@@ -1367,7 +1367,9 @@ fn paint_trigger(
             },
         ),
     };
-    paint_text_in_rect(ctx, content, text_style, text_rect, opacity);
+    ctx.with_clip(text_rect, |ctx| {
+        paint_text_in_rect(ctx, content, text_style, text_rect, opacity);
+    });
     ctx.push(DrawCmd::Image(DrawImage {
         rect: chevron,
         icon: IconId::Lucide(Icon::ChevronDown),

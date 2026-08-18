@@ -103,6 +103,41 @@ fn select_dropdown_compat_bottom_popup_still_opens_below() {
 }
 
 #[test]
+fn narrow_select_clips_long_trigger_label_to_its_text_slot() {
+    let (app, _) = layout_view(
+        Select::<Choice>::new()
+            .width(96.0)
+            .selected(Choice::One)
+            .option(Choice::One, "Provider default")
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    let scene = app.paint(&mut text_system);
+    let (text, clip) = scene
+        .layers
+        .iter()
+        .find_map(|layer| {
+            let clip = layer.clip.scissor_rect()?;
+            layer.cmds.iter().find_map(|cmd| match cmd {
+                DrawCmd::Text(text) if text.layout.text() == "Provider default" => {
+                    Some((text, clip))
+                }
+                _ => None,
+            })
+        })
+        .expect("selected trigger label");
+    let raw_text_right = text.pos[0] + text.layout.width();
+
+    assert!(
+        raw_text_right > clip.right(),
+        "fixture must overflow the slot"
+    );
+    assert!(clip.x >= 0.0);
+    assert!(clip.right() <= 96.0);
+    assert!(clip.w > 0.0);
+}
+
+#[test]
 fn select_popup_placement_top_opens_above_trigger() {
     let (app, root) = layout_view(
         Select::<Choice>::new()
