@@ -1,0 +1,105 @@
+Ailloli UI File Icons — third-party notices
+================================================
+
+Scope
+-----
+
+These notices apply to assets/AilloliUIFileIcons-Regular.ttf. The font is a
+modified subset of Nerd Fonts Symbols Only 3.4.0. Ailloli UI removed every
+Font Logos glyph, retained only the audited glyphs required by devicons 0.6.12
+and the framework file/folder fallbacks, and changed the font family and
+PostScript names. Exact hashes, versions, source links, exclusions and the
+rebuild command are recorded in SOURCE_PROVENANCE.toml.
+
+No upstream author or trademark owner endorses Ailloli UI. Brand icons remain
+subject to their owners' trademark policies independently of copyright terms.
+
+Nerd Fonts Symbols Only and Nerd Fonts modifications
+-----------------------------------------------------
+
+Project: Nerd Fonts
+Version: 3.4.0, commit fa7b859994228a9c8759f99c55a8d31ee92a1b5e
+Source: https://github.com/ryanoasis/nerd-fonts/tree/v3.4.0
+Copyright: Copyright (c) 2014 Ryan L McIntyre
+License: MIT; see LICENSE-MIT.
+
+Seti-UI and Nerd Fonts custom file icons
+-----------------------------------------
+
+Projects: Seti-UI and Nerd Fonts
+Sources: https://github.com/jesseweed/seti-ui
+         https://github.com/ryanoasis/nerd-fonts/tree/v3.4.0/src/svgs
+Copyright: Copyright (c) 2014 Jesse Weed; Nerd Fonts contributors
+License: MIT; see LICENSE-MIT.
+
+Devicons
+--------
+
+Project: Devicons
+Version: 2.16.0.custom in Nerd Fonts 3.4.0
+Source: https://github.com/devicons/devicon/tree/v2.16.0
+Copyright: Copyright (c) 2015 konpa and Devicons contributors
+License: MIT; see LICENSE-MIT.
+
+Font Awesome Extension
+----------------------
+
+Project: Font Awesome Extension
+Version: 1.0
+Source: https://github.com/AndreLZGava/font-awesome-extension/tree/09d80249058ee8018a45da30add4339289dbb466
+Copyright: Copyright (c) 2017 André Luiz Gava
+License: MIT; see LICENSE-MIT.
+
+Codicons
+--------
+
+Project: @vscode/codicons
+Version: 0.0.35, font version 1.10
+Source: https://github.com/microsoft/vscode-codicons/tree/0.0.35
+Creator: Microsoft Corporation and contributors
+License: Creative Commons Attribution 4.0 International; see
+LICENSE-CC-BY-4.0 and https://creativecommons.org/licenses/by/4.0/legalcode.
+The glyphs were subset and repackaged in a renamed composite font. Codicons,
+Microsoft, Windows, Visual Studio Code and related names may be trademarks;
+the license does not grant trademark rights.
+
+Font Awesome Free
+-----------------
+
+Project: Font Awesome Free
+Version: 6.5.1 source font in Nerd Fonts 3.4.0
+Source: https://github.com/FortAwesome/Font-Awesome
+Copyright: Copyright (c) 2022 Fonticons, Inc. (https://fontawesome.com)
+Licenses: Icons are CC-BY-4.0; desktop font software is OFL-1.1 with reserved
+font name "Font Awesome". See LICENSE-CC-BY-4.0 and LICENSE-FONT-AWESOME.
+The output is a modified, subsetted and renamed font and does not use the
+reserved font name.
+
+Octicons
+--------
+
+Project: Octicons
+Version: 18.3.0 source font in Nerd Fonts 3.4.0
+Source: https://github.com/primer/octicons
+Copyright: Copyright (c) 2023 GitHub Inc.
+License: MIT; see LICENSE-MIT.
+
+Material Design Icons
+---------------------
+
+Project: Material Design Icons / Pictogrammers
+Snapshot: source fetched by Nerd Fonts on 2022-10-06
+Source: https://github.com/Templarian/MaterialDesign-Font
+License: Apache License 2.0 for the desktop font and retained icons; see
+LICENSE-APACHE-2.0 and LICENSE-MATERIAL-DESIGN-ICONS. The source font was
+modified by Nerd Fonts and this project and has been subset and renamed. The
+upstream snapshot distributed no NOTICE file requiring additional
+carry-forward text.
+
+Explicit exclusion
+------------------
+
+Nerd Fonts 3.4.0 identifies Font Logos (U+F300-U+F381) as unlicensed in its
+license-audit.md. No Font Logos glyph is present in the bundled subset. Calls
+requesting those codepoints, or devicons mappings whose Unicode glyph was not
+present in the source font, render the generic U+F15B file fallback instead.

@@ -1,0 +1,34 @@
+Ailloli UI
+Copyright 2026 Rising Corporation and Ailloli UI contributors
+
+This product includes third-party software and font assets. The notices below
+are informational and do not modify the applicable license terms.
+
+JetBrains Mono Nerd Font
+------------------------
+
+Bundled at:
+  crates/ailloli_ui_text/assets/fonts/JetBrainsMonoNerdFont-Regular.ttf
+
+Copyright 2020 The JetBrains Mono Project Authors.
+Source: https://github.com/JetBrains/JetBrainsMono
+License: SIL Open Font License 1.1. The complete license is stored at
+  crates/ailloli_ui_text/assets/fonts/OFL-JetBrainsMonoNerdFont.txt
+Asset SHA-256:
+  0ec29a68b539ece7078fc714cebff0c0accb2f4948f8f7963d9f5e86633b12d9
+
+Ailloli UI File Icons
+---------------------
+
+Bundled at:
+  crates/ailloli_ui_devicons_font/assets/AilloliUIFileIcons-Regular.ttf
+
+This is a renamed, reduced derivative of Nerd Fonts Symbols Only 3.4.0.
+Unlicensed Font Logos glyphs are excluded. Exact source versions, hashes,
+included components, license texts, exclusions, and the reproducible rebuild
+command are stored beside the asset in:
+  crates/ailloli_ui_devicons_font/SOURCE_PROVENANCE.toml
+  crates/ailloli_ui_devicons_font/THIRD_PARTY_NOTICES
+
+The reduced asset SHA-256 is:
+  2ad7a644bf07f6f752fbab646b96b599bdee6118800b3e17ffc132cea274431b

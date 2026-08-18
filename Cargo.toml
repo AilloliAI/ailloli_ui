@@ -1,0 +1,79 @@
+# Autonomous Ailloli UI framework workspace.
+[workspace]
+resolver = "2"
+members = [
+    "crates/ailloli_ui",
+    "crates/ailloli_ui_app_storage",
+    "crates/ailloli_ui_bench",
+    "crates/ailloli_ui_core",
+    "crates/ailloli_ui_devicons_font",
+    "crates/ailloli_ui_devtools_core",
+    "crates/ailloli_ui_devtools_ui",
+    "crates/ailloli_ui_editor",
+    "crates/ailloli_ui_fs",
+    "crates/ailloli_ui_fs_local",
+    "crates/ailloli_ui_icon",
+    "crates/ailloli_ui_openxr",
+    "crates/ailloli_ui_packaging",
+    "crates/ailloli_ui_render_vulkan",
+    "crates/ailloli_ui_render_wgpu",
+    "crates/ailloli_ui_runtime",
+    "crates/ailloli_ui_terminal_core",
+    "crates/ailloli_ui_terminal_pty",
+    "crates/ailloli_ui_text",
+    "crates/ailloli_ui_widgets",
+    "crates/ailloli_ui_winit",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+[workspace.dependencies]
+winit = "0.30.13"
+wgpu = "0.20"
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+shaderc = "0.10.1"
+pollster = "0.4.0"
+bytemuck = { version = "1.16", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "2.0.18"
+lucide-icons = "1.14.0"
+devicons = "0.6.12"
+ailloli_ui_devicons_font = { path = "crates/ailloli_ui_devicons_font" }
+fontdue = "0.9"
+ttf-parser = "0.25.1"
+resvg = "0.47"
+usvg = "0.47"
+tiny-skia = "0.12"
+parley = "0.9.0"
+fontique = "0.9.0"
+fs2 = "0.4"
+swash = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+semver = "1.0"
+sha2 = "0.10"
+roxmltree = "0.20"
+clap = { version = "4.5", features = ["derive"] }
+editpe = { version = "0.2.3", features = ["images"] }
+flate2 = "1.0"
+zip = { version = "4.3", default-features = false, features = ["deflate"] }
+once_cell = "1.19"
+tar = "0.4"
+toml = "0.8"
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }
+image = "0.25"
+lru = "0.18.0"
+ropey = "1.6"
+unicode-segmentation = "1.11"
+unicode-width = "0.1.14"
+vte = "0.15.0"
+zstd = "0.13"
+portable-pty = "0.9.0"
+arboard = "3.4"
+libc = "0.2.177"
+raw-window-handle = "0.6.2"
+smithay-client-toolkit = "0.19.2"
+wayland-client = "0.31.11"

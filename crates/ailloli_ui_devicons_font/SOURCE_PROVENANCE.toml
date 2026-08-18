@@ -1,0 +1,91 @@
+schema_version = 1
+asset = "assets/AilloliUIFileIcons-Regular.ttf"
+asset_sha256 = "2ad7a644bf07f6f752fbab646b96b599bdee6118800b3e17ffc132cea274431b"
+asset_family = "Ailloli UI File Icons"
+asset_version = "1.000"
+modified = true
+modification = "Subset to audited runtime glyphs, remove unlicensed and unavailable glyphs, and rename the font."
+
+[source]
+project = "Nerd Fonts"
+version = "3.4.0"
+tag_commit = "fa7b859994228a9c8759f99c55a8d31ee92a1b5e"
+release_url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/NerdFontsSymbolsOnly.zip"
+archive_sha256 = "8e617904b980fe3648a4b116808788fe50c99d2d495376cb7c0badbd8a564c47"
+archive_member = "SymbolsNerdFontMono-Regular.ttf"
+font_sha256 = "f0f624d9b474bea1662cf7e862d44aebe1ae1f6c7f9cb7a0ca5d0e5ac9561c60"
+
+[generator]
+script = "tools/rebuild_font.py"
+python = "3"
+fonttools_version = "4.59.1"
+fonttools_cp313_linux_x86_64_wheel_sha256 = "8387876a8011caec52d327d5e5bca705d9399ec4b17afb8b431ec50d47c17d23"
+command = "python tools/rebuild_font.py --source /path/to/SymbolsNerdFontMono-Regular.ttf --output assets/AilloliUIFileIcons-Regular.ttf"
+
+[audit]
+consumer = "devicons 0.6.12 default dark map"
+consumer_unique_codepoints = 229
+included_codepoints = 198
+explicit_framework_glyphs = ["U+F07B", "U+F15B"]
+excluded_unlicensed_range = "U+F300-U+F381"
+excluded_unlicensed_source = "Font Logos"
+excluded_unlicensed_used_codepoints = [
+  "U+F303", "U+F313", "U+F336", "U+F338", "U+F33C", "U+F33D",
+  "U+F34B", "U+F34C", "U+F34E", "U+F351", "U+F355", "U+F359",
+  "U+F35A", "U+F35B", "U+F35E", "U+F361", "U+F362", "U+F363",
+  "U+F364", "U+F367", "U+F369", "U+F36E", "U+F370", "U+F373",
+  "U+F375",
+]
+excluded_missing_from_source = [
+  "U+003E", "U+03BB", "U+221E", "U+235D", "U+2389", "U+25B2",
+  "U+2699",
+]
+runtime_fallback = "U+F15B"
+
+[[component]]
+name = "Nerd Fonts Symbols Only"
+version = "3.4.0"
+license = "MIT"
+source = "https://github.com/ryanoasis/nerd-fonts/tree/v3.4.0"
+
+[[component]]
+name = "Seti-UI and Nerd Fonts custom file icons"
+version = "Nerd Fonts source snapshot 3.4.0"
+license = "MIT"
+source = "https://github.com/jesseweed/seti-ui"
+
+[[component]]
+name = "Devicons"
+version = "2.16.0.custom"
+license = "MIT"
+source = "https://github.com/devicons/devicon/tree/v2.16.0"
+
+[[component]]
+name = "Font Awesome Extension"
+version = "1.0"
+license = "MIT"
+source = "https://github.com/AndreLZGava/font-awesome-extension/tree/09d80249058ee8018a45da30add4339289dbb466"
+
+[[component]]
+name = "Codicons"
+version = "0.0.35 / font 1.10"
+license = "CC-BY-4.0"
+source = "https://github.com/microsoft/vscode-codicons/tree/0.0.35"
+
+[[component]]
+name = "Font Awesome Free"
+version = "6.5.1"
+license = "CC-BY-4.0 AND OFL-1.1"
+source = "https://github.com/FortAwesome/Font-Awesome"
+
+[[component]]
+name = "Octicons"
+version = "18.3.0"
+license = "MIT"
+source = "https://github.com/primer/octicons"
+
+[[component]]
+name = "Material Design Icons"
+version = "Nerd Fonts snapshot fetched 2022-10-06"
+license = "Apache-2.0"
+source = "https://github.com/Templarian/MaterialDesign-Font"

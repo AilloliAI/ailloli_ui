@@ -1,0 +1,53 @@
+[package]
+name = "ailloli_ui_winit"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+native-overlay = [
+    "dep:libc",
+    "dep:raw-window-handle",
+    "dep:smithay-client-toolkit",
+    "dep:wayland-client",
+]
+devtools = [
+    "dep:ailloli_ui_devtools_core",
+    "dep:ailloli_ui_devtools_ui",
+    "ailloli_ui_runtime/devtools",
+]
+
+[dependencies]
+winit.workspace = true
+ailloli_ui_app_storage = { path = "../ailloli_ui_app_storage" }
+ailloli_ui_core = { path = "../ailloli_ui_core" }
+ailloli_ui_icon = { path = "../ailloli_ui_icon" }
+ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
+ailloli_ui_text = { path = "../ailloli_ui_text" }
+ailloli_ui_widgets = { path = "../ailloli_ui_widgets" }
+ailloli_ui_devtools_core = { path = "../ailloli_ui_devtools_core", optional = true }
+ailloli_ui_devtools_ui = { path = "../ailloli_ui_devtools_ui", optional = true }
+ailloli_ui_render_wgpu = { path = "../ailloli_ui_render_wgpu" }
+ctrlc = { version = "3.4", features = ["termination"] }
+ailloli_ui_bench = { path = "../ailloli_ui_bench" }
+serde.workspace = true
+serde_json.workspace = true
+arboard.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true, optional = true }
+raw-window-handle = { workspace = true, optional = true }
+smithay-client-toolkit = { workspace = true, optional = true }
+wayland-client = { workspace = true, optional = true, features = ["system"] }
+
+[dev-dependencies]
+ailloli_ui = { path = "../ailloli_ui", features = ["files-local"] }
+ailloli_ui_editor = { path = "../ailloli_ui_editor", features = ["tree-sitter"] }
+ailloli_ui_widgets = { path = "../ailloli_ui_widgets", features = ["files-local"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+tokio.workspace = true

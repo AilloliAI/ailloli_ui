@@ -1,0 +1,34 @@
+[package]
+name = "ailloli_ui_editor"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ailloli_ui_core = { path = "../ailloli_ui_core" }
+ailloli_ui_fs = { path = "../ailloli_ui_fs" }
+ailloli_ui_text = { path = "../ailloli_ui_text" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tree-sitter = { version = "0.26.9", optional = true }
+tree-sitter-rust = { version = "0.24.2", optional = true }
+tree-sitter-json = { version = "0.24.8", optional = true }
+tree-sitter-bash = { version = "0.25.1", optional = true }
+tree-sitter-css = { version = "0.25.0", optional = true }
+tree-sitter-html = { version = "0.23.2", optional = true }
+tree-sitter-javascript = { version = "0.25.0", optional = true }
+tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-toml = { version = "0.20.0", optional = true }
+tree-sitter-typescript = { version = "0.23.2", optional = true }
+tree-sitter-yaml = { version = "0.7.2", optional = true }
+tree-sitter-php = { version = "0.24.2", optional = true }
+tree-sitter-markdown = { version = "0.7.1", optional = true }
+tree-sitter-ruby = { version = "0.23.1", optional = true }
+tree-sitter-swift = { version = "0.7.2", optional = true }
+tree-sitter-go = { version = "0.25.0", optional = true }
+tree-sitter-java = { version = "0.23.5", optional = true }
+tree-sitter-c = { version = "0.24.2", optional = true }
+
+[features]
+tree-sitter = ["dep:tree-sitter", "dep:tree-sitter-rust"]

@@ -1,0 +1,28 @@
+[package]
+name = "ailloli_ui_render_wgpu"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+bytemuck.workspace = true
+thiserror.workspace = true
+winit.workspace = true
+pollster.workspace = true
+image.workspace = true
+lucide-icons.workspace = true
+ailloli_ui_devicons_font.workspace = true
+fontdue.workspace = true
+resvg.workspace = true
+usvg.workspace = true
+tiny-skia.workspace = true
+swash.workspace = true
+serde.workspace = true
+
+ailloli_ui_core = { path = "../ailloli_ui_core" }
+ailloli_ui_icon = { path = "../ailloli_ui_icon" }
+ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
+ailloli_ui_text = { path = "../ailloli_ui_text" }
+ailloli_ui_bench = { path = "../ailloli_ui_bench" }

@@ -1,0 +1,2311 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use ailloli_ui_core::geometry::ClipShape;
+use ailloli_ui_core::math::Scale;
+use ailloli_ui_core::Color;
+use ailloli_ui_runtime::scene::ClipStackSnapshot;
+use ailloli_ui_runtime::{BlendMode, DrawCmd, IsolatedEffects};
+use ailloli_ui_text::FontMetrics;
+use winit::dpi::PhysicalSize;
+use winit::window::Window;
+
+use crate::backdrop_blur::run_backdrop_blur;
+use crate::backdrop_capture::{
+    copy_swapchain_region_to_offscreen, lease_backdrop_slot, BackdropTable,
+};
+use crate::capture::{
+    bgra_to_rgba_in_place, bytes_per_row_padded_256, encode_png_rgba, unpad_rows_rgba,
+    CaptureParams, CapturedFrame, CapturedFrameFormat,
+};
+use crate::clip::{resolve_clip_render_plan, ClipParamsGpu, ClipRenderMode, RenderClipPlan};
+use crate::composite_blend::{draw_composite_blend, CompositeBlendPipelines};
+use crate::effect_chain::{run_effect_chain, EffectPipelines, IsolatedCompositeTable};
+use crate::error::RendererError;
+use crate::frame_plan::{
+    ClipBindKind, FrameRenderPlan, PipelineKind, PlannedBatch, PlannedLayer, TextureBindKind,
+};
+use crate::frame_prep::PreparedResources;
+use crate::icons::IconCache;
+use crate::isolated_budget::{IsolatedBudgetConfig, IsolatedBudgetPolicy, IsolatedDowngradeCounts};
+use crate::isolated_plan::OffscreenPassId;
+use crate::isolated_plan::PlannedIsolatedComposite;
+use crate::offscreen_pool::{OffscreenSurfacePool, PoolKey};
+use crate::passes::{apply_layer_scissor, now_ms};
+use crate::pipeline_cache::{ResizeOutcome, WgpuRenderContext, WgpuSurfaceBundle};
+use crate::render_target::RenderTarget;
+use crate::stencil::StencilTarget;
+use crate::text::{TextAtlas, TextAtlasStats};
+use wgpu::util::DeviceExt;
+
+/// GPU renderer for a single winit window (surface, pipelines, atlas, icons).
+///
+/// Phase 30: a single `wgpu::RenderPass` is opened per frame, driven by a
+/// [`FrameRenderPlan`]. Per-layer stencil_ref counters are assigned by
+/// `FrameRenderPlan::build_cpu`, removing the previous `StencilFrameState`
+/// field.
+pub struct Renderer {
+    gpu: RenderBackend,
+
+    icon_cache: IconCache,
+    text_atlas: TextAtlas,
+    text_metrics: FontMetrics,
+    /// Font blobs per `face_id` (filled by `TextSystem` before each frame).
+    text_face_blobs: Arc<HashMap<u64, Arc<[u8]>>>,
+    stencil_target: Option<StencilTarget>,
+    offscreen_pool: OffscreenSurfacePool,
+    effect_pipelines: Option<EffectPipelines>,
+    composite_blend_pipelines: Option<CompositeBlendPipelines>,
+    isolated_metrics: IsolatedFrameMetrics,
+    isolated_budget: IsolatedBudgetConfig,
+    bench_scenario: Option<String>,
+    /// Holds offscreen leases until `end_frame` after the main pass composite.
+    frame_leases: Vec<crate::offscreen_pool::LeasedOffscreen>,
+}
+
+enum RenderBackend {
+    Surface(WgpuSurfaceBundle),
+    Detached(WgpuRenderContext),
+}
+
+impl RenderBackend {
+    fn surface_mut(&mut self) -> Option<&mut WgpuSurfaceBundle> {
+        match self {
+            Self::Surface(bundle) => Some(bundle),
+            _ => None,
+        }
+    }
+
+    fn device(&self) -> &wgpu::Device {
+        match self {
+            Self::Surface(bundle) => &bundle.device,
+            Self::Detached(context) => &context.device,
+        }
+    }
+
+    fn queue(&self) -> &wgpu::Queue {
+        match self {
+            Self::Surface(bundle) => &bundle.queue,
+            Self::Detached(context) => &context.queue,
+        }
+    }
+
+    fn pipelines(&self) -> &crate::pipeline_cache::PipelineCache {
+        match self {
+            Self::Surface(bundle) => &bundle.pipelines,
+            Self::Detached(context) => &context.pipelines,
+        }
+    }
+
+    fn config(&self) -> &wgpu::SurfaceConfiguration {
+        match self {
+            Self::Surface(bundle) => &bundle.config,
+            Self::Detached(context) => &context.config,
+        }
+    }
+
+    fn try_resize(
+        &mut self,
+        new_size: winit::dpi::PhysicalSize<u32>,
+    ) -> Result<ResizeOutcome, crate::error::RendererError> {
+        match self {
+            Self::Surface(surface) => Ok(surface.try_resize(new_size)?),
+            Self::Detached(context) => Ok(context.try_resize(new_size)),
+        }
+    }
+
+    fn surface_capabilities(&self) -> wgpu::SurfaceCapabilities {
+        match self {
+            Self::Surface(surface) => surface.surface_capabilities(),
+            Self::Detached(context) => wgpu::SurfaceCapabilities {
+                formats: vec![context.config.format],
+                present_modes: vec![wgpu::PresentMode::Fifo],
+                alpha_modes: vec![if context.transparent {
+                    wgpu::CompositeAlphaMode::PreMultiplied
+                } else {
+                    wgpu::CompositeAlphaMode::Opaque
+                }],
+                usages: context.config.usage,
+            },
+        }
+    }
+
+    fn surface_config_deferred_reason(
+        &self,
+    ) -> Option<crate::pipeline_cache::SurfaceConfigDeferredReason> {
+        match self {
+            Self::Surface(surface) => surface.surface_config_deferred_reason(),
+            Self::Detached(context) => context.surface_config_deferred_reason(),
+        }
+    }
+
+    fn adapter_info(&self) -> wgpu::AdapterInfo {
+        match self {
+            Self::Surface(surface) => surface.adapter_info(),
+            Self::Detached(_) => wgpu::AdapterInfo {
+                name: "ailloli_ui_render_wgpu detached".to_string(),
+                vendor: 0,
+                device: 0,
+                device_type: wgpu::DeviceType::Other,
+                driver: "n/a".to_string(),
+                driver_info: "n/a".to_string(),
+                backend: wgpu::Backend::Empty,
+            },
+        }
+    }
+
+    fn pre_present_notify(&self) {
+        match self {
+            Self::Surface(surface) => surface.pre_present_notify(),
+            Self::Detached(context) => context.pre_present_notify(),
+        }
+    }
+
+    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        let _ = self.try_resize(new_size);
+    }
+
+    fn require_surface_mut(
+        &mut self,
+    ) -> Result<&mut WgpuSurfaceBundle, crate::error::RendererError> {
+        self.surface_mut()
+            .ok_or(crate::error::RendererError::RenderTargetUnavailable(
+                "renderer is not surface-backed",
+            ))
+    }
+}
+
+/// Per-frame metrics for isolated offscreen rendering (`AILLOLI_UI_GPU_DEBUG=1`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IsolatedFrameMetrics {
+    pub isolated_pass_count: u32,
+    pub offscreen_pixels_rendered: u64,
+    pub blur_pixels_total: u64,
+    pub offscreen_peak_bytes: u64,
+    pub pool_reuse_hits: u32,
+    pub pool_allocs: u32,
+    pub blur_pass_count: u32,
+    pub stencil_offscreen_count: u32,
+    pub downgrade_nested_isolated: u32,
+    pub downgrade_oversized: u32,
+    pub downgrades: IsolatedDowngradeCounts,
+    pub backdrop_capture_count: u32,
+    pub backdrop_pixels_total: u64,
+    pub backdrop_blur_pass_count: u32,
+    pub blend_capture_count: u32,
+    pub blend_composite_count: u32,
+}
+
+impl IsolatedFrameMetrics {
+    pub fn downgrade_count(&self) -> u32 {
+        self.downgrades.total() + self.downgrade_nested_isolated + self.downgrade_oversized
+    }
+
+    pub fn pool_reuse_ratio(&self) -> f64 {
+        let denom = self.pool_reuse_hits + self.pool_allocs;
+        if denom == 0 {
+            0.0
+        } else {
+            self.pool_reuse_hits as f64 / denom as f64
+        }
+    }
+}
+
+/// Options passed when creating a [`Renderer`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RendererOptions {
+    /// Use a transparent swapchain clear (client chrome / rounded window).
+    pub transparent: bool,
+    /// Optional bootstrap override (desktop path).
+    pub bootstrap: Option<crate::pipeline_cache::SurfaceBootstrapConfig>,
+    /// Offscreen isolated budgets (`None` = [`IsolatedBudgetConfig::default`]).
+    pub isolated_budget: Option<IsolatedBudgetConfig>,
+}
+
+impl RendererOptions {
+    pub fn with_bootstrap(
+        mut self,
+        bootstrap: crate::pipeline_cache::SurfaceBootstrapConfig,
+    ) -> Self {
+        self.bootstrap = Some(bootstrap);
+        self
+    }
+
+    pub fn bootstrap_config(&self) -> crate::pipeline_cache::SurfaceBootstrapConfig {
+        self.bootstrap.unwrap_or_default()
+    }
+}
+
+/// One scene layer: draw commands plus a non-destructive clip stack.
+///
+/// `isolated == true` requests an offscreen pass when [`IsolatedEffects::needs_offscreen`]
+/// is true (opacity < 1, blur, etc.). Phase 31 renders content to a pooled
+/// texture, runs the effect chain, then composites into the main pass.
+#[derive(Debug, Clone)]
+pub struct LayerPass<'a> {
+    pub cmds: &'a [DrawCmd],
+    pub clip: ClipStackSnapshot,
+    pub clip_plan: RenderClipPlan,
+    pub isolated: bool,
+    /// Nesting depth from runtime (`PaintContext`); 0 for flat isolated layers.
+    pub isolated_depth: u8,
+    pub effects: IsolatedEffects,
+}
+
+impl<'a> LayerPass<'a> {
+    pub fn new(cmds: &'a [DrawCmd]) -> Self {
+        Self::with_clip_stack(cmds, ClipStackSnapshot::empty())
+    }
+
+    pub fn with_clip_stack(cmds: &'a [DrawCmd], clip: ClipStackSnapshot) -> Self {
+        let clip_plan = resolve_clip_render_plan(&clip, cmds.len());
+        Self {
+            cmds,
+            clip,
+            clip_plan,
+            isolated: false,
+            isolated_depth: 0,
+            effects: IsolatedEffects::default(),
+        }
+    }
+
+    pub fn from_scene_layer(
+        cmds: &'a [DrawCmd],
+        clip: ClipStackSnapshot,
+        isolated: bool,
+        isolated_depth: u8,
+        effects: IsolatedEffects,
+    ) -> Self {
+        let clip_plan = resolve_clip_render_plan(&clip, cmds.len());
+        Self {
+            cmds,
+            clip,
+            clip_plan,
+            isolated,
+            isolated_depth,
+            effects,
+        }
+    }
+
+    pub fn with_clip(cmds: &'a [DrawCmd], clip: ClipShape) -> Self {
+        Self::with_clip_stack(cmds, ClipStackSnapshot::from_clip(Some(clip), false))
+    }
+
+    pub fn with_window_root_clip(cmds: &'a [DrawCmd], clip: ClipShape) -> Self {
+        Self::with_clip_stack(cmds, ClipStackSnapshot::from_clip(Some(clip), true))
+    }
+
+    /// Isolated layer with default effects (collapsed into main pass if noop).
+    pub fn new_isolated(cmds: &'a [DrawCmd]) -> Self {
+        Self::with_clip_stack_isolated(cmds, ClipStackSnapshot::empty())
+    }
+
+    /// Same as `with_clip_stack` but marks the layer as `isolated`.
+    pub fn with_clip_stack_isolated(cmds: &'a [DrawCmd], clip: ClipStackSnapshot) -> Self {
+        Self::with_clip_stack_isolated_effects(cmds, clip, IsolatedEffects::default())
+    }
+
+    pub fn with_clip_stack_isolated_effects(
+        cmds: &'a [DrawCmd],
+        clip: ClipStackSnapshot,
+        effects: IsolatedEffects,
+    ) -> Self {
+        let mut layer = Self::with_clip_stack(cmds, clip);
+        layer.isolated = true;
+        layer.effects = effects;
+        layer
+    }
+}
+
+struct ClipBinding {
+    _buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+struct PerLayerBindings {
+    none_clip: ClipBinding,
+    shape_clip: Option<ClipBinding>,
+}
+
+struct MainPassGpuBuffers {
+    vertex_buf: Option<wgpu::Buffer>,
+    rrect_buf: Option<wgpu::Buffer>,
+    border_rrect_buf: Option<wgpu::Buffer>,
+    shadow_buf: Option<wgpu::Buffer>,
+    ring_progress_buf: Option<wgpu::Buffer>,
+    stroke_buf: Option<wgpu::Buffer>,
+    tex_buf: Option<wgpu::Buffer>,
+    stencil_mask_buf: Option<wgpu::Buffer>,
+    composite_buf: Option<wgpu::Buffer>,
+    per_layer: Vec<PerLayerBindings>,
+}
+
+fn stencil_depth_attachment<'a>(
+    stencil_target: &'a Option<StencilTarget>,
+    needs: bool,
+) -> Option<wgpu::RenderPassDepthStencilAttachment<'a>> {
+    if !needs {
+        return None;
+    }
+    stencil_target
+        .as_ref()
+        .map(|target| wgpu::RenderPassDepthStencilAttachment {
+            view: &target.view,
+            depth_ops: None,
+            stencil_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(0),
+                store: wgpu::StoreOp::Store,
+            }),
+        })
+}
+
+fn record_text_atlas_frame(stats: TextAtlasStats) {
+    if stats.hits
+        + stats.misses
+        + stats.rasterized
+        + stats.resets
+        + stats.evictions_blocked
+        + stats.glyphs_skipped
+        == 0
+    {
+        return;
+    }
+
+    ailloli_ui_bench::record(ailloli_ui_bench::Event::TextAtlasFrame {
+        ts_ms: now_ms(),
+        hits: stats.hits,
+        misses: stats.misses,
+        rasterized: stats.rasterized,
+        resets: stats.resets,
+        evictions_blocked: stats.evictions_blocked,
+        glyphs_skipped: stats.glyphs_skipped,
+        pages_active: stats.pages_active,
+    });
+}
+
+impl Renderer {
+    /// Creates a renderer that co-owns the window via `Arc<Window>`.
+    ///
+    /// The wgpu `Surface` holds a strong reference so it never outlives the window,
+    /// avoiding intermittent Wayland use-after-free segfaults.
+    pub fn new(window: Arc<Window>) -> Result<Self, RendererError> {
+        Self::new_with_options(window, RendererOptions::default())
+    }
+
+    pub fn new_with_options(
+        window: Arc<Window>,
+        options: RendererOptions,
+    ) -> Result<Self, RendererError> {
+        let gpu = WgpuSurfaceBundle::new_with_transparency_and_config(
+            window,
+            options.transparent,
+            options.bootstrap_config(),
+        )?;
+
+        Self::new_from_backend(RenderBackend::Surface(gpu), options)
+    }
+
+    pub fn new_with_surface_target<T>(
+        target: Arc<T>,
+        size: PhysicalSize<u32>,
+        options: RendererOptions,
+        pre_present: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, RendererError>
+    where
+        T: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle + Send + Sync + 'static,
+    {
+        let gpu = WgpuSurfaceBundle::new_with_surface_target(
+            target,
+            size,
+            options.transparent,
+            options.bootstrap_config(),
+            pre_present,
+        )?;
+        Self::new_from_backend(RenderBackend::Surface(gpu), options)
+    }
+
+    fn new_from_backend(
+        gpu: RenderBackend,
+        options: RendererOptions,
+    ) -> Result<Self, RendererError> {
+        let text_atlas = TextAtlas::new(
+            gpu.device(),
+            gpu.queue(),
+            &gpu.pipelines().texture_bind_group_layout,
+        );
+        let text_metrics = FontMetrics::new();
+
+        let stencil_target =
+            StencilTarget::new(gpu.device(), gpu.config().width, gpu.config().height);
+
+        Ok(Self {
+            gpu,
+            icon_cache: IconCache::new(),
+            text_atlas,
+            text_metrics,
+            text_face_blobs: Arc::new(HashMap::new()),
+            stencil_target: Some(stencil_target),
+            offscreen_pool: OffscreenSurfacePool::default(),
+            effect_pipelines: None,
+            composite_blend_pipelines: None,
+            isolated_metrics: IsolatedFrameMetrics::default(),
+            frame_leases: Vec::new(),
+            isolated_budget: options.isolated_budget.unwrap_or_default(),
+            bench_scenario: ailloli_ui_bench::bench_scenario_from_env(),
+        })
+    }
+
+    pub fn new_with_render_context(context: WgpuRenderContext, options: RendererOptions) -> Self {
+        Self::new_from_backend(RenderBackend::Detached(context), options)
+            .unwrap_or_else(|_| unreachable!("WgpuRenderContext constructor is non-fallible"))
+    }
+
+    pub fn new_with_render_context_and_bootstrap(
+        context: WgpuRenderContext,
+        options: RendererOptions,
+    ) -> Self {
+        Self::new_with_render_context(context, options)
+    }
+
+    pub fn new_with_transparency(
+        window: Arc<Window>,
+        transparent: bool,
+    ) -> Result<Self, RendererError> {
+        Self::new_with_options(
+            window,
+            RendererOptions {
+                transparent,
+                ..RendererOptions::default()
+            },
+        )
+    }
+
+    pub fn new_with_bootstrap(
+        window: Arc<Window>,
+        options: RendererOptions,
+    ) -> Result<Self, RendererError> {
+        Self::new_with_options(window, options)
+    }
+
+    pub fn isolated_budget_config(&self) -> IsolatedBudgetConfig {
+        self.isolated_budget
+    }
+
+    pub fn set_isolated_budget_config(&mut self, config: IsolatedBudgetConfig) {
+        self.isolated_budget = config;
+    }
+
+    pub fn text_measurer(&self) -> &FontMetrics {
+        &self.text_metrics
+    }
+
+    pub fn set_text_face_blobs(&mut self, blobs: Arc<HashMap<u64, Arc<[u8]>>>) {
+        self.text_face_blobs = blobs;
+    }
+
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        self.gpu.resize(new_size);
+        if let Some(st) = self.stencil_target.as_mut() {
+            st.recreate(self.gpu.device(), new_size.width, new_size.height);
+        }
+    }
+
+    pub fn try_resize(
+        &mut self,
+        new_size: PhysicalSize<u32>,
+    ) -> Result<ResizeOutcome, RendererError> {
+        let out = self.gpu.try_resize(new_size);
+        if matches!(out, Ok(ResizeOutcome::Applied)) {
+            if let Some(st) = self.stencil_target.as_mut() {
+                st.recreate(self.gpu.device(), new_size.width, new_size.height);
+            }
+        }
+        out
+    }
+
+    pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
+        self.gpu.config()
+    }
+
+    pub fn surface_capabilities(&self) -> wgpu::SurfaceCapabilities {
+        self.gpu.surface_capabilities()
+    }
+
+    pub fn adapter_info(&self) -> wgpu::AdapterInfo {
+        self.gpu.adapter_info()
+    }
+
+    pub fn surface_config_deferred_reason(
+        &self,
+    ) -> Option<crate::pipeline_cache::SurfaceConfigDeferredReason> {
+        self.gpu.surface_config_deferred_reason()
+    }
+
+    /// Metrics from the most recent frame that ran isolated offscreen passes.
+    pub fn isolated_frame_metrics(&self) -> IsolatedFrameMetrics {
+        self.isolated_metrics
+    }
+
+    pub fn render(&mut self, clear: Color, cmds: &[DrawCmd]) -> Result<(), RendererError> {
+        self.render_layers(clear, &[cmds])
+    }
+
+    pub fn render_layers(
+        &mut self,
+        clear: Color,
+        layers: &[&[DrawCmd]],
+    ) -> Result<(), RendererError> {
+        self.render_layers_scaled(clear, layers, Scale::new(1.0))
+    }
+
+    pub fn render_layers_scaled(
+        &mut self,
+        clear: Color,
+        layers: &[&[DrawCmd]],
+        scale: Scale,
+    ) -> Result<(), RendererError> {
+        let passes: Vec<LayerPass<'_>> = layers.iter().map(|cmds| LayerPass::new(cmds)).collect();
+        self.render_layered_scaled(clear, &passes, scale)
+    }
+
+    /// Renders layered draw commands to the swapchain (DPR = 1).
+    pub fn render_layered(
+        &mut self,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+    ) -> Result<(), RendererError> {
+        self.render_layered_scaled(clear, layers, Scale::new(1.0))
+    }
+
+    /// Renders layered draw commands with explicit logical-to-physical scale.
+    pub fn render_layered_scaled(
+        &mut self,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+        scale: Scale,
+    ) -> Result<(), RendererError> {
+        if let Some(reason) = self.gpu.surface_config_deferred_reason() {
+            ailloli_ui_bench::record(ailloli_ui_bench::Event::GetCurrentTextureErr {
+                ts_ms: now_ms(),
+                err: format!("surface not ready before acquire: {}", reason.as_str()),
+            });
+            return Ok(());
+        }
+
+        let frame = self.gpu.require_surface_mut()?.acquire_frame()?;
+        self.render_layered_from_frame(clear, layers, scale, &frame)?;
+        self.gpu.pre_present_notify();
+        frame.present();
+        Ok(())
+    }
+
+    /// Renders layered draw commands into an injected `RenderTarget`.
+    pub fn render_layered_to_target_scaled<T: RenderTarget + ?Sized>(
+        &mut self,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+        scale: Scale,
+        target: &mut T,
+    ) -> Result<(), RendererError> {
+        let frame_start = std::time::Instant::now();
+        let acquire_start = std::time::Instant::now();
+        let frame = target.acquire_frame()?;
+        ailloli_ui_bench::metric(
+            "get_current_texture_us",
+            acquire_start.elapsed().as_micros() as f64,
+        );
+        self.render_layered_from_frame(clear, layers, scale, &frame)?;
+        target.pre_present_notify();
+        frame.present();
+        ailloli_ui_bench::record(ailloli_ui_bench::Event::RenderFrame {
+            ts_ms: now_ms(),
+            dur_us: frame_start.elapsed().as_micros(),
+        });
+        Ok(())
+    }
+
+    fn render_layered_from_frame(
+        &mut self,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+        scale: Scale,
+        frame: &crate::render_target::RenderFrame,
+    ) -> Result<(), RendererError> {
+        let frame_start = std::time::Instant::now();
+        let size = frame.size;
+        let source_texture = frame
+            .texture()
+            .ok_or(RendererError::FrameTextureUnavailable)?;
+        let view = &frame.view;
+
+        let mut encoder =
+            self.gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("encoder"),
+                });
+
+        let w = size.width as f32;
+        let h = size.height as f32;
+        self.record_single_pass(
+            view,
+            source_texture,
+            &mut encoder,
+            w,
+            h,
+            scale,
+            clear,
+            layers,
+        );
+
+        self.gpu.queue().submit(Some(encoder.finish()));
+        ailloli_ui_bench::record(ailloli_ui_bench::Event::RenderFrame {
+            ts_ms: now_ms(),
+            dur_us: frame_start.elapsed().as_micros(),
+        });
+        Ok(())
+    }
+
+    /// Renders one layer stack at DPR = 1 into an injected target.
+    pub fn render_layered_to_target(
+        &mut self,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+        target: &mut dyn RenderTarget,
+    ) -> Result<(), RendererError> {
+        self.render_layered_to_target_scaled(clear, layers, Scale::new(1.0), target)
+    }
+
+    /// Renders and readbacks one frame without presenting (for tests / capture).
+    pub fn render_layered_capture_once(
+        &mut self,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+        params: CaptureParams,
+    ) -> Result<CapturedFrame, RendererError> {
+        self.render_layered_capture_once_scaled(clear, layers, Scale::new(1.0), params)
+    }
+
+    pub fn render_layered_capture_once_scaled(
+        &mut self,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+        scale: Scale,
+        params: CaptureParams,
+    ) -> Result<CapturedFrame, RendererError> {
+        if let Some(reason) = self.gpu.surface_config_deferred_reason() {
+            return Err(RendererError::SurfaceCapabilitiesUnavailable(
+                reason.as_str(),
+            ));
+        }
+
+        let surface = self.gpu.require_surface_mut()?;
+        let acquire_start = std::time::Instant::now();
+        let frame = match surface.surface.get_current_texture() {
+            Ok(f) => f,
+            Err(err) => {
+                ailloli_ui_bench::metric(
+                    "get_current_texture_us",
+                    acquire_start.elapsed().as_micros() as f64,
+                );
+                ailloli_ui_bench::record(ailloli_ui_bench::Event::GetCurrentTextureErr {
+                    ts_ms: now_ms(),
+                    err: format!("{err:?}"),
+                });
+                return Err(RendererError::from_surface_error(err));
+            }
+        };
+        ailloli_ui_bench::metric(
+            "get_current_texture_us",
+            acquire_start.elapsed().as_micros() as f64,
+        );
+
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder =
+            self.gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("encoder (capture)"),
+                });
+
+        let w = self.gpu.config().width as f32;
+        let h = self.gpu.config().height as f32;
+        self.record_single_pass(
+            &view,
+            &frame.texture,
+            &mut encoder,
+            w,
+            h,
+            scale,
+            clear,
+            layers,
+        );
+
+        // Readback from swapchain texture.
+        let (staging, width, height, padded_bpr, unpadded_bpr, surface_format) =
+            self.enqueue_surface_texture_readback(&mut encoder, &frame.texture)?;
+
+        self.gpu.queue().submit(Some(encoder.finish()));
+        self.gpu.pre_present_notify();
+        frame.present();
+
+        // Wait for GPU work to complete before mapping.
+        self.gpu.device().poll(wgpu::Maintain::Wait);
+
+        let rgba = self.map_readback_to_rgba(
+            &staging,
+            width,
+            height,
+            padded_bpr,
+            unpadded_bpr,
+            surface_format,
+        )?;
+        let png_data = if params.encode_png {
+            Some(encode_png_rgba(width, height, &rgba).map_err(RendererError::CaptureMapFailed)?)
+        } else {
+            None
+        };
+
+        Ok(CapturedFrame {
+            width,
+            height,
+            format: CapturedFrameFormat::Rgba8,
+            rgba,
+            png_data,
+        })
+    }
+
+    fn enqueue_surface_texture_readback(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+    ) -> Result<(wgpu::Buffer, u32, u32, u32, u32, wgpu::TextureFormat), RendererError> {
+        let width = self.gpu.config().width.max(1);
+        let height = self.gpu.config().height.max(1);
+
+        let unpadded_bpr = width * 4;
+        let padded_bpr = bytes_per_row_padded_256(unpadded_bpr);
+
+        let format = self.gpu.config().format;
+        match format {
+            wgpu::TextureFormat::Bgra8UnormSrgb
+            | wgpu::TextureFormat::Bgra8Unorm
+            | wgpu::TextureFormat::Rgba8UnormSrgb
+            | wgpu::TextureFormat::Rgba8Unorm => {}
+            other => return Err(RendererError::CaptureUnsupportedFormat(other)),
+        }
+
+        let size = (padded_bpr as u64) * (height as u64);
+        let staging = self.gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("capture staging buf"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &staging,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bpr),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        Ok((staging, width, height, padded_bpr, unpadded_bpr, format))
+    }
+
+    fn map_readback_to_rgba(
+        &self,
+        staging: &wgpu::Buffer,
+        _width: u32,
+        height: u32,
+        padded_bpr: u32,
+        unpadded_bpr: u32,
+        surface_format: wgpu::TextureFormat,
+    ) -> Result<Vec<u8>, RendererError> {
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |res| {
+            let _ = tx.send(res.map_err(|e| format!("{e:?}")));
+        });
+
+        // Drive the mapping callback to completion.
+        // Without this, tests (and some platforms) can hang waiting for the map_async callback.
+        self.gpu.device().poll(wgpu::Maintain::Wait);
+
+        let res = rx
+            .recv()
+            .map_err(|e| RendererError::CaptureMapFailed(format!("map recv failed: {e}")))?;
+        res.map_err(RendererError::CaptureMapFailed)?;
+
+        let mapped = slice.get_mapped_range();
+        let mut tight = unpad_rows_rgba(
+            &mapped,
+            padded_bpr as usize,
+            unpadded_bpr as usize,
+            height as usize,
+        );
+        drop(mapped);
+        staging.unmap();
+
+        if matches!(
+            surface_format,
+            wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Bgra8Unorm
+        ) {
+            bgra_to_rgba_in_place(&mut tight);
+        }
+
+        // (winit surfaces are top-left origin in pixel coords; the copy preserves that order.
+        // If we ever need vertical flip for specific platforms, do it in tooling/tests.)
+
+        Ok(tight)
+    }
+
+    fn create_clip_binding(&self, label: &str, params: ClipParamsGpu) -> ClipBinding {
+        let buffer = self
+            .gpu
+            .device()
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let bind_group = self
+            .gpu
+            .device()
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &self.gpu.pipelines().clip_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+        ClipBinding {
+            _buffer: buffer,
+            bind_group,
+        }
+    }
+
+    /// Phase 30 — records all layers into a single `wgpu::RenderPass`.
+    ///
+    /// The four-step layout matches the plan:
+    ///   1. `text_atlas.start_frame()` + `PreparedResources::prepare(...)`
+    ///      (only GPU-touching step before the pass — glyph rasterization
+    ///      and icon cache population).
+    ///   2. `FrameRenderPlan::build_cpu(...)` (pure CPU).
+    ///   3. Allocate per-frame arena buffers (3-4) + per-layer clip bindings
+    ///      **before** `begin_render_pass`.
+    ///   4. Open one render pass with `LoadOp::Clear(color)` (+ stencil clear
+    ///      if needed); iterate `PlannedLayer`s setting scissor / stencil_ref
+    ///      / pipeline / bind groups / vertex range for each batch.
+    ///
+    /// Invariants enforced here (anti-Phase-29 traps):
+    ///   - one `wgpu::Buffer` per arena per frame ; never rewrite a region
+    ///     before submit,
+    ///   - scissor is reset for every layer (`apply_layer_scissor` with the
+    ///     layer's scissor or full-surface),
+    ///   - stencil reference is reset for every batch (`set_stencil_reference(
+    ///     layer.stencil_ref.unwrap_or(0))`),
+    ///   - vertex range convention is `set_vertex_buffer(0, buffer.slice(..))`
+    ///     + `draw(batch.vertex_range, 0..1)`.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    fn record_single_pass(
+        &mut self,
+        view: &wgpu::TextureView,
+        frame_texture: &wgpu::Texture,
+        encoder: &mut wgpu::CommandEncoder,
+        w: f32,
+        h: f32,
+        scale: Scale,
+        clear: Color,
+        layers: &[LayerPass<'_>],
+    ) {
+        // --- Étape 1: PREP GPU (atlas + icons) ---
+        self.text_atlas.start_frame();
+        let prepared = PreparedResources::prepare(
+            layers,
+            scale,
+            &mut self.text_atlas,
+            &mut self.icon_cache,
+            self.gpu.device(),
+            self.gpu.queue(),
+            &self.gpu.pipelines().texture_bind_group_layout,
+            self.text_face_blobs.as_ref(),
+        );
+
+        // --- Étape 2: PLAN CPU PUR ---
+        let stencil_supported = self.stencil_target.is_some();
+        let mut budget = IsolatedBudgetPolicy::new(self.isolated_budget);
+        let plan = FrameRenderPlan::try_build_cpu(
+            layers,
+            &prepared,
+            [w, h],
+            scale,
+            stencil_supported,
+            &mut budget,
+        )
+        .unwrap_or_else(|e| panic!("FrameRenderPlan::try_build_cpu: {e:?}"));
+
+        let has_backdrop = !plan.backdrop_captures.is_empty();
+        self.frame_leases.clear();
+
+        // --- Étape 3: ALLOC GPU (vertex arenas + per-layer clip bindings) ---
+        // One buffer per primitive type per frame (3-4 total), not 3·N.
+        let vertex_buf = if plan.vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame vertex arena"),
+                        contents: bytemuck::cast_slice(&plan.vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let rrect_buf = if plan.rrect_vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame rrect arena"),
+                        contents: bytemuck::cast_slice(&plan.rrect_vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let border_rrect_buf = if plan.border_vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame border rrect arena"),
+                        contents: bytemuck::cast_slice(&plan.border_vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let shadow_buf = if plan.shadow_vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame box shadow arena"),
+                        contents: bytemuck::cast_slice(&plan.shadow_vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let ring_progress_buf = if plan.ring_progress_vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame ring progress arena"),
+                        contents: bytemuck::cast_slice(&plan.ring_progress_vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let stroke_buf = if plan.stroke_vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame stroke arena"),
+                        contents: bytemuck::cast_slice(&plan.stroke_vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let tex_buf = if plan.tex_vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame tex arena"),
+                        contents: bytemuck::cast_slice(&plan.tex_vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let stencil_mask_buf = if plan.stencil_mask_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame stencil mask arena"),
+                        contents: bytemuck::cast_slice(&plan.stencil_mask_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+        let composite_buf = if plan.composite_vertex_arena.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu
+                    .device()
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("frame composite arena"),
+                        contents: bytemuck::cast_slice(&plan.composite_vertex_arena),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+            )
+        };
+
+        // Per-layer clip bindings: 1 (none) + 0 or 1 (shape).
+        let per_layer: Vec<PerLayerBindings> = plan
+            .layers
+            .iter()
+            .map(|pl| {
+                let none_clip = self.create_clip_binding("clip none", pl.clip_params_none);
+                let shape_clip = pl
+                    .clip_params_shape
+                    .map(|p| self.create_clip_binding("clip shape", p));
+                PerLayerBindings {
+                    none_clip,
+                    shape_clip,
+                }
+            })
+            .collect();
+
+        let needs_stencil_attachment = plan.needs_stencil_attachment;
+
+        let gpu_bufs = MainPassGpuBuffers {
+            vertex_buf,
+            rrect_buf,
+            border_rrect_buf,
+            shadow_buf,
+            ring_progress_buf,
+            stroke_buf,
+            tex_buf,
+            stencil_mask_buf,
+            composite_buf,
+            per_layer,
+        };
+
+        let composite_table = if has_backdrop {
+            let format = self.gpu.config().format;
+            if self.effect_pipelines.is_none() {
+                self.effect_pipelines = Some(EffectPipelines::new(self.gpu.device(), format));
+            }
+            let first_split = plan.backdrop_captures[0].split_planned_layer_idx;
+            self.record_main_pass_segment(
+                encoder,
+                view,
+                frame_texture,
+                &plan,
+                &gpu_bufs,
+                0..first_split,
+                true,
+                clear,
+                needs_stencil_attachment,
+                None,
+                w,
+                h,
+                scale,
+            );
+
+            let mut backdrop_table = BackdropTable::empty();
+            for (i, cut) in plan.backdrop_captures.iter().enumerate() {
+                let iso = plan
+                    .planned_isolated
+                    .iter()
+                    .find(|p| p.id == cut.pass_id)
+                    .expect("backdrop capture pass_id");
+                let lease = lease_backdrop_slot(
+                    &mut self.offscreen_pool,
+                    self.gpu.device(),
+                    cut.capture_rect_px,
+                    format,
+                );
+                let px = lease.width as u64 * lease.height as u64;
+                self.isolated_metrics.backdrop_capture_count += 1;
+                self.isolated_metrics.backdrop_pixels_total += px;
+
+                copy_swapchain_region_to_offscreen(
+                    self.gpu.device(),
+                    encoder,
+                    frame_texture,
+                    cut.capture_rect_px,
+                    &lease,
+                    &self.offscreen_pool,
+                    format,
+                );
+                let color_view = lease.color_view(&self.offscreen_pool);
+                if iso.backdrop_blur_radius_px > 0.0 {
+                    let effect = self.effect_pipelines.as_ref().expect("effect pipelines");
+                    run_backdrop_blur(
+                        self.gpu.device(),
+                        encoder,
+                        effect,
+                        format,
+                        color_view,
+                        lease.width,
+                        lease.height,
+                        iso.backdrop_blur_radius_px,
+                        cut.pass_id.0,
+                    );
+                    self.isolated_metrics.backdrop_blur_pass_count += 2;
+                }
+                let bind_group = {
+                    let effect = self.effect_pipelines.as_ref().expect("effect pipelines");
+                    self.gpu
+                        .device()
+                        .create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("backdrop blur tex"),
+                            layout: &self.gpu.pipelines().texture_bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::TextureView(color_view),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::Sampler(&effect.sampler),
+                                },
+                            ],
+                        })
+                };
+                backdrop_table.insert(cut.pass_id.0, lease, bind_group);
+                self.frame_leases.push(lease);
+
+                if let Some(next) = plan.backdrop_captures.get(i + 1) {
+                    self.record_main_pass_segment(
+                        encoder,
+                        view,
+                        frame_texture,
+                        &plan,
+                        &gpu_bufs,
+                        cut.split_planned_layer_idx..next.split_planned_layer_idx,
+                        false,
+                        clear,
+                        needs_stencil_attachment,
+                        None,
+                        w,
+                        h,
+                        scale,
+                    );
+                }
+            }
+
+            let saved_backdrop = (
+                self.isolated_metrics.backdrop_capture_count,
+                self.isolated_metrics.backdrop_pixels_total,
+                self.isolated_metrics.backdrop_blur_pass_count,
+            );
+            let table = self.execute_isolated_passes(
+                encoder,
+                &plan,
+                layers,
+                &prepared,
+                scale,
+                stencil_supported,
+                Some(&backdrop_table),
+            );
+            self.isolated_metrics.backdrop_capture_count = saved_backdrop.0;
+            self.isolated_metrics.backdrop_pixels_total = saved_backdrop.1;
+            self.isolated_metrics.backdrop_blur_pass_count = saved_backdrop.2;
+
+            let last_split = plan
+                .backdrop_captures
+                .last()
+                .expect("backdrop_captures non-empty")
+                .split_planned_layer_idx;
+            self.record_main_pass_segment(
+                encoder,
+                view,
+                frame_texture,
+                &plan,
+                &gpu_bufs,
+                last_split..plan.layers.len(),
+                false,
+                clear,
+                needs_stencil_attachment,
+                Some(&table),
+                w,
+                h,
+                scale,
+            );
+            table
+        } else {
+            let table = self.execute_isolated_passes(
+                encoder,
+                &plan,
+                layers,
+                &prepared,
+                scale,
+                stencil_supported,
+                None,
+            );
+            self.record_main_pass_segment(
+                encoder,
+                view,
+                frame_texture,
+                &plan,
+                &gpu_bufs,
+                0..plan.layers.len(),
+                true,
+                clear,
+                needs_stencil_attachment,
+                Some(&table),
+                w,
+                h,
+                scale,
+            );
+            table
+        };
+
+        self.finish_isolated_frame_metrics(&budget);
+        self.offscreen_pool
+            .debug_assert_leased_count(self.frame_leases.len());
+        let _ = composite_table;
+        self.offscreen_pool.end_frame();
+        let atlas_stats = self.text_atlas.stats();
+        self.text_atlas.finish_frame();
+        record_text_atlas_frame(atlas_stats);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_main_pass_segment(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        frame_texture: &wgpu::Texture,
+        plan: &FrameRenderPlan,
+        gpu_bufs: &MainPassGpuBuffers,
+        layer_range: std::ops::Range<usize>,
+        clear_load: bool,
+        clear: Color,
+        needs_stencil_attachment: bool,
+        composite_table: Option<&IsolatedCompositeTable>,
+        w: f32,
+        h: f32,
+        scale: Scale,
+    ) {
+        if layer_range.is_empty() {
+            return;
+        }
+        let frame_has_stencil = plan.needs_stencil_attachment;
+        let format = self.gpu.config().format;
+        let mut use_clear = clear_load;
+        let mut i = layer_range.start;
+
+        while i < layer_range.end {
+            if let Some(comp) = find_shader_blend_composite(plan, i) {
+                let depth =
+                    stencil_depth_attachment(&self.stencil_target, needs_stencil_attachment);
+                let load = if use_clear {
+                    wgpu::LoadOp::Clear(wgpu::Color {
+                        r: clear.r as f64,
+                        g: clear.g as f64,
+                        b: clear.b as f64,
+                        a: clear.a as f64,
+                    })
+                } else {
+                    wgpu::LoadOp::Load
+                };
+                {
+                    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("frame main pre-blend"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: depth.clone(),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    record_planned_layer(
+                        &mut rpass,
+                        self.gpu.pipelines(),
+                        &self.text_atlas,
+                        &self.icon_cache,
+                        &gpu_bufs.per_layer[i],
+                        &plan.layers[i],
+                        &plan.batches,
+                        gpu_bufs.vertex_buf.as_ref(),
+                        gpu_bufs.rrect_buf.as_ref(),
+                        gpu_bufs.border_rrect_buf.as_ref(),
+                        gpu_bufs.shadow_buf.as_ref(),
+                        gpu_bufs.ring_progress_buf.as_ref(),
+                        gpu_bufs.stroke_buf.as_ref(),
+                        gpu_bufs.tex_buf.as_ref(),
+                        gpu_bufs.stencil_mask_buf.as_ref(),
+                        gpu_bufs.composite_buf.as_ref(),
+                        composite_table,
+                        w,
+                        h,
+                        scale,
+                        frame_has_stencil,
+                        true,
+                    );
+                }
+                use_clear = false;
+                self.draw_shader_blend_composite(
+                    encoder,
+                    view,
+                    frame_texture,
+                    comp,
+                    composite_table,
+                    gpu_bufs.composite_buf.as_ref(),
+                    &gpu_bufs.per_layer[i],
+                    format,
+                );
+                i += 1;
+            } else {
+                let run_start = i;
+                while i < layer_range.end && find_shader_blend_composite(plan, i).is_none() {
+                    i += 1;
+                }
+                let depth =
+                    stencil_depth_attachment(&self.stencil_target, needs_stencil_attachment);
+                let load = if use_clear {
+                    wgpu::LoadOp::Clear(wgpu::Color {
+                        r: clear.r as f64,
+                        g: clear.g as f64,
+                        b: clear.b as f64,
+                        a: clear.a as f64,
+                    })
+                } else {
+                    wgpu::LoadOp::Load
+                };
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("frame main segment"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: depth.clone(),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                use_clear = false;
+                for layer_idx in run_start..i {
+                    record_planned_layer(
+                        &mut rpass,
+                        self.gpu.pipelines(),
+                        &self.text_atlas,
+                        &self.icon_cache,
+                        &gpu_bufs.per_layer[layer_idx],
+                        &plan.layers[layer_idx],
+                        &plan.batches,
+                        gpu_bufs.vertex_buf.as_ref(),
+                        gpu_bufs.rrect_buf.as_ref(),
+                        gpu_bufs.border_rrect_buf.as_ref(),
+                        gpu_bufs.shadow_buf.as_ref(),
+                        gpu_bufs.ring_progress_buf.as_ref(),
+                        gpu_bufs.stroke_buf.as_ref(),
+                        gpu_bufs.tex_buf.as_ref(),
+                        gpu_bufs.stencil_mask_buf.as_ref(),
+                        gpu_bufs.composite_buf.as_ref(),
+                        composite_table,
+                        w,
+                        h,
+                        scale,
+                        frame_has_stencil,
+                        false,
+                    );
+                }
+                drop(rpass);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_shader_blend_composite(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        frame_texture: &wgpu::Texture,
+        comp: &PlannedIsolatedComposite,
+        composite_table: Option<&IsolatedCompositeTable>,
+        composite_buf: Option<&wgpu::Buffer>,
+        _bindings: &PerLayerBindings,
+        format: wgpu::TextureFormat,
+    ) {
+        let Some(composite_buf) = composite_buf else {
+            return;
+        };
+        let Some(table) = composite_table else {
+            return;
+        };
+        let Some(fg_bg) = table.get(comp.pass_id.0) else {
+            return;
+        };
+        let capture_rect = comp.dst_capture_rect_px.unwrap_or(comp.dest_rect_px);
+        let device = self.gpu.device();
+
+        if self.composite_blend_pipelines.is_none() {
+            self.composite_blend_pipelines = Some(CompositeBlendPipelines::new(device, format));
+        }
+        let blend_pipes = self
+            .composite_blend_pipelines
+            .as_ref()
+            .expect("composite blend pipelines");
+
+        let lease = lease_backdrop_slot(&mut self.offscreen_pool, device, capture_rect, format);
+        copy_swapchain_region_to_offscreen(
+            device,
+            encoder,
+            frame_texture,
+            capture_rect,
+            &lease,
+            &self.offscreen_pool,
+            format,
+        );
+        self.frame_leases.push(lease);
+        self.isolated_metrics.blend_capture_count += 1;
+        self.isolated_metrics.blend_composite_count += 1;
+
+        let bg_view = lease.color_view(&self.offscreen_pool);
+        draw_composite_blend(
+            device,
+            encoder,
+            blend_pipes,
+            fg_bg,
+            bg_view,
+            comp,
+            composite_buf,
+            view,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_isolated_passes(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        plan: &FrameRenderPlan,
+        layers: &[LayerPass<'_>],
+        prepared: &PreparedResources,
+        scale: Scale,
+        stencil_supported: bool,
+        backdrop_table: Option<&BackdropTable>,
+    ) -> IsolatedCompositeTable {
+        if plan.planned_isolated.is_empty() {
+            self.isolated_metrics.isolated_pass_count = 0;
+            return IsolatedCompositeTable::empty();
+        }
+
+        self.isolated_metrics = IsolatedFrameMetrics::default();
+
+        let format = self.gpu.config().format;
+        if self.effect_pipelines.is_none() {
+            self.effect_pipelines = Some(EffectPipelines::new(self.gpu.device(), format));
+        }
+        let device = self.gpu.device();
+        let main_pipelines = self.gpu.pipelines();
+        let effect = self.effect_pipelines.as_ref().expect("effect pipelines");
+        let pool = &mut self.offscreen_pool;
+
+        let mut table = IsolatedCompositeTable::empty();
+        let order = crate::isolated_plan::topo_sort_isolated_passes(&plan.planned_isolated);
+
+        for idx in order {
+            let iso = &plan.planned_isolated[idx];
+            let layer = &layers[iso.source_layer_idx];
+            let sub = FrameRenderPlan::build_isolated_subplan(
+                layer,
+                prepared,
+                iso,
+                scale,
+                stencil_supported,
+            );
+
+            let key = PoolKey::color(
+                iso.local_size_px[0],
+                iso.local_size_px[1],
+                iso.needs_stencil,
+            );
+            let lease = pool.lease(device, key, format);
+            self.frame_leases.push(lease);
+            let pixel_count = lease.width as u64 * lease.height as u64;
+            self.isolated_metrics.offscreen_pixels_rendered += pixel_count;
+            if iso.needs_stencil {
+                self.isolated_metrics.stencil_offscreen_count += 1;
+            }
+
+            let has_children = !iso.child_pass_ids.is_empty();
+            let has_backdrop = iso.needs_backdrop_capture
+                && backdrop_table.is_some_and(|t| t.get(iso.id.0).is_some());
+            if has_children || has_backdrop {
+                clear_isolated_color_target(encoder, &lease, pool, iso.clear_color);
+            }
+            if has_backdrop {
+                blit_backdrop_texture(
+                    encoder,
+                    device,
+                    main_pipelines,
+                    &lease,
+                    pool,
+                    iso,
+                    backdrop_table.expect("backdrop table"),
+                );
+            }
+            if has_children {
+                blit_child_isolated_textures(
+                    encoder,
+                    device,
+                    main_pipelines,
+                    &lease,
+                    pool,
+                    iso,
+                    plan,
+                    &table,
+                );
+            }
+
+            record_isolated_content_pass(
+                encoder,
+                device,
+                main_pipelines,
+                &self.text_atlas,
+                &self.icon_cache,
+                &sub,
+                &lease,
+                pool,
+                iso.clear_color,
+                iso.id.0,
+                has_children || has_backdrop,
+            );
+
+            let color_view = lease.color_view(pool);
+            run_effect_chain(
+                device,
+                encoder,
+                effect,
+                format,
+                color_view,
+                lease.width,
+                lease.height,
+                &iso.effects,
+                iso.id.0,
+            );
+
+            let has_blur = iso.effects.effects.iter().any(|e| {
+                matches!(
+                    e,
+                    crate::isolated_plan::IsolatedEffect::Blur { radius_px } if *radius_px > 0.0
+                )
+            });
+            if has_blur {
+                self.isolated_metrics.blur_pass_count += 2;
+                self.isolated_metrics.blur_pixels_total += pixel_count;
+            }
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("isolated composite tex"),
+                layout: &main_pipelines.texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(color_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&effect.sampler),
+                    },
+                ],
+            });
+            table.bind_groups.insert(iso.id.0, bind_group);
+            self.isolated_metrics.isolated_pass_count += 1;
+        }
+
+        self.isolated_metrics.pool_reuse_hits = pool.reuse_hits;
+        self.isolated_metrics.pool_allocs = pool.allocs;
+        self.isolated_metrics.offscreen_peak_bytes = pool.peak_bytes();
+
+        table
+    }
+
+    fn finish_isolated_frame_metrics(&mut self, budget: &IsolatedBudgetPolicy) {
+        self.isolated_metrics.downgrades = budget.downgrades;
+        log_isolated_frame_metrics(self.isolated_metrics, self.bench_scenario.as_deref());
+    }
+}
+
+fn log_isolated_frame_metrics(m: IsolatedFrameMetrics, scenario: Option<&str>) {
+    let scenario = scenario.unwrap_or("").to_string();
+    if ailloli_ui_bench::bench_enabled() {
+        ailloli_ui_bench::record(ailloli_ui_bench::Event::IsolatedCompositorFrame {
+            ts_ms: now_ms(),
+            scenario,
+            isolated_pass_count: m.isolated_pass_count,
+            isolated_pixels_total: m.offscreen_pixels_rendered,
+            blur_pixels_total: m.blur_pixels_total,
+            offscreen_peak_bytes: m.offscreen_peak_bytes,
+            pool_reuse_hits: m.pool_reuse_hits,
+            pool_allocs: m.pool_allocs,
+            pool_reuse_ratio: m.pool_reuse_ratio(),
+            blur_pass_count: m.blur_pass_count,
+            stencil_offscreen_count: m.stencil_offscreen_count,
+            downgrade_count: m.downgrade_count(),
+            downgrade_blur_clamped: m.downgrades.blur_radius_clamped,
+            downgrade_surface_clamped: m.downgrades.surface_px_clamped,
+            downgrade_bytes_skipped: m.downgrades.bytes_budget_skipped,
+            backdrop_capture_count: m.backdrop_capture_count,
+            backdrop_pixels_total: m.backdrop_pixels_total,
+            backdrop_blur_pass_count: m.backdrop_blur_pass_count,
+            downgrade_backdrop_skipped: m.downgrades.backdrop_budget_skipped,
+            blend_capture_count: m.blend_capture_count,
+            blend_composite_count: m.blend_composite_count,
+            downgrade_blend_skipped: m.downgrades.blend_capture_budget_skipped,
+        });
+    }
+
+    if !crate::pipeline_cache::gpu_debug_enabled() {
+        return;
+    }
+    eprintln!(
+        "ailloli_ui_render_wgpu: isolated metrics passes={} pixels={} blur_pixels={} peak_bytes={} pool_hits={} pool_allocs={} reuse_ratio={:.3} blur_passes={} stencil_offscreen={} downgrades={}",
+        m.isolated_pass_count,
+        m.offscreen_pixels_rendered,
+        m.blur_pixels_total,
+        m.offscreen_peak_bytes,
+        m.pool_reuse_hits,
+        m.pool_allocs,
+        m.pool_reuse_ratio(),
+        m.blur_pass_count,
+        m.stencil_offscreen_count,
+        m.downgrade_count(),
+    );
+}
+
+fn clear_isolated_color_target(
+    encoder: &mut wgpu::CommandEncoder,
+    lease: &crate::offscreen_pool::LeasedOffscreen,
+    pool: &crate::offscreen_pool::OffscreenSurfacePool,
+    clear: Color,
+) {
+    let color_view = lease.color_view(pool);
+    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("clear nested isolated parent"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: clear.r as f64,
+                    g: clear.g as f64,
+                    b: clear.b as f64,
+                    a: clear.a as f64,
+                }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit_backdrop_texture(
+    encoder: &mut wgpu::CommandEncoder,
+    device: &wgpu::Device,
+    pipelines: &crate::pipeline_cache::PipelineCache,
+    lease: &crate::offscreen_pool::LeasedOffscreen,
+    pool: &crate::offscreen_pool::OffscreenSurfacePool,
+    iso: &crate::isolated_plan::PlannedIsolatedPass,
+    backdrop_table: &BackdropTable,
+) {
+    use crate::cmd_bounds::push_composite_quad_local;
+    let Some(capture_rect) = iso.backdrop_capture_rect_px else {
+        return;
+    };
+    let Some(tex_bg) = backdrop_table.get(iso.id.0) else {
+        return;
+    };
+
+    let local_surface = [lease.width as f32, lease.height as f32];
+    let [ox, oy] = iso.content_origin_px;
+    let local = ailloli_ui_core::Rect::new(
+        capture_rect.x - ox,
+        capture_rect.y - oy,
+        capture_rect.w,
+        capture_rect.h,
+    );
+    let mut verts = Vec::new();
+    let range = push_composite_quad_local(&mut verts, local_surface, local, [1.0, 1.0, 1.0, 1.0]);
+    if verts.is_empty() {
+        return;
+    }
+
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("backdrop blit verts"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let none_clip = create_clip_binding(
+        device,
+        pipelines,
+        "backdrop iso clip none",
+        ClipParamsGpu::none(),
+    );
+    let color_view = lease.color_view(pool);
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("blit backdrop into isolated"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_pipeline(&pipelines.textured);
+    pass.set_bind_group(0, &none_clip.bind_group, &[]);
+    pass.set_bind_group(1, tex_bg, &[]);
+    pass.set_vertex_buffer(0, vbuf.slice(..));
+    pass.draw(range, 0..1);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blit_child_isolated_textures(
+    encoder: &mut wgpu::CommandEncoder,
+    device: &wgpu::Device,
+    pipelines: &crate::pipeline_cache::PipelineCache,
+    parent_lease: &crate::offscreen_pool::LeasedOffscreen,
+    pool: &crate::offscreen_pool::OffscreenSurfacePool,
+    parent_iso: &crate::isolated_plan::PlannedIsolatedPass,
+    plan: &FrameRenderPlan,
+    table: &IsolatedCompositeTable,
+) {
+    use crate::cmd_bounds::push_composite_quad_local;
+    use crate::vertices::TexVertex;
+
+    let local_surface = [parent_lease.width as f32, parent_lease.height as f32];
+    let [ox, oy] = parent_iso.content_origin_px;
+    let mut verts: Vec<TexVertex> = Vec::new();
+    let mut draws: Vec<(OffscreenPassId, std::ops::Range<u32>)> = Vec::new();
+
+    for child_id in &parent_iso.child_pass_ids {
+        let Some(child_iso) = plan.planned_isolated.iter().find(|p| p.id == *child_id) else {
+            continue;
+        };
+        let dest = child_iso.composite.dest_rect_px;
+        let local = ailloli_ui_core::Rect::new(dest.x - ox, dest.y - oy, dest.w, dest.h);
+        let tint = [1.0, 1.0, 1.0, child_iso.composite.opacity.clamp(0.0, 1.0)];
+        let range = push_composite_quad_local(&mut verts, local_surface, local, tint);
+        draws.push((*child_id, range));
+    }
+
+    if verts.is_empty() {
+        return;
+    }
+
+    let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("nested isolated child blit verts"),
+        contents: bytemuck::cast_slice(&verts),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+
+    let none_clip = create_clip_binding(
+        device,
+        pipelines,
+        "nested iso clip none",
+        ClipParamsGpu::none(),
+    );
+    let color_view = parent_lease.color_view(pool);
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("blit nested isolated children"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    for (child_id, range) in draws {
+        let Some(tex_bg) = table.get(child_id.0) else {
+            continue;
+        };
+        let byte_start = range.start as u64 * std::mem::size_of::<TexVertex>() as u64;
+        let byte_end = range.end as u64 * std::mem::size_of::<TexVertex>() as u64;
+        pass.set_pipeline(&pipelines.textured);
+        pass.set_bind_group(0, &none_clip.bind_group, &[]);
+        pass.set_bind_group(1, tex_bg, &[]);
+        pass.set_vertex_buffer(0, vbuf.slice(byte_start..byte_end));
+        pass.draw(range.clone(), 0..1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_isolated_content_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    device: &wgpu::Device,
+    pipelines: &crate::pipeline_cache::PipelineCache,
+    text_atlas: &TextAtlas,
+    icon_cache: &IconCache,
+    plan: &FrameRenderPlan,
+    lease: &crate::offscreen_pool::LeasedOffscreen,
+    pool: &crate::offscreen_pool::OffscreenSurfacePool,
+    clear: Color,
+    pass_id: u16,
+    preserve_color: bool,
+) {
+    let color_view = lease.color_view(pool);
+    let w = lease.width as f32;
+    let h = lease.height as f32;
+
+    let vertex_buf = if plan.vertex_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated vertex arena"),
+                contents: bytemuck::cast_slice(&plan.vertex_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+    let rrect_buf = if plan.rrect_vertex_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated rrect arena"),
+                contents: bytemuck::cast_slice(&plan.rrect_vertex_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+    let border_rrect_buf = if plan.border_vertex_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated border rrect arena"),
+                contents: bytemuck::cast_slice(&plan.border_vertex_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+    let shadow_buf = if plan.shadow_vertex_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated box shadow arena"),
+                contents: bytemuck::cast_slice(&plan.shadow_vertex_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+    let ring_progress_buf = if plan.ring_progress_vertex_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated ring progress arena"),
+                contents: bytemuck::cast_slice(&plan.ring_progress_vertex_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+    let stroke_buf = if plan.stroke_vertex_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated stroke arena"),
+                contents: bytemuck::cast_slice(&plan.stroke_vertex_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+    let tex_buf = if plan.tex_vertex_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated tex arena"),
+                contents: bytemuck::cast_slice(&plan.tex_vertex_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+    let stencil_mask_buf = if plan.stencil_mask_arena.is_empty() {
+        None
+    } else {
+        Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("isolated stencil mask arena"),
+                contents: bytemuck::cast_slice(&plan.stencil_mask_arena),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        )
+    };
+
+    let per_layer: Vec<PerLayerBindings> = plan
+        .layers
+        .iter()
+        .map(|pl| {
+            let none = ClipParamsGpu::none();
+            let none_clip = create_clip_binding(device, pipelines, "iso clip none", none);
+            let shape_clip = pl
+                .clip_params_shape
+                .map(|p| create_clip_binding(device, pipelines, "iso clip shape", p));
+            PerLayerBindings {
+                none_clip,
+                shape_clip,
+            }
+        })
+        .collect();
+
+    let depth_stencil_attachment = if plan.needs_stencil_attachment {
+        lease
+            .stencil_view(pool)
+            .map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: None,
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0),
+                    store: wgpu::StoreOp::Store,
+                }),
+            })
+    } else {
+        None
+    };
+
+    let color_load = if preserve_color {
+        wgpu::LoadOp::Load
+    } else {
+        wgpu::LoadOp::Clear(wgpu::Color {
+            r: clear.r as f64,
+            g: clear.g as f64,
+            b: clear.b as f64,
+            a: clear.a as f64,
+        })
+    };
+
+    let pass_label = format!("isolated pass {pass_id}");
+    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(&pass_label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: color_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: color_load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    let frame_has_stencil = plan.needs_stencil_attachment;
+    for (i, pl) in plan.layers.iter().enumerate() {
+        record_planned_layer(
+            &mut rpass,
+            pipelines,
+            text_atlas,
+            icon_cache,
+            &per_layer[i],
+            pl,
+            &plan.batches,
+            vertex_buf.as_ref(),
+            rrect_buf.as_ref(),
+            border_rrect_buf.as_ref(),
+            shadow_buf.as_ref(),
+            ring_progress_buf.as_ref(),
+            stroke_buf.as_ref(),
+            tex_buf.as_ref(),
+            stencil_mask_buf.as_ref(),
+            None,
+            None,
+            w,
+            h,
+            Scale::new(1.0),
+            frame_has_stencil,
+            false,
+        );
+    }
+}
+
+fn create_clip_binding(
+    device: &wgpu::Device,
+    pipelines: &crate::pipeline_cache::PipelineCache,
+    label: &'static str,
+    params: ClipParamsGpu,
+) -> ClipBinding {
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::bytes_of(&params),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &pipelines.clip_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    ClipBinding {
+        _buffer: buffer,
+        bind_group,
+    }
+}
+
+fn find_shader_blend_composite(
+    plan: &FrameRenderPlan,
+    layer_idx: usize,
+) -> Option<&PlannedIsolatedComposite> {
+    let pl = &plan.layers[layer_idx];
+    for batch_idx in pl.batch_range.clone() {
+        if let PlannedBatch::IsolatedComposite(comp) = &plan.batches[batch_idx] {
+            if comp.needs_dst_capture && comp.blend_mode != BlendMode::Normal {
+                return Some(comp);
+            }
+        }
+    }
+    None
+}
+
+/// Records one `PlannedLayer` (scissor + stencil mask + batches) into the
+/// already-open `wgpu::RenderPass`. Free function so it can borrow individual
+/// `Renderer` fields without conflicting with the `&mut self` held by the
+/// pass.
+#[allow(clippy::too_many_arguments)]
+fn record_planned_layer<'a>(
+    rpass: &mut wgpu::RenderPass<'a>,
+    pipelines: &'a crate::pipeline_cache::PipelineCache,
+    text_atlas: &'a TextAtlas,
+    icon_cache: &'a IconCache,
+    bindings: &'a PerLayerBindings,
+    pl: &PlannedLayer,
+    batches: &[crate::frame_plan::PlannedBatch],
+    vertex_buf: Option<&'a wgpu::Buffer>,
+    rrect_buf: Option<&'a wgpu::Buffer>,
+    border_rrect_buf: Option<&'a wgpu::Buffer>,
+    shadow_buf: Option<&'a wgpu::Buffer>,
+    ring_progress_buf: Option<&'a wgpu::Buffer>,
+    stroke_buf: Option<&'a wgpu::Buffer>,
+    tex_buf: Option<&'a wgpu::Buffer>,
+    stencil_mask_buf: Option<&'a wgpu::Buffer>,
+    composite_buf: Option<&'a wgpu::Buffer>,
+    composite_table: Option<&'a IsolatedCompositeTable>,
+    w: f32,
+    h: f32,
+    scale: Scale,
+    frame_has_stencil_attachment: bool,
+    skip_shader_blend_composite: bool,
+) {
+    // (3) Scissor reset — always, full-screen if `pl.scissor.is_none()`.
+    apply_layer_scissor(rpass, w, h, scale, pl.scissor);
+
+    let use_stencil = pl.clip_mode == ClipRenderMode::Stencil;
+
+    // (4) Optional stencil-mask draw for this layer.
+    if use_stencil {
+        if let (Some(stencil_ref), Some(mask_range), Some(mask_buf)) = (
+            pl.stencil_ref,
+            pl.stencil_mask_range.clone(),
+            stencil_mask_buf,
+        ) {
+            rpass.set_pipeline(&pipelines.rounded_rect_stencil_mask);
+            rpass.set_bind_group(0, &bindings.none_clip.bind_group, &[]);
+            rpass.set_stencil_reference(stencil_ref);
+            rpass.set_vertex_buffer(0, mask_buf.slice(..));
+            rpass.draw(mask_range, 0..1);
+        }
+    }
+
+    let stencil_ref = pl.stencil_ref.unwrap_or(0);
+
+    // (5) Iterate the layer's batches.
+    for batch_idx in pl.batch_range.clone() {
+        let batch = &batches[batch_idx];
+
+        if let PlannedBatch::IsolatedComposite(comp) = batch {
+            if skip_shader_blend_composite
+                || (comp.needs_dst_capture && comp.blend_mode != BlendMode::Normal)
+            {
+                continue;
+            }
+            let Some(composite_buf) = composite_buf else {
+                continue;
+            };
+            let Some(table) = composite_table else {
+                continue;
+            };
+            let Some(tex_bg) = table.get(comp.pass_id.0) else {
+                continue;
+            };
+            rpass.set_pipeline(&pipelines.textured);
+            rpass.set_bind_group(0, &bindings.none_clip.bind_group, &[]);
+            rpass.set_bind_group(1, tex_bg, &[]);
+            rpass.set_stencil_reference(0);
+            rpass.set_vertex_buffer(0, composite_buf.slice(..));
+            rpass.draw(comp.vertex_range.clone(), 0..1);
+            continue;
+        }
+
+        let PlannedBatch::Primitives {
+            pipeline,
+            clip_bind,
+            texture,
+            vertex_range,
+        } = batch
+        else {
+            continue;
+        };
+
+        // Phase 30 — if the frame has a stencil attachment but this layer is
+        // not in stencil mode, the wgpu validation requires that the pipeline
+        // declares a compatible depth_stencil state. Use the passthrough
+        // variants in that case (compare=Always, no write).
+        let pipe = match (*pipeline, use_stencil, frame_has_stencil_attachment) {
+            (PipelineKind::Rect, true, _) => &pipelines.rect_stencil,
+            (PipelineKind::Rect, false, true) => &pipelines.rect_passthrough_stencil,
+            (PipelineKind::Rect, false, false) => &pipelines.rect,
+            (PipelineKind::RRect, true, _) => &pipelines.rounded_rect_stencil,
+            (PipelineKind::RRect, false, true) => &pipelines.rounded_rect_passthrough_stencil,
+            (PipelineKind::RRect, false, false) => &pipelines.rounded_rect,
+            (PipelineKind::BorderRRect, true, _) => &pipelines.border_rounded_rect_stencil,
+            (PipelineKind::BorderRRect, false, true) => {
+                &pipelines.border_rounded_rect_passthrough_stencil
+            }
+            (PipelineKind::BorderRRect, false, false) => &pipelines.border_rounded_rect,
+            (PipelineKind::BoxShadow, true, _) => &pipelines.box_shadow_stencil,
+            (PipelineKind::BoxShadow, false, true) => &pipelines.box_shadow_passthrough_stencil,
+            (PipelineKind::BoxShadow, false, false) => &pipelines.box_shadow,
+            (PipelineKind::RingProgress, true, _) => &pipelines.ring_progress_stencil,
+            (PipelineKind::RingProgress, false, true) => {
+                &pipelines.ring_progress_passthrough_stencil
+            }
+            (PipelineKind::RingProgress, false, false) => &pipelines.ring_progress,
+            // Stroked polylines skip the hard stencil Equal test: thin triangle strips
+            // can miss the 8-bit stencil mask written by the rounded-rect mask pass
+            // while solid rects still pass. Scissor + optional shader clip (Shape bind)
+            // keep window-root corners clean.
+            (PipelineKind::Stroke, true, _) => &pipelines.stroke_passthrough_stencil,
+            (PipelineKind::Stroke, false, true) => &pipelines.stroke_passthrough_stencil,
+            (PipelineKind::Stroke, false, false) => &pipelines.stroke,
+            (PipelineKind::Textured, true, _) => &pipelines.textured_stencil,
+            (PipelineKind::Textured, false, true) => &pipelines.textured_passthrough_stencil,
+            (PipelineKind::Textured, false, false) => &pipelines.textured,
+        };
+
+        let clip_bg = match clip_bind {
+            ClipBindKind::None => &bindings.none_clip.bind_group,
+            ClipBindKind::Shape => bindings
+                .shape_clip
+                .as_ref()
+                .map(|c| &c.bind_group)
+                .unwrap_or(&bindings.none_clip.bind_group),
+        };
+
+        let arena_buf = match pipeline {
+            PipelineKind::Rect => vertex_buf,
+            PipelineKind::RRect => rrect_buf,
+            PipelineKind::BorderRRect => border_rrect_buf,
+            PipelineKind::BoxShadow => shadow_buf,
+            PipelineKind::RingProgress => ring_progress_buf,
+            PipelineKind::Stroke => stroke_buf,
+            PipelineKind::Textured => tex_buf,
+        };
+        let Some(arena_buf) = arena_buf else {
+            continue;
+        };
+
+        rpass.set_pipeline(pipe);
+        rpass.set_bind_group(0, clip_bg, &[]);
+
+        if matches!(pipeline, PipelineKind::Textured) {
+            match texture {
+                TextureBindKind::TextPage(p) => {
+                    rpass.set_bind_group(1, text_atlas.page_bind_group(*p), &[]);
+                }
+                TextureBindKind::IconPage(key) => {
+                    let Some(gpu_icon) = icon_cache.get(key) else {
+                        continue;
+                    };
+                    rpass.set_bind_group(1, &gpu_icon.bind_group, &[]);
+                }
+                TextureBindKind::None => {
+                    debug_assert!(false, "Textured batch without TextureBindKind");
+                    continue;
+                }
+            }
+        }
+
+        rpass.set_stencil_reference(stencil_ref);
+        rpass.set_vertex_buffer(0, arena_buf.slice(..));
+        rpass.draw(vertex_range.clone(), 0..1);
+    }
+}
+
+// Phase 29 legacy `render_layer_pass` body removed in Phase 30.
+//
+// The single-pass implementation lives in `Renderer::record_single_pass`
+// (open one `wgpu::RenderPass`, iterate `FrameRenderPlan::layers`) and the
+// per-layer record logic lives in the free function `record_planned_layer`
+// above.
+//
+// Removed at this site:
+//   - `Renderer::render_layer_pass(...)` — replaced by `record_single_pass` +
+//     `record_planned_layer`;
+//   - `RenderBatch` / `BatchClipKey` / `batch_clip_key` / `push_render_batch`
+//     — replaced by `FrameRenderPlan::PlannedBatch` + intra-layer fusion in
+//     `frame_plan::push_planned_batch`;
+//   - `mod render_batch_tests` — replaced by `frame_plan::tests::*`
+//     (CPU-pure, no GPU required);
+//   - `Renderer.stencil_frame: StencilFrameState` — replaced by per-frame
+//     `stencil_ref` assignment inside `FrameRenderPlan::build_cpu`.

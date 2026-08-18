@@ -1,0 +1,94 @@
+use ailloli_ui_core::geometry::{Constraints, Rect};
+use ailloli_ui_core::Offset;
+use ailloli_ui_runtime::component::{IntoView, View, Widget};
+use ailloli_ui_runtime::layout::LayoutEngine;
+use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
+use ailloli_ui_runtime::scene::PaintCtx;
+
+/// Aligns a child within allocated space; `x` / `y` in `[-1, 1]` (Flutter-like).
+pub struct Align<A = ()> {
+    x: f32,
+    y: f32,
+    child: Option<View<A>>,
+}
+
+impl<A: 'static> Align<A> {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self {
+            x: x.clamp(-1.0, 1.0),
+            y: y.clamp(-1.0, 1.0),
+            child: None,
+        }
+    }
+
+    pub fn child(mut self, child: impl IntoView<A>) -> Self {
+        self.child = Some(child.into_view());
+        self
+    }
+}
+
+struct AlignWidget {
+    x: f32,
+    y: f32,
+}
+
+impl<A: 'static> Widget<A> for AlignWidget {
+    fn debug_name(&self) -> &'static str {
+        "Align"
+    }
+
+    fn layout(
+        &self,
+        engine: &mut LayoutEngine<'_, A>,
+        ctx: &mut LayoutCtx<'_>,
+        children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let max = constraints.max_size();
+        let size = constraints.constrain(max);
+        let mut child_layouts = Vec::new();
+
+        if let Some(child) = children.first_mut() {
+            let r = child.layout(engine, ctx, Constraints::loose(max.w, max.h));
+            let free_x = (max.w - r.size.w).max(0.0);
+            let free_y = (max.h - r.size.h).max(0.0);
+            let offset = Offset::new(free_x * (self.x + 1.0) / 2.0, free_y * (self.y + 1.0) / 2.0);
+            child_layouts.push(ChildLayout {
+                offset,
+                size: r.size,
+                paint_bounds: Rect::new(0.0, 0.0, r.size.w, r.size.h),
+                visual_bounds: r.visual_bounds,
+            });
+        }
+
+        LayoutResult {
+            size,
+            children: child_layouts,
+            paint_bounds: Rect::new(0.0, 0.0, size.w, size.h),
+            visual_bounds: Rect::new(0.0, 0.0, size.w, size.h),
+            overlay_hit_bounds: Vec::new(),
+            clip: None,
+            is_window_root_clip: false,
+            artifact: None,
+        }
+    }
+
+    fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
+}
+
+impl<A: 'static> IntoView<A> for Align<A> {
+    fn into_view(self) -> View<A> {
+        let mut children = Vec::new();
+        if let Some(child) = self.child {
+            children.push(child);
+        }
+
+        View::node(
+            AlignWidget {
+                x: self.x,
+                y: self.y,
+            },
+            children,
+        )
+    }
+}
