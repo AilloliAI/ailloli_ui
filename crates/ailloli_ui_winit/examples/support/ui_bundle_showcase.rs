@@ -5532,7 +5532,7 @@ fn terminal_phase80_fixture() -> ailloli_ui::terminal_core::TerminalState {
     );
     let mut parser = ailloli_ui::terminal_core::VteTerminalParser::new();
     let fixture = concat!(
-        "\x1b]9001;ailloli_ui:cwd;uri=file:///home/user/projects/ailloli-ui\x07",
+        "\x1b]9001;ailloli_ui:cwd;uri=file:///workspace/ailloli-ui\x07",
         "\x1b]9001;ailloli_ui:command_start;cmd=cargo%20test%20-p%20ailloli_ui_terminal_core\x07",
         "\x1b[1;36m$ cargo test -p ailloli_ui_terminal_core diagnostics\x1b[0m\r\n",
         "running diagnostics fixtures\r\n",

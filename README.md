@@ -14,7 +14,7 @@ Add the façade crate from a local checkout:
 
 ```toml
 [dependencies]
-ailloli_ui = { path = "../ailloli-ui/crates/ailloli_ui" }
+ailloli_ui = { path = "crates/ailloli_ui" }
 ```
 
 Then build an application through the public prelude:

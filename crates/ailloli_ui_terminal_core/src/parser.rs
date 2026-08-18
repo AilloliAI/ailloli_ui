@@ -886,13 +886,13 @@ mod tests {
 
         parser.advance(
             &mut state,
-            b"\x1b]1337;CurrentDir=file:///home/user\x07\
+            b"\x1b]1337;CurrentDir=file:///workspace/user\x07\
               \x1b]133;A\x07\
               \x1b]133;B;cmd=ls%20-la\x07output\n\
               \x1b]133;C;exit=2\x07",
         );
 
-        assert_eq!(state.cwd_uri.as_deref(), Some("file:///home/user"));
+        assert_eq!(state.cwd_uri.as_deref(), Some("file:///workspace/user"));
         assert!(state.shell.last_prompt_line.is_some());
         let command = state.shell.last_command.as_ref().expect("last command");
         assert_eq!(command.command_line, "ls -la");
