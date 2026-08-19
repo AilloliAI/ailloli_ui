@@ -227,6 +227,7 @@ fn paint_initials(ctx: &mut PaintCtx<'_>, bounds: Rect, initials: &str, style: &
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, y],
         color: text_style.color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: layout.clone(),
     }));
 }

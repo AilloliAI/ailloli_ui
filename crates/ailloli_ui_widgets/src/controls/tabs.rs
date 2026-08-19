@@ -149,6 +149,7 @@ pub fn draw_tabs_bar_with_options<T: TabsItem>(
         out.push(DrawCmd::Text(DrawText {
             pos,
             color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: text.layout_cached(TextLayoutParams {
                 text: s,
                 style: TextStyle::new(font, px_size, color),

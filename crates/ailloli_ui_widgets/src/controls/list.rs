@@ -43,6 +43,7 @@ pub fn draw_list_rows(
         out.push(DrawCmd::Text(DrawText {
             pos: [row_rect.x + 14.0, row_rect.y + 18.0],
             color: style.title_fg,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: text.layout_cached(TextLayoutParams {
                 text: &r.title,
                 style: TextStyle::new(style.font, style.title_px, style.title_fg),
@@ -53,6 +54,7 @@ pub fn draw_list_rows(
         out.push(DrawCmd::Text(DrawText {
             pos: [row_rect.x + 14.0, row_rect.y + 34.0],
             color: style.subtitle_fg,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: text.layout_cached(TextLayoutParams {
                 text: &r.subtitle,
                 style: TextStyle::new(style.font, style.subtitle_px, style.subtitle_fg),

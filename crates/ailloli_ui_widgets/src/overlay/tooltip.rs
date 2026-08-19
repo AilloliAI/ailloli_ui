@@ -46,6 +46,7 @@ pub fn draw_tooltip(
                 card.y + style.pad_y + style.font_px as f32,
             ],
             color: style.fg,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: text_system.layout_cached(TextLayoutParams {
                 text,
                 style: TextStyle::new(FontId::Ui, style.font_px, style.fg),

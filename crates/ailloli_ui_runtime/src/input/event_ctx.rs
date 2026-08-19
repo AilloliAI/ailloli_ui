@@ -1,4 +1,5 @@
 use crate::app::runtime_handle::RuntimeHandle;
+use crate::app::{ExternalUrl, OpenUrlError};
 use ailloli_ui_core::ids::ElementId;
 use std::time::Duration;
 
@@ -70,5 +71,9 @@ impl<A> EventContext<A> {
 
     pub fn write_clipboard_text(&self, text: &str) -> Result<(), String> {
         self.runtime.write_clipboard_text(text)
+    }
+
+    pub fn open_external_url(&self, url: &ExternalUrl) -> Result<(), OpenUrlError> {
+        self.runtime.open_external_url(url)
     }
 }

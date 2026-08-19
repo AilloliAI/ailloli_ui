@@ -340,6 +340,27 @@ mod tests {
     }
 
     #[test]
+    fn paint_only_decoration_reuses_cached_layout() {
+        let mut ts = TextSystem::new();
+        let plain = TextStyle::new(FontId::Ui, 14, Color::WHITE);
+        let underlined = plain.underline();
+        let a = ts.layout_cached(TextLayoutParams {
+            text: "Documentation",
+            style: plain,
+            max_width: None,
+            wrap_mode: WrapMode::NoWrap,
+        });
+        let b = ts.layout_cached(TextLayoutParams {
+            text: "Documentation",
+            style: underlined,
+            max_width: None,
+            wrap_mode: WrapMode::NoWrap,
+        });
+
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
     fn no_wrap_key_ignores_max_width() {
         let style = TextStyle::new(FontId::Ui, 14, Color::new(1.0, 1.0, 1.0, 1.0));
         let a = TextLayoutKey::from_params(&TextLayoutParams {

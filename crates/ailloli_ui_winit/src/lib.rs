@@ -37,6 +37,8 @@ pub mod devtools;
 pub mod dpi;
 /// Event loop helpers and Linux Ctrl+C shutdown.
 pub mod event_loop;
+/// Native browser handoff for validated external URLs.
+pub mod external_url;
 #[cfg(feature = "native-overlay")]
 pub mod native_overlay;
 /// OS-specific winit extensions.
@@ -67,6 +69,7 @@ pub use capture::{
     CaptureRequestId, CaptureResult, CaptureTarget, FrameCaptureHook, FrameCaptureResult,
 };
 pub use event_loop::{new_event_loop, new_event_loop_allow_any_thread, run_app_on_event_loop};
+pub use external_url::SystemExternalUrlOpener;
 #[cfg(feature = "native-overlay")]
 pub use native_overlay::{
     NativeCalibrationMarkerGuard, NativeCalibrationMarkerPixel, NativeCalibrationMarkerSpec,

@@ -1379,6 +1379,7 @@ fn paint_terminal_text(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, row_y + baseline],
         color: style.text.color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: prepared,
     }));
 }

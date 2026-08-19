@@ -70,9 +70,25 @@ The public framework never depends on an application or an application-owned
 crate. Provider choice, business workflows, credentials, and product policy
 belong in the consuming application.
 
+## Sandbox application
+
+The repository includes a real consumer package at `apps/sandbox_app`. Run it
+from the workspace root with:
+
+```sh
+cargo run -p sandbox_app
+```
+
+Or run `cargo run` directly from `apps/sandbox_app`. The sandbox depends only
+on the public `ailloli_ui` façade, so it exercises the same API and dependency
+direction as an external application. It is a workspace application rather
+than a crate-local Cargo example because its role is to validate the complete
+consumer experience across framework packages.
+
 ## Workspace packages
 
-The workspace contains exactly 21 public-framework packages:
+The workspace contains 21 public-framework packages plus the non-publishable
+`sandbox_app` consumer application:
 
 | Package | Responsibility |
 | --- | --- |
@@ -97,6 +113,7 @@ The workspace contains exactly 21 public-framework packages:
 | `ailloli_ui_devicons_font` | Audited, reduced file-icon font asset. |
 | `ailloli_ui_packaging` | Packaging library and `cargo-ailloli-ui` subcommand. |
 | `ailloli_ui_bench` | Opt-in structured performance measurements. |
+| `sandbox_app` | Public consumer sandbox used to exercise the façade from the repository. |
 
 ## Façade features
 

@@ -1157,6 +1157,7 @@ fn paint_overlay_single_line_text(
         ctx.push_overlay(DrawCmd::Text(DrawText {
             pos: [baseline_x, baseline_y],
             color: style.text.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: layout_handle.clone(),
         }));
 

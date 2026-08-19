@@ -1781,6 +1781,7 @@ fn push_text(ctx: &mut PaintCtx<'_>, text: &str, x: f32, baseline_y: f32, style:
         ctx.push(DrawCmd::Text(DrawText {
             pos: [x, baseline_y],
             color: style.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout,
         }));
     }
@@ -1805,6 +1806,7 @@ fn push_overlay_text(
         ctx.push_overlay(DrawCmd::Text(DrawText {
             pos: [x, baseline_y],
             color: style.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout,
         }));
     }

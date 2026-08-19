@@ -965,6 +965,7 @@ fn breadcrumb_text_cmd(
         DrawCmd::Text(DrawText {
             pos: [x, baseline],
             color: style.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout,
         }),
         width,
@@ -1105,6 +1106,7 @@ fn label_cmd(
     DrawCmd::Text(DrawText {
         pos,
         color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: text.layout_cached(TextLayoutParams {
             text: value,
             style: TextStyle::new(FontId::Ui, px_size, color),

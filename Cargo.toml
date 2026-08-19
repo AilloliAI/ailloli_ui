@@ -23,6 +23,7 @@ members = [
     "crates/ailloli_ui_text",
     "crates/ailloli_ui_widgets",
     "crates/ailloli_ui_winit",
+    "apps/sandbox_app",
 ]
 
 [workspace.package]
@@ -77,3 +78,5 @@ libc = "0.2.177"
 raw-window-handle = "0.6.2"
 smithay-client-toolkit = "0.19.2"
 wayland-client = "0.31.11"
+url = "2"
+windows-sys = "0.61.2"

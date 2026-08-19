@@ -106,6 +106,7 @@ pub fn draw_editable_mono_line(
     out.push(DrawCmd::Text(DrawText {
         pos: [baseline_x, baseline_y],
         color: style.text.color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: laid,
     }));
 

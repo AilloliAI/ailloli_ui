@@ -210,6 +210,7 @@ pub(crate) fn paint_text_in_rect(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [rect.x, y],
         color: apply_opacity(style.color, opacity),
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: layout.clone(),
     }));
 }
@@ -275,6 +276,7 @@ pub(crate) fn paint_overlay_text_in_rect_aligned(
     ctx.push_overlay(DrawCmd::Text(DrawText {
         pos: [x, y],
         color: apply_opacity(style.color, options.opacity),
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: layout.clone(),
     }));
 }

@@ -226,6 +226,7 @@ impl InputRouter {
                     id = parent;
                 }
                 role @ (HoverCursorRole::Default
+                | HoverCursorRole::Pointer
                 | HoverCursorRole::Text
                 | HoverCursorRole::ResizeX
                 | HoverCursorRole::ResizeY) => return role,
@@ -301,7 +302,8 @@ impl InputRouter {
         outcome
     }
 
-    fn apply_pending_focus_request<A: 'static>(
+    /// Applies a programmatic focus-key request after the tree has been laid out.
+    pub fn apply_pending_focus_request<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
         runtime: RuntimeHandle<A>,

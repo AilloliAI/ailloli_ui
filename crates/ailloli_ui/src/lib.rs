@@ -73,9 +73,9 @@ pub use ailloli_ui_core::{
     BoxShadow, ChartPoint, ChartRange, ChartSeries, ChatEvent, ChatItemId, ChatMessage,
     ChatMessageKind, ChatMessageStatus, ChatRequestId, ChatRole, ChatSessionId, ChatSessionState,
     ChatSessionStatus, ChatSessionSummary, Color, Constraints, DateValue, FontId, HsvColor, IconId,
-    MonthValue, Offset, Rect, Size, SvgSource, Theme, ThemePalette, ThemeRadius, ThemeShadows,
-    ThemeSpacing, ThemeState, ThemeTypography, TimeFormat, TimeValue, UploadAccept, UploadFile,
-    WeekStart, APP_IDENTITY_METADATA_VERSION, CONVENTIONAL_APP_ICON_PATH,
+    MonthValue, Offset, Rect, Size, SvgSource, TextDecoration, TextStyle, Theme, ThemePalette,
+    ThemeRadius, ThemeShadows, ThemeSpacing, ThemeState, ThemeTypography, TimeFormat, TimeValue,
+    UploadAccept, UploadFile, WeekStart, APP_IDENTITY_METADATA_VERSION, CONVENTIONAL_APP_ICON_PATH,
 };
 #[cfg(feature = "devtools")]
 pub use ailloli_ui_devtools_core::{
@@ -107,8 +107,8 @@ pub use ailloli_ui_text::{ApproxTextMeasure, FontMetrics, TextBuffer, TextMeasur
 pub use ailloli_ui_widgets::controls::{
     terminal_key_bytes, terminal_key_bytes_with_modes, terminal_selection_text,
     ChatMessageRenderer, ChatWidget, ChatWidgetAction, ChatWidgetActionHandler,
-    ChatWidgetCopyHandler, ChatWidgetRetryHandler, ChatWidgetSendHandler, ChatWidgetStyle,
-    Terminal, TerminalSelectionMode, TerminalWidgetStyle,
+    ChatWidgetCopyHandler, ChatWidgetRetryHandler, ChatWidgetSendHandler, ChatWidgetStyle, Link,
+    LinkStyle, Terminal, TerminalSelectionMode, TerminalWidgetStyle,
 };
 pub use ailloli_ui_widgets::editor::{
     CodeEditorFeatureFlags, CodeFileSummary, CodeSymbol, Diagnostic, DiagnosticHit,

@@ -185,6 +185,7 @@ pub(crate) fn paint_single_line_text(
         ctx.push(DrawCmd::Text(DrawText {
             pos: [baseline_x, baseline_y],
             color: style.text.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: layout_handle.clone(),
         }));
 
@@ -334,6 +335,7 @@ pub(crate) fn paint_multi_line_text(
         ctx.push(DrawCmd::Text(DrawText {
             pos: [origin_x, baseline_y],
             color: style.text.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: layout_handle.clone(),
         }));
 

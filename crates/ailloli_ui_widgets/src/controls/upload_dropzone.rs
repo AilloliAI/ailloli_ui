@@ -427,6 +427,7 @@ fn push_text_centered(
         ctx.push(DrawCmd::Text(DrawText {
             pos: [x, baseline_y],
             color: style.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout,
         }));
     }

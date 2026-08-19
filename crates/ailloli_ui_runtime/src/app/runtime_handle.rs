@@ -1,3 +1,4 @@
+use super::external_url::{ExternalUrl, ExternalUrlOpener, MemoryExternalUrlOpener, OpenUrlError};
 use super::state_store::StateStore;
 use ailloli_ui_core::ids::ElementId;
 use std::cell::RefCell;
@@ -144,6 +145,24 @@ impl<A> RuntimeHandle<A> {
         self.inner.borrow().clipboard.write_text(text)
     }
 
+    pub fn set_external_url_opener(&self, opener: Rc<dyn ExternalUrlOpener>) {
+        self.inner.borrow_mut().external_url_opener = opener;
+    }
+
+    /// Opens an already validated URL and records non-fatal provider errors.
+    pub fn open_external_url(&self, url: &ExternalUrl) -> Result<(), OpenUrlError> {
+        let opener = self.inner.borrow().external_url_opener.clone();
+        let result = opener.open(url);
+        if let Err(error) = &result {
+            self.inner.borrow_mut().open_url_errors.push(error.clone());
+        }
+        result
+    }
+
+    pub fn take_open_url_errors(&self) -> Vec<OpenUrlError> {
+        std::mem::take(&mut self.inner.borrow_mut().open_url_errors)
+    }
+
     /// Requests application exit (like `Command::Quit` without a user action).
     pub fn request_close(&self) {
         self.inner.borrow_mut().close_requested = true;
@@ -183,6 +202,8 @@ pub struct RuntimeInner<A> {
     pub actions: Vec<A>,
     pub dirty_elements: Vec<ElementId>,
     pub clipboard: Rc<dyn ClipboardProvider>,
+    pub external_url_opener: Rc<dyn ExternalUrlOpener>,
+    pub open_url_errors: Vec<OpenUrlError>,
     /// Close requested; consumed by winit via `take_close_requested`.
     pub close_requested: bool,
     /// Pending minimize/maximize per logical window id (`Window::new("main")`).
@@ -198,6 +219,8 @@ impl<A> RuntimeInner<A> {
             actions: Vec::new(),
             dirty_elements: Vec::new(),
             clipboard: Rc::new(MemoryClipboard::new()),
+            external_url_opener: Rc::new(MemoryExternalUrlOpener::new()),
+            open_url_errors: Vec::new(),
             close_requested: false,
             window_chrome_ops: Vec::new(),
             scheduled_repaints: Vec::new(),
@@ -258,5 +281,22 @@ mod tests {
             .take_due_scheduled_repaints(Instant::now() + Duration::from_millis(50))
             .contains(&id));
         assert!(runtime.next_scheduled_repaint_due().is_none());
+    }
+
+    #[test]
+    fn external_url_opener_is_injected_and_errors_are_non_fatal() {
+        let runtime = RuntimeHandle::<()>::new();
+        let opener = MemoryExternalUrlOpener::new();
+        runtime.set_external_url_opener(Rc::new(opener.clone()));
+        let url = ExternalUrl::parse("https://example.com/docs?q=1#api").unwrap();
+
+        runtime.open_external_url(&url).unwrap();
+        assert_eq!(opener.opened_urls(), [url.as_str()]);
+        assert!(runtime.take_open_url_errors().is_empty());
+
+        opener.fail_next(OpenUrlError::LaunchFailed);
+        assert!(runtime.open_external_url(&url).is_err());
+        assert_eq!(runtime.take_open_url_errors().len(), 1);
+        assert!(runtime.take_open_url_errors().is_empty());
     }
 }

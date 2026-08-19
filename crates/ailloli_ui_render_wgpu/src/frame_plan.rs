@@ -1248,6 +1248,20 @@ fn append_layer_draws(
                 }
             }
             DrawCmd::Text(dt) => {
+                for rect in dt.decoration_rects(scale.dpr) {
+                    let rect = origin.map_or(rect, |origin| {
+                        translate_rect(rect, [origin[0] / scale.dpr, origin[1] / scale.dpr])
+                    });
+                    push_border_rect_batch(
+                        plan,
+                        batch_start,
+                        content_clip_bind,
+                        ctx.surface,
+                        scale,
+                        rect,
+                        dt.color,
+                    );
+                }
                 emit_text_batches_local(
                     &mut plan.tex_vertex_arena,
                     &mut plan.batches,
@@ -1587,7 +1601,8 @@ mod tests {
     use super::*;
     use crate::isolated_budget::IsolatedBudgetPolicy;
     use ailloli_ui_core::{
-        Border, BorderStyle, BoxShadow, EdgeColors, EdgeInsets, IconId, Point, Radius, StrokeStyle,
+        Border, BorderStyle, BoxShadow, EdgeColors, EdgeInsets, FontId, IconId, Point, Radius,
+        StrokeStyle, TextDecoration, TextStyle,
     };
     use ailloli_ui_runtime::scene::ClipStackSnapshot;
     use ailloli_ui_runtime::BlendMode;
@@ -1596,6 +1611,8 @@ mod tests {
     use ailloli_ui_runtime::DrawPolyline;
     use ailloli_ui_runtime::DrawRect;
     use ailloli_ui_runtime::DrawRingProgress;
+    use ailloli_ui_runtime::DrawText;
+    use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
     fn batch_range(b: &PlannedBatch) -> std::ops::Range<u32> {
         match b {
@@ -1627,6 +1644,42 @@ mod tests {
 
     fn empty_prepared() -> PreparedResources {
         PreparedResources::default()
+    }
+
+    #[test]
+    fn underlined_wrapped_text_emits_one_rect_per_visual_line() {
+        let mut text_system = TextSystem::new();
+        let style = TextStyle::new(FontId::Ui, 14, Color::WHITE).underline();
+        let layout = text_system.layout_cached(TextLayoutParams {
+            text: "one two three four",
+            style,
+            max_width: Some(35.0),
+            wrap_mode: WrapMode::WordOrAnywhere,
+        });
+        assert!(layout.lines.len() > 1);
+        let expected_vertices = layout.lines.len() * 6;
+        let baseline = layout.lines[0].baseline_y;
+        let cmds = vec![DrawCmd::Text(DrawText {
+            pos: [4.0, 4.0 + baseline],
+            color: style.color,
+            decoration: TextDecoration::Underline,
+            layout,
+        })];
+        let layers = vec![LayerPass::new(&cmds)];
+
+        let plan = FrameRenderPlan::build_cpu(
+            &layers,
+            &empty_prepared(),
+            [160.0, 120.0],
+            Scale::new(2.0),
+            true,
+        );
+
+        assert_eq!(plan.vertex_arena.len(), expected_vertices);
+        assert!(plan
+            .batches
+            .iter()
+            .any(|batch| batch_pipeline(batch) == Some(PipelineKind::Rect)));
     }
 
     #[test]

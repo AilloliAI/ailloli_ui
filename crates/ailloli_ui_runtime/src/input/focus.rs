@@ -20,6 +20,7 @@ pub enum HoverCursorRole {
     #[default]
     Inherit,
     Default,
+    Pointer,
     Text,
     ResizeX,
     ResizeY,

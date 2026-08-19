@@ -15,6 +15,7 @@ pub mod dialog;
 pub mod disclosure_row;
 pub mod divider;
 pub mod icon_button;
+pub mod link;
 pub mod list;
 pub mod list_view;
 pub mod navigation;
@@ -60,6 +61,7 @@ pub use disclosure_row::{DisclosureRow, DisclosureRowStyle, DisclosureRowVariant
 pub use divider::{Divider, DividerOrientation, DividerStyle, DividerVariant};
 #[allow(deprecated)]
 pub use icon_button::{draw_icon_button, IconButtonStyle};
+pub use link::{Link, LinkStyle};
 pub use list_view::{ListItem, ListItemStyle, ListItemVariant, ListView, ListViewStyle};
 pub use navigation::{NavItem, NavItemStyle, NavItemVariant, Sidebar, SidebarStyle};
 pub use pickers::{

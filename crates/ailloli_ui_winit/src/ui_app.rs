@@ -42,6 +42,7 @@ use crate::clipboard::NativeClipboard;
 #[cfg(feature = "devtools")]
 use crate::devtools::DevToolsWindowState;
 use crate::event_loop::shutdown_signal;
+use crate::external_url::SystemExternalUrlOpener;
 #[cfg(all(target_os = "linux", feature = "native-overlay"))]
 use crate::native_overlay::wayland::{
     CreatedWaylandOverlay, WaylandOverlayConfigured, WaylandOverlayEvent, WaylandOverlaySurface,
@@ -418,6 +419,7 @@ impl<A: 'static> UiApp<A> {
     pub fn with_control_flow(control_flow: ControlFlow) -> Self {
         let runtime = RuntimeHandle::new();
         runtime.set_clipboard_provider(Rc::new(NativeClipboard::new()));
+        runtime.set_external_url_opener(Rc::new(SystemExternalUrlOpener::new()));
         Self {
             runtime,
             pending: Vec::new(),
@@ -1068,6 +1070,10 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                     let layout_start = Instant::now();
                     layout_window(state);
                     let layout_us = layout_start.elapsed().as_micros();
+                    state.input.apply_pending_focus_request(
+                        &state.runtime.tree,
+                        state.runtime.runtime.clone(),
+                    );
                     update_ime_state(state);
 
                     let paint_start = Instant::now();
@@ -1541,6 +1547,7 @@ fn root_client_bounds_logical<A>(state: &WindowState<A>) -> Rect {
 
 fn cursor_icon_for_hover_role(role: HoverCursorRole) -> CursorIcon {
     match role {
+        HoverCursorRole::Pointer => CursorIcon::Pointer,
         HoverCursorRole::Text => CursorIcon::Text,
         HoverCursorRole::ResizeX => CursorIcon::from(resize_edge_to_winit(ResizeEdge::E)),
         HoverCursorRole::ResizeY => CursorIcon::from(resize_edge_to_winit(ResizeEdge::S)),
@@ -2179,6 +2186,10 @@ mod tests {
 
     #[test]
     fn hover_cursor_role_mapping_uses_text_cursor_for_text_role() {
+        assert_eq!(
+            cursor_icon_for_hover_role(HoverCursorRole::Pointer),
+            CursorIcon::Pointer
+        );
         assert_eq!(
             cursor_icon_for_hover_role(HoverCursorRole::Text),
             CursorIcon::Text

@@ -107,6 +107,7 @@ pub fn draw_checkbox(
         out.push(DrawCmd::Text(DrawText {
             pos: [lx, baseline_y],
             color: style.label_color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: text_system.layout_cached(TextLayoutParams {
                 text: lbl,
                 style: TextStyle::new(FontId::Ui, style.label_px, style.label_color),

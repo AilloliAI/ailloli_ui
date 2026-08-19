@@ -42,6 +42,9 @@ raw-window-handle = { workspace = true, optional = true }
 smithay-client-toolkit = { workspace = true, optional = true }
 wayland-client = { workspace = true, optional = true, features = ["system"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 ailloli_ui = { path = "../ailloli_ui", features = ["files-local"] }
 ailloli_ui_editor = { path = "../ailloli_ui_editor", features = ["tree-sitter"] }

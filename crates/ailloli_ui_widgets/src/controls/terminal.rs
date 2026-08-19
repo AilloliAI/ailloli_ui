@@ -1006,6 +1006,7 @@ fn paint_terminal_text(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, row_y + baseline],
         color: text_style.color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: prepared,
     }));
 }

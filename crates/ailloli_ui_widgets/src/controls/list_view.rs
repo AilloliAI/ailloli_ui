@@ -550,6 +550,7 @@ fn paint_text_at(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, baseline_y],
         color: style.color.with_alpha(style.color.a * opacity),
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
 }
@@ -574,6 +575,7 @@ fn paint_text_centered(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, y],
         color: style.color.with_alpha(style.color.a * opacity),
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
 }
@@ -599,6 +601,7 @@ fn paint_trailing_text(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, y],
         color: style.color.with_alpha(style.color.a * opacity),
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
 }
@@ -644,6 +647,7 @@ fn paint_badge(
             .badge_text
             .color
             .with_alpha(style.badge_text.color.a * opacity),
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
     rect.x

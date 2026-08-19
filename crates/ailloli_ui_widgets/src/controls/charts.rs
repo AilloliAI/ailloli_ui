@@ -830,6 +830,7 @@ fn paint_centered_text(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str, style: Te
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, y],
         color: style.color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
 }
@@ -853,6 +854,7 @@ fn paint_text(
     ctx.push(DrawCmd::Text(DrawText {
         pos,
         color: style.color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
 }

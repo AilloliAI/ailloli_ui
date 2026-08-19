@@ -381,6 +381,7 @@ pub fn draw_button(
     out.push(DrawCmd::Text(DrawText {
         pos: [x, y],
         color: text_style.color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
 

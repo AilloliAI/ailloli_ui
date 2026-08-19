@@ -139,6 +139,18 @@ where
                     geometry.stats.rects_rendered = geometry.stats.rects_rendered.saturating_add(1);
                 }
                 DrawCmd::Text(text) => {
+                    for rect in text.decoration_rects(scale.dpr) {
+                        push_rect(
+                            &mut geometry,
+                            rect,
+                            text.color.to_array(),
+                            scale,
+                            extent,
+                            clip_plan,
+                        );
+                        geometry.stats.rects_rendered =
+                            geometry.stats.rects_rendered.saturating_add(1);
+                    }
                     push_text(
                         &mut geometry,
                         text,
@@ -917,7 +929,7 @@ fn to_ndc(extent: vk::Extent2D, x: f32, y: f32) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use ailloli_ui_core::style::TextStyle;
-    use ailloli_ui_core::{ClipShape, Color, FontId};
+    use ailloli_ui_core::{ClipShape, Color, FontId, TextDecoration};
     use ailloli_ui_runtime::scene::{ClipEntry, ClipStackSnapshot};
     use ailloli_ui_runtime::{DrawCmd, DrawRRect, DrawRect, DrawText, Layer, Scene};
     use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
@@ -992,6 +1004,7 @@ mod tests {
         layer.cmds.push(DrawCmd::Text(DrawText {
             pos: [4.0, 24.0],
             color: Color::WHITE,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout,
         }));
         let scene = Scene {
@@ -1023,6 +1036,43 @@ mod tests {
         assert!(!geometry.text_vertices.is_empty());
         assert_eq!(geometry.text_vertices.len() % 6, 0);
         assert!(geometry.stats.glyphs_rendered > 0);
+    }
+
+    #[test]
+    fn underlined_text_emits_solid_geometry_for_each_visual_line() {
+        let mut text_system = TextSystem::new();
+        let style = TextStyle::new(FontId::Ui, 16, Color::WHITE).underline();
+        let layout = text_system.layout_cached(TextLayoutParams {
+            text: "one two three four",
+            style,
+            max_width: Some(40.0),
+            wrap_mode: WrapMode::WordOrAnywhere,
+        });
+        assert!(layout.lines.len() > 1);
+        let line_count = layout.lines.len();
+        let baseline = layout.lines[0].baseline_y;
+        let mut layer = Layer::base(ClipStackSnapshot::empty());
+        layer.cmds.push(DrawCmd::Text(DrawText {
+            pos: [4.0, 4.0 + baseline],
+            color: Color::WHITE,
+            decoration: TextDecoration::Underline,
+            layout,
+        }));
+        let geometry = build_frame_geometry(
+            &Scene {
+                layers: vec![layer],
+            },
+            Scale::new(2.0),
+            vk::Extent2D {
+                width: 240,
+                height: 160,
+            },
+            |_| Ok(None),
+        )
+        .expect("geometry");
+
+        assert_eq!(geometry.solid_vertices.len(), line_count * 6);
+        assert_eq!(geometry.stats.rects_rendered, line_count as u32);
     }
 
     #[test]
@@ -1178,6 +1228,7 @@ mod tests {
         layer.cmds.push(DrawCmd::Text(DrawText {
             pos: [4.0, 24.0],
             color: Color::WHITE,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout,
         }));
         let scene = Scene {

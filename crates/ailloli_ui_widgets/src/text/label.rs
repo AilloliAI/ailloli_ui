@@ -145,6 +145,7 @@ impl<A: 'static> Widget<A> for TextWidget {
             // Contract: pos.y is baseline (Phase 27).
             pos: [bounds.x, bounds.y + baseline],
             color: self.style.color,
+            decoration: self.style.decoration,
             layout: prepared,
         });
 

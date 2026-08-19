@@ -950,6 +950,7 @@ fn paint_label(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, y],
         color: apply_opacity(text_style.color, opacity),
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: layout.clone(),
     }));
 }

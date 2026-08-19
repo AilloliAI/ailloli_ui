@@ -67,7 +67,11 @@ fn text_bounds(dt: &DrawText, scale: Scale) -> Rect {
     let (ox, oy) = text_origin_from_baseline(dt);
     let w = dt.layout.width();
     let h = dt.layout.height();
-    scale_rect(Rect::new(ox, oy, w, h), scale)
+    let mut bounds = scale_rect(Rect::new(ox, oy, w, h), scale);
+    for decoration in dt.decoration_rects(scale.dpr) {
+        bounds = union_rect(bounds, scale_rect(decoration, scale));
+    }
+    bounds
 }
 
 fn text_bounds_prepared(dt: &DrawText, scale: Scale, prepared: &PreparedResources) -> Option<Rect> {
@@ -94,6 +98,13 @@ fn text_bounds_prepared(dt: &DrawText, scale: Scale, prepared: &PreparedResource
         acc = Some(match acc {
             None => r,
             Some(a) => union_rect(a, r),
+        });
+    }
+    for decoration in dt.decoration_rects(scale.dpr) {
+        let rect = scale_rect(decoration, scale);
+        acc = Some(match acc {
+            None => rect,
+            Some(bounds) => union_rect(bounds, rect),
         });
     }
     acc

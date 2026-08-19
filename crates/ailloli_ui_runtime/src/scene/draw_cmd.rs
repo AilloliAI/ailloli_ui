@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use ailloli_ui_core::{Border, BoxShadow, Color, IconId, Point, Radius, Rect, StrokeStyle};
+use ailloli_ui_core::{
+    Border, BoxShadow, Color, IconId, Point, Radius, Rect, StrokeStyle, TextDecoration,
+};
 use ailloli_ui_text::PreparedTextLayout;
 
 /// Filled axis-aligned rectangle draw primitive.
@@ -53,7 +55,36 @@ pub struct DrawPolyline {
 pub struct DrawText {
     pub pos: [f32; 2],
     pub color: Color,
+    pub decoration: TextDecoration,
     pub layout: Arc<PreparedTextLayout>,
+}
+
+impl DrawText {
+    /// Logical underline rectangles for all visual lines.
+    pub fn decoration_rects(&self, dpr: f32) -> Vec<Rect> {
+        if self.decoration != TextDecoration::Underline {
+            return Vec::new();
+        }
+        let dpr = dpr.max(0.01);
+        let first_baseline = self
+            .layout
+            .lines
+            .first()
+            .map(|line| line.baseline_y)
+            .unwrap_or(0.0);
+        let origin_y = self.pos[1] - first_baseline;
+        self.layout
+            .lines
+            .iter()
+            .filter(|line| line.width > 0.0)
+            .map(|line| {
+                let thickness = (line.descent / 3.0).max(1.0 / dpr);
+                let y = origin_y + line.baseline_y + (line.descent * 0.5).max(thickness * 0.5);
+                let snapped_y = (y * dpr).round() / dpr;
+                Rect::new(self.pos[0], snapped_y, line.width, thickness)
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

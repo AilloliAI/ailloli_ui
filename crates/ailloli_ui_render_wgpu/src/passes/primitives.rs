@@ -709,6 +709,7 @@ mod tests {
         let dt = RuntimeDrawText {
             pos: [10.0, 20.0 + baseline],
             color: style.color,
+            decoration: ailloli_ui_core::TextDecoration::None,
             layout: std::sync::Arc::clone(&prep),
         };
 

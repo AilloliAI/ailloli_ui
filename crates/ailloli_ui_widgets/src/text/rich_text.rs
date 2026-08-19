@@ -49,6 +49,7 @@ pub fn draw_rich_text(
     Some(DrawCmd::Text(DrawText {
         pos: baseline_xy,
         color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout: prepared,
     }))
 }

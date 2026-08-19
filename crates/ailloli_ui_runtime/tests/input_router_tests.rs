@@ -343,6 +343,29 @@ fn hovered_cursor_role_inherits_from_text_parent() {
 }
 
 #[test]
+fn hovered_cursor_role_inherits_pointer_from_link_like_parent() {
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(View::node(
+        TestParent {
+            log: Rc::new(RefCell::new(Vec::new())),
+            input_role: InputRole::None,
+            hover_cursor_role: HoverCursorRole::Pointer,
+        },
+        vec![View::leaf(TestLeaf::plain("link-child"))],
+    ));
+    layout(&mut app);
+    let mut router = InputRouter::default();
+
+    router.route_event(&app.tree, runtime, &pointer_move(Point::new(2.0, 2.0)));
+
+    assert_eq!(
+        router.hovered_cursor_role(&app.tree),
+        HoverCursorRole::Pointer
+    );
+}
+
+#[test]
 fn hovered_cursor_role_child_can_refuse_text_parent() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());

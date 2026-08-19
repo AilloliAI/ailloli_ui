@@ -1065,6 +1065,7 @@ fn paint_layout(
     ctx.push(DrawCmd::Text(DrawText {
         pos: [x, y + baseline],
         color,
+        decoration: ailloli_ui_core::TextDecoration::None,
         layout,
     }));
 }

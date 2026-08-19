@@ -44,7 +44,7 @@ pub use shadow::BoxShadow;
 #[allow(deprecated)]
 pub use shadow::Shadow;
 pub use stroke::{LineCap, LineJoin, StrokeStyle};
-pub use text_style::TextStyle;
+pub use text_style::{TextDecoration, TextStyle};
 pub use theme::{
     Theme, ThemePalette, ThemeRadius, ThemeShadows, ThemeSpacing, ThemeState, ThemeTypography,
 };

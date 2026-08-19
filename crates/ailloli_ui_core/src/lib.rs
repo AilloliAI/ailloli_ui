@@ -67,8 +67,8 @@ pub use style::Rgba;
 pub use style::Shadow;
 pub use style::{
     Border, BorderStyle, BoxShadow, Color, ColorParseError, EdgeColors, LineCap, LineJoin, Radius,
-    StrokeStyle, TextStyle, Theme, ThemePalette, ThemeRadius, ThemeShadows, ThemeSpacing,
-    ThemeState, ThemeTypography,
+    StrokeStyle, TextDecoration, TextStyle, Theme, ThemePalette, ThemeRadius, ThemeShadows,
+    ThemeSpacing, ThemeState, ThemeTypography,
 };
 pub use time_picker::{TimeFormat, TimeValue};
 pub use upload::{UploadAccept, UploadFile};

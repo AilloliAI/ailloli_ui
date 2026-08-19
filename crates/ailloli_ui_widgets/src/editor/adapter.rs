@@ -34,6 +34,7 @@ pub(crate) fn paint_editor_frame(ctx: &mut PaintCtx<'_>, frame: &EditorFrame) {
                         ctx.push(DrawCmd::Text(DrawText {
                             pos: *pos,
                             color: *color,
+                            decoration: ailloli_ui_core::TextDecoration::None,
                             layout: layout.clone(),
                         }));
                     }
@@ -103,6 +104,7 @@ pub(crate) fn paint_editor_frame(ctx: &mut PaintCtx<'_>, frame: &EditorFrame) {
                     ctx.push(DrawCmd::Text(DrawText {
                         pos: *pos,
                         color: *color,
+                        decoration: ailloli_ui_core::TextDecoration::None,
                         layout: layout.clone(),
                     }));
                 }
@@ -110,6 +112,7 @@ pub(crate) fn paint_editor_frame(ctx: &mut PaintCtx<'_>, frame: &EditorFrame) {
                     ctx.push(DrawCmd::Text(DrawText {
                         pos: *pos,
                         color: *color,
+                        decoration: ailloli_ui_core::TextDecoration::None,
                         layout: layout.clone(),
                     }));
                 }

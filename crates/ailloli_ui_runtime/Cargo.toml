@@ -12,3 +12,4 @@ devtools = []
 [dependencies]
 ailloli_ui_core = { path = "../ailloli_ui_core" }
 ailloli_ui_text = { path = "../ailloli_ui_text" }
+url.workspace = true
