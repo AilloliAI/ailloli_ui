@@ -4,6 +4,8 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors = ["Rising Corporation and Ailloli UI contributors <admin@risingcorporation.com>"]
+description = "Ailloli UI public API and widget sandbox"
 publish = false
 default-run = "sandbox_app"
 
