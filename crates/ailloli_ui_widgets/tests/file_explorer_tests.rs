@@ -1,16 +1,23 @@
 #![cfg(feature = "files")]
 
+use std::time::Duration;
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent, WheelDelta};
 use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, NamedKey};
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
-use ailloli_ui_core::{Color, IconId, Point};
+use ailloli_ui_core::{Color, IconId, LogicalWindowId, Point};
 use ailloli_ui_fs::{FileEntry, FileKind, FileMetadata, FileUri};
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, State};
 use ailloli_ui_runtime::element::ElementKind;
-use ailloli_ui_runtime::input::{absolute_paint_bounds, dispatch_event_to_target, InputRouter};
-use ailloli_ui_runtime::DrawCmd;
+use ailloli_ui_runtime::input::{
+    absolute_paint_bounds, dispatch_event_to_target, EventEnvelope, EventId, EventMeta,
+    EventTimestamp, InputRouter,
+};
+use ailloli_ui_runtime::popup::{PopupId, HEADLESS_POPUP_WINDOW_ID};
+use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
+use ailloli_ui_runtime::{DrawCmd, Scene};
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::files::{
     file_icon_for_name, file_icon_visual_for_entry, file_icon_visual_for_name, flatten_file_nodes,
@@ -667,14 +674,20 @@ fn file_explorer_context_menu_rename_accepts_first_typed_character_without_secon
     );
     layout_app(&mut app);
 
-    let rename_pos = painted_text_position(&app, "Rename...").expect("rename menu item");
-    click(
-        &mut router,
-        &app,
-        runtime.clone(),
-        rename_pos.x + 8.0,
-        rename_pos.y - 6.0,
+    let (mut mounts, mut popup_text, _) = mount_open_popup(&app);
+    let popup_scene = mounts.paint(&mut popup_text, 0);
+    let rename_pos = scene_text_position(&popup_scene, "Rename...").expect("rename menu item");
+    click_popup(
+        &mut mounts,
+        1,
+        Point::new(rename_pos.x + 8.0, rename_pos.y - 6.0),
     );
+    assert!(router.apply_pending_popup_intents_for_presentation(
+        &app.tree,
+        runtime.clone(),
+        &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+        PresentationGeneration::INITIAL,
+    ));
     layout_app(&mut app);
     runtime.take_actions();
 
@@ -727,14 +740,20 @@ fn file_explorer_context_menu_new_file_starts_inline_create() {
     );
     layout_app(&mut app);
 
-    let new_file_pos = painted_text_position(&app, "New File").expect("new file item");
-    click(
-        &mut router,
-        &app,
-        runtime.clone(),
-        new_file_pos.x + 8.0,
-        new_file_pos.y - 6.0,
+    let (mut mounts, mut popup_text, _) = mount_open_popup(&app);
+    let popup_scene = mounts.paint(&mut popup_text, 0);
+    let new_file_pos = scene_text_position(&popup_scene, "New File").expect("new file item");
+    click_popup(
+        &mut mounts,
+        10,
+        Point::new(new_file_pos.x + 8.0, new_file_pos.y - 6.0),
     );
+    assert!(router.apply_pending_popup_intents_for_presentation(
+        &app.tree,
+        runtime.clone(),
+        &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+        PresentationGeneration::INITIAL,
+    ));
     layout_app(&mut app);
     assert!(painted_text_contains(&app, "New_File"));
     assert!(runtime.take_actions().iter().any(|action| matches!(
@@ -784,14 +803,20 @@ fn file_explorer_context_menu_new_folder_starts_inline_create() {
     );
     layout_app(&mut app);
 
-    let new_folder_pos = painted_text_position(&app, "New Folder").expect("new folder item");
-    click(
-        &mut router,
-        &app,
-        runtime.clone(),
-        new_folder_pos.x + 8.0,
-        new_folder_pos.y - 6.0,
+    let (mut mounts, mut popup_text, _) = mount_open_popup(&app);
+    let popup_scene = mounts.paint(&mut popup_text, 0);
+    let new_folder_pos = scene_text_position(&popup_scene, "New Folder").expect("new folder item");
+    click_popup(
+        &mut mounts,
+        20,
+        Point::new(new_folder_pos.x + 8.0, new_folder_pos.y - 6.0),
     );
+    assert!(router.apply_pending_popup_intents_for_presentation(
+        &app.tree,
+        runtime.clone(),
+        &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+        PresentationGeneration::INITIAL,
+    ));
     layout_app(&mut app);
     assert!(painted_text_contains(&app, "New_Folder"));
     assert!(runtime.take_actions().iter().any(|action| matches!(
@@ -1141,12 +1166,14 @@ fn file_explorer_context_menu_paints_file_actions_on_right_click() {
     router.route_event(&app.tree, runtime, &right_pointer_button(32.0, 76.0));
     layout_app_size(&mut app, 360.0, 260.0);
 
-    assert!(painted_text_contains(&app, "Open"));
-    assert!(painted_text_contains(&app, "Cut"));
-    assert!(painted_text_contains(&app, "Copy File"));
-    assert!(painted_text_contains(&app, "Copy Path"));
-    assert!(painted_text_contains(&app, "Rename..."));
-    assert!(painted_text_contains(&app, "Delete"));
+    let (mounts, mut popup_text, _) = mount_open_popup(&app);
+    let popup_scene = mounts.paint(&mut popup_text, 0);
+    assert!(scene_text_contains(&popup_scene, "Open"));
+    assert!(scene_text_contains(&popup_scene, "Cut"));
+    assert!(scene_text_contains(&popup_scene, "Copy File"));
+    assert!(scene_text_contains(&popup_scene, "Copy Path"));
+    assert!(scene_text_contains(&popup_scene, "Rename..."));
+    assert!(scene_text_contains(&popup_scene, "Delete"));
 }
 
 fn sample_nodes() -> Vec<FileExplorerNode> {
@@ -1250,6 +1277,79 @@ fn painted_text_position<A: 'static>(app: &Runtime<A>, needle: &str) -> Option<P
             }
             _ => None,
         })
+}
+
+fn mount_open_popup<A: 'static>(app: &Runtime<A>) -> (PopupOverlayMounts<A>, TextSystem, PopupId) {
+    let mut owner_text = TextSystem::new();
+    let _ = app.paint(&mut owner_text);
+    let popup_id = app
+        .runtime
+        .popup_portal()
+        .borrow()
+        .topmost()
+        .expect("one open popup");
+    let mut mounts = PopupOverlayMounts::new(app.runtime.clone());
+    assert_eq!(
+        mounts
+            .sync(
+                &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+                PresentationGeneration::INITIAL,
+            )
+            .mounted(),
+        1
+    );
+    let mut text_system = TextSystem::new();
+    mounts.layout(Scale::new(1.0), &mut text_system);
+    assert!(mounts.contains(popup_id));
+    (mounts, text_system, popup_id)
+}
+
+fn scene_text_contains(scene: &Scene, needle: &str) -> bool {
+    scene.layers.iter().any(|layer| {
+        layer
+            .cmds
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text().contains(needle)))
+    })
+}
+
+fn scene_text_position(scene: &Scene, needle: &str) -> Option<Point> {
+    scene
+        .layers
+        .iter()
+        .flat_map(|layer| layer.cmds.iter())
+        .find_map(|cmd| match cmd {
+            DrawCmd::Text(text) if text.layout.text().contains(needle) => {
+                Some(Point::new(text.pos[0], text.pos[1]))
+            }
+            _ => None,
+        })
+}
+
+fn click_popup<A: 'static>(mounts: &mut PopupOverlayMounts<A>, event_id: u64, point: Point) {
+    let press = mounts.route_envelope(&popup_envelope(
+        event_id,
+        pointer_button(point.x, point.y, true),
+    ));
+    assert!(press.consumed());
+    let release = mounts.route_envelope(&popup_envelope(
+        event_id + 1,
+        pointer_button(point.x, point.y, false),
+    ));
+    assert!(release.consumed());
+    assert!(release.route().event_dispatched);
+}
+
+fn popup_envelope(id: u64, event: Event) -> EventEnvelope {
+    EventEnvelope::new(
+        EventMeta::new(
+            EventId::new(id),
+            EventTimestamp::new(Duration::from_millis(id)),
+            HEADLESS_POPUP_WINDOW_ID,
+            PresentationGeneration::INITIAL,
+        ),
+        event,
+    )
 }
 
 fn painted_rrect_count<A: 'static>(app: &Runtime<A>) -> usize {

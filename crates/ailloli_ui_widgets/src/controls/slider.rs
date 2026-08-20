@@ -10,7 +10,7 @@ use ailloli_ui_core::{Color, Theme};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Memo, Signal, View, Widget,
 };
-use ailloli_ui_runtime::input::{EventCtx, FocusPolicy};
+use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawRect};
@@ -476,6 +476,11 @@ impl<A: 'static> Widget<A> for SliderWidget<A> {
                 self.set_from_point(ctx, bounds, pos.x, pos.y);
                 ctx.stop_propagation();
             }
+            Event::Pointer(PointerEvent::Cancelled { .. }) if self.dragging.read() => {
+                self.dragging.set(false);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
             Event::Keyboard(key) if key.state == KeyState::Pressed => {
                 if let Some(next) = slider_key_value(self.spec, self.value.read(), &key.key) {
                     self.set_value(ctx, next);
@@ -491,6 +496,10 @@ impl<A: 'static> Widget<A> for SliderWidget<A> {
         } else {
             FocusPolicy::Focusable
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::AllowOnFocusOnly
     }
 }
 
@@ -596,6 +605,13 @@ impl<A: 'static> Widget<A> for RangeSliderWidget<A> {
                     ctx.stop_propagation();
                 }
             }
+            Event::Pointer(PointerEvent::Cancelled { .. })
+                if self.active_thumb.read().is_some() =>
+            {
+                self.active_thumb.set(None);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
             Event::Keyboard(key) if key.state == KeyState::Pressed => {
                 let thumb = self.active_thumb.read().unwrap_or(SliderThumb::End);
                 let values = self.spec.clamp_range_value(self.values.read());
@@ -618,6 +634,10 @@ impl<A: 'static> Widget<A> for RangeSliderWidget<A> {
         } else {
             FocusPolicy::Focusable
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::AllowOnFocusOnly
     }
 }
 

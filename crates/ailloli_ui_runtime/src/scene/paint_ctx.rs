@@ -21,6 +21,7 @@ pub struct PaintContext<'a> {
     /// Indices into `layers` for active isolated scopes (outermost first).
     isolated_scope_stack: Vec<usize>,
     overlay_target_stack: Vec<usize>,
+    default_overlay_layer: Option<usize>,
 }
 
 pub type PaintCtx<'a> = PaintContext<'a>;
@@ -45,6 +46,7 @@ impl<'a> PaintContext<'a> {
             frame_time_ms: 0,
             isolated_scope_stack: Vec::new(),
             overlay_target_stack: Vec::new(),
+            default_overlay_layer: None,
         };
         s.layers.push(Layer::base(ClipStackSnapshot::empty()));
         s
@@ -89,12 +91,18 @@ impl<'a> PaintContext<'a> {
     ///
     /// Overlay clips are top-level and intentionally do not inherit parent widget clips.
     pub fn with_overlay_clip(&mut self, clip: Rect, f: impl FnOnce(&mut Self)) {
+        let entered_from_default_target = self.overlay_target_stack.is_empty();
         let idx = self.overlay_layers.len();
         self.overlay_layers
             .push(Layer::overlay_with_clip(Some(ClipShape::Rect(clip)), false));
         self.overlay_target_stack.push(idx);
         f(self);
         self.overlay_target_stack.pop();
+        if entered_from_default_target {
+            // Preserve procedural paint order. The next unscoped overlay must
+            // be appended after this clipped scope, never into its clip layer.
+            self.default_overlay_layer = None;
+        }
     }
 
     fn push_target_layer_index(&self) -> usize {
@@ -108,11 +116,14 @@ impl<'a> PaintContext<'a> {
         if let Some(idx) = self.overlay_target_stack.last().copied() {
             return idx;
         }
-        if self.overlay_layers.is_empty() {
-            self.overlay_layers
-                .push(Layer::overlay(ClipStackSnapshot::empty()));
+        if let Some(idx) = self.default_overlay_layer {
+            return idx;
         }
-        self.overlay_layers.len() - 1
+        let idx = self.overlay_layers.len();
+        self.overlay_layers
+            .push(Layer::overlay(ClipStackSnapshot::empty()));
+        self.default_overlay_layer = Some(idx);
+        idx
     }
 
     pub fn with_clip(&mut self, clip: Rect, f: impl FnOnce(&mut Self)) {
@@ -188,6 +199,11 @@ impl<'a> PaintContext<'a> {
 
     pub fn is_focused(&self) -> bool {
         self.current_interaction.focused
+    }
+
+    /// Whether this element or a descendant owns keyboard focus.
+    pub fn has_focus_within(&self) -> bool {
+        self.current_interaction.focus_within
     }
 
     pub fn is_hovered(&self) -> bool {
@@ -386,5 +402,28 @@ mod tests {
             scene.layers[0].clip.entries(),
             &[crate::scene::ClipEntry::new(ClipShape::Rect(clip), false)]
         );
+    }
+
+    #[test]
+    fn unscoped_overlay_after_clipped_scope_uses_a_fresh_unclipped_layer() {
+        let clip = Rect::new(10.0, 12.0, 100.0, 80.0);
+        let mut ctx = PaintCtx::new();
+
+        ctx.push_overlay(rect_cmd(Rect::new(0.0, 0.0, 8.0, 8.0)));
+        ctx.with_overlay_clip(clip, |ctx| {
+            ctx.push_overlay(rect_cmd(Rect::new(20.0, 24.0, 10.0, 10.0)));
+        });
+        ctx.push_overlay(rect_cmd(Rect::new(150.0, 140.0, 12.0, 12.0)));
+
+        let scene = ctx.into_scene();
+
+        assert_eq!(scene.layers.len(), 3);
+        assert!(scene.layers[0].clip.is_empty());
+        assert_eq!(
+            scene.layers[1].clip.entries(),
+            &[crate::scene::ClipEntry::new(ClipShape::Rect(clip), false)]
+        );
+        assert!(scene.layers[2].clip.is_empty());
+        assert!(scene.layers.iter().all(|layer| layer.cmds.len() == 1));
     }
 }

@@ -500,7 +500,7 @@ fn tree_sitter_rust_symbol_spec<'tree>(
             name_override: None,
         }),
         "impl_item" => {
-            let type_node = impl_type_node(node).or_else(&name);
+            let type_node = impl_type_node(node).or_else(name);
             let type_text = type_node
                 .map(|type_node| compact_node_text(node_text(text, type_node)))
                 .unwrap_or_else(|| "impl".to_string());

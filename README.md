@@ -148,6 +148,53 @@ RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-de
 Visual capture tests are opt-in and ignored by default. Their artifacts are
 written under `artifacts/captures/` inside this workspace.
 
+### Performance regression gates
+
+`ailloli_ui_bench` records versioned JSONL runs through a bounded writer queue.
+Application runs opt in explicitly and must use a new destination:
+
+```sh
+AILLOLI_UI_BENCH=1 \
+AILLOLI_UI_BENCH_PATH=artifacts/bench/manual/sandbox.jsonl \
+cargo run -p sandbox_app
+```
+
+For reproducible native comparisons, build the measured child once in release
+mode, then run it through the feature-gated CLI. Each scenario gets its own
+directory, process, `RunEnd`, SHA-256 index, backend, dimensions, and observed
+scale factor:
+
+```sh
+CARGO_INCREMENTAL=0 cargo build --release --locked \
+  -p ailloli_ui_winit --features test-support \
+  --example winit_regression_bench
+
+CARGO_INCREMENTAL=0 cargo run --release --locked \
+  -p ailloli_ui_bench --features cli --bin ailloli-ui-bench -- \
+  run-matrix \
+  --output-root artifacts/bench/phase125 \
+  --phase candidate --winit-version 0.30.13 --backend wayland \
+  --profile release --harness winit_regression_bench \
+  --target x86_64-unknown-linux-gnu --machine local-wayland-01 \
+  --scenario wake_single --mode steady \
+  --warmups 3 --samples 30 --duration-ms 1200 \
+  -- target/release/examples/winit_regression_bench
+
+CARGO_INCREMENTAL=0 cargo run --release --locked \
+  -p ailloli_ui_bench --features cli --bin ailloli-ui-bench -- \
+  summarize --input \
+  artifacts/bench/phase125/candidate/winit-0.30.13/wayland/wake_single
+```
+
+Run Wayland and X11 separately and compare only artifacts produced by the same
+schema, harness, machine, GPU/driver, profile, geometry, and DPR. The CLI
+rejects incomplete sessions and correctness counters above zero. The old
+`OCTAVUI_BENCH_*`, `UI_BENCH*`, and `BENCH_*` names remain lower-priority
+compatibility fallbacks; new integrations use `AILLOLI_UI_BENCH_*`, retain the
+`BenchInit` guard, and call `finish()` so write, flush, sync, and publication
+errors cannot be lost. The deprecated append-only `init_from_env` path is not
+a regression gate.
+
 ## Assets and license
 
 Framework-authored code is dual-licensed under Apache-2.0 or MIT, at your

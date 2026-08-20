@@ -32,11 +32,6 @@ pub(crate) mod shutdown_signal {
         });
     }
 
-    #[cfg(feature = "native-overlay")]
-    pub fn current_proxy() -> Option<EventLoopProxy<()>> {
-        PROXY.lock().ok().and_then(|proxy| proxy.clone())
-    }
-
     pub fn take_requested() -> bool {
         SHUTDOWN_REQUESTED.swap(false, Ordering::SeqCst)
     }
@@ -47,11 +42,6 @@ pub(crate) mod shutdown_signal {
     use winit::event_loop::EventLoopProxy;
 
     pub fn install(_proxy: EventLoopProxy<()>) {}
-
-    #[cfg(feature = "native-overlay")]
-    pub fn current_proxy() -> Option<EventLoopProxy<()>> {
-        None
-    }
 
     pub fn take_requested() -> bool {
         false

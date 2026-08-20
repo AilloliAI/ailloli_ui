@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use ailloli_ui_core::{ClipShape, Color, Point, Rect, StrokeStyle};
-use ailloli_ui_render_wgpu::{CaptureParams, LayerPass, Renderer};
+use ailloli_ui_render_wgpu::{CaptureParams, LayerPass};
 use ailloli_ui_runtime::{DrawCmd, DrawPolyline, DrawRect};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
@@ -29,7 +29,7 @@ fn capture_stroke_only_under_root_stencil() -> ailloli_ui_render_wgpu::CapturedF
         )
         .expect("window"),
     );
-    let mut renderer = Renderer::new(window.clone()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window(window.clone()).expect("renderer");
 
     let cmds = vec![DrawCmd::Polyline(DrawPolyline {
         points: vec![Point::new(20.0, 100.0), Point::new(300.0, 100.0)],
@@ -78,7 +78,7 @@ fn capture_stroke_under_root_stencil() -> ailloli_ui_render_wgpu::CapturedFrame 
         )
         .expect("window"),
     );
-    let mut renderer = Renderer::new(window.clone()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window(window.clone()).expect("renderer");
 
     let cmds = vec![
         DrawCmd::Rect(DrawRect {
@@ -118,7 +118,7 @@ fn capture_rect_line_under_root_stencil() -> ailloli_ui_render_wgpu::CapturedFra
         )
         .expect("window"),
     );
-    let mut renderer = Renderer::new(window.clone()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window(window.clone()).expect("renderer");
 
     let cmds = vec![
         DrawCmd::Rect(DrawRect {

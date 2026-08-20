@@ -4490,7 +4490,7 @@ fn scip_project_panel(
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "<memory>".into());
-        rows = rows.child(mono(format!("Scip file {}", path), 11, colors.muted));
+        rows = rows.child(mono(format!("Scip file {path}"), 11, colors.muted));
         for symbol in document.symbols.iter().take(4) {
             rows = rows.child(mono(
                 format!(

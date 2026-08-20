@@ -1,27 +1,252 @@
+use super::select::SelectStyle;
 use ailloli_ui_core::event::WheelDelta;
 use ailloli_ui_core::geometry::{Rect, Size};
 use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
 use ailloli_ui_core::style::{AlignItems, Border, JustifyContent};
-use ailloli_ui_core::{Color, IconId, TextStyle};
+use ailloli_ui_core::{Color, ElementId, IconId, LogicalWindowId, TextStyle};
+use ailloli_ui_runtime::app::{PresentationGeneration, RuntimeHandle};
+use ailloli_ui_runtime::component::Context;
+use ailloli_ui_runtime::input::EventCtx;
+use ailloli_ui_runtime::popup::{
+    clamp_popup_to_viewport, position_popup, resolve_popup_placement, PopupBackendCapabilities,
+    PopupContent, PopupDismissReason, PopupFocusPolicy, PopupId, PopupMountPolicy, PopupOwner,
+    PopupPlacementInput, PopupPlacementSpec, PopupRequest, PopupRole, PopupSemantics,
+    HEADLESS_POPUP_WINDOW_ID,
+};
+pub use ailloli_ui_runtime::popup::{PopupAlignment, PopupPlacement};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{
     DrawBorder, DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText,
 };
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
-use super::select::SelectStyle;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PopupPlacement {
-    Top,
-    #[default]
-    Bottom,
+/// Connects a widget popup to the runtime popup authority.
+///
+/// Events carrying host metadata replace the deterministic headless
+/// window/generation fallback as soon as they reach the widget. The selected
+/// mount policy decides whether the widget keeps its procedural renderer or
+/// the host mounts [`PopupContent`] in its retained overlay. In both cases the
+/// portal owns identity, semantic role, open/close state, geometry and
+/// host-facing intents.
+pub(super) struct PopupPortalBridge<A> {
+    runtime: RuntimeHandle<A>,
+    owner_element: ElementId,
+    popup_id: Option<PopupId>,
+    semantics: PopupSemantics,
+    mount_policy: PopupMountPolicy,
+    content: PopupContent<A>,
 }
 
+impl<A: 'static> PopupPortalBridge<A> {
+    /// Registers content that is mounted and painted by the host retained
+    /// popup overlay. The owner widget may still publish geometry from its
+    /// paint pass, but must not draw a procedural copy of the popup.
+    pub(super) fn new_retained_with_content(
+        context: &Context<A>,
+        semantics: PopupSemantics,
+        initially_open: bool,
+        content: PopupContent<A>,
+    ) -> Self {
+        Self::new_with_content_and_policy(
+            context,
+            semantics,
+            initially_open,
+            PopupMountPolicy::RetainedOverlay,
+            content,
+        )
+    }
+
+    fn new_with_content_and_policy(
+        context: &Context<A>,
+        semantics: PopupSemantics,
+        initially_open: bool,
+        mount_policy: PopupMountPolicy,
+        content: PopupContent<A>,
+    ) -> Self {
+        let runtime = context.runtime();
+        let owner_element = context.element_id();
+        let popup_id = runtime.popup_id_for_element(owner_element).ok();
+        let bridge = Self {
+            runtime,
+            owner_element,
+            popup_id,
+            semantics,
+            mount_policy,
+            content,
+        };
+        let first_registration = bridge.ensure_registered(None);
+        if initially_open && first_registration {
+            bridge.open_unpositioned(None);
+        }
+        bridge
+    }
+
+    pub(super) fn open(&self, ctx: &EventCtx<A>, anchor: Rect, bounds: Rect) {
+        self.ensure_registered(Some(ctx));
+        if let Some(popup_id) = self.popup_id {
+            let _ = self.runtime.open_popup(popup_id, anchor, bounds);
+        }
+    }
+
+    pub(super) fn open_without_event(&self, anchor: Rect, bounds: Rect) {
+        self.ensure_registered(None);
+        if let Some(popup_id) = self.popup_id {
+            let _ = self.runtime.open_popup(popup_id, anchor, bounds);
+        }
+    }
+
+    pub(super) fn open_placed(&self, ctx: &EventCtx<A>, placement: PopupPlacementSpec) {
+        self.ensure_registered(Some(ctx));
+        if let Some(popup_id) = self.popup_id {
+            let _ = self.runtime.open_popup_placed(popup_id, placement);
+        }
+    }
+
+    pub(super) fn open_placed_without_event(&self, placement: PopupPlacementSpec) {
+        self.ensure_registered(None);
+        if let Some(popup_id) = self.popup_id {
+            let _ = self.runtime.open_popup_placed(popup_id, placement);
+        }
+    }
+
+    pub(super) fn open_unpositioned(&self, ctx: Option<&EventCtx<A>>) {
+        self.ensure_registered(ctx);
+        if let Some(popup_id) = self.popup_id {
+            let _ = self.runtime.open_popup_unpositioned(popup_id);
+        }
+    }
+
+    pub(super) fn close(&self, reason: PopupDismissReason) {
+        if let Some(popup_id) = self.popup_id {
+            self.runtime.close_popup(popup_id, reason);
+        }
+    }
+
+    /// Semantic visibility is owned by the portal, not by a widget-local
+    /// boolean. This is what lets Escape/outside press/stale-owner dismissal
+    /// immediately control the procedural fallback.
+    pub(super) fn is_open(&self) -> bool {
+        self.popup_id
+            .is_some_and(|popup_id| self.runtime.popup_is_open(popup_id))
+    }
+
+    pub(super) fn refresh_owner(&self, ctx: &EventCtx<A>) {
+        self.ensure_registered(Some(ctx));
+    }
+
+    /// Ensures registration and reports whether this popup had no prior
+    /// registration. A component rebuild must not reinterpret `default_open`
+    /// as a fresh open request after the portal dismissed an existing popup.
+    fn ensure_registered(&self, ctx: Option<&EventCtx<A>>) -> bool {
+        let Some(popup_id) = self.popup_id else {
+            return false;
+        };
+        let owner = self.owner(ctx, popup_id);
+        let portal = self.runtime.popup_portal();
+        let current_owner = portal
+            .borrow()
+            .request(popup_id)
+            .map(|request| request.owner().clone());
+
+        if current_owner.as_ref() == Some(&owner) {
+            return false;
+        }
+
+        let was_open = portal.borrow().is_open(popup_id);
+        drop(portal);
+        if current_owner.is_some() {
+            if was_open {
+                self.runtime
+                    .close_popup(popup_id, PopupDismissReason::PresentationStale);
+            }
+            self.runtime.unregister_popup(popup_id);
+        }
+
+        let request = PopupRequest::new(popup_id, owner, self.content.clone())
+            .with_semantics(self.semantics.clone())
+            .with_mount_policy(self.mount_policy);
+        if self.runtime.register_popup(request).is_ok() {
+            if was_open {
+                let _ = self.runtime.open_popup_unpositioned(popup_id);
+            }
+            return current_owner.is_none();
+        }
+        false
+    }
+
+    fn owner(&self, ctx: Option<&EventCtx<A>>, popup_id: PopupId) -> PopupOwner {
+        if let Some(meta) = ctx.and_then(EventCtx::event_meta) {
+            return PopupOwner::new(
+                meta.logical_window_id().clone(),
+                meta.presentation_generation(),
+                self.runtime.element_tree_id(),
+                self.owner_element,
+            );
+        }
+
+        // Focus/blur events synthesized by the runtime carry no EventMeta and
+        // may bubble from a descendant trigger. Popup ownership must remain
+        // attached to the component that registered the bridge; using the
+        // transient event target here would silently rewrite a native owner
+        // into a headless descendant and disable host-level dismissal.
+        if let Some((logical_window_id, presentation_generation)) =
+            self.runtime.presentation_scope()
+        {
+            return PopupOwner::new(
+                logical_window_id,
+                presentation_generation,
+                self.runtime.element_tree_id(),
+                self.owner_element,
+            );
+        }
+
+        if let Some(owner) = self
+            .runtime
+            .popup_portal()
+            .borrow()
+            .request(popup_id)
+            .map(|request| request.owner().clone())
+        {
+            return owner;
+        }
+
+        PopupOwner::new(
+            LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+            PresentationGeneration::INITIAL,
+            self.runtime.element_tree_id(),
+            self.owner_element,
+        )
+    }
+}
+
+pub(super) const fn listbox_popup_semantics() -> PopupSemantics {
+    PopupSemantics::new()
+        .with_role(PopupRole::Listbox)
+        .with_focus_policy(PopupFocusPolicy::None)
+}
+
+pub(super) const fn menu_popup_semantics(trap_focus: bool) -> PopupSemantics {
+    PopupSemantics::new()
+        .with_role(PopupRole::Menu)
+        .with_focus_policy(if trap_focus {
+            PopupFocusPolicy::TrapWithinPopup
+        } else {
+            PopupFocusPolicy::None
+        })
+}
+
+#[cfg(test)]
 pub(crate) fn popup_rect_for_size(trigger: Size, popup_width: f32, popup_height: f32) -> Rect {
-    Rect::new(0.0, trigger.h + 4.0, popup_width, popup_height)
+    popup_rect_for_size_with_placement(
+        trigger,
+        popup_width,
+        popup_height,
+        4.0,
+        PopupPlacement::Bottom,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn popup_rect_for_size_with_placement(
     trigger: Size,
     popup_width: f32,
@@ -29,11 +254,14 @@ pub(crate) fn popup_rect_for_size_with_placement(
     gap: f32,
     placement: PopupPlacement,
 ) -> Rect {
-    let y = match placement {
-        PopupPlacement::Top => -gap - popup_height,
-        PopupPlacement::Bottom => trigger.h + gap,
-    };
-    Rect::new(0.0, y, popup_width, popup_height)
+    position_popup(
+        Rect::new(0.0, 0.0, trigger.w, trigger.h),
+        Size::new(popup_width, popup_height),
+        placement,
+        PopupAlignment::Start,
+        gap,
+    )
+    .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0))
 }
 
 pub(crate) fn popup_rect_for_bounds(
@@ -43,13 +271,38 @@ pub(crate) fn popup_rect_for_bounds(
     gap: f32,
     placement: PopupPlacement,
 ) -> Rect {
-    let y = match placement {
-        PopupPlacement::Top => trigger.y - gap - popup_height,
-        PopupPlacement::Bottom => trigger.bottom() + gap,
-    };
-    Rect::new(trigger.x, y, popup_width, popup_height)
+    position_popup(
+        trigger,
+        Size::new(popup_width, popup_height),
+        placement,
+        PopupAlignment::Start,
+        gap,
+    )
+    .unwrap_or(Rect::new(trigger.x, trigger.y, 0.0, 0.0))
 }
 
+pub(crate) fn resolve_popup_rect(
+    anchor: Rect,
+    desired_size: Size,
+    viewport: Rect,
+    gap: f32,
+    placement: PopupPlacement,
+    alignment: PopupAlignment,
+    allow_flip: bool,
+) -> Rect {
+    resolve_popup_placement(
+        PopupPlacementInput::new(anchor, desired_size, viewport)
+            .with_gap(gap)
+            .with_placement(placement)
+            .with_alignment(alignment)
+            .with_flip(allow_flip),
+        PopupBackendCapabilities::overlay_only(),
+    )
+    .map(|resolved| resolved.bounds())
+    .unwrap_or(Rect::new(viewport.x, viewport.y, 0.0, 0.0))
+}
+
+#[cfg(test)]
 pub(crate) fn popup_rect_at_pointer(
     pointer_x: f32,
     pointer_y: f32,
@@ -57,22 +310,38 @@ pub(crate) fn popup_rect_at_pointer(
     height: f32,
     clamp_bounds: Rect,
 ) -> Rect {
-    clamp_rect_to_bounds(Rect::new(pointer_x, pointer_y, width, height), clamp_bounds)
+    resolve_popup_rect(
+        Rect::new(pointer_x, pointer_y, 0.0, 0.0),
+        Size::new(width, height),
+        clamp_bounds,
+        0.0,
+        PopupPlacement::Bottom,
+        PopupAlignment::Start,
+        true,
+    )
 }
 
 pub(crate) fn clamp_rect_to_bounds(rect: Rect, bounds: Rect) -> Rect {
-    let width = rect.w.min(bounds.w.max(0.0));
-    let height = rect.h.min(bounds.h.max(0.0));
-    let min_x = bounds.x;
-    let min_y = bounds.y;
-    let max_x = (bounds.right() - width).max(min_x);
-    let max_y = (bounds.bottom() - height).max(min_y);
-    Rect::new(
-        rect.x.clamp(min_x, max_x),
-        rect.y.clamp(min_y, max_y),
-        width,
-        height,
-    )
+    clamp_popup_to_viewport(rect, bounds).unwrap_or_else(|_| {
+        Rect::new(
+            if bounds.x.is_finite() { bounds.x } else { 0.0 },
+            if bounds.y.is_finite() { bounds.y } else { 0.0 },
+            0.0,
+            0.0,
+        )
+    })
+}
+
+/// Returns the top-level window viewport rather than a nested widget clip.
+///
+/// Procedural overlay fallbacks use this boundary for placement so a popup is
+/// not accidentally reduced to its trigger or a scroll viewport.
+pub(crate) fn window_viewport(ctx: &PaintCtx<'_>) -> Option<Rect> {
+    ctx.current_clip()
+        .entries()
+        .iter()
+        .find(|entry| entry.is_window_root)
+        .map(|entry| entry.shape.bounding_rect())
 }
 
 #[allow(dead_code)]
@@ -351,4 +620,79 @@ pub(crate) fn union_rect(a: Rect, b: Rect) -> Rect {
     let x1 = a.right().max(b.right());
     let y1 = a.bottom().max(b.bottom());
     Rect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ailloli_ui_runtime::component::IntoView;
+
+    #[test]
+    fn procedural_helpers_delegate_to_runtime_geometry() {
+        let trigger = Size::new(80.0, 24.0);
+        assert_eq!(
+            popup_rect_for_size(trigger, 120.0, 60.0),
+            Rect::new(0.0, 28.0, 120.0, 60.0)
+        );
+        assert_eq!(
+            popup_rect_for_size_with_placement(trigger, 120.0, 60.0, 6.0, PopupPlacement::Top,),
+            Rect::new(0.0, -66.0, 120.0, 60.0)
+        );
+
+        let pointer_popup =
+            popup_rect_at_pointer(90.0, 90.0, 40.0, 30.0, Rect::new(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(pointer_popup, Rect::new(60.0, 60.0, 40.0, 30.0));
+    }
+
+    #[test]
+    fn procedural_clamp_handles_an_empty_viewport_without_panicking() {
+        assert_eq!(
+            clamp_rect_to_bounds(
+                Rect::new(10.0, 10.0, 20.0, 20.0),
+                Rect::new(5.0, 7.0, 0.0, 0.0),
+            ),
+            Rect::new(5.0, 7.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn bridge_prefers_the_current_tree_presentation_scope_without_an_event() {
+        let runtime = RuntimeHandle::<()>::new();
+        let element = ElementId(41);
+        let context = Context::new(element, runtime.clone());
+        runtime.set_presentation_scope("native-main", PresentationGeneration::new(4));
+
+        let bridge = PopupPortalBridge::new_retained_with_content(
+            &context,
+            PopupSemantics::default(),
+            false,
+            PopupContent::new(|| crate::text::Text::new("popup").into_view()),
+        );
+        let popup_id = runtime.popup_id_for_element(element).unwrap();
+        let owner = runtime
+            .popup_portal()
+            .borrow()
+            .request(popup_id)
+            .unwrap()
+            .owner()
+            .clone();
+        assert_eq!(owner.logical_window_id().as_str(), "native-main");
+        assert_eq!(
+            owner.presentation_generation(),
+            PresentationGeneration::new(4)
+        );
+
+        runtime.set_presentation_scope("native-main", PresentationGeneration::new(5));
+        bridge.ensure_registered(None);
+        assert_eq!(
+            runtime
+                .popup_portal()
+                .borrow()
+                .request(popup_id)
+                .unwrap()
+                .owner()
+                .presentation_generation(),
+            PresentationGeneration::new(5)
+        );
+    }
 }

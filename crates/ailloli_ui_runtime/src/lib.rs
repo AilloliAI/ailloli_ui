@@ -29,6 +29,10 @@ pub mod element;
 pub mod input;
 /// Layout measurement and results.
 pub mod layout;
+/// Provider-neutral popup registry, ownership, and dismissal intents.
+pub mod popup;
+/// Retained popup trees for the provider-neutral fallback overlay.
+pub mod popup_mount;
 /// Scene graph and draw commands.
 pub mod scene;
 

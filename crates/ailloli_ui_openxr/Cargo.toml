@@ -2,12 +2,13 @@
 name = "ailloli_ui_openxr"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [features]
 default = ["wgpu-target"]
-wgpu-target = ["dep:winit", "dep:wgpu", "dep:ailloli_ui_render"]
+wgpu-target = ["dep:wgpu", "dep:ailloli_ui_render"]
 openxr = ["dep:openxr", "dep:ash", "dep:ailloli_ui_text", "dep:ailloli_ui_render_vulkan"]
 smoke-ui = ["openxr", "dep:ailloli_ui_widgets"]
 
@@ -16,7 +17,6 @@ ash = { version = "0.38", default-features = false, features = ["loaded"], optio
 openxr = { version = "0.21", features = ["loaded"], optional = true }
 log = "0.4"
 thiserror.workspace = true
-winit = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 
 ailloli_ui_core = { path = "../ailloli_ui_core" }

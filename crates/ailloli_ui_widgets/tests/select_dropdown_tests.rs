@@ -1,11 +1,19 @@
+use std::time::Duration;
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
-use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, NamedKey, WheelDelta};
+use ailloli_ui_core::event::{
+    Event, Key, KeyEvent, KeyState, Modifiers, NamedKey, PointerId, PointerSample, PointerSource,
+    WheelDelta,
+};
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
-use ailloli_ui_core::{Point, Theme};
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_core::{LogicalWindowId, Point, Rect, Theme};
+use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, State, View};
-use ailloli_ui_runtime::input::{dispatch_event_to_target, InputRouter};
+use ailloli_ui_runtime::input::{EventEnvelope, EventId, EventMeta, EventTimestamp, InputRouter};
+use ailloli_ui_runtime::popup::{PopupId, PopupMountPolicy, PopupRole, HEADLESS_POPUP_WINDOW_ID};
+use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
+use ailloli_ui_runtime::scene::LayerKind;
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{
@@ -60,12 +68,48 @@ fn open_select_popup_is_overlay_only() {
     let layout = app.tree.get(select).unwrap().layout.as_ref().unwrap();
 
     assert_eq!(layout.size.h, 36.0);
-    assert_eq!(layout.overlay_hit_bounds.len(), 1);
-    assert!(layout.overlay_hit_bounds[0].y >= layout.size.h);
+    assert!(
+        layout.overlay_hit_bounds.is_empty(),
+        "the trigger no longer exposes a procedural popup hit region"
+    );
 
-    let scene = paint_scene(&app);
-    assert!(scene.iter().any(|cmd| matches!(cmd, DrawCmd::BoxShadow(_))));
-    assert!(scene.iter().any(|cmd| matches!(cmd, DrawCmd::Text(_))));
+    let owner_scene = paint_scene(&app);
+    assert!(
+        !owner_scene
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::BoxShadow(_))),
+        "the owner tree must not retain a procedural popup copy"
+    );
+
+    let (mounts, mut text_system, popup_id, _) = mount_open_popup(&app);
+    let request = app
+        .runtime
+        .popup_portal()
+        .borrow()
+        .request(popup_id)
+        .unwrap()
+        .clone();
+    assert_eq!(request.mount_policy(), PopupMountPolicy::RetainedOverlay);
+    assert_eq!(request.semantics().role(), PopupRole::Listbox);
+    let scene = mounts.paint(&mut text_system, 0);
+    assert!(scene
+        .layers
+        .iter()
+        .all(|layer| layer.kind == LayerKind::Overlay));
+    assert!(scene
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.cmds)
+        .any(|cmd| matches!(cmd, DrawCmd::BoxShadow(_))));
+    assert!(scene
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.cmds)
+        .filter_map(|cmd| match cmd {
+            DrawCmd::Text(text) => Some(text.layout.text()),
+            _ => None,
+        })
+        .any(|text| text == "Two"));
 }
 
 #[test]
@@ -80,9 +124,9 @@ fn select_popup_placement_bottom_is_default() {
     );
     let select = first_child(&app, root);
     let layout = app.tree.get(select).unwrap().layout.as_ref().unwrap();
-
-    assert_eq!(layout.overlay_hit_bounds.len(), 1);
-    assert_eq!(layout.overlay_hit_bounds[0].y, layout.size.h + 4.0);
+    assert!(layout.overlay_hit_bounds.is_empty());
+    let (_, _, _, popup) = mount_open_popup(&app);
+    assert_eq!(popup.y, layout.size.h + 4.0);
 }
 
 #[test]
@@ -97,9 +141,9 @@ fn select_dropdown_compat_bottom_popup_still_opens_below() {
     );
     let select = first_child(&app, root);
     let layout = app.tree.get(select).unwrap().layout.as_ref().unwrap();
-
-    assert_eq!(layout.overlay_hit_bounds.len(), 1);
-    assert!(layout.overlay_hit_bounds[0].y > 0.0);
+    assert!(layout.overlay_hit_bounds.is_empty());
+    let (_, _, _, popup) = mount_open_popup(&app);
+    assert!(popup.y > 0.0);
 }
 
 #[test]
@@ -151,9 +195,10 @@ fn select_popup_placement_top_opens_above_trigger() {
     let select = first_child(&app, root);
     let layout = app.tree.get(select).unwrap().layout.as_ref().unwrap();
 
-    assert_eq!(layout.overlay_hit_bounds.len(), 1);
-    assert_eq!(layout.overlay_hit_bounds[0].y, -68.0);
-    assert_eq!(layout.overlay_hit_bounds[0].h, 64.0);
+    assert!(layout.overlay_hit_bounds.is_empty());
+    let (_, _, _, popup) = mount_open_popup(&app);
+    assert_eq!(popup.y, -68.0);
+    assert_eq!(popup.h, 64.0);
 }
 
 #[test]
@@ -172,14 +217,9 @@ fn select_click_on_enabled_option_updates_signal_and_dispatches() {
             .into_view(),
     );
     layout_app(&mut app, 320.0, 300.0);
-    let select = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        select,
-        &pointer_button(20.0, 84.0, false),
-    );
+    let _select = first_child(&app, root);
+    let (mut mounts, _text_system, _, popup) = mount_open_popup(&app);
+    click_popup(&mut mounts, 20, Point::new(popup.x + 20.0, popup.y + 48.0));
 
     assert_eq!(selected.read(), Choice::Two);
     assert_eq!(runtime.take_actions(), vec![Action::SetChoice(Choice::Two)]);
@@ -202,14 +242,9 @@ fn select_popup_placement_top_click_selects_option() {
             .into_view(),
     );
     layout_app(&mut app, 320.0, 300.0);
-    let select = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        select,
-        &pointer_button(20.0, -44.0, false),
-    );
+    let _select = first_child(&app, root);
+    let (mut mounts, _text_system, _, popup) = mount_open_popup(&app);
+    click_popup(&mut mounts, 30, Point::new(popup.x + 20.0, popup.y + 48.0));
 
     assert_eq!(selected.read(), Choice::Two);
     assert_eq!(runtime.take_actions(), vec![Action::SetChoice(Choice::Two)]);
@@ -239,20 +274,21 @@ fn select_popup_placement_top_wheel_scrolls_with_top_bounds() {
             .into_view(),
     );
     layout_app(&mut app, 320.0, 300.0);
-    let select = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        select,
-        &wheel_event(20.0, -208.0, -64.0),
-    );
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        select,
-        &pointer_button(20.0, -208.0, false),
-    );
+    let _select = first_child(&app, root);
+    let (mut mounts, _text_system, _, popup) = mount_open_popup(&app);
+    let point = Point::new(popup.x + 20.0, popup.y + 16.0);
+    let wheel = mounts.route_envelope(&pointer_envelope(
+        40,
+        point,
+        PointerEvent::wheel(
+            point,
+            WheelDelta::PixelDelta { x: 0.0, y: -64.0 },
+            Modifiers::default(),
+            true,
+        ),
+    ));
+    assert!(wheel.consumed());
+    click_popup(&mut mounts, 41, point);
 
     assert_eq!(selected.read(), Choice::Three);
     assert_eq!(
@@ -276,17 +312,13 @@ fn select_disabled_option_does_not_update_or_dispatch() {
             .into_view(),
     );
     layout_app(&mut app, 320.0, 260.0);
-    let select = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        select,
-        &pointer_button(20.0, 84.0, false),
-    );
+    let _select = first_child(&app, root);
+    let (mut mounts, _text_system, popup_id, popup) = mount_open_popup(&app);
+    click_popup(&mut mounts, 50, Point::new(popup.x + 20.0, popup.y + 48.0));
 
     assert_eq!(selected.read(), Choice::One);
     assert!(runtime.take_actions().is_empty());
+    assert!(runtime.popup_is_open(popup_id));
 }
 
 #[test]
@@ -300,23 +332,25 @@ fn dropdown_item_dispatches_and_closes_popup() {
             .into_view(),
     );
     layout_app(&mut app, 320.0, 260.0);
-    let dropdown = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        dropdown,
-        &pointer_button(20.0, 56.0, false),
+    let _dropdown = first_child(&app, root);
+    let (mut mounts, _text_system, popup_id, popup) = mount_open_popup(&app);
+    assert_eq!(
+        app.runtime
+            .popup_portal()
+            .borrow()
+            .request(popup_id)
+            .unwrap()
+            .mount_policy(),
+        PopupMountPolicy::RetainedOverlay
     );
-    layout_app(&mut app, 320.0, 260.0);
+    click_popup(&mut mounts, 60, Point::new(popup.x + 20.0, popup.y + 16.0));
 
     assert_eq!(runtime.take_actions(), vec![Action::Refresh]);
-    let layout = app.tree.get(dropdown).unwrap().layout.as_ref().unwrap();
-    assert!(layout.overlay_hit_bounds.is_empty());
+    assert!(!runtime.popup_is_open(popup_id));
 }
 
 #[test]
-fn focused_select_opens_with_keyboard_and_blurs_on_outside_click() {
+fn focused_select_opens_retained_popup_with_keyboard_and_closes_on_outside_press() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
     let root = app.reconcile(
@@ -342,18 +376,6 @@ fn focused_select_opens_with_keyboard_and_blurs_on_outside_click() {
         &keyboard_event(NamedKey::ArrowDown),
     );
     layout_app(&mut app, 320.0, 260.0);
-    assert!(!app
-        .tree
-        .get(select)
-        .unwrap()
-        .layout
-        .as_ref()
-        .unwrap()
-        .overlay_hit_bounds
-        .is_empty());
-
-    router.route_event(&app.tree, runtime, &pointer_button(300.0, 230.0, true));
-    layout_app(&mut app, 320.0, 260.0);
     assert!(app
         .tree
         .get(select)
@@ -363,6 +385,17 @@ fn focused_select_opens_with_keyboard_and_blurs_on_outside_click() {
         .unwrap()
         .overlay_hit_bounds
         .is_empty());
+    let (mut mounts, _text_system, popup_id, _) = mount_open_popup(&app);
+    assert!(runtime.popup_is_open(popup_id));
+
+    let outside = Point::new(300.0, 230.0);
+    let outcome = mounts.route_envelope(&pointer_envelope(
+        70,
+        outside,
+        PointerEvent::button(outside, MouseButton::Left, true, Modifiers::default()),
+    ));
+    assert!(outcome.consumed());
+    assert!(!runtime.popup_is_open(popup_id));
 }
 
 fn layout_view(view: View<()>) -> (Runtime<()>, ailloli_ui_core::ElementId) {
@@ -396,21 +429,64 @@ fn paint_scene(app: &Runtime<()>) -> Vec<DrawCmd> {
         .collect()
 }
 
+fn mount_open_popup<A: 'static>(
+    app: &Runtime<A>,
+) -> (PopupOverlayMounts<A>, TextSystem, PopupId, Rect) {
+    let mut text_system = TextSystem::new();
+    let _owner_scene = app.paint(&mut text_system);
+    let (popup_id, bounds) = {
+        let portal = app.runtime.popup_portal();
+        let portal = portal.borrow();
+        let popup_id = portal.open_ids().next().expect("one open popup");
+        let bounds = portal.bounds(popup_id).expect("published popup bounds");
+        (popup_id, bounds)
+    };
+    let mut mounts = PopupOverlayMounts::new(app.runtime.clone());
+    mounts.sync(
+        &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+        PresentationGeneration::INITIAL,
+    );
+    mounts.layout(Scale::new(1.0), &mut text_system);
+    assert!(mounts.contains(popup_id));
+    (mounts, text_system, popup_id, bounds)
+}
+
+fn pointer_envelope(id: u64, point: Point, event: PointerEvent) -> EventEnvelope {
+    let pointer = PointerSample::new(PointerId::MOUSE, PointerSource::Mouse, point).unwrap();
+    EventEnvelope::new(
+        EventMeta::new(
+            EventId::new(id),
+            EventTimestamp::new(Duration::from_millis(id)),
+            HEADLESS_POPUP_WINDOW_ID,
+            PresentationGeneration::INITIAL,
+        )
+        .with_pointer(pointer),
+        Event::Pointer(event),
+    )
+}
+
+fn click_popup<A: 'static>(mounts: &mut PopupOverlayMounts<A>, id: u64, point: Point) {
+    let press = mounts.route_envelope(&pointer_envelope(
+        id,
+        point,
+        PointerEvent::button(point, MouseButton::Left, true, Modifiers::default()),
+    ));
+    assert!(press.consumed());
+    let release = mounts.route_envelope(&pointer_envelope(
+        id + 1,
+        point,
+        PointerEvent::button(point, MouseButton::Left, false, Modifiers::default()),
+    ));
+    assert!(release.consumed());
+    assert!(release.route().event_dispatched);
+}
+
 fn pointer_button(x: f32, y: f32, pressed: bool) -> Event {
     Event::Pointer(PointerEvent::Button {
         pos: Point::new(x, y),
         button: MouseButton::Left,
         pressed,
         modifiers: Modifiers::default(),
-    })
-}
-
-fn wheel_event(x: f32, y: f32, delta_y: f32) -> Event {
-    Event::Pointer(PointerEvent::Wheel {
-        pos: Point::new(x, y),
-        delta: WheelDelta::PixelDelta { x: 0.0, y: delta_y },
-        modifiers: Modifiers::default(),
-        precise: true,
     })
 }
 

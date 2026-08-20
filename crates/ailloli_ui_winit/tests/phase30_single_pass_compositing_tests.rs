@@ -517,7 +517,7 @@ fn phase30_single_pass_visual_regressions() {
         .expect("transparent window"),
     );
 
-    let mut renderer_opaque = Renderer::new_with_options(
+    let mut renderer_opaque = ailloli_ui_winit::renderer_from_window_with_options(
         window_opaque.clone(),
         RendererOptions {
             transparent: false,
@@ -525,7 +525,7 @@ fn phase30_single_pass_visual_regressions() {
         },
     )
     .expect("opaque renderer");
-    let mut renderer_transparent = Renderer::new_with_options(
+    let mut renderer_transparent = ailloli_ui_winit::renderer_from_window_with_options(
         window_transparent.clone(),
         RendererOptions {
             transparent: true,

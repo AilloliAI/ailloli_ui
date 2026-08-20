@@ -22,11 +22,27 @@ pub enum EditorClickZone {
 
 #[derive(Debug, Clone, Default)]
 pub struct EditorClickState {
-    last_at: Option<Instant>,
+    last_at: Option<EditorClickTimestamp>,
     last_pos: Option<Point>,
     last_byte: usize,
     last_zone: Option<EditorClickZone>,
     click_count: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EditorClickTimestamp {
+    Event(Duration),
+    Legacy(Instant),
+}
+
+impl EditorClickTimestamp {
+    fn elapsed_since(self, earlier: Self) -> Option<Duration> {
+        match (self, earlier) {
+            (Self::Event(now), Self::Event(earlier)) => now.checked_sub(earlier),
+            (Self::Legacy(now), Self::Legacy(earlier)) => now.checked_duration_since(earlier),
+            _ => None,
+        }
+    }
 }
 
 /// Mutable editor session state: text buffer plus edit/viewport state.
@@ -114,12 +130,47 @@ impl EditorSession {
         byte: usize,
         zone: EditorClickZone,
     ) -> u8 {
+        self.register_pointer_click_with_timestamp(
+            EditorClickTimestamp::Legacy(now),
+            pos,
+            byte,
+            zone,
+        )
+    }
+
+    /// Registers a click using a provider-neutral monotonic event timestamp.
+    ///
+    /// This is the deterministic counterpart to [`Self::register_pointer_click`]
+    /// for hosts that attach an explicit timestamp to each input event.
+    pub fn register_pointer_click_at(
+        &mut self,
+        timestamp: Duration,
+        pos: Point,
+        byte: usize,
+        zone: EditorClickZone,
+    ) -> u8 {
+        self.register_pointer_click_with_timestamp(
+            EditorClickTimestamp::Event(timestamp),
+            pos,
+            byte,
+            zone,
+        )
+    }
+
+    fn register_pointer_click_with_timestamp(
+        &mut self,
+        now: EditorClickTimestamp,
+        pos: Point,
+        byte: usize,
+        zone: EditorClickZone,
+    ) -> u8 {
         let continues = self
             .click_state
             .last_at
             .zip(self.click_state.last_pos)
             .is_some_and(|(last_at, last_pos)| {
-                now.duration_since(last_at) <= MULTI_CLICK_MAX_DELAY
+                now.elapsed_since(last_at)
+                    .is_some_and(|elapsed| elapsed <= MULTI_CLICK_MAX_DELAY)
                     && point_distance_sq(pos, last_pos)
                         <= MULTI_CLICK_MAX_DISTANCE * MULTI_CLICK_MAX_DISTANCE
                     && self.click_state.last_byte == byte

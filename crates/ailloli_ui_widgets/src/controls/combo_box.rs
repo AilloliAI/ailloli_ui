@@ -10,16 +10,19 @@ use ailloli_ui_core::{FontId, IconId, TextStyle, Theme};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Memo, Signal, View, Widget,
 };
-use ailloli_ui_runtime::input::{EventCtx, FocusPolicy, InputRole};
+use ailloli_ui_runtime::input::{
+    ActivationPolicy, EventCtx, FocusPolicy, HoverCursorRole, InputRole,
+};
 use ailloli_ui_runtime::layout::{LayoutArtifact, LayoutChild, LayoutCtx, LayoutResult};
+use ailloli_ui_runtime::popup::{PopupContent, PopupDismissReason, PopupId};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawImage, DrawRRect};
 use ailloli_ui_text::{TextBuffer, TextEditState};
 use lucide_icons::Icon;
 
 use super::popup::{
-    apply_opacity, measure_text, paint_overlay_text_in_rect, paint_popup_border, paint_popup_row,
-    paint_popup_shell, popup_rect_for_size, PopupRowState,
+    apply_opacity, listbox_popup_semantics, measure_text, paint_overlay_text_in_rect,
+    paint_popup_border, paint_popup_row, paint_popup_shell, PopupPortalBridge, PopupRowState,
 };
 use super::select::{SelectSize, SelectStyle};
 use super::text_field_core::{
@@ -297,6 +300,26 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for ComboBoxCo
         let query = context.signal(query_text.clone());
         let buffer = context.signal(TextBuffer::from_string(query_text.clone()));
         let edit = context.signal(edit_at_end(&query_text));
+        let active_index = context.signal(None);
+        let scroll = context.signal(ScrollState::new());
+        let popup_id = context
+            .runtime()
+            .popup_id_for_element(context.element_id())
+            .ok();
+        let popup_content = combo_box_popup_content(RetainedComboBoxPopup {
+            options: self.options.clone(),
+            selected: self.selected.clone(),
+            bound: self.bound.clone(),
+            disabled: self.disabled.clone(),
+            on_change: self.on_change.clone(),
+            style: self.style.clone(),
+            active_index: active_index.clone(),
+            scroll: scroll.clone(),
+            query: query.clone(),
+            buffer: buffer.clone(),
+            edit: edit.clone(),
+            popup_id,
+        });
 
         View::leaf(ComboBoxWidget {
             layout: self.layout,
@@ -307,12 +330,17 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for ComboBoxCo
             disabled: self.disabled.clone(),
             on_change: self.on_change.clone(),
             style: self.style.clone(),
-            open: context.signal(self.default_open),
-            active_index: context.signal(None),
-            scroll: context.signal(ScrollState::new()),
+            active_index,
+            scroll,
             query,
             buffer,
             edit,
+            popup: PopupPortalBridge::new_retained_with_content(
+                context,
+                listbox_popup_semantics(),
+                self.default_open,
+                popup_content,
+            ),
         })
     }
 }
@@ -347,12 +375,12 @@ struct ComboBoxWidget<T, A> {
     disabled: Binding<bool>,
     on_change: Option<ComboChangeHandler<T, A>>,
     style: ComboBoxStyle,
-    open: Signal<bool>,
     active_index: Signal<Option<usize>>,
     scroll: Signal<ScrollState>,
     query: Signal<String>,
     buffer: Signal<TextBuffer>,
     edit: Signal<TextEditState>,
+    popup: PopupPortalBridge<A>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T, A> {
@@ -380,15 +408,8 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
             self.text_style(),
         );
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        let mut overlay_hit_bounds = Vec::new();
-        if self.open.read() && !self.disabled.read() {
-            let popup = popup_rect_for_size(
-                size,
-                self.popup_width(size.w, ctx.text_system.as_deref_mut()),
-                self.popup_height(),
-            );
-            overlay_hit_bounds.push(popup);
-            self.clamp_scroll(Size::new(popup.w, popup.h));
+        if self.disabled.read() {
+            self.popup.close(PopupDismissReason::Programmatic);
         }
 
         LayoutResult {
@@ -396,7 +417,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
             children: Vec::new(),
             paint_bounds,
             visual_bounds: self.style.visual_bounds(paint_bounds),
-            overlay_hit_bounds,
+            overlay_hit_bounds: Vec::new(),
             clip: None,
             is_window_root_clip: false,
             artifact: text_layout.map(LayoutArtifact::Text),
@@ -405,13 +426,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
         paint_combo_input(ctx, bounds, layout, self, true);
-    }
-
-    fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        if !self.open.read() || self.disabled.read() {
-            return;
+        if self.popup.is_open() && !self.disabled.read() {
+            self.popup
+                .open_without_event(bounds, self.popup_rect(bounds));
         }
-        self.paint_popup(ctx, self.popup_rect(bounds));
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
@@ -420,8 +438,8 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
         }
 
         match event {
-            Event::Focus(focus) if !focus.focused && self.open.read() => {
-                self.close_restore();
+            Event::Focus(focus) if !focus.focused && self.popup.is_open() => {
+                self.close_restore(PopupDismissReason::OutsidePress);
                 ctx.request_repaint();
             }
             Event::Pointer(PointerEvent::Button {
@@ -431,7 +449,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
                 ..
             }) if bounds.contains(pos.x, pos.y) => {
                 if *pressed {
-                    self.open();
+                    self.open(ctx, bounds);
                 }
                 let _ = handle_single_line_text_event(
                     ctx,
@@ -448,19 +466,6 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
                 );
                 ctx.request_repaint();
                 ctx.stop_propagation();
-            }
-            Event::Pointer(PointerEvent::Button {
-                pos,
-                button: MouseButton::Left,
-                pressed: false,
-                ..
-            }) if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) => {
-                self.activate_pointer_option(ctx, bounds, *pos);
-            }
-            Event::Pointer(PointerEvent::Wheel { pos, delta, .. })
-                if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) =>
-            {
-                self.scroll_popup(ctx, bounds, *delta);
             }
             Event::Keyboard(key) if key.state == KeyState::Pressed => {
                 self.handle_keyboard(ctx, &key.key, event, bounds, layout);
@@ -480,7 +485,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
                         consume_handled_events: true,
                     },
                 );
-                self.after_text_event(ctx, before, handled);
+                self.after_text_event(ctx, before, handled, bounds);
             }
             _ => {}
         }
@@ -492,6 +497,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
         } else {
             FocusPolicy::Focusable
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
     }
 
     fn input_role(&self) -> InputRole {
@@ -588,28 +597,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComboBoxWidget<T, A> {
         )
     }
 
-    fn clamp_scroll(&self, viewport: Size) {
-        let rows = self.filtered_indices().len().max(1);
-        let content = Size::new(viewport.w, rows as f32 * self.style.popup.option_height);
-        let out = self
-            .scroll
-            .read()
-            .clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
-        if out.changed {
-            self.scroll.set(out.state());
-        }
-    }
-
-    fn open(&self) {
-        if !self.open.read() {
-            self.open.set(true);
-        }
+    fn open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         self.active_index.set(self.first_enabled_index());
+        self.popup.open(ctx, bounds, self.popup_rect(bounds));
     }
 
-    fn close_restore(&self) {
-        self.open.set(false);
+    fn close_restore(&self, reason: PopupDismissReason) {
         self.active_index.set(None);
+        self.popup.close(reason);
         let restored = self
             .selected_index()
             .map(|idx| self.options[idx].label.clone())
@@ -621,39 +616,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComboBoxWidget<T, A> {
         }
     }
 
-    fn close_keep_query(&self) {
-        self.open.set(false);
+    fn close_keep_query(&self, reason: PopupDismissReason) {
         self.active_index.set(None);
-    }
-
-    fn activate_pointer_option(
-        &self,
-        ctx: &mut EventCtx<A>,
-        bounds: Rect,
-        pos: ailloli_ui_core::Point,
-    ) {
-        let Some(index) = self.option_at(bounds, pos) else {
-            return;
-        };
-        if self.options[index].disabled.read() {
-            ctx.stop_propagation();
-            return;
-        }
-        self.select_index(ctx, index);
-    }
-
-    fn option_at(&self, bounds: Rect, pos: ailloli_ui_core::Point) -> Option<usize> {
-        let popup = self.popup_rect(bounds);
-        if !popup.contains(pos.x, pos.y) {
-            return None;
-        }
-        let filtered = self.filtered_indices();
-        if filtered.is_empty() {
-            return None;
-        }
-        let y = pos.y - popup.y + self.scroll.read().offset.y;
-        let row = (y / self.style.popup.option_height).floor() as usize;
-        filtered.get(row).copied()
+        self.popup.close(reason);
     }
 
     fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
@@ -682,30 +647,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComboBoxWidget<T, A> {
         self.buffer
             .set(TextBuffer::from_string(option.label.clone()));
         self.edit.set(edit_at_end(&option.label));
-        self.close_keep_query();
+        self.close_keep_query(PopupDismissReason::Programmatic);
         ctx.request_repaint();
         ctx.stop_propagation();
-    }
-
-    fn scroll_popup(&self, ctx: &mut EventCtx<A>, bounds: Rect, delta: WheelDelta) {
-        let popup = self.popup_rect(bounds);
-        let rows = self.filtered_indices().len().max(1);
-        let metrics = ScrollMetrics::new(
-            Size::new(popup.w, popup.h),
-            Size::new(popup.w, rows as f32 * self.style.popup.option_height),
-        );
-        let behavior =
-            ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(self.style.popup.option_height);
-        let out = self.scroll.read().scroll_by(
-            behavior.wheel_delta(delta),
-            metrics,
-            ScrollAxes::VERTICAL,
-        );
-        if out.changed {
-            self.scroll.set(out.state());
-            ctx.request_repaint();
-            ctx.stop_propagation();
-        }
     }
 
     fn handle_keyboard(
@@ -716,14 +660,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComboBoxWidget<T, A> {
         bounds: Rect,
         layout: &LayoutResult,
     ) {
-        if !self.open.read() {
+        if !self.popup.is_open() {
             if matches!(
                 key,
                 Key::Named(NamedKey::Enter)
                     | Key::Named(NamedKey::ArrowDown)
                     | Key::Named(NamedKey::ArrowUp)
             ) {
-                self.open();
+                self.open(ctx, bounds);
                 ctx.request_repaint();
                 ctx.stop_propagation();
                 return;
@@ -731,7 +675,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComboBoxWidget<T, A> {
         } else {
             match key {
                 Key::Named(NamedKey::Escape) => {
-                    self.close_restore();
+                    self.close_restore(PopupDismissReason::Escape);
                     ctx.request_repaint();
                     ctx.stop_propagation();
                     return;
@@ -780,12 +724,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComboBoxWidget<T, A> {
                 consume_handled_events: true,
             },
         );
-        self.after_text_event(ctx, before, handled);
+        self.after_text_event(ctx, before, handled, bounds);
     }
 
-    fn after_text_event(&self, ctx: &mut EventCtx<A>, before: String, handled: bool) {
+    fn after_text_event(&self, ctx: &mut EventCtx<A>, before: String, handled: bool, bounds: Rect) {
         if handled && self.query.read() != before {
-            self.open();
+            self.open(ctx, bounds);
             self.scroll.set(ScrollState::new());
             ctx.request_repaint();
         }
@@ -828,66 +772,6 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComboBoxWidget<T, A> {
     fn previous_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let filtered = self.filtered_indices();
         previous_enabled(&filtered, current, |idx| !self.options[idx].disabled.read())
-    }
-
-    fn paint_popup(&self, ctx: &mut PaintCtx<'_>, popup: Rect) {
-        let filtered = self.filtered_indices();
-        let selected = self.selected_index();
-        paint_popup_shell(ctx, popup, &self.style.popup);
-        ctx.with_overlay_clip(popup, |ctx| {
-            if filtered.is_empty() {
-                let row = Rect::new(popup.x, popup.y, popup.w, self.style.popup.option_height);
-                paint_overlay_text_in_rect(
-                    ctx,
-                    "No results",
-                    self.style.popup.disabled_text,
-                    inset_rect_x(row, self.style.popup.padding_x),
-                    self.style.popup.disabled_opacity,
-                );
-                return;
-            }
-
-            for (row_idx, option_idx) in filtered.iter().copied().enumerate() {
-                let option = &self.options[option_idx];
-                let row = Rect::new(
-                    popup.x,
-                    popup.y - self.scroll.read().offset.y
-                        + row_idx as f32 * self.style.popup.option_height,
-                    popup.w,
-                    self.style.popup.option_height,
-                );
-                if row.bottom() < popup.y || row.y > popup.bottom() {
-                    continue;
-                }
-                paint_popup_row(
-                    ctx,
-                    row,
-                    &option.label,
-                    option.icon.as_ref(),
-                    PopupRowState {
-                        disabled: option.disabled.read(),
-                        selected: selected == Some(option_idx),
-                        active: self.active_index.read() == Some(option_idx),
-                    },
-                    &self.style.popup,
-                );
-                if selected == Some(option_idx) {
-                    let check = Rect::new(
-                        row.right() - self.style.popup.padding_x - self.style.popup.icon_size,
-                        row.y + (row.h - self.style.popup.icon_size) * 0.5,
-                        self.style.popup.icon_size,
-                        self.style.popup.icon_size,
-                    );
-                    ctx.push_overlay(DrawCmd::Image(DrawImage {
-                        rect: check,
-                        icon: IconId::Check,
-                        tint: self.style.popup.selected_icon_tint,
-                        rotation_rad: 0.0,
-                    }));
-                }
-            }
-        });
-        paint_popup_border(ctx, popup, &self.style.popup);
     }
 }
 
@@ -1059,6 +943,26 @@ impl<A: 'static> ComponentNode<A> for AutocompleteComponent<A> {
             .clone()
             .unwrap_or_else(|| context.signal(String::new()));
         let current = value.read();
+        let buffer = context.signal(TextBuffer::from_string(current.clone()));
+        let edit = context.signal(edit_at_end(&current));
+        let active_index = context.signal(None);
+        let scroll = context.signal(ScrollState::new());
+        let popup_id = context
+            .runtime()
+            .popup_id_for_element(context.element_id())
+            .ok();
+        let popup_content = autocomplete_popup_content(RetainedAutocompletePopup {
+            value: value.clone(),
+            items: self.items.clone(),
+            disabled: self.disabled.clone(),
+            on_select: self.on_select.clone(),
+            style: self.style.clone(),
+            active_index: active_index.clone(),
+            scroll: scroll.clone(),
+            buffer: buffer.clone(),
+            edit: edit.clone(),
+            popup_id,
+        });
         View::leaf(AutocompleteWidget {
             layout: self.layout,
             value: value.clone(),
@@ -1067,11 +971,16 @@ impl<A: 'static> ComponentNode<A> for AutocompleteComponent<A> {
             disabled: self.disabled.clone(),
             on_select: self.on_select.clone(),
             style: self.style.clone(),
-            open: context.signal(self.default_open),
-            active_index: context.signal(None),
-            scroll: context.signal(ScrollState::new()),
-            buffer: context.signal(TextBuffer::from_string(current.clone())),
-            edit: context.signal(edit_at_end(&current)),
+            active_index,
+            scroll,
+            buffer,
+            edit,
+            popup: PopupPortalBridge::new_retained_with_content(
+                context,
+                listbox_popup_semantics(),
+                self.default_open,
+                popup_content,
+            ),
         })
     }
 }
@@ -1103,11 +1012,11 @@ struct AutocompleteWidget<A> {
     disabled: Binding<bool>,
     on_select: Option<AutocompleteSelectHandler<A>>,
     style: AutocompleteStyle,
-    open: Signal<bool>,
     active_index: Signal<Option<usize>>,
     scroll: Signal<ScrollState>,
     buffer: Signal<TextBuffer>,
     edit: Signal<TextEditState>,
+    popup: PopupPortalBridge<A>,
 }
 
 impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
@@ -1135,15 +1044,8 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
             self.text_style(),
         );
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        let mut overlay_hit_bounds = Vec::new();
-        if self.open.read() && !self.disabled.read() {
-            let popup = popup_rect_for_size(
-                size,
-                self.popup_width(size.w, ctx.text_system.as_deref_mut()),
-                self.popup_height(),
-            );
-            overlay_hit_bounds.push(popup);
-            self.clamp_scroll(Size::new(popup.w, popup.h));
+        if self.disabled.read() {
+            self.popup.close(PopupDismissReason::Programmatic);
         }
 
         LayoutResult {
@@ -1151,7 +1053,7 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
             children: Vec::new(),
             paint_bounds,
             visual_bounds: self.style.visual_bounds(paint_bounds),
-            overlay_hit_bounds,
+            overlay_hit_bounds: Vec::new(),
             clip: None,
             is_window_root_clip: false,
             artifact: text_layout.map(LayoutArtifact::Text),
@@ -1160,13 +1062,10 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
         paint_autocomplete_input(ctx, bounds, layout, self);
-    }
-
-    fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        if !self.open.read() || self.disabled.read() {
-            return;
+        if self.popup.is_open() && !self.disabled.read() {
+            self.popup
+                .open_without_event(bounds, self.popup_rect(bounds));
         }
-        self.paint_popup(ctx, self.popup_rect(bounds));
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
@@ -1175,8 +1074,8 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
         }
 
         match event {
-            Event::Focus(focus) if !focus.focused && self.open.read() => {
-                self.close();
+            Event::Focus(focus) if !focus.focused && self.popup.is_open() => {
+                self.close(PopupDismissReason::OutsidePress);
                 ctx.request_repaint();
             }
             Event::Pointer(PointerEvent::Button {
@@ -1186,7 +1085,7 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
                 ..
             }) if bounds.contains(pos.x, pos.y) => {
                 if *pressed {
-                    self.open();
+                    self.open(ctx, bounds);
                 }
                 let _ = handle_single_line_text_event(
                     ctx,
@@ -1203,19 +1102,6 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
                 );
                 ctx.request_repaint();
                 ctx.stop_propagation();
-            }
-            Event::Pointer(PointerEvent::Button {
-                pos,
-                button: MouseButton::Left,
-                pressed: false,
-                ..
-            }) if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) => {
-                self.activate_pointer_item(ctx, bounds, *pos);
-            }
-            Event::Pointer(PointerEvent::Wheel { pos, delta, .. })
-                if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) =>
-            {
-                self.scroll_popup(ctx, bounds, *delta);
             }
             Event::Keyboard(key) if key.state == KeyState::Pressed => {
                 self.handle_keyboard(ctx, &key.key, event, bounds, layout);
@@ -1235,7 +1121,7 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
                         consume_handled_events: true,
                     },
                 );
-                self.after_text_event(ctx, before, handled);
+                self.after_text_event(ctx, before, handled, bounds);
             }
             _ => {}
         }
@@ -1247,6 +1133,10 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
         } else {
             FocusPolicy::Focusable
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
     }
 
     fn input_role(&self) -> InputRole {
@@ -1328,58 +1218,14 @@ impl<A: 'static> AutocompleteWidget<A> {
         )
     }
 
-    fn clamp_scroll(&self, viewport: Size) {
-        let rows = self.filtered_indices().len().max(1);
-        let content = Size::new(viewport.w, rows as f32 * self.style.popup.option_height);
-        let out = self
-            .scroll
-            .read()
-            .clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
-        if out.changed {
-            self.scroll.set(out.state());
-        }
-    }
-
-    fn open(&self) {
-        if !self.open.read() {
-            self.open.set(true);
-        }
+    fn open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         self.active_index.set(self.first_enabled_index());
+        self.popup.open(ctx, bounds, self.popup_rect(bounds));
     }
 
-    fn close(&self) {
-        self.open.set(false);
+    fn close(&self, reason: PopupDismissReason) {
         self.active_index.set(None);
-    }
-
-    fn activate_pointer_item(
-        &self,
-        ctx: &mut EventCtx<A>,
-        bounds: Rect,
-        pos: ailloli_ui_core::Point,
-    ) {
-        let Some(index) = self.item_at(bounds, pos) else {
-            return;
-        };
-        if self.items[index].disabled.read() {
-            ctx.stop_propagation();
-            return;
-        }
-        self.select_item(ctx, index);
-    }
-
-    fn item_at(&self, bounds: Rect, pos: ailloli_ui_core::Point) -> Option<usize> {
-        let popup = self.popup_rect(bounds);
-        if !popup.contains(pos.x, pos.y) {
-            return None;
-        }
-        let filtered = self.filtered_indices();
-        if filtered.is_empty() {
-            return None;
-        }
-        let y = pos.y - popup.y + self.scroll.read().offset.y;
-        let row = (y / self.style.popup.option_height).floor() as usize;
-        filtered.get(row).copied()
+        self.popup.close(reason);
     }
 
     fn select_item(&self, ctx: &mut EventCtx<A>, index: usize) {
@@ -1395,30 +1241,9 @@ impl<A: 'static> AutocompleteWidget<A> {
         if let Some(on_select) = &self.on_select {
             on_select(ctx, item.label.clone());
         }
-        self.close();
+        self.close(PopupDismissReason::Programmatic);
         ctx.request_repaint();
         ctx.stop_propagation();
-    }
-
-    fn scroll_popup(&self, ctx: &mut EventCtx<A>, bounds: Rect, delta: WheelDelta) {
-        let popup = self.popup_rect(bounds);
-        let rows = self.filtered_indices().len().max(1);
-        let metrics = ScrollMetrics::new(
-            Size::new(popup.w, popup.h),
-            Size::new(popup.w, rows as f32 * self.style.popup.option_height),
-        );
-        let behavior =
-            ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(self.style.popup.option_height);
-        let out = self.scroll.read().scroll_by(
-            behavior.wheel_delta(delta),
-            metrics,
-            ScrollAxes::VERTICAL,
-        );
-        if out.changed {
-            self.scroll.set(out.state());
-            ctx.request_repaint();
-            ctx.stop_propagation();
-        }
     }
 
     fn handle_keyboard(
@@ -1429,14 +1254,14 @@ impl<A: 'static> AutocompleteWidget<A> {
         bounds: Rect,
         layout: &LayoutResult,
     ) {
-        if !self.open.read() {
+        if !self.popup.is_open() {
             if matches!(
                 key,
                 Key::Named(NamedKey::Enter)
                     | Key::Named(NamedKey::ArrowDown)
                     | Key::Named(NamedKey::ArrowUp)
             ) {
-                self.open();
+                self.open(ctx, bounds);
                 ctx.request_repaint();
                 ctx.stop_propagation();
                 return;
@@ -1444,7 +1269,7 @@ impl<A: 'static> AutocompleteWidget<A> {
         } else {
             match key {
                 Key::Named(NamedKey::Escape) => {
-                    self.close();
+                    self.close(PopupDismissReason::Escape);
                     ctx.request_repaint();
                     ctx.stop_propagation();
                     return;
@@ -1493,12 +1318,12 @@ impl<A: 'static> AutocompleteWidget<A> {
                 consume_handled_events: true,
             },
         );
-        self.after_text_event(ctx, before, handled);
+        self.after_text_event(ctx, before, handled, bounds);
     }
 
-    fn after_text_event(&self, ctx: &mut EventCtx<A>, before: String, handled: bool) {
+    fn after_text_event(&self, ctx: &mut EventCtx<A>, before: String, handled: bool, bounds: Rect) {
         if handled && self.value.read() != before {
-            self.open();
+            self.open(ctx, bounds);
             self.scroll.set(ScrollState::new());
             ctx.request_repaint();
         }
@@ -1541,6 +1366,386 @@ impl<A: 'static> AutocompleteWidget<A> {
     fn previous_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let filtered = self.filtered_indices();
         previous_enabled(&filtered, current, |idx| !self.items[idx].disabled.read())
+    }
+}
+
+struct RetainedComboBoxPopup<T, A> {
+    options: Vec<ComboBoxOption<T>>,
+    selected: Option<Binding<T>>,
+    bound: Option<Signal<T>>,
+    disabled: Binding<bool>,
+    on_change: Option<ComboChangeHandler<T, A>>,
+    style: ComboBoxStyle,
+    active_index: Signal<Option<usize>>,
+    scroll: Signal<ScrollState>,
+    query: Signal<String>,
+    buffer: Signal<TextBuffer>,
+    edit: Signal<TextEditState>,
+    popup_id: Option<PopupId>,
+}
+
+impl<T: Clone, A> Clone for RetainedComboBoxPopup<T, A> {
+    fn clone(&self) -> Self {
+        Self {
+            options: self.options.clone(),
+            selected: self.selected.clone(),
+            bound: self.bound.clone(),
+            disabled: self.disabled.clone(),
+            on_change: self.on_change.clone(),
+            style: self.style.clone(),
+            active_index: self.active_index.clone(),
+            scroll: self.scroll.clone(),
+            query: self.query.clone(),
+            buffer: self.buffer.clone(),
+            edit: self.edit.clone(),
+            popup_id: self.popup_id,
+        }
+    }
+}
+
+impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedComboBoxPopup<T, A> {
+    fn debug_name(&self) -> &'static str {
+        "ComboBoxPopup"
+    }
+
+    fn layout(
+        &self,
+        _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
+        _ctx: &mut LayoutCtx<'_>,
+        _children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let rows = self.filtered_indices().len().max(1);
+        let size = retained_popup_size(constraints, self.style.width, rows, &self.style.popup);
+        clamp_retained_popup_scroll(&self.scroll, size, rows, &self.style.popup);
+        retained_popup_layout(size)
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        self.paint_popup(ctx, bounds);
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
+        if self.disabled.read() {
+            self.close(ctx, PopupDismissReason::Programmatic);
+            return;
+        }
+
+        match event {
+            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
+                let next = self
+                    .option_index_at(bounds, *pos)
+                    .filter(|index| !self.options[*index].disabled.read());
+                self.set_active(next, ctx);
+            }
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left,
+                pressed: false,
+                ..
+            }) => {
+                if let Some(index) = self.option_index_at(bounds, *pos) {
+                    self.select_index(ctx, index);
+                }
+                ctx.stop_propagation();
+            }
+            Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+                scroll_retained_popup(
+                    ctx,
+                    &self.scroll,
+                    *delta,
+                    Size::new(bounds.w, bounds.h),
+                    self.filtered_indices().len().max(1),
+                    &self.style.popup,
+                );
+            }
+            Event::Pointer(PointerEvent::Cancelled { .. }) => self.set_active(None, ctx),
+            _ => {}
+        }
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        FocusPolicy::NotFocusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
+
+    fn hover_cursor_role_at(
+        &self,
+        bounds: Rect,
+        _layout: &LayoutResult,
+        pos: ailloli_ui_core::Point,
+    ) -> HoverCursorRole {
+        self.option_index_at(bounds, pos)
+            .filter(|index| !self.options[*index].disabled.read())
+            .map_or(HoverCursorRole::Default, |_| HoverCursorRole::Pointer)
+    }
+}
+
+impl<T: Clone + PartialEq + 'static, A: 'static> RetainedComboBoxPopup<T, A> {
+    fn filtered_indices(&self) -> Vec<usize> {
+        filtered_indices(
+            &self.query.read(),
+            self.options.iter().map(|option| &option.label),
+        )
+    }
+
+    fn option_index_at(&self, bounds: Rect, pos: ailloli_ui_core::Point) -> Option<usize> {
+        retained_filtered_index_at(
+            bounds,
+            pos,
+            self.scroll.read().offset.y,
+            self.style.popup.option_height,
+            &self.filtered_indices(),
+        )
+    }
+
+    fn selected_value(&self) -> Option<T> {
+        self.selected.as_ref().map(Binding::read)
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        let selected = self.selected_value()?;
+        self.options
+            .iter()
+            .position(|option| option.value == selected)
+    }
+
+    fn paint_popup(&self, ctx: &mut PaintCtx<'_>, popup: Rect) {
+        let filtered = self.filtered_indices();
+        let selected = self.selected_index();
+        paint_popup_shell(ctx, popup, &self.style.popup);
+        ctx.with_overlay_clip(popup, |ctx| {
+            if filtered.is_empty() {
+                let row = Rect::new(popup.x, popup.y, popup.w, self.style.popup.option_height);
+                paint_overlay_text_in_rect(
+                    ctx,
+                    "No results",
+                    self.style.popup.disabled_text,
+                    inset_rect_x(row, self.style.popup.padding_x),
+                    self.style.popup.disabled_opacity,
+                );
+                return;
+            }
+
+            for (row_idx, option_idx) in filtered.iter().copied().enumerate() {
+                let option = &self.options[option_idx];
+                let row = Rect::new(
+                    popup.x,
+                    popup.y - self.scroll.read().offset.y
+                        + row_idx as f32 * self.style.popup.option_height,
+                    popup.w,
+                    self.style.popup.option_height,
+                );
+                if row.bottom() < popup.y || row.y > popup.bottom() {
+                    continue;
+                }
+                paint_popup_row(
+                    ctx,
+                    row,
+                    &option.label,
+                    option.icon.as_ref(),
+                    PopupRowState {
+                        disabled: option.disabled.read(),
+                        selected: selected == Some(option_idx),
+                        active: self.active_index.read() == Some(option_idx),
+                    },
+                    &self.style.popup,
+                );
+                if selected == Some(option_idx) {
+                    let check = Rect::new(
+                        row.right() - self.style.popup.padding_x - self.style.popup.icon_size,
+                        row.y + (row.h - self.style.popup.icon_size) * 0.5,
+                        self.style.popup.icon_size,
+                        self.style.popup.icon_size,
+                    );
+                    ctx.push_overlay(DrawCmd::Image(DrawImage {
+                        rect: check,
+                        icon: IconId::Check,
+                        tint: self.style.popup.selected_icon_tint,
+                        rotation_rad: 0.0,
+                    }));
+                }
+            }
+        });
+        paint_popup_border(ctx, popup, &self.style.popup);
+    }
+
+    fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
+        let Some(option) = self.options.get(index) else {
+            return;
+        };
+        if option.disabled.read() {
+            return;
+        }
+
+        let changed = self
+            .selected_value()
+            .as_ref()
+            .is_none_or(|value| value != &option.value);
+        if changed {
+            let next = option.value.clone();
+            if let Some(bound) = &self.bound {
+                bound.set(next.clone());
+            }
+            if let Some(on_change) = &self.on_change {
+                on_change(ctx, next);
+            }
+        }
+
+        self.query.set(option.label.clone());
+        self.buffer
+            .set(TextBuffer::from_string(option.label.clone()));
+        self.edit.set(edit_at_end(&option.label));
+        self.close(ctx, PopupDismissReason::Programmatic);
+    }
+
+    fn set_active(&self, next: Option<usize>, ctx: &mut EventCtx<A>) {
+        if self.active_index.read() != next {
+            self.active_index.set(next);
+            ctx.request_repaint();
+        }
+    }
+
+    fn close(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
+        self.active_index.set(None);
+        if let Some(popup_id) = self.popup_id {
+            ctx.runtime().close_popup(popup_id, reason);
+        }
+        ctx.request_repaint();
+        ctx.stop_propagation();
+    }
+}
+
+struct RetainedAutocompletePopup<A> {
+    value: Signal<String>,
+    items: Vec<AutocompleteItem>,
+    disabled: Binding<bool>,
+    on_select: Option<AutocompleteSelectHandler<A>>,
+    style: AutocompleteStyle,
+    active_index: Signal<Option<usize>>,
+    scroll: Signal<ScrollState>,
+    buffer: Signal<TextBuffer>,
+    edit: Signal<TextEditState>,
+    popup_id: Option<PopupId>,
+}
+
+impl<A> Clone for RetainedAutocompletePopup<A> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            items: self.items.clone(),
+            disabled: self.disabled.clone(),
+            on_select: self.on_select.clone(),
+            style: self.style.clone(),
+            active_index: self.active_index.clone(),
+            scroll: self.scroll.clone(),
+            buffer: self.buffer.clone(),
+            edit: self.edit.clone(),
+            popup_id: self.popup_id,
+        }
+    }
+}
+
+impl<A: 'static> Widget<A> for RetainedAutocompletePopup<A> {
+    fn debug_name(&self) -> &'static str {
+        "AutocompletePopup"
+    }
+
+    fn layout(
+        &self,
+        _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
+        _ctx: &mut LayoutCtx<'_>,
+        _children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let rows = self.filtered_indices().len().max(1);
+        let size = retained_popup_size(constraints, self.style.width, rows, &self.style.popup);
+        clamp_retained_popup_scroll(&self.scroll, size, rows, &self.style.popup);
+        retained_popup_layout(size)
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        self.paint_popup(ctx, bounds);
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
+        if self.disabled.read() {
+            self.close(ctx, PopupDismissReason::Programmatic);
+            return;
+        }
+
+        match event {
+            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
+                let next = self
+                    .item_index_at(bounds, *pos)
+                    .filter(|index| !self.items[*index].disabled.read());
+                self.set_active(next, ctx);
+            }
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left,
+                pressed: false,
+                ..
+            }) => {
+                if let Some(index) = self.item_index_at(bounds, *pos) {
+                    self.select_item(ctx, index);
+                }
+                ctx.stop_propagation();
+            }
+            Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+                scroll_retained_popup(
+                    ctx,
+                    &self.scroll,
+                    *delta,
+                    Size::new(bounds.w, bounds.h),
+                    self.filtered_indices().len().max(1),
+                    &self.style.popup,
+                );
+            }
+            Event::Pointer(PointerEvent::Cancelled { .. }) => self.set_active(None, ctx),
+            _ => {}
+        }
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        FocusPolicy::NotFocusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
+
+    fn hover_cursor_role_at(
+        &self,
+        bounds: Rect,
+        _layout: &LayoutResult,
+        pos: ailloli_ui_core::Point,
+    ) -> HoverCursorRole {
+        self.item_index_at(bounds, pos)
+            .filter(|index| !self.items[*index].disabled.read())
+            .map_or(HoverCursorRole::Default, |_| HoverCursorRole::Pointer)
+    }
+}
+
+impl<A: 'static> RetainedAutocompletePopup<A> {
+    fn filtered_indices(&self) -> Vec<usize> {
+        filtered_indices(
+            &self.value.read(),
+            self.items.iter().map(|item| &item.label),
+        )
+    }
+
+    fn item_index_at(&self, bounds: Rect, pos: ailloli_ui_core::Point) -> Option<usize> {
+        retained_filtered_index_at(
+            bounds,
+            pos,
+            self.scroll.read().offset.y,
+            self.style.popup.option_height,
+            &self.filtered_indices(),
+        )
     }
 
     fn paint_popup(&self, ctx: &mut PaintCtx<'_>, popup: Rect) {
@@ -1587,6 +1792,127 @@ impl<A: 'static> AutocompleteWidget<A> {
         });
         paint_popup_border(ctx, popup, &self.style.popup);
     }
+
+    fn select_item(&self, ctx: &mut EventCtx<A>, index: usize) {
+        let Some(item) = self.items.get(index) else {
+            return;
+        };
+        if item.disabled.read() {
+            return;
+        }
+        self.value.set(item.label.clone());
+        self.buffer.set(TextBuffer::from_string(item.label.clone()));
+        self.edit.set(edit_at_end(&item.label));
+        if let Some(on_select) = &self.on_select {
+            on_select(ctx, item.label.clone());
+        }
+        self.close(ctx, PopupDismissReason::Programmatic);
+    }
+
+    fn set_active(&self, next: Option<usize>, ctx: &mut EventCtx<A>) {
+        if self.active_index.read() != next {
+            self.active_index.set(next);
+            ctx.request_repaint();
+        }
+    }
+
+    fn close(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
+        self.active_index.set(None);
+        if let Some(popup_id) = self.popup_id {
+            ctx.runtime().close_popup(popup_id, reason);
+        }
+        ctx.request_repaint();
+        ctx.stop_propagation();
+    }
+}
+
+fn combo_box_popup_content<T: Clone + PartialEq + 'static, A: 'static>(
+    popup: RetainedComboBoxPopup<T, A>,
+) -> PopupContent<A> {
+    PopupContent::new(move || View::leaf(popup.clone()))
+}
+
+fn autocomplete_popup_content<A: 'static>(popup: RetainedAutocompletePopup<A>) -> PopupContent<A> {
+    PopupContent::new(move || View::leaf(popup.clone()))
+}
+
+fn retained_popup_size(
+    constraints: Constraints,
+    width: f32,
+    rows: usize,
+    style: &SelectStyle,
+) -> Size {
+    constraints.constrain(Size::new(
+        width,
+        (rows as f32 * style.option_height).min(style.popup_max_height),
+    ))
+}
+
+fn retained_popup_layout(size: Size) -> LayoutResult {
+    let bounds = Rect::new(0.0, 0.0, size.w, size.h);
+    LayoutResult {
+        size,
+        children: Vec::new(),
+        paint_bounds: bounds,
+        visual_bounds: bounds,
+        overlay_hit_bounds: Vec::new(),
+        clip: Some(ailloli_ui_core::ClipShape::Rect(bounds)),
+        is_window_root_clip: false,
+        artifact: None,
+    }
+}
+
+fn retained_filtered_index_at(
+    bounds: Rect,
+    pos: ailloli_ui_core::Point,
+    scroll_y: f32,
+    row_height: f32,
+    filtered: &[usize],
+) -> Option<usize> {
+    if !bounds.contains(pos.x, pos.y) || row_height <= 0.0 {
+        return None;
+    }
+    let row = ((pos.y - bounds.y + scroll_y) / row_height).floor() as usize;
+    filtered.get(row).copied()
+}
+
+fn clamp_retained_popup_scroll(
+    scroll: &Signal<ScrollState>,
+    viewport: Size,
+    rows: usize,
+    style: &SelectStyle,
+) {
+    let content = Size::new(viewport.w, rows as f32 * style.option_height);
+    let outcome = scroll
+        .read()
+        .clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
+    if outcome.changed {
+        scroll.set(outcome.state());
+    }
+}
+
+fn scroll_retained_popup<A: 'static>(
+    ctx: &mut EventCtx<A>,
+    scroll: &Signal<ScrollState>,
+    delta: WheelDelta,
+    viewport: Size,
+    rows: usize,
+    style: &SelectStyle,
+) {
+    let metrics = ScrollMetrics::new(
+        viewport,
+        Size::new(viewport.w, rows as f32 * style.option_height),
+    );
+    let behavior = ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(style.option_height);
+    let outcome =
+        scroll
+            .read()
+            .scroll_by(behavior.wheel_delta(delta), metrics, ScrollAxes::VERTICAL);
+    if outcome.changed {
+        scroll.set(outcome.state());
+        ctx.request_repaint();
+    }
+    ctx.stop_propagation();
 }
 
 #[derive(Debug, Clone, Copy)]

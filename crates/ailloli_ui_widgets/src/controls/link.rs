@@ -9,7 +9,7 @@ use ailloli_ui_core::style::{
 use ailloli_ui_core::{Color, Constraints, FontId, Offset, Rect, Size, TextStyle, Theme};
 use ailloli_ui_runtime::app::ExternalUrl;
 use ailloli_ui_runtime::component::{Binding, IntoView, Memo, View, Widget};
-use ailloli_ui_runtime::input::{EventCtx, FocusPolicy, HoverCursorRole};
+use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, HoverCursorRole};
 use ailloli_ui_runtime::layout::{
     ChildLayout, LayoutArtifact, LayoutChild, LayoutCtx, LayoutResult,
 };
@@ -262,6 +262,10 @@ impl<A: 'static> Widget<A> for LinkWidget {
         } else {
             FocusPolicy::NotFocusable
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
     }
 
     fn hover_cursor_role(&self) -> HoverCursorRole {

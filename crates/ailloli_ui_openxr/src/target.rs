@@ -5,10 +5,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use ailloli_ui_render::render_target::{RenderFrame, RenderTarget};
+use ailloli_ui_render::render_target::{PhysicalExtent, RenderFrame, RenderTarget};
 use ailloli_ui_render::RendererError;
 use wgpu::Texture;
-use winit::dpi::PhysicalSize;
 
 use crate::error::{OpenXrHostError, OpenXrHostResult};
 
@@ -29,7 +28,7 @@ pub trait OpenXrImageSource {
     type FrameToken: Clone + Send + 'static;
     type TextureFormat: Send + 'static;
 
-    fn size(&self) -> PhysicalSize<u32>;
+    fn size(&self) -> PhysicalExtent;
 
     fn format(&self) -> Self::TextureFormat;
 
@@ -65,7 +64,7 @@ where
 }
 
 trait SourceProxy<S: OpenXrImageSource<TextureFormat = wgpu::TextureFormat>>: Send + Sync {
-    fn size(&self) -> PhysicalSize<u32>;
+    fn size(&self) -> PhysicalExtent;
     fn format(&self) -> wgpu::TextureFormat;
     fn pre_present_notify(&self);
     fn acquire(&self) -> Result<OpenXrImageFrame<S::FrameToken>, String>;
@@ -88,11 +87,11 @@ impl<S> SourceProxy<S> for SimpleSourceProxy<S>
 where
     S: OpenXrImageSource<TextureFormat = wgpu::TextureFormat> + Send + 'static,
 {
-    fn size(&self) -> PhysicalSize<u32> {
+    fn size(&self) -> PhysicalExtent {
         self.inner
             .lock()
             .map(|s| s.size())
-            .unwrap_or(PhysicalSize::new(1, 1))
+            .unwrap_or(PhysicalExtent::new(1, 1))
     }
 
     fn format(&self) -> wgpu::TextureFormat {
@@ -128,7 +127,7 @@ impl<S> RenderTarget for OpenXrRenderTarget<S>
 where
     S: OpenXrImageSource<TextureFormat = wgpu::TextureFormat> + Send + 'static,
 {
-    fn size(&self) -> PhysicalSize<u32> {
+    fn size(&self) -> PhysicalExtent {
         self.source.size()
     }
 
@@ -175,7 +174,7 @@ where
     Fa: FnMut() -> OpenXrHostResult<OpenXrImageFrame<FrameToken>> + Send,
     Fp: FnMut(FrameToken) -> OpenXrHostResult<()> + Send,
 {
-    size: PhysicalSize<u32>,
+    size: PhysicalExtent,
     format: wgpu::TextureFormat,
     acquire: Arc<Mutex<Fa>>,
     present: Arc<Mutex<Fp>>,
@@ -187,7 +186,7 @@ where
     Fp: FnMut(FrameToken) -> OpenXrHostResult<()> + Send,
 {
     pub fn new(
-        size: PhysicalSize<u32>,
+        size: PhysicalExtent,
         format: wgpu::TextureFormat,
         acquire: Fa,
         present: Fp,
@@ -209,7 +208,7 @@ where
     type FrameToken = FrameToken;
     type TextureFormat = wgpu::TextureFormat;
 
-    fn size(&self) -> PhysicalSize<u32> {
+    fn size(&self) -> PhysicalExtent {
         self.size
     }
 
@@ -234,7 +233,7 @@ where
 
 /// Construct a callback-backed target in one line for host/runtime integrations.
 pub fn build_callback_source<Fa, Fp>(
-    size: PhysicalSize<u32>,
+    size: PhysicalExtent,
     format: wgpu::TextureFormat,
     acquire: Fa,
     present: Fp,

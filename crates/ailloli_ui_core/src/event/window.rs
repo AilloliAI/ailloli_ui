@@ -1,4 +1,5 @@
 /// Window-level lifecycle and surface events.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
     /// Inner size changed (physical pixels).

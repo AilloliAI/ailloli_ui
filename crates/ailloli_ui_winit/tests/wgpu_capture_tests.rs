@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use ailloli_ui_core::{Color, Rect};
-use ailloli_ui_render_wgpu::{CaptureParams, LayerPass, Renderer};
+use ailloli_ui_render_wgpu::{CaptureParams, LayerPass};
 use ailloli_ui_runtime::{DrawCmd, DrawRect};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
@@ -24,7 +24,7 @@ fn capture_once_produces_png_bytes() {
         )
         .expect("window"),
     );
-    let mut renderer = Renderer::new(window.clone()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window(window.clone()).expect("renderer");
 
     let clear = Color::new(0.0, 0.0, 0.0, 1.0);
     let cmds = vec![DrawCmd::Rect(DrawRect {

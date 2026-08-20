@@ -13,7 +13,7 @@ use ailloli_ui_editor::{
     EditorClickZone, EditorConfig, EditorEngine, EditorLanguage, EditorSession,
 };
 use ailloli_ui_runtime::component::{ComponentNode, Context, Signal, View, Widget};
-use ailloli_ui_runtime::input::{EventCtx, FocusPolicy, InputRole};
+use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, InputRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_text::TextSelection;
@@ -122,7 +122,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
             Event::Ime(ImeEvent::Commit { text }) => {
                 self.apply_edit_action(ctx, TextEditAction::ImeCommit { text: text.clone() });
             }
-            Event::Ime(ImeEvent::End) => {
+            Event::Ime(ImeEvent::End | ImeEvent::Disabled) => {
                 self.apply_edit_action(ctx, TextEditAction::ImeEnd);
             }
             Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
@@ -157,12 +157,21 @@ impl<A: 'static> Widget<A> for EditorWidget {
                     .hit_test_cached(&session, bounds, *pos)
                     .byte;
                 if *pressed {
-                    let click_count = session.register_pointer_click(
-                        Instant::now(),
-                        *pos,
-                        byte,
-                        EditorClickZone::Text,
-                    );
+                    let click_count = if let Some(meta) = ctx.event_meta() {
+                        session.register_pointer_click_at(
+                            meta.timestamp().duration(),
+                            *pos,
+                            byte,
+                            EditorClickZone::Text,
+                        )
+                    } else {
+                        session.register_pointer_click(
+                            Instant::now(),
+                            *pos,
+                            byte,
+                            EditorClickZone::Text,
+                        )
+                    };
                     match click_count {
                         1 => {
                             session.begin_pointer_selection(byte, modifiers.shift);
@@ -193,12 +202,25 @@ impl<A: 'static> Widget<A> for EditorWidget {
                     ctx.request_repaint();
                 }
             }
+            Event::Pointer(PointerEvent::Cancelled { .. }) => {
+                let mut session = self.sync_session_from_props();
+                if session.edit.drag_anchor.is_some() {
+                    session.end_pointer_selection();
+                    self.session.set(session);
+                    ctx.request_repaint();
+                    ctx.stop_propagation();
+                }
+            }
             _ => {}
         }
     }
 
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::Focusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::AllowOnFocusOnly
     }
 
     fn input_role(&self) -> InputRole {

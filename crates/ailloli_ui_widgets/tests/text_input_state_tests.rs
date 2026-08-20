@@ -158,15 +158,65 @@ fn text_input_on_change_ignores_focus_wheel_and_preedit_without_commit() {
         &app.tree,
         runtime.clone(),
         &Event::Ime(ImeEvent::Preedit {
-            preedit: ImePreedit {
-                text: "é".into(),
-                selection: None,
-            },
+            preedit: ImePreedit::new("é"),
             pos: Some(Point::new(10.0, 10.0)),
         }),
     );
 
     assert!(runtime.take_actions().is_empty());
+}
+
+#[test]
+fn text_input_disabled_ends_preedit_in_both_input_modes() {
+    for multiline in [false, true] {
+        let value = State::new("stable".to_string());
+        let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+        let mut app = Runtime::new(runtime.clone());
+        let input = TextInput::new().bind(value.clone());
+        let input = if multiline { input.multiline() } else { input };
+        app.reconcile(input.into_view());
+
+        let mut text_system = TextSystem::new();
+        app.layout(
+            Constraints::tight(240.0, 80.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+
+        let mut router = InputRouter::default();
+        focus_input(&mut router, &app, runtime.clone());
+        router.route_event(
+            &app.tree,
+            runtime.clone(),
+            &Event::Ime(ImeEvent::Preedit {
+                preedit: ImePreedit::new("PREEDIT-MARKER"),
+                pos: None,
+            }),
+        );
+        app.layout(
+            Constraints::tight(240.0, 80.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        let during_preedit = app.paint_with_input(&mut text_system, router.snapshot(), 0);
+        assert!(
+            scene_contains_text_fragment(&during_preedit, "PREEDIT-MARKER"),
+            "preedit must be visible before Disabled (multiline={multiline})"
+        );
+
+        router.route_event(&app.tree, runtime, &Event::Ime(ImeEvent::Disabled));
+        app.layout(
+            Constraints::tight(240.0, 80.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        let after_disabled = app.paint_with_input(&mut text_system, router.snapshot(), 0);
+        assert!(
+            !scene_contains_text_fragment(&after_disabled, "PREEDIT-MARKER"),
+            "Disabled must clear preedit (multiline={multiline})"
+        );
+        assert_eq!(value.read(), "stable");
+    }
 }
 
 #[test]
@@ -649,6 +699,15 @@ fn text_draw(scene: &ailloli_ui_runtime::Scene) -> Option<DrawText> {
             DrawCmd::Text(text) => Some(text.clone()),
             _ => None,
         })
+    })
+}
+
+fn scene_contains_text_fragment(scene: &ailloli_ui_runtime::Scene, needle: &str) -> bool {
+    scene.layers.iter().any(|layer| {
+        layer
+            .cmds
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text().contains(needle)))
     })
 }
 

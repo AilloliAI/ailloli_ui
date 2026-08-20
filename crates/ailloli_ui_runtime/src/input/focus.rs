@@ -7,6 +7,23 @@ pub enum FocusPolicy {
     Focusable,
 }
 
+/// Controls whether a pointer gesture that only activated/focused the host may
+/// also activate a widget.
+///
+/// Policies are resolved from the hit-tested child towards its ancestors. If
+/// no widget chooses an explicit policy, the input router uses the safe
+/// [`ActivationPolicy::SuppressOnFocusOnly`] root fallback.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ActivationPolicy {
+    /// Defer the decision to the closest ancestor with an explicit policy.
+    #[default]
+    Inherit,
+    /// Preserve focus handling but suppress action activation.
+    SuppressOnFocusOnly,
+    /// Deliver the gesture normally, for example to place a text caret.
+    AllowOnFocusOnly,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum InputRole {
     #[default]

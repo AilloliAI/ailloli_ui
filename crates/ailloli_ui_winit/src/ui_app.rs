@@ -1,18 +1,22 @@
-//! Multi-window [`winit::application::ApplicationHandler`] for Ailloli UI.
+//! Retained multi-window UI state serviced by the winit host adapter.
 //!
 //! Owns one runtime and [`ailloli_ui_render_wgpu::Renderer`] per window, routes
 //! pointer/keyboard/IME events, and runs `layout → paint → render` on each redraw.
+//! [`crate::WinitHost`] is the sole `ApplicationHandler` on the high-level path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ailloli_ui_app_storage::{LogicalWindowPosition, LogicalWindowSize, WindowSnapshot};
 use ailloli_ui_core::event::keyboard::{Key, KeyEvent, KeyState, NamedKey};
-use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
+use ailloli_ui_core::event::pointer::{
+    MouseButton, PointerEvent, PointerId, PointerSample, PointerSource,
+};
 use ailloli_ui_core::event::{Event, FileEvent, ImeEvent, ImePreedit, Modifiers};
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::{snap_rect_to_physical, to_logical_f32, PhysicalRectI32, Scale};
@@ -20,20 +24,31 @@ use ailloli_ui_core::Color;
 use ailloli_ui_core::ElementId;
 use ailloli_ui_core::Point;
 use ailloli_ui_core::Rect;
-use ailloli_ui_render_wgpu::{CaptureParams, LayerPass, Renderer, RendererError, RendererOptions};
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle, WindowChromeOp};
+use ailloli_ui_core::Size;
+use ailloli_ui_render_wgpu::{
+    CaptureParams, LayerPass, Renderer, RendererError, RendererOptions, SurfaceReattachOutcome,
+};
+#[cfg(feature = "devtools")]
+use ailloli_ui_runtime::app::UiWakeError;
+use ailloli_ui_runtime::app::{
+    PendingPresentationIntents, PresentationCursor, PresentationEvent, PresentationGeneration,
+    PresentationIntent, PresentationLifecycle, PresentationState, PresentationUnavailableReason,
+    Runtime, RuntimeHandle, UiWake, WindowChromeOp,
+};
 use ailloli_ui_runtime::component::{IntoView, View};
 use ailloli_ui_runtime::element::ViewKeyResolveError;
 use ailloli_ui_runtime::element::{ElementKind, ElementTree};
 use ailloli_ui_runtime::input::{
-    absolute_paint_bounds, hit_test_target, FocusPolicy, HoverCursorRole, InputRole, InputRouter,
-    ResizeEdge,
+    absolute_paint_bounds, hit_test_target, EventEnvelope, EventId, EventMeta, EventTimestamp,
+    FocusPolicy, HoverCursorRole, InputRole, InputRouter, ResizeEdge,
 };
+use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::chrome::{hit_resize_frame, hit_window_drag_region};
-use winit::application::ApplicationHandler;
+#[cfg(feature = "test-support")]
+use winit::dpi::PhysicalSize;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey as WinitNamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
@@ -47,7 +62,10 @@ use crate::external_url::SystemExternalUrlOpener;
 use crate::native_overlay::wayland::{
     CreatedWaylandOverlay, WaylandOverlayConfigured, WaylandOverlayEvent, WaylandOverlaySurface,
 };
-use crate::resize::{ResizeController, ResizeRedrawAction};
+use crate::resize::{ResizeController, ResizeRedrawAction, SurfaceRecoveryAction};
+use crate::wgpu_bootstrap::{
+    detach_renderer_surface, reattach_renderer_to_window, renderer_from_window_with_options,
+};
 use crate::window::{create_window, WindowOptions};
 use crate::window_chrome_resize::{resize_edge_to_winit, CLIENT_RESIZE_BORDER_LOGICAL_PX};
 #[cfg(feature = "native-overlay")]
@@ -81,6 +99,89 @@ impl fmt::Display for UiAppError {
 }
 
 impl Error for UiAppError {}
+
+/// Presentation failure injected on the event-loop thread by native tests.
+#[cfg(feature = "test-support")]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentationTestFault {
+    /// Detach and immediately reattach the native presentation.
+    DetachReattach,
+    /// Exercise the recovery path used after `SurfaceError::Lost`.
+    Lost,
+    /// Exercise the recovery path used after `SurfaceError::Outdated`.
+    Outdated,
+    /// Exercise a dormant zero extent followed by a non-zero surface apply.
+    ///
+    /// This fault is injected on the event-loop thread without asking the
+    /// compositor to create a physically zero-sized native window. It covers
+    /// the same provider-neutral resize/lifecycle path as a winit `Resized`
+    /// callback and waits for the restored extent to be configured.
+    ZeroExtentRoundTrip,
+}
+
+/// Observable lifecycle state for deterministic native tests.
+#[cfg(feature = "test-support")]
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationTestState {
+    pub logical_window_id: ailloli_ui_core::LogicalWindowId,
+    pub state: PresentationState,
+    pub generation: PresentationGeneration,
+    pub attached: bool,
+    pub detach_count: u64,
+    pub recovery_count: u64,
+    /// Reattachments that retained the existing GPU context and caches.
+    pub gpu_context_reuse_count: u64,
+    /// Reattachments that required a new adapter/device/pipeline context.
+    pub gpu_context_rebuild_count: u64,
+    pub lost_count: u64,
+    pub outdated_count: u64,
+    pub zero_extent_count: u64,
+    pub rejected_stale_event_count: u64,
+    pub pending_fault_count: usize,
+    /// Successful native frames rendered for this retained presentation.
+    ///
+    /// Unlike `rendered_once`, this counter is not reset by a test fault. It
+    /// lets native capture tests wait for a geometry-publishing warmup frame
+    /// and a subsequent layout frame before issuing a one-shot capture.
+    pub rendered_frame_count: u64,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Debug, Default, Clone, Copy)]
+struct PresentationTestCounters {
+    detach_count: u64,
+    recovery_count: u64,
+    gpu_context_reuse_count: u64,
+    gpu_context_rebuild_count: u64,
+    lost_count: u64,
+    outdated_count: u64,
+    zero_extent_count: u64,
+    rejected_stale_event_count: u64,
+}
+
+fn observed_winit_backend(event_loop: &ActiveEventLoop) -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::ActiveEventLoopExtWayland;
+        use winit::platform::x11::ActiveEventLoopExtX11;
+
+        if event_loop.is_wayland() {
+            "wayland"
+        } else if event_loop.is_x11() {
+            "x11"
+        } else {
+            "linux-native"
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = event_loop;
+        std::env::consts::OS
+    }
+}
 
 #[cfg(feature = "native-overlay")]
 fn configure_x11_overlay(
@@ -154,23 +255,87 @@ struct PendingWindow<A> {
     clear: Color,
 }
 
-struct WindowState<A> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingFileBatchKind {
+    Entered,
+    Left,
+    Dropped,
+}
+
+struct PendingFileBatch {
+    window_id: WindowId,
+    kind: PendingFileBatchKind,
+    files: Vec<ailloli_ui_core::UploadFile>,
+}
+
+/// Tracks the first contact in one active touch sequence.
+///
+/// winit 0.30 exposes stable touch IDs but no primary flag. The adapter can
+/// still classify the first `Started` contact deterministically. If that
+/// contact ends while secondary contacts remain, none of those existing
+/// contacts is promoted; the next sequence begins once all contacts end.
+#[derive(Debug, Default)]
+struct TouchPrimaryTracker {
+    active_ids: HashSet<u64>,
+    primary_id: Option<u64>,
+}
+
+impl TouchPrimaryTracker {
+    fn classify(&mut self, id: u64, phase: TouchPhase) -> bool {
+        match phase {
+            TouchPhase::Started => {
+                let begins_sequence = self.active_ids.is_empty();
+                let inserted = self.active_ids.insert(id);
+                if begins_sequence && inserted {
+                    self.primary_id = Some(id);
+                }
+                self.primary_id == Some(id)
+            }
+            TouchPhase::Moved => self.primary_id == Some(id),
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                let is_primary = self.primary_id == Some(id);
+                self.active_ids.remove(&id);
+                if is_primary || self.active_ids.is_empty() {
+                    self.primary_id = None;
+                }
+                is_primary
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.active_ids.clear();
+        self.primary_id = None;
+    }
+}
+
+/// Provider-neutral UI state that survives destruction of a native presentation.
+///
+/// No winit window, WGPU surface, resize controller, or other native attachment is
+/// stored here. A renderer may retain its detached instance/adapter/device/queue and
+/// caches. Keeping this value alive across `suspended` preserves both that reusable
+/// GPU context and the element tree, signals, focus/input router, text system, and
+/// pending presentation intents.
+struct RetainedWindowState<A> {
+    options: WindowOptions,
     logical_window_id: String,
+    lifecycle: PresentationLifecycle,
+    presentation_generation: PresentationGeneration,
+    presentation_intents: PendingPresentationIntents,
+    renderer: Option<Renderer>,
     client_edge_resize: bool,
     client_titlebar_drag: bool,
     client_titlebar_key: Option<String>,
-    // `renderer` holds a strong ref to the window via the wgpu `Surface`; declare it
-    // before `window` so drop order releases the surface first, then the window.
-    renderer: Renderer,
-    window: Arc<Window>,
-    resize: ResizeController,
     clear: Color,
     text_system: TextSystem,
     runtime: Runtime<A>,
     scale: Scale,
     cursor_pos: Option<Point>,
+    touch_primary: TouchPrimaryTracker,
+    current_cursor: PresentationCursor,
     modifiers: Modifiers,
     input: InputRouter,
+    popup_mounts: PopupOverlayMounts<A>,
     ime_allowed: bool,
     last_ime_cursor_area: Option<PhysicalRectI32>,
     next_text_blink: Option<Instant>,
@@ -178,28 +343,72 @@ struct WindowState<A> {
     render_timeout_streak: u32,
     input_bench: InputBenchCounters,
     rendered_once: bool,
+    #[cfg(feature = "test-support")]
+    rendered_frame_count: u64,
     reveal_after_first_frame: bool,
-    #[cfg(feature = "native-overlay")]
-    native_overlay_capabilities: Option<NativeOverlayCapabilities>,
     #[cfg(feature = "devtools")]
     devtools: DevToolsWindowState,
 }
 
+struct WindowState<A> {
+    // `renderer` holds a strong ref to the window via the wgpu `Surface`; declare it
+    // before `window` so drop order releases the surface first, then the window.
+    renderer: Renderer,
+    window: Arc<Window>,
+    resize: ResizeController,
+    #[cfg(feature = "native-overlay")]
+    native_overlay_capabilities: Option<NativeOverlayCapabilities>,
+    retained: RetainedWindowState<A>,
+}
+
+impl<A> Deref for WindowState<A> {
+    type Target = RetainedWindowState<A>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.retained
+    }
+}
+
+impl<A> DerefMut for WindowState<A> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.retained
+    }
+}
+
+enum AttachedWindow<A> {
+    Native(WindowId, WindowState<A>),
+    #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+    WaylandOverlay(WaylandOverlayState<A>),
+}
+
+type AttachmentError<A> = Box<(RetainedWindowState<A>, UiAppError)>;
+
 #[cfg(all(target_os = "linux", feature = "native-overlay"))]
 struct WaylandOverlayState<A> {
-    logical_window_id: String,
+    // Drop the WGPU surface before the layer-shell surface.
     renderer: Renderer,
     _surface: Arc<WaylandOverlaySurface>,
     events: std::sync::mpsc::Receiver<WaylandOverlayEvent>,
     configured: WaylandOverlayConfigured,
     capabilities: NativeOverlayCapabilities,
-    clear: Color,
-    text_system: TextSystem,
-    runtime: Runtime<A>,
-    input: InputRouter,
-    scale: Scale,
     needs_redraw: std::cell::Cell<bool>,
-    rendered_once: bool,
+    retained: RetainedWindowState<A>,
+}
+
+#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+impl<A> Deref for WaylandOverlayState<A> {
+    type Target = RetainedWindowState<A>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.retained
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+impl<A> DerefMut for WaylandOverlayState<A> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.retained
+    }
 }
 
 const RENDER_TIMEOUT_RETRY_BASE_DELAY: Duration = Duration::from_millis(16);
@@ -210,6 +419,13 @@ enum RenderErrorAction {
     RetryFrame(Duration),
     ReconfigureSurface,
     Fatal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PresentationRecreationCause {
+    Lost,
+    Outdated,
+    ReconfigureFailed,
 }
 
 #[derive(Debug)]
@@ -329,6 +545,18 @@ impl InputBenchCounters {
         if now.duration_since(self.last_flush) < Duration::from_secs(1) {
             return;
         }
+        self.flush_values(now);
+    }
+
+    /// Flushes pending input counters at a lifecycle boundary without waiting
+    /// for the periodic one-second interval.
+    fn flush(&mut self) {
+        if Self::metrics_enabled() {
+            self.flush_values(Instant::now());
+        }
+    }
+
+    fn flush_values(&mut self, now: Instant) {
         Self::metric_count("input.ime_preedit_empty", self.ime_preedit_empty);
         Self::metric_count("input.ime_preedit_nonempty", self.ime_preedit_nonempty);
         Self::metric_count("input.ime_commit", self.ime_commit);
@@ -395,14 +623,25 @@ pub struct UiApp<A> {
     runtime: RuntimeHandle<A>,
     pending: Vec<PendingWindow<A>>,
     windows: HashMap<WindowId, WindowState<A>>,
+    retained_windows: Vec<RetainedWindowState<A>>,
+    pending_file_batches: Vec<PendingFileBatch>,
     #[cfg(all(target_os = "linux", feature = "native-overlay"))]
     wayland_overlays: Vec<WaylandOverlayState<A>>,
     window_snapshots: HashMap<String, WindowSnapshot>,
+    event_origin: Instant,
+    next_event_id: u64,
     control_flow: ControlFlow,
     error: Option<UiAppError>,
     capture: Option<crate::capture::CaptureHandle>,
+    host_wake: Option<Arc<dyn UiWake>>,
+    #[cfg(feature = "test-support")]
+    presentation_test_faults: Vec<(ailloli_ui_core::LogicalWindowId, PresentationTestFault)>,
+    #[cfg(feature = "test-support")]
+    presentation_test_counters: HashMap<ailloli_ui_core::LogicalWindowId, PresentationTestCounters>,
     #[cfg(feature = "devtools")]
     devtools_remote_addr: Option<std::net::SocketAddr>,
+    #[cfg(feature = "devtools")]
+    devtools_wake_error: Option<UiWakeError>,
 }
 
 impl<A: 'static> Default for UiApp<A> {
@@ -424,14 +663,25 @@ impl<A: 'static> UiApp<A> {
             runtime,
             pending: Vec::new(),
             windows: HashMap::new(),
+            retained_windows: Vec::new(),
+            pending_file_batches: Vec::new(),
             #[cfg(all(target_os = "linux", feature = "native-overlay"))]
             wayland_overlays: Vec::new(),
             window_snapshots: HashMap::new(),
+            event_origin: Instant::now(),
+            next_event_id: 1,
             control_flow,
             error: None,
             capture: None,
+            host_wake: None,
+            #[cfg(feature = "test-support")]
+            presentation_test_faults: Vec::new(),
+            #[cfg(feature = "test-support")]
+            presentation_test_counters: HashMap::new(),
             #[cfg(feature = "devtools")]
             devtools_remote_addr: None,
+            #[cfg(feature = "devtools")]
+            devtools_wake_error: None,
         }
     }
 
@@ -439,6 +689,296 @@ impl<A: 'static> UiApp<A> {
     pub fn capture_handle(mut self, handle: crate::capture::CaptureHandle) -> Self {
         self.capture = Some(handle);
         self
+    }
+
+    /// Capture queue attached to this host, when configured.
+    pub(crate) fn capture_handle_for_host(&self) -> Option<crate::capture::CaptureHandle> {
+        self.capture.clone()
+    }
+
+    pub(crate) fn install_host_wake(&mut self, wake: Arc<dyn UiWake>) {
+        self.host_wake = Some(wake.clone());
+        #[cfg(feature = "devtools")]
+        {
+            let mut first_error = None;
+            for state in self.windows.values_mut() {
+                if let Err(error) = state.devtools.install_host_wake(wake.clone()) {
+                    first_error.get_or_insert(error);
+                }
+            }
+            for retained in &mut self.retained_windows {
+                if let Err(error) = retained.devtools.install_host_wake(wake.clone()) {
+                    first_error.get_or_insert(error);
+                }
+            }
+            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+            for state in &mut self.wayland_overlays {
+                if let Err(error) = state.devtools.install_host_wake(wake.clone()) {
+                    first_error.get_or_insert(error);
+                }
+            }
+            if let Some(error) = first_error {
+                self.devtools_wake_error.get_or_insert(error);
+            }
+        }
+    }
+
+    #[cfg(feature = "devtools")]
+    pub(crate) fn begin_devtools_host_service(&mut self) -> bool {
+        let mut pending = false;
+        let mut first_error = None;
+        for state in self.windows.values() {
+            pending |= state.devtools.begin_host_service();
+            if let Some(error) = state.devtools.take_wake_error() {
+                first_error.get_or_insert(error);
+            }
+        }
+        for retained in &self.retained_windows {
+            pending |= retained.devtools.begin_host_service();
+            if let Some(error) = retained.devtools.take_wake_error() {
+                first_error.get_or_insert(error);
+            }
+        }
+        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        for state in &self.wayland_overlays {
+            pending |= state.devtools.begin_host_service();
+            if let Some(error) = state.devtools.take_wake_error() {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            self.devtools_wake_error.get_or_insert(error);
+        }
+        pending
+    }
+
+    #[cfg(feature = "devtools")]
+    pub(crate) fn take_devtools_wake_error(&mut self) -> Option<UiWakeError> {
+        self.devtools_wake_error.take()
+    }
+
+    /// Queues a deterministic presentation failure for the next safe
+    /// event-loop boundary.
+    #[cfg(feature = "test-support")]
+    pub fn inject_presentation_fault(
+        &mut self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+        fault: PresentationTestFault,
+    ) -> bool {
+        let known = self
+            .windows
+            .values()
+            .any(|state| state.logical_window_id == logical_window_id.as_str())
+            || self
+                .retained_windows
+                .iter()
+                .any(|state| state.logical_window_id == logical_window_id.as_str())
+            || {
+                #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                {
+                    self.wayland_overlays
+                        .iter()
+                        .any(|state| state.logical_window_id == logical_window_id.as_str())
+                }
+                #[cfg(not(all(target_os = "linux", feature = "native-overlay")))]
+                {
+                    false
+                }
+            }
+            || self
+                .pending
+                .iter()
+                .any(|state| state.options.logical_window_id == logical_window_id.as_str());
+        if known {
+            self.presentation_test_faults
+                .push((logical_window_id.clone(), fault));
+        }
+        known
+    }
+
+    /// Routes one provider-neutral event through a currently attached and
+    /// generation-matching presentation.
+    #[cfg(feature = "test-support")]
+    pub fn inject_event_envelope(&mut self, envelope: EventEnvelope) -> bool {
+        let logical_window_id = envelope.meta().logical_window_id().clone();
+        let Some(window_id) = self.windows.iter().find_map(|(window_id, state)| {
+            (state.logical_window_id == logical_window_id.as_str()).then_some(*window_id)
+        }) else {
+            return false;
+        };
+        let accepted = self.windows.get(&window_id).is_some_and(|state| {
+            state
+                .lifecycle
+                .accepts(envelope.meta().presentation_generation())
+        });
+        if !accepted {
+            self.presentation_test_counters
+                .entry(logical_window_id)
+                .or_default()
+                .rejected_stale_event_count += 1;
+            return false;
+        }
+
+        let state = self
+            .windows
+            .get_mut(&window_id)
+            .expect("window id was resolved above");
+        if !runtime_has_root_layout(&state.runtime) {
+            layout_window(state);
+        }
+        let outcome = route_retained_envelope(&mut state.retained, &envelope);
+        if outcome.needs_redraw() || state.runtime.runtime.has_dirty_elements() {
+            state.window.request_redraw();
+        }
+        true
+    }
+
+    /// Returns deterministic presentation state/counters for native tests.
+    #[cfg(feature = "test-support")]
+    pub fn presentation_test_state(
+        &self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+    ) -> Option<PresentationTestState> {
+        let live = self
+            .windows
+            .values()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())
+            .map(|state| {
+                (
+                    state.lifecycle.state(),
+                    state.lifecycle.generation(),
+                    true,
+                    state.rendered_frame_count,
+                )
+            });
+        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        let live = live.or_else(|| {
+            self.wayland_overlays
+                .iter()
+                .find(|state| state.logical_window_id == logical_window_id.as_str())
+                .map(|state| {
+                    (
+                        state.lifecycle.state(),
+                        state.lifecycle.generation(),
+                        true,
+                        state.rendered_frame_count,
+                    )
+                })
+        });
+        let lifecycle = live.or_else(|| {
+            self.retained_windows
+                .iter()
+                .find(|state| state.logical_window_id == logical_window_id.as_str())
+                .map(|state| {
+                    (
+                        state.lifecycle.state(),
+                        state.lifecycle.generation(),
+                        false,
+                        state.rendered_frame_count,
+                    )
+                })
+        })?;
+        let counters = self
+            .presentation_test_counters
+            .get(logical_window_id)
+            .copied()
+            .unwrap_or_default();
+        Some(PresentationTestState {
+            logical_window_id: logical_window_id.clone(),
+            state: lifecycle.0,
+            generation: lifecycle.1,
+            attached: lifecycle.2,
+            detach_count: counters.detach_count,
+            recovery_count: counters.recovery_count,
+            gpu_context_reuse_count: counters.gpu_context_reuse_count,
+            gpu_context_rebuild_count: counters.gpu_context_rebuild_count,
+            lost_count: counters.lost_count,
+            outdated_count: counters.outdated_count,
+            zero_extent_count: counters.zero_extent_count,
+            rejected_stale_event_count: counters.rejected_stale_event_count,
+            pending_fault_count: self
+                .presentation_test_faults
+                .iter()
+                .filter(|(id, _)| id == logical_window_id)
+                .count(),
+            rendered_frame_count: lifecycle.3,
+        })
+    }
+
+    /// Reports whether the native host currently considers this test window focused.
+    ///
+    /// Native input benchmarks use this readiness signal before injecting a
+    /// focus-sensitive sequence. In particular, X11 can deliver its initial
+    /// `Focused(false)`/`Focused(true)` pair after the first rendered frame.
+    #[cfg(feature = "test-support")]
+    pub fn presentation_test_window_has_native_focus(
+        &self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+    ) -> Option<bool> {
+        self.windows
+            .values()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())
+            .map(|state| state.window.has_focus())
+    }
+
+    /// Reports whether a retained popup registration is mounted in the
+    /// requested live presentation and whether that popup tree owns focus.
+    #[cfg(feature = "test-support")]
+    pub fn presentation_test_popup_mount_state(
+        &self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+        popup_id: ailloli_ui_runtime::popup::PopupId,
+    ) -> Option<(bool, bool)> {
+        self.windows
+            .values()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())
+            .map(|state| {
+                (
+                    state.retained.popup_mounts.contains(popup_id),
+                    state
+                        .retained
+                        .popup_mounts
+                        .focus_owner()
+                        .is_some_and(|focus| focus.popup_id() == popup_id),
+                )
+            })
+    }
+
+    /// Returns the absolute layout bounds of one keyed view in a live native
+    /// presentation. This is available only to the event-loop test driver.
+    #[cfg(feature = "test-support")]
+    pub fn presentation_test_element_bounds(
+        &self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+        key: &str,
+    ) -> Option<Rect> {
+        let state = self
+            .windows
+            .values()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())?;
+        let element_id = state.runtime.tree.resolve_element_by_view_key(key).ok()?;
+        absolute_paint_bounds(&state.runtime.tree, element_id)
+    }
+
+    /// Reports whether a keyed view contains the current focus target in one
+    /// live native presentation.
+    #[cfg(feature = "test-support")]
+    pub fn presentation_test_focus_within_key(
+        &self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+        key: &str,
+    ) -> Option<bool> {
+        let state = self
+            .windows
+            .values()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())?;
+        let element_id = state.runtime.tree.resolve_element_by_view_key(key).ok()?;
+        Some(
+            state
+                .input
+                .focused()
+                .is_some_and(|focused| state.runtime.tree.is_ancestor_of(element_id, focused)),
+        )
     }
 
     #[cfg(feature = "devtools")]
@@ -483,19 +1023,62 @@ impl<A: 'static> UiApp<A> {
         self
     }
 
-    pub fn request_redraw_all(&self) {
+    pub fn request_redraw_all(&mut self) {
         for state in self.windows.values() {
             state.window.request_redraw();
+        }
+        for retained in &mut self.retained_windows {
+            retained
+                .presentation_intents
+                .push(PresentationIntent::Redraw);
         }
         #[cfg(all(target_os = "linux", feature = "native-overlay"))]
         if !self.wayland_overlays.is_empty() {
             for state in &self.wayland_overlays {
                 state.needs_redraw.set(true);
             }
-            if let Some(proxy) = shutdown_signal::current_proxy() {
-                let _ = proxy.send_event(());
+            if let Some(wake) = self.host_wake.as_ref() {
+                let _ = wake.wake();
             }
         }
+    }
+
+    /// Requests a redraw for one stable logical window when it is attached.
+    pub fn request_window_redraw(
+        &mut self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+    ) -> bool {
+        if let Some(state) = self
+            .windows
+            .values()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())
+        {
+            state.window.request_redraw();
+            return true;
+        }
+        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        if let Some(state) = self
+            .wayland_overlays
+            .iter()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())
+        {
+            state.needs_redraw.set(true);
+            if let Some(wake) = self.host_wake.as_ref() {
+                let _ = wake.wake();
+            }
+            return true;
+        }
+        if let Some(retained) = self
+            .retained_windows
+            .iter_mut()
+            .find(|state| state.logical_window_id == logical_window_id.as_str())
+        {
+            retained
+                .presentation_intents
+                .push(PresentationIntent::Redraw);
+            return true;
+        }
+        false
     }
 
     fn drain_window_chrome_ops(&mut self) {
@@ -504,8 +1087,9 @@ impl<A: 'static> UiApp<A> {
             return;
         }
         for (lid, op) in ops {
+            let mut applied = false;
             for state in self.windows.values_mut() {
-                if state.logical_window_id != lid {
+                if state.logical_window_id != lid.as_str() {
                     continue;
                 }
                 match op {
@@ -516,7 +1100,78 @@ impl<A: 'static> UiApp<A> {
                     }
                 }
                 state.window.request_redraw();
+                applied = true;
                 break;
+            }
+            if !applied {
+                if let Some(retained) = self
+                    .retained_windows
+                    .iter_mut()
+                    .find(|state| state.logical_window_id == lid.as_str())
+                {
+                    retained
+                        .presentation_intents
+                        .push(PresentationIntent::WindowChrome(op));
+                    retained
+                        .presentation_intents
+                        .push(PresentationIntent::Redraw);
+                }
+            }
+        }
+    }
+
+    fn queue_file_batch(
+        &mut self,
+        window_id: WindowId,
+        kind: PendingFileBatchKind,
+        file: Option<ailloli_ui_core::UploadFile>,
+    ) {
+        if let Some(batch) = self.pending_file_batches.last_mut() {
+            if batch.window_id == window_id && batch.kind == kind {
+                if let Some(file) = file {
+                    batch.files.push(file);
+                }
+                return;
+            }
+        }
+        self.pending_file_batches.push(PendingFileBatch {
+            window_id,
+            kind,
+            files: file.into_iter().collect(),
+        });
+    }
+
+    fn flush_pending_file_batches(&mut self) {
+        let batches = std::mem::take(&mut self.pending_file_batches);
+        for batch in batches {
+            let Some(state) = self.windows.get_mut(&batch.window_id) else {
+                continue;
+            };
+            let event = match batch.kind {
+                PendingFileBatchKind::Entered => Event::File(FileEvent::Entered {
+                    pos: None,
+                    files: batch.files,
+                }),
+                PendingFileBatchKind::Left => Event::File(FileEvent::Left),
+                PendingFileBatchKind::Dropped => Event::File(FileEvent::Dropped {
+                    pos: None,
+                    files: batch.files,
+                }),
+            };
+            let meta = EventMeta::new(
+                EventId::new(self.next_event_id),
+                EventTimestamp::new(self.event_origin.elapsed()),
+                state.logical_window_id.as_str(),
+                state.presentation_generation,
+            );
+            self.next_event_id = self.next_event_id.saturating_add(1);
+            if !runtime_has_root_layout(&state.runtime) {
+                layout_window(state);
+            }
+            let envelope = EventEnvelope::new(meta, event);
+            let outcome = route_retained_envelope(&mut state.retained, &envelope);
+            if outcome.needs_redraw() || state.runtime.runtime.has_dirty_elements() {
+                state.window.request_redraw();
             }
         }
     }
@@ -561,11 +1216,15 @@ impl<A: 'static> UiApp<A> {
             })
     }
 
-    pub fn about_to_wait_with_wakeup(
+    /// Services deferred UI work before the native loop sleeps.
+    pub(crate) fn host_about_to_wait(
         &mut self,
         event_loop: &ActiveEventLoop,
         external_wakeup: Option<Instant>,
     ) {
+        self.flush_pending_file_batches();
+        #[cfg(feature = "test-support")]
+        self.service_presentation_test_faults(event_loop);
         #[cfg(all(target_os = "linux", feature = "native-overlay"))]
         self.service_wayland_overlays(event_loop);
         if shutdown_signal::take_requested() {
@@ -581,12 +1240,8 @@ impl<A: 'static> UiApp<A> {
         let mut next_render_wakeup = None;
         let mut pending_render_redraw = false;
         let now = Instant::now();
-        let due_scheduled_repaints = self.runtime.take_due_scheduled_repaints(now);
-        let pending_scheduled_redraw = !due_scheduled_repaints.is_empty();
-        for element_id in due_scheduled_repaints {
-            self.runtime.mark_dirty(element_id);
-        }
-        let next_scheduled_wakeup = self.runtime.next_scheduled_repaint_due();
+        let pending_scheduled_redraw = self.runtime.promote_due_scheduled_repaints(now) != 0;
+        let next_scheduled_wakeup = self.runtime.next_scheduled_repaint_due_global();
         for state in self.windows.values_mut() {
             if state.resize.take_due_redraw_request() {
                 state.window.request_redraw();
@@ -614,14 +1269,20 @@ impl<A: 'static> UiApp<A> {
                 state.input.focused_input_role(&state.runtime.tree),
                 InputRole::TextSingleLine | InputRole::TextMultiLine
             ) {
-                let due = state.next_text_blink.get_or_insert(now);
-                if *due <= now {
+                let (text_redraw_due, due) = {
+                    let due = state.retained.next_text_blink.get_or_insert(now);
+                    let redraw_due = *due <= now;
+                    if redraw_due {
+                        *due = now + Duration::from_millis(500);
+                    }
+                    (redraw_due, *due)
+                };
+                if text_redraw_due {
                     state.window.request_redraw();
-                    *due = now + Duration::from_millis(500);
                     pending_text_redraw = true;
                 }
                 next_text_wakeup =
-                    Some(next_text_wakeup.map_or(*due, |current| std::cmp::min(current, *due)));
+                    Some(next_text_wakeup.map_or(due, |current| std::cmp::min(current, due)));
             } else {
                 state.next_text_blink = None;
             }
@@ -630,7 +1291,10 @@ impl<A: 'static> UiApp<A> {
         }
 
         let startup_redraw_pending = (!self.windows.is_empty()
-            && self.windows.values().any(|state| !state.rendered_once))
+            && self
+                .windows
+                .values()
+                .any(|state| !state.rendered_once && !state.resize.zero_extent_unavailable()))
             || {
                 #[cfg(all(target_os = "linux", feature = "native-overlay"))]
                 {
@@ -697,8 +1361,13 @@ impl<A: 'static> UiApp<A> {
                         if configured != state.configured {
                             state.configured = configured;
                             state.scale = Scale::new(configured.scale_factor.max(1) as f32);
-                            if let Err(err) = state.renderer.try_resize(configured.physical_size())
-                            {
+                            let size = configured.physical_size();
+                            if let Err(err) = state.renderer.try_resize(
+                                ailloli_ui_render_wgpu::PhysicalExtent::new(
+                                    size.width,
+                                    size.height,
+                                ),
+                            ) {
                                 failure = Some(UiAppError::Render(err.to_string()));
                                 break;
                             }
@@ -717,16 +1386,17 @@ impl<A: 'static> UiApp<A> {
 
             let logical_width = state.configured.logical_width as f32;
             let logical_height = state.configured.logical_height as f32;
-            state.runtime.layout(
-                Constraints::tight(logical_width, logical_height),
-                state.scale,
-                &mut state.text_system,
-            );
-            let scene = state.runtime.paint_with_input(
-                &mut state.text_system,
-                state.input.snapshot(),
-                now_ms(),
-            );
+            {
+                let retained = &mut state.retained;
+                let scale = retained.scale;
+                retained.runtime.layout(
+                    Constraints::tight(logical_width, logical_height),
+                    scale,
+                    &mut retained.text_system,
+                );
+            }
+            let popup_viewport = Rect::new(0.0, 0.0, logical_width, logical_height);
+            let scene = paint_retained_window(&mut state.retained, popup_viewport, now_ms());
             state
                 .renderer
                 .set_text_face_blobs(state.text_system.face_blobs_snapshot());
@@ -747,23 +1417,601 @@ impl<A: 'static> UiApp<A> {
                     .render_layered_scaled(state.clear, &passes, state.scale)
             };
             match result {
-                Ok(()) => state.rendered_once = true,
+                Ok(()) => {
+                    state.rendered_once = true;
+                    #[cfg(feature = "test-support")]
+                    {
+                        state.rendered_frame_count = state.rendered_frame_count.saturating_add(1);
+                    }
+                }
                 Err(err) => failure = Some(UiAppError::Render(err.to_string())),
             }
         }
 
-        self.wayland_overlays
-            .retain(|state| state.capabilities.placed);
+        self.wayland_overlays.retain(|state| {
+            if !state.capabilities.placed {
+                state.runtime.runtime.clear_presentation_scope();
+            }
+            state.capabilities.placed
+        });
         if let Some(cap) = &capture {
             if cap.exit_after_all_captures() && cap.is_complete() {
                 event_loop.exit();
             }
         }
-        if self.wayland_overlays.is_empty() && self.windows.is_empty() {
+        if self.wayland_overlays.is_empty()
+            && self.windows.is_empty()
+            && self.retained_windows.is_empty()
+            && self.pending.is_empty()
+        {
             event_loop.exit();
         }
         if let Some(error) = failure {
             self.fail(event_loop, error);
+        }
+    }
+
+    fn retain_pending_window(&mut self, pending: PendingWindow<A>) -> RetainedWindowState<A> {
+        #[cfg(feature = "native-overlay")]
+        let is_native_overlay = pending.options.native_overlay.is_some();
+        #[cfg(not(feature = "native-overlay"))]
+        let is_native_overlay = false;
+
+        let logical_window_id = pending.options.logical_window_id.clone();
+        let mut runtime = Runtime::new(self.runtime.clone());
+        runtime.reconcile(pending.root);
+        let popup_mounts = PopupOverlayMounts::new(runtime.runtime.clone());
+
+        #[cfg(feature = "devtools")]
+        let mut devtools = DevToolsWindowState::new();
+        #[cfg(feature = "devtools")]
+        if let Some(addr) = self.devtools_remote_addr {
+            devtools.set_remote_addr(Some(addr));
+        }
+        #[cfg(feature = "devtools")]
+        if let Some(wake) = self.host_wake.as_ref() {
+            if let Err(error) = devtools.install_host_wake(wake.clone()) {
+                self.devtools_wake_error.get_or_insert(error);
+            }
+        }
+
+        RetainedWindowState {
+            lifecycle: PresentationLifecycle::new(logical_window_id.clone()),
+            presentation_generation: PresentationGeneration::INITIAL,
+            presentation_intents: PendingPresentationIntents::default(),
+            renderer: None,
+            client_edge_resize: !is_native_overlay
+                && !pending.options.decorations
+                && pending.options.resizable,
+            client_titlebar_drag: !is_native_overlay
+                && client_titlebar_drag_enabled(&pending.options),
+            client_titlebar_key: pending.options.client_titlebar_key.clone(),
+            reveal_after_first_frame: pending.options.start_hidden_until_first_frame,
+            options: pending.options,
+            logical_window_id,
+            clear: pending.clear,
+            text_system: TextSystem::new(),
+            runtime,
+            scale: Scale::new(1.0),
+            cursor_pos: None,
+            touch_primary: TouchPrimaryTracker::default(),
+            current_cursor: PresentationCursor::Default,
+            modifiers: Modifiers::default(),
+            input: InputRouter::default(),
+            popup_mounts,
+            ime_allowed: false,
+            last_ime_cursor_area: None,
+            next_text_blink: None,
+            render_retry_at: None,
+            render_timeout_streak: 0,
+            input_bench: InputBenchCounters::new(Instant::now()),
+            rendered_once: false,
+            #[cfg(feature = "test-support")]
+            rendered_frame_count: 0,
+            #[cfg(feature = "devtools")]
+            devtools,
+        }
+    }
+
+    fn allow_presentation_creation(
+        retained: &mut RetainedWindowState<A>,
+    ) -> Result<(), UiAppError> {
+        let transition = match retained.lifecycle.state() {
+            PresentationState::Declared | PresentationState::Suspended => {
+                Some(PresentationEvent::AllowCreation)
+            }
+            PresentationState::Unavailable(_) => Some(PresentationEvent::Retry),
+            PresentationState::CreationAllowed => None,
+            PresentationState::Ready => {
+                return Err(UiAppError::WindowCreate(format!(
+                    "logical window `{}` is already attached",
+                    retained.logical_window_id
+                )))
+            }
+            PresentationState::Destroyed => {
+                return Err(UiAppError::WindowCreate(format!(
+                    "logical window `{}` was destroyed",
+                    retained.logical_window_id
+                )))
+            }
+            _ => {
+                return Err(UiAppError::WindowCreate(format!(
+                    "logical window `{}` has an unsupported lifecycle state",
+                    retained.logical_window_id
+                )))
+            }
+        };
+        if let Some(transition) = transition {
+            retained.lifecycle.apply(transition).map_err(|error| {
+                UiAppError::WindowCreate(format!(
+                    "logical window `{}` rejected lifecycle transition: {error}",
+                    retained.logical_window_id
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn mark_attachment_unavailable(
+        retained: &mut RetainedWindowState<A>,
+        reason: PresentationUnavailableReason,
+    ) {
+        let _ = retained
+            .lifecycle
+            .apply(PresentationEvent::Unavailable(reason));
+    }
+
+    /// Marks an attached zero-sized presentation ready only after its surface
+    /// accepted a later non-zero extent. This advances the generation so any
+    /// event retained across the unavailable interval is rejected as stale.
+    fn complete_zero_extent_recovery(
+        retained: &mut RetainedWindowState<A>,
+    ) -> Result<(), UiAppError> {
+        if retained.lifecycle.state()
+            != PresentationState::Unavailable(PresentationUnavailableReason::ZeroExtent)
+        {
+            return Ok(());
+        }
+
+        retained
+            .lifecycle
+            .apply(PresentationEvent::Retry)
+            .and_then(|_| retained.lifecycle.apply(PresentationEvent::Attached))
+            .map(|reduction| {
+                retained.presentation_generation = reduction.generation;
+            })
+            .map_err(|error| {
+                UiAppError::WindowCreate(format!(
+                    "logical window `{}` could not recover from a zero physical extent: {error}",
+                    retained.logical_window_id
+                ))
+            })
+    }
+
+    fn complete_attachment(retained: &mut RetainedWindowState<A>) -> Result<(), UiAppError> {
+        let reduction = retained
+            .lifecycle
+            .apply(PresentationEvent::Attached)
+            .map_err(|error| {
+                UiAppError::WindowCreate(format!(
+                    "logical window `{}` could not attach: {error}",
+                    retained.logical_window_id
+                ))
+            })?;
+        retained.presentation_generation = reduction.generation;
+        retained.ime_allowed = false;
+        retained.last_ime_cursor_area = None;
+        retained.render_retry_at = None;
+        retained.render_timeout_streak = 0;
+        retained.rendered_once = false;
+        retained.reveal_after_first_frame = true;
+        Ok(())
+    }
+
+    fn record_gpu_reattach_outcome(
+        &mut self,
+        logical_window_id: &str,
+        outcome: SurfaceReattachOutcome,
+    ) {
+        Self::trace_startup(format_args!(
+            "reattached GPU presentation for {logical_window_id}: {outcome:?}"
+        ));
+        #[cfg(feature = "test-support")]
+        {
+            let counters = self
+                .presentation_test_counters
+                .entry(ailloli_ui_core::LogicalWindowId::new(logical_window_id))
+                .or_default();
+            match outcome {
+                SurfaceReattachOutcome::ReusedGpuContext => {
+                    counters.gpu_context_reuse_count =
+                        counters.gpu_context_reuse_count.saturating_add(1);
+                }
+                SurfaceReattachOutcome::RebuiltGpuContext { .. } => {
+                    counters.gpu_context_rebuild_count =
+                        counters.gpu_context_rebuild_count.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn attach_retained_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        mut retained: RetainedWindowState<A>,
+    ) -> Result<AttachedWindow<A>, AttachmentError<A>> {
+        if let Err(error) = Self::allow_presentation_creation(&mut retained) {
+            return Err(Box::new((retained, error)));
+        }
+
+        #[cfg(feature = "native-overlay")]
+        let native_overlay = retained.options.native_overlay.clone();
+        #[cfg(feature = "native-overlay")]
+        let is_native_overlay = native_overlay.is_some();
+        #[cfg(not(feature = "native-overlay"))]
+        let is_native_overlay = false;
+
+        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        if let Some(options) = native_overlay.as_ref() {
+            use winit::platform::wayland::ActiveEventLoopExtWayland;
+
+            if event_loop.is_wayland() {
+                let Some(wake) = self.host_wake.clone() else {
+                    Self::mark_attachment_unavailable(
+                        &mut retained,
+                        PresentationUnavailableReason::HostUnavailable,
+                    );
+                    return Err(Box::new((
+                        retained,
+                        UiAppError::WindowCreate(
+                            "native overlay host wake is unavailable".to_string(),
+                        ),
+                    )));
+                };
+                let created = match crate::native_overlay::wayland::create(options, wake) {
+                    Ok(created) => created,
+                    Err(error) => {
+                        Self::mark_attachment_unavailable(
+                            &mut retained,
+                            PresentationUnavailableReason::HostUnavailable,
+                        );
+                        return Err(Box::new((
+                            retained,
+                            UiAppError::WindowCreate(error.to_string()),
+                        )));
+                    }
+                };
+                let CreatedWaylandOverlay {
+                    surface,
+                    configured,
+                    events,
+                    capabilities,
+                } = created;
+                let renderer_options = RendererOptions {
+                    transparent: true,
+                    ..Default::default()
+                };
+                let physical_size = configured.physical_size();
+                let physical_extent = ailloli_ui_render_wgpu::PhysicalExtent::new(
+                    physical_size.width,
+                    physical_size.height,
+                );
+                let (mut renderer, reattach_outcome) = if let Some(mut renderer) =
+                    retained.renderer.take()
+                {
+                    match renderer.reattach_surface_target(surface.clone(), physical_extent, None) {
+                        Ok(outcome) => (renderer, Some(outcome)),
+                        Err(error) => {
+                            retained.renderer = Some(renderer);
+                            Self::mark_attachment_unavailable(
+                                &mut retained,
+                                PresentationUnavailableReason::NoCompatibleSurface,
+                            );
+                            return Err(Box::new((
+                                retained,
+                                UiAppError::RendererCreate(error.to_string()),
+                            )));
+                        }
+                    }
+                } else {
+                    match Renderer::new_with_surface_target(
+                        surface.clone(),
+                        physical_extent,
+                        renderer_options,
+                        None,
+                    ) {
+                        Ok(renderer) => (renderer, None),
+                        Err(error) => {
+                            Self::mark_attachment_unavailable(
+                                &mut retained,
+                                PresentationUnavailableReason::NoCompatibleSurface,
+                            );
+                            return Err(Box::new((
+                                retained,
+                                UiAppError::RendererCreate(error.to_string()),
+                            )));
+                        }
+                    }
+                };
+                retained.scale = Scale::new(configured.scale_factor.max(1) as f32);
+                if let Err(error) = Self::complete_attachment(&mut retained) {
+                    renderer.detach_surface();
+                    retained.renderer = Some(renderer);
+                    return Err(Box::new((retained, error)));
+                }
+                if let Some(outcome) = reattach_outcome {
+                    self.record_gpu_reattach_outcome(&retained.logical_window_id, outcome);
+                }
+                let redraw = replay_retained_intents(&mut retained, None);
+                return Ok(AttachedWindow::WaylandOverlay(WaylandOverlayState {
+                    renderer,
+                    _surface: surface,
+                    events,
+                    configured,
+                    capabilities,
+                    needs_redraw: std::cell::Cell::new(redraw),
+                    retained,
+                }));
+            }
+        }
+
+        let renderer_options = RendererOptions {
+            transparent: retained.options.transparent || is_native_overlay,
+            ..Default::default()
+        };
+        // `create_window` consumes its options, while the retained copy is needed
+        // for a later resume.
+        let window = match create_window(event_loop, retained.options.clone()) {
+            Ok(window) => Arc::new(window),
+            Err(error) => {
+                Self::mark_attachment_unavailable(
+                    &mut retained,
+                    PresentationUnavailableReason::HostUnavailable,
+                );
+                return Err(Box::new((
+                    retained,
+                    UiAppError::WindowCreate(error.to_string()),
+                )));
+            }
+        };
+        #[cfg(feature = "native-overlay")]
+        let native_overlay_capabilities =
+            match configure_x11_overlay(event_loop, window.as_ref(), native_overlay.as_ref()) {
+                Ok(capabilities) => capabilities,
+                Err(error) => {
+                    Self::mark_attachment_unavailable(
+                        &mut retained,
+                        PresentationUnavailableReason::HostUnavailable,
+                    );
+                    return Err(Box::new((retained, UiAppError::WindowCreate(error))));
+                }
+            };
+        Self::trace_startup(format_args!("created window {:?}", window.id()));
+        retained.scale = Scale::new(window.scale_factor() as f32);
+        if let Err(error) = ailloli_ui_bench::try_update_window_observation(
+            observed_winit_backend(event_loop),
+            window.scale_factor(),
+        ) {
+            eprintln!(
+                "ailloli_ui_winit: benchmark window observation could not be recorded: {error}"
+            );
+        }
+        let (mut renderer, reattach_outcome) = if let Some(mut renderer) = retained.renderer.take()
+        {
+            match reattach_renderer_to_window(&mut renderer, window.clone()) {
+                Ok(outcome) => (renderer, Some(outcome)),
+                Err(error) => {
+                    retained.renderer = Some(renderer);
+                    Self::mark_attachment_unavailable(
+                        &mut retained,
+                        PresentationUnavailableReason::NoCompatibleSurface,
+                    );
+                    return Err(Box::new((
+                        retained,
+                        UiAppError::RendererCreate(error.to_string()),
+                    )));
+                }
+            }
+        } else {
+            match renderer_from_window_with_options(window.clone(), renderer_options) {
+                Ok(renderer) => (renderer, None),
+                Err(error) => {
+                    Self::mark_attachment_unavailable(
+                        &mut retained,
+                        PresentationUnavailableReason::NoCompatibleSurface,
+                    );
+                    return Err(Box::new((
+                        retained,
+                        UiAppError::RendererCreate(error.to_string()),
+                    )));
+                }
+            }
+        };
+        record_renderer_bench_metadata(&renderer);
+        Self::trace_startup(format_args!("created renderer for {:?}", window.id()));
+        if let Err(error) = Self::complete_attachment(&mut retained) {
+            detach_renderer_surface(&mut renderer);
+            retained.renderer = Some(renderer);
+            return Err(Box::new((retained, error)));
+        }
+        if let Some(outcome) = reattach_outcome {
+            self.record_gpu_reattach_outcome(&retained.logical_window_id, outcome);
+        }
+        let redraw = replay_retained_intents(&mut retained, Some(window.as_ref()));
+        let id = window.id();
+        let mut resize = ResizeController::default();
+        let resize_requested = resize.request_window_size(window.as_ref());
+        if !resize_requested {
+            Self::mark_attachment_unavailable(
+                &mut retained,
+                PresentationUnavailableReason::ZeroExtent,
+            );
+        }
+        if redraw && resize_requested {
+            window.request_redraw();
+        }
+        Ok(AttachedWindow::Native(
+            id,
+            WindowState {
+                renderer,
+                window,
+                resize,
+                #[cfg(feature = "native-overlay")]
+                native_overlay_capabilities,
+                retained,
+            },
+        ))
+    }
+
+    fn store_attached_window(&mut self, attached: AttachedWindow<A>) {
+        match attached {
+            AttachedWindow::Native(id, state) => {
+                self.windows.insert(id, state);
+            }
+            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+            AttachedWindow::WaylandOverlay(state) => self.wayland_overlays.push(state),
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    fn service_presentation_test_faults(&mut self, event_loop: &ActiveEventLoop) {
+        let faults = std::mem::take(&mut self.presentation_test_faults);
+        for (logical_window_id, fault) in faults {
+            let native_window_id = self.windows.iter().find_map(|(window_id, state)| {
+                (state.logical_window_id == logical_window_id.as_str()).then_some(*window_id)
+            });
+
+            if fault == PresentationTestFault::ZeroExtentRoundTrip {
+                let Some(window_id) = native_window_id else {
+                    // A detached presentation has no surface to resize. Keep
+                    // the fault observable as pending work for the next
+                    // event-loop boundary after a successful attachment.
+                    self.presentation_test_faults
+                        .push((logical_window_id, fault));
+                    continue;
+                };
+                let state = self
+                    .windows
+                    .get_mut(&window_id)
+                    .expect("zero-extent fault target was resolved above");
+                let current = state.window.inner_size();
+                let restored = PhysicalSize::new(current.width.max(1), current.height.max(1));
+
+                ailloli_ui_bench::record(ailloli_ui_bench::Event::ResizePending {
+                    ts_ms: now_ms(),
+                    w: 0,
+                    h: 0,
+                });
+                let zero_redraw_requested = state.resize.request(PhysicalSize::new(0, 0));
+                debug_assert!(!zero_redraw_requested);
+                Self::mark_attachment_unavailable(
+                    &mut state.retained,
+                    PresentationUnavailableReason::ZeroExtent,
+                );
+                state.render_retry_at = None;
+                state.render_timeout_streak = 0;
+
+                ailloli_ui_bench::record(ailloli_ui_bench::Event::ResizePending {
+                    ts_ms: now_ms(),
+                    w: restored.width,
+                    h: restored.height,
+                });
+                let restore_redraw_requested = state.resize.request(restored);
+                debug_assert!(restore_redraw_requested);
+                state.window.request_redraw();
+                let counters = self
+                    .presentation_test_counters
+                    .entry(logical_window_id)
+                    .or_default();
+                counters.zero_extent_count = counters.zero_extent_count.saturating_add(1);
+                continue;
+            }
+
+            let mut detached = native_window_id.and_then(|window_id| {
+                self.windows.remove(&window_id).map(|state| {
+                    self.window_snapshots
+                        .insert(state.logical_window_id.clone(), window_snapshot(&state));
+                    detach_native_window(state)
+                })
+            });
+
+            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+            if detached.is_none() {
+                if let Some(index) = self
+                    .wayland_overlays
+                    .iter()
+                    .position(|state| state.logical_window_id == logical_window_id.as_str())
+                {
+                    detached = Some(detach_wayland_overlay(self.wayland_overlays.remove(index)));
+                }
+            }
+
+            let was_attached = detached.is_some();
+            if detached.is_none() {
+                if let Some(index) = self
+                    .retained_windows
+                    .iter()
+                    .position(|state| state.logical_window_id == logical_window_id.as_str())
+                {
+                    detached = Some(self.retained_windows.remove(index));
+                }
+            }
+            let Some(mut retained) = detached else {
+                continue;
+            };
+            let previous_generation = retained.lifecycle.generation();
+            let counters = self
+                .presentation_test_counters
+                .entry(logical_window_id.clone())
+                .or_default();
+            if was_attached {
+                counters.detach_count = counters.detach_count.saturating_add(1);
+            }
+            match fault {
+                PresentationTestFault::DetachReattach => {}
+                PresentationTestFault::Lost => {
+                    counters.lost_count = counters.lost_count.saturating_add(1);
+                    Self::mark_attachment_unavailable(
+                        &mut retained,
+                        PresentationUnavailableReason::SurfaceLost,
+                    );
+                }
+                PresentationTestFault::Outdated => {
+                    counters.outdated_count = counters.outdated_count.saturating_add(1);
+                    Self::mark_attachment_unavailable(
+                        &mut retained,
+                        PresentationUnavailableReason::SurfaceLost,
+                    );
+                }
+                PresentationTestFault::ZeroExtentRoundTrip => {
+                    unreachable!("zero-extent faults are handled without detaching above")
+                }
+            }
+
+            match self.attach_retained_window(event_loop, retained) {
+                Ok(attached) => {
+                    let next_generation = match &attached {
+                        AttachedWindow::Native(_, state) => state.lifecycle.generation(),
+                        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                        AttachedWindow::WaylandOverlay(state) => state.lifecycle.generation(),
+                    };
+                    if next_generation > previous_generation {
+                        self.presentation_test_counters
+                            .entry(logical_window_id)
+                            .or_default()
+                            .recovery_count += 1;
+                    }
+                    self.store_attached_window(attached);
+                }
+                Err(attachment_error) => {
+                    let (retained, error) = *attachment_error;
+                    eprintln!(
+                        "ailloli_ui_winit: injected presentation recovery remains unavailable: {error}"
+                    );
+                    self.retained_windows.push(retained);
+                }
+            }
         }
     }
 
@@ -780,173 +2028,230 @@ impl<A: 'static> UiApp<A> {
     }
 }
 
-impl<A: 'static> ApplicationHandler for UiApp<A> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        Self::trace_startup(format_args!(
-            "resumed with {} pending window(s)",
-            self.pending.len()
+fn cursor_icon_from_presentation_cursor(cursor: PresentationCursor) -> CursorIcon {
+    match cursor {
+        PresentationCursor::Default => CursorIcon::Default,
+        PresentationCursor::Pointer => CursorIcon::Pointer,
+        PresentationCursor::Text => CursorIcon::Text,
+        PresentationCursor::ResizeX => CursorIcon::from(resize_edge_to_winit(ResizeEdge::E)),
+        PresentationCursor::ResizeY => CursorIcon::from(resize_edge_to_winit(ResizeEdge::S)),
+        _ => CursorIcon::Default,
+    }
+}
+
+fn replay_retained_intents<A>(
+    retained: &mut RetainedWindowState<A>,
+    window: Option<&Window>,
+) -> bool {
+    let mut redraw = true;
+    for intent in retained.presentation_intents.drain() {
+        match intent {
+            PresentationIntent::SetTitle(title) => {
+                retained.options.title.clone_from(&title);
+                if let Some(window) = window {
+                    window.set_title(&title);
+                }
+            }
+            PresentationIntent::SetInnerSize(size) => {
+                let size = LogicalSize::new(size.w.max(1.0) as f64, size.h.max(1.0) as f64);
+                retained.options.inner_size = Some(size);
+                if let Some(window) = window {
+                    let _ = window.request_inner_size(size);
+                }
+            }
+            PresentationIntent::SetCursor(cursor) => {
+                retained.current_cursor = cursor;
+                if let Some(window) = window {
+                    window.set_cursor(cursor_icon_from_presentation_cursor(cursor));
+                }
+            }
+            PresentationIntent::WindowChrome(operation) => {
+                if let Some(window) = window {
+                    match operation {
+                        WindowChromeOp::Minimize => window.set_minimized(true),
+                        WindowChromeOp::ToggleMaximize => {
+                            window.set_maximized(!window.is_maximized());
+                        }
+                    }
+                } else {
+                    retained
+                        .presentation_intents
+                        .push(PresentationIntent::WindowChrome(operation));
+                }
+            }
+            PresentationIntent::Redraw => redraw = true,
+            _ => {}
+        }
+    }
+    if let Some(window) = window {
+        window.set_cursor(cursor_icon_from_presentation_cursor(
+            retained.current_cursor,
         ));
+    }
+    redraw
+}
+
+fn record_renderer_bench_metadata(renderer: &Renderer) {
+    let adapter_info = renderer.adapter_info();
+    let mut bench_metadata = ailloli_ui_bench::RunMetadata::default();
+    bench_metadata.winit_version = Some("0.30.13".to_string());
+    bench_metadata.backend = Some(adapter_info.backend.to_str().to_string());
+    bench_metadata.gpu = Some(adapter_info.name.clone());
+    bench_metadata.driver = Some(if adapter_info.driver_info.is_empty() {
+        adapter_info.driver.clone()
+    } else {
+        format!("{} ({})", adapter_info.driver, adapter_info.driver_info)
+    });
+    let _ = ailloli_ui_bench::try_update_metadata(bench_metadata);
+}
+
+fn prepare_retained_for_detach<A>(retained: &mut RetainedWindowState<A>, logical_size: Size) {
+    retained.input_bench.flush();
+    retained.options.inner_size = Some(LogicalSize::new(
+        logical_size.w.max(1.0) as f64,
+        logical_size.h.max(1.0) as f64,
+    ));
+    retained
+        .presentation_intents
+        .push(PresentationIntent::SetInnerSize(logical_size));
+    retained
+        .presentation_intents
+        .push(PresentationIntent::SetCursor(retained.current_cursor));
+    retained
+        .presentation_intents
+        .push(PresentationIntent::Redraw);
+    retained.input.clear_pointer_state();
+    retained.cursor_pos = None;
+    retained.touch_primary.clear();
+    retained.ime_allowed = false;
+    retained.last_ime_cursor_area = None;
+    retained.render_retry_at = None;
+    retained.render_timeout_streak = 0;
+    let _ = retained.lifecycle.apply(PresentationEvent::Suspend);
+}
+
+fn detach_native_window<A>(state: WindowState<A>) -> RetainedWindowState<A> {
+    let physical_size = state.window.inner_size();
+    let logical_size = Size::new(
+        to_logical_f32(physical_size.width as f32, state.scale),
+        to_logical_f32(physical_size.height as f32, state.scale),
+    );
+    let WindowState {
+        mut renderer,
+        window,
+        resize: _,
+        #[cfg(feature = "native-overlay")]
+            native_overlay_capabilities: _,
+        mut retained,
+    } = state;
+    prepare_retained_for_detach(&mut retained, logical_size);
+    // Release the surface and its strong raw-handle owner before dropping the
+    // native window. The remaining GPU context and caches are retained.
+    detach_renderer_surface(&mut renderer);
+    retained.renderer = Some(renderer);
+    drop(window);
+    retained
+}
+
+#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+fn detach_wayland_overlay<A>(state: WaylandOverlayState<A>) -> RetainedWindowState<A> {
+    let logical_size = Size::new(
+        state.configured.logical_width as f32,
+        state.configured.logical_height as f32,
+    );
+    let WaylandOverlayState {
+        mut renderer,
+        _surface: surface,
+        events: _,
+        configured: _,
+        capabilities: _,
+        needs_redraw: _,
+        mut retained,
+    } = state;
+    prepare_retained_for_detach(&mut retained, logical_size);
+    renderer.detach_surface();
+    retained.renderer = Some(renderer);
+    drop(surface);
+    retained
+}
+
+impl<A: 'static> UiApp<A> {
+    /// Handles the native resume callback delegated by [`crate::WinitHost`].
+    pub(crate) fn host_resumed(&mut self, event_loop: &ActiveEventLoop) {
+        Self::trace_startup(format_args!(
+            "resumed with {} new and {} retained window(s)",
+            self.pending.len(),
+            self.retained_windows.len()
+        ));
+
         let pending_windows = std::mem::take(&mut self.pending);
         for pending in pending_windows {
-            #[cfg(feature = "native-overlay")]
-            let native_overlay = pending.options.native_overlay.clone();
-            #[cfg(feature = "native-overlay")]
-            let is_native_overlay = native_overlay.is_some();
-            #[cfg(not(feature = "native-overlay"))]
-            let is_native_overlay = false;
-            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
-            if let Some(options) = native_overlay.as_ref() {
-                use winit::platform::wayland::ActiveEventLoopExtWayland;
-
-                if event_loop.is_wayland() {
-                    let Some(proxy) = shutdown_signal::current_proxy() else {
-                        self.fail(
-                            event_loop,
-                            UiAppError::WindowCreate(
-                                "native overlay event-loop proxy is unavailable".to_string(),
-                            ),
-                        );
-                        return;
-                    };
-                    let created = match crate::native_overlay::wayland::create(options, proxy) {
-                        Ok(created) => created,
-                        Err(err) => {
-                            self.fail(event_loop, UiAppError::WindowCreate(err.to_string()));
-                            return;
-                        }
-                    };
-                    let CreatedWaylandOverlay {
-                        surface,
-                        configured,
-                        events,
-                        capabilities,
-                    } = created;
-                    let renderer_options = RendererOptions {
-                        transparent: true,
-                        ..Default::default()
-                    };
-                    let renderer = match Renderer::new_with_surface_target(
-                        surface.clone(),
-                        configured.physical_size(),
-                        renderer_options,
-                        None,
-                    ) {
-                        Ok(renderer) => renderer,
-                        Err(err) => {
-                            self.fail(event_loop, UiAppError::RendererCreate(err.to_string()));
-                            return;
-                        }
-                    };
-                    let mut runtime = Runtime::new(self.runtime.clone());
-                    runtime.reconcile(pending.root);
-                    self.wayland_overlays.push(WaylandOverlayState {
-                        logical_window_id: pending.options.logical_window_id,
-                        renderer,
-                        _surface: surface,
-                        events,
-                        configured,
-                        capabilities,
-                        clear: Color::TRANSPARENT,
-                        text_system: TextSystem::new(),
-                        runtime,
-                        input: InputRouter::default(),
-                        scale: Scale::new(configured.scale_factor.max(1) as f32),
-                        needs_redraw: std::cell::Cell::new(true),
-                        rendered_once: false,
-                    });
-                    continue;
-                }
-            }
-            let reveal_after_first_frame = pending.options.start_hidden_until_first_frame;
-            let logical_window_id = pending.options.logical_window_id.clone();
-            let client_edge_resize =
-                !is_native_overlay && !pending.options.decorations && pending.options.resizable;
-            let client_titlebar_drag =
-                !is_native_overlay && client_titlebar_drag_enabled(&pending.options);
-            let client_titlebar_key = pending.options.client_titlebar_key.clone();
-            let renderer_options = RendererOptions {
-                transparent: pending.options.transparent || is_native_overlay,
-                ..Default::default()
-            };
-            // `Arc<Window>` is required: the wgpu `Surface` keeps a strong ref (see
-            // `ailloli_ui_render_wgpu::WgpuSurfaceBundle`). Moving the window into `WindowState`
-            // without `Arc` would invalidate the surface's window pointer.
-            let window = match create_window(event_loop, pending.options) {
-                Ok(window) => Arc::new(window),
-                Err(err) => {
-                    self.fail(event_loop, UiAppError::WindowCreate(err.to_string()));
-                    return;
-                }
-            };
-            #[cfg(feature = "native-overlay")]
-            let native_overlay_capabilities =
-                match configure_x11_overlay(event_loop, window.as_ref(), native_overlay.as_ref()) {
-                    Ok(capabilities) => capabilities,
-                    Err(err) => {
-                        self.fail(event_loop, UiAppError::WindowCreate(err));
-                        return;
-                    }
-                };
-            Self::trace_startup(format_args!("created window {:?}", window.id()));
-            let scale = Scale::new(window.scale_factor() as f32);
-            let renderer = match Renderer::new_with_options(window.clone(), renderer_options) {
-                Ok(renderer) => renderer,
-                Err(err) => {
-                    self.fail(event_loop, UiAppError::RendererCreate(err.to_string()));
-                    return;
-                }
-            };
-            Self::trace_startup(format_args!("created renderer for {:?}", window.id()));
-
-            let mut runtime = Runtime::new(self.runtime.clone());
-            runtime.reconcile(pending.root);
-            #[cfg(feature = "devtools")]
-            let mut devtools = DevToolsWindowState::new();
-            #[cfg(feature = "devtools")]
-            if let Some(addr) = self.devtools_remote_addr {
-                devtools.set_remote_addr(Some(addr));
-            }
-
-            let id = window.id();
-            let bench_now = Instant::now();
-            self.windows.insert(
-                id,
-                WindowState {
-                    logical_window_id,
-                    client_edge_resize,
-                    client_titlebar_drag,
-                    client_titlebar_key,
-                    renderer,
-                    window,
-                    resize: ResizeController::default(),
-                    clear: pending.clear,
-                    text_system: TextSystem::new(),
-                    runtime,
-                    scale,
-                    cursor_pos: None,
-                    modifiers: Modifiers::default(),
-                    input: InputRouter::default(),
-                    ime_allowed: false,
-                    last_ime_cursor_area: None,
-                    next_text_blink: None,
-                    render_retry_at: None,
-                    render_timeout_streak: 0,
-                    input_bench: InputBenchCounters::new(bench_now),
-                    rendered_once: false,
-                    reveal_after_first_frame,
-                    #[cfg(feature = "native-overlay")]
-                    native_overlay_capabilities,
-                    #[cfg(feature = "devtools")]
-                    devtools,
-                },
-            );
+            let retained = self.retain_pending_window(pending);
+            self.retained_windows.push(retained);
         }
 
+        let retained_windows = std::mem::take(&mut self.retained_windows);
+        for retained in retained_windows {
+            let was_previously_attached =
+                retained.presentation_generation != PresentationGeneration::INITIAL;
+            match self.attach_retained_window(event_loop, retained) {
+                Ok(attached) => self.store_attached_window(attached),
+                Err(attachment_error) => {
+                    let (retained, error) = *attachment_error;
+                    self.retained_windows.push(retained);
+                    if was_previously_attached {
+                        eprintln!(
+                            "ailloli_ui_winit: presentation reattach deferred; retained UI state remains available: {error}"
+                        );
+                    } else {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "test-support")]
+        self.service_presentation_test_faults(event_loop);
         Self::trace_startup("requesting initial redraw");
         self.request_redraw_all();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    /// Handles the native suspend callback delegated by [`crate::WinitHost`].
+    pub(crate) fn host_suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        Self::trace_startup(format_args!(
+            "suspending {} native window(s)",
+            self.windows.len()
+        ));
+
+        self.flush_pending_file_batches();
+        let windows = std::mem::take(&mut self.windows);
+        for (_, state) in windows {
+            self.window_snapshots
+                .insert(state.logical_window_id.clone(), window_snapshot(&state));
+            self.retained_windows.push(detach_native_window(state));
+        }
+
+        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        {
+            let overlays = std::mem::take(&mut self.wayland_overlays);
+            for state in overlays {
+                self.retained_windows.push(detach_wayland_overlay(state));
+            }
+        }
+
+        // A suspended host can legitimately own no native window. The logical
+        // application remains alive and will reattach presentations on resumed.
+        self.control_flow = ControlFlow::Wait;
+    }
+
+    /// Handles one native window callback delegated by [`crate::WinitHost`].
+    pub(crate) fn host_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        event: WindowEvent,
+    ) {
         let capture = self.capture.clone();
         let known_window_ids: Vec<String> = self
             .windows
@@ -970,30 +2275,71 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
             c.fail_unknown_windows(known_window_ids.iter().map(|s| s.as_str()));
         }
 
+        let event_id = EventId::new(self.next_event_id);
+        self.next_event_id = self.next_event_id.saturating_add(1);
+        let event_timestamp = EventTimestamp::new(self.event_origin.elapsed());
+
+        let queued_file_event = match &event {
+            WindowEvent::HoveredFile(path) => {
+                self.queue_file_batch(
+                    id,
+                    PendingFileBatchKind::Entered,
+                    Some(ailloli_ui_core::UploadFile::from_path(path.clone())),
+                );
+                true
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.queue_file_batch(id, PendingFileBatchKind::Left, None);
+                true
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.queue_file_batch(
+                    id,
+                    PendingFileBatchKind::Dropped,
+                    Some(ailloli_ui_core::UploadFile::from_path(path.clone())),
+                );
+                true
+            }
+            _ => false,
+        };
+        if queued_file_event {
+            self.drain_window_chrome_ops();
+            return;
+        }
+
         let Some(state) = self.windows.get_mut(&id) else {
             self.drain_window_chrome_ops();
             return;
         };
 
         let mut failure = None;
+        let mut recreate_surface = None;
 
         match event {
             WindowEvent::CloseRequested => {
-                if let Some(state) = self.windows.get(&id) {
+                if let Some(mut state) = self.windows.remove(&id) {
                     self.window_snapshots
-                        .insert(state.logical_window_id.clone(), window_snapshot(state));
+                        .insert(state.logical_window_id.clone(), window_snapshot(&state));
+                    state.input_bench.flush();
+                    let _ = state.lifecycle.apply(PresentationEvent::Destroy);
+                    state.runtime.runtime.clear_presentation_scope();
+                    // Struct field order releases renderer/surface before window.
+                    drop(state);
                 }
-                self.windows.remove(&id);
-                if self.windows.is_empty() && {
-                    #[cfg(all(target_os = "linux", feature = "native-overlay"))]
-                    {
-                        self.wayland_overlays.is_empty()
+                if self.windows.is_empty()
+                    && self.retained_windows.is_empty()
+                    && self.pending.is_empty()
+                    && {
+                        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                        {
+                            self.wayland_overlays.is_empty()
+                        }
+                        #[cfg(not(all(target_os = "linux", feature = "native-overlay")))]
+                        {
+                            true
+                        }
                     }
-                    #[cfg(not(all(target_os = "linux", feature = "native-overlay")))]
-                    {
-                        true
-                    }
-                } {
+                {
                     event_loop.exit();
                 }
             }
@@ -1003,10 +2349,20 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                     w: size.width,
                     h: size.height,
                 });
-                state.resize.request(size);
+                let request_redraw = state.resize.request(size);
+                if !request_redraw {
+                    Self::mark_attachment_unavailable(
+                        &mut state.retained,
+                        PresentationUnavailableReason::ZeroExtent,
+                    );
+                    state.render_retry_at = None;
+                    state.render_timeout_streak = 0;
+                }
                 self.window_snapshots
                     .insert(state.logical_window_id.clone(), window_snapshot(state));
-                state.window.request_redraw();
+                if request_redraw {
+                    state.window.request_redraw();
+                }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 state.scale = Scale::new(scale_factor as f32);
@@ -1017,10 +2373,20 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                     w: size.width,
                     h: size.height,
                 });
-                state.resize.request(size);
+                let request_redraw = state.resize.request(size);
+                if !request_redraw {
+                    Self::mark_attachment_unavailable(
+                        &mut state.retained,
+                        PresentationUnavailableReason::ZeroExtent,
+                    );
+                    state.render_retry_at = None;
+                    state.render_timeout_streak = 0;
+                }
                 self.window_snapshots
                     .insert(state.logical_window_id.clone(), window_snapshot(state));
-                state.window.request_redraw();
+                if request_redraw {
+                    state.window.request_redraw();
+                }
             }
             WindowEvent::RedrawRequested => {
                 Self::trace_startup(format_args!("redraw requested for {id:?}"));
@@ -1040,6 +2406,12 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                     }
                     Ok(ResizeRedrawAction::SkippedZero) => {
                         skip_render = true;
+                        Self::mark_attachment_unavailable(
+                            &mut state.retained,
+                            PresentationUnavailableReason::ZeroExtent,
+                        );
+                        state.render_retry_at = None;
+                        state.render_timeout_streak = 0;
                         Self::trace_startup(format_args!("skipped zero-sized resize for {id:?}"));
                     }
                     Ok(ResizeRedrawAction::Applied(applied)) => {
@@ -1053,8 +2425,29 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                             "resize outcome for {id:?}: {:?}",
                             applied.outcome
                         ));
+                        if let Err(error) = Self::complete_zero_extent_recovery(&mut state.retained)
+                        {
+                            failure = Some(error);
+                            skip_render = true;
+                        }
                     }
-                    Err(err) => failure = Some(UiAppError::Render(err.to_string())),
+                    Err(err) => match render_error_action(&err) {
+                        RenderErrorAction::RetryFrame(delay) => {
+                            schedule_render_retry(state, delay);
+                            skip_render = true;
+                        }
+                        RenderErrorAction::ReconfigureSurface => {
+                            recreate_surface = Some(presentation_recreation_cause(&err));
+                            skip_render = true;
+                        }
+                        RenderErrorAction::Fatal => {
+                            failure = Some(UiAppError::Render(err.to_string()));
+                        }
+                    },
+                }
+
+                if state.lifecycle.state() != PresentationState::Ready {
+                    skip_render = true;
                 }
 
                 if failure.is_none() && !skip_render {
@@ -1070,29 +2463,32 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                     let layout_start = Instant::now();
                     layout_window(state);
                     let layout_us = layout_start.elapsed().as_micros();
-                    state.input.apply_pending_focus_request(
-                        &state.runtime.tree,
-                        state.runtime.runtime.clone(),
-                    );
-                    update_ime_state(state);
+                    {
+                        let retained = &mut state.retained;
+                        let runtime_handle = retained.runtime.runtime.clone();
+                        retained
+                            .input
+                            .apply_pending_focus_request(&retained.runtime.tree, runtime_handle);
+                    }
 
                     let paint_start = Instant::now();
-                    let scene = state.runtime.paint_with_input(
-                        &mut state.text_system,
-                        state.input.snapshot(),
-                        now_ms(),
-                    );
+                    let popup_viewport = window_viewport_logical(state);
+                    let scene =
+                        paint_retained_window(&mut state.retained, popup_viewport, now_ms());
+                    update_ime_state(state);
                     #[cfg(feature = "devtools")]
                     let mut scene = scene;
                     #[cfg(feature = "devtools")]
                     if let Some(root) = state.runtime.root {
                         let viewport = window_viewport_logical(state);
-                        if let Some(devtools_scene) = state.devtools.build_scene(
-                            &state.runtime.tree,
+                        let retained = &mut state.retained;
+                        let scale = retained.scale;
+                        if let Some(devtools_scene) = retained.devtools.build_scene(
+                            &retained.runtime.tree,
                             root,
                             viewport,
-                            state.scale,
-                            &mut state.text_system,
+                            scale,
+                            &mut retained.text_system,
                         ) {
                             scene.layers.extend(devtools_scene.layers);
                         }
@@ -1125,12 +2521,25 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                             .render_layered_scaled(state.clear, &passes, state.scale)
                     };
                     let render_us = render_start.elapsed().as_micros();
-                    record_ui_frame_metrics(layout_us, paint_us, render_us, draw_text_cmds);
+                    record_ui_frame_metrics(
+                        &state.logical_window_id,
+                        state.presentation_generation,
+                        layout_us,
+                        paint_us,
+                        render_us,
+                        draw_text_cmds,
+                    );
 
                     match render_outcome {
                         Ok(()) => {
+                            state.resize.mark_render_succeeded();
                             state.render_retry_at = None;
                             state.render_timeout_streak = 0;
+                            #[cfg(feature = "test-support")]
+                            {
+                                state.rendered_frame_count =
+                                    state.rendered_frame_count.saturating_add(1);
+                            }
                             if let Some(ref cap) = capture {
                                 if cap.exit_after_all_captures() && cap.is_complete() {
                                     event_loop.exit();
@@ -1154,12 +2563,28 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                                 ));
                             }
                             RenderErrorAction::ReconfigureSurface => {
-                                state.resize.defer_for_surface(state.window.as_ref());
                                 state.render_retry_at = None;
                                 state.render_timeout_streak = 0;
-                                Self::trace_startup(format_args!(
-                                    "skipping render for {id:?}: surface requires reconfigure ({err})"
-                                ));
+                                match state.resize.request_surface_recovery(state.window.as_ref()) {
+                                    SurfaceRecoveryAction::ReconfigureScheduled => {
+                                        if state.resize.zero_extent_unavailable() {
+                                            Self::mark_attachment_unavailable(
+                                                &mut state.retained,
+                                                PresentationUnavailableReason::ZeroExtent,
+                                            );
+                                        }
+                                        Self::trace_startup(format_args!(
+                                            "skipping render for {id:?}: forcing surface reconfigure ({err})"
+                                        ));
+                                    }
+                                    SurfaceRecoveryAction::RecreatePresentation => {
+                                        recreate_surface =
+                                            Some(presentation_recreation_cause(&err));
+                                        Self::trace_startup(format_args!(
+                                            "recreating presentation for {id:?}: surface remained invalid after forced reconfigure ({err})"
+                                        ));
+                                    }
+                                }
                             }
                             RenderErrorAction::Fatal => {
                                 failure = Some(UiAppError::Render(err.to_string()));
@@ -1169,7 +2594,7 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
                 }
             }
             event => {
-                let redraw = route_window_event(state, &event);
+                let redraw = route_window_event(state, &event, event_id, event_timestamp);
                 if redraw.request {
                     if redraw.from_route {
                         state.input_bench.record_route_redraw();
@@ -1182,6 +2607,74 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
             }
         }
 
+        if let Some(recreation_cause) = recreate_surface {
+            Self::trace_startup(format_args!(
+                "rebuilding native presentation for {id:?} after {recreation_cause:?}"
+            ));
+            if let Some(state) = self.windows.remove(&id) {
+                // The retained-state boundary drops the invalid surface before
+                // the native window. Reattachment first reuses the GPU context
+                // and rebuilds device-bound caches only when compatibility fails.
+                #[cfg(feature = "test-support")]
+                let logical_window_id =
+                    ailloli_ui_core::LogicalWindowId::new(state.logical_window_id.clone());
+                self.window_snapshots
+                    .insert(state.logical_window_id.clone(), window_snapshot(&state));
+                #[cfg(feature = "test-support")]
+                let previous_generation = state.lifecycle.generation();
+                let mut retained = detach_native_window(state);
+                Self::mark_attachment_unavailable(
+                    &mut retained,
+                    PresentationUnavailableReason::SurfaceLost,
+                );
+                #[cfg(feature = "test-support")]
+                {
+                    let counters = self
+                        .presentation_test_counters
+                        .entry(logical_window_id.clone())
+                        .or_default();
+                    counters.detach_count = counters.detach_count.saturating_add(1);
+                    match recreation_cause {
+                        PresentationRecreationCause::Lost => {
+                            counters.lost_count = counters.lost_count.saturating_add(1);
+                        }
+                        PresentationRecreationCause::Outdated => {
+                            counters.outdated_count = counters.outdated_count.saturating_add(1);
+                        }
+                        PresentationRecreationCause::ReconfigureFailed => {}
+                    }
+                }
+                match self.attach_retained_window(event_loop, retained) {
+                    Ok(attached) => {
+                        #[cfg(feature = "test-support")]
+                        {
+                            let next_generation = match &attached {
+                                AttachedWindow::Native(_, state) => state.lifecycle.generation(),
+                                #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                                AttachedWindow::WaylandOverlay(state) => {
+                                    state.lifecycle.generation()
+                                }
+                            };
+                            if next_generation > previous_generation {
+                                self.presentation_test_counters
+                                    .entry(logical_window_id)
+                                    .or_default()
+                                    .recovery_count += 1;
+                            }
+                        }
+                        self.store_attached_window(attached);
+                    }
+                    Err(attachment_error) => {
+                        let (retained, error) = *attachment_error;
+                        eprintln!(
+                            "ailloli_ui_winit: surface recovery deferred; retained UI state remains available: {error}"
+                        );
+                        self.retained_windows.push(retained);
+                    }
+                }
+            }
+        }
+
         self.drain_window_chrome_ops();
 
         if let Some(error) = failure {
@@ -1189,11 +2682,8 @@ impl<A: 'static> ApplicationHandler for UiApp<A> {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.about_to_wait_with_wakeup(event_loop, None);
-    }
-
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+    /// Handles the payload-free native wake callback delegated by [`crate::WinitHost`].
+    pub(crate) fn host_user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         #[cfg(all(target_os = "linux", feature = "native-overlay"))]
         self.service_wayland_overlays(_event_loop);
     }
@@ -1405,12 +2895,80 @@ fn layout_window<A: 'static>(state: &mut WindowState<A>) {
     }
     let constraints = Constraints::tight(logical_w, logical_h);
 
-    state
+    let retained = &mut state.retained;
+    let scale = retained.scale;
+    retained
         .runtime
-        .layout(constraints, state.scale, &mut state.text_system);
+        .layout(constraints, scale, &mut retained.text_system);
 }
 
-#[cfg(feature = "devtools")]
+fn paint_retained_window<A: 'static>(
+    retained: &mut RetainedWindowState<A>,
+    popup_viewport: Rect,
+    frame_time_ms: u128,
+) -> ailloli_ui_runtime::Scene {
+    let logical_window_id =
+        ailloli_ui_core::LogicalWindowId::new(retained.logical_window_id.clone());
+    let presentation_generation = retained.presentation_generation;
+    let runtime_handle = retained.runtime.runtime.clone();
+    runtime_handle.set_presentation_scope(logical_window_id.clone(), presentation_generation);
+    runtime_handle.close_stale_popup_presentations(&logical_window_id, presentation_generation);
+    retained.popup_mounts.apply_pending_popup_intents();
+    retained.input.apply_pending_popup_intents_for_presentation(
+        &retained.runtime.tree,
+        runtime_handle.clone(),
+        &logical_window_id,
+        presentation_generation,
+    );
+    blur_owner_for_focused_popup(retained);
+
+    let input = retained.input.snapshot();
+    let mut scene =
+        retained
+            .runtime
+            .paint_with_input(&mut retained.text_system, input, frame_time_ms);
+
+    // Procedural widgets publish their authoritative popup geometry while the
+    // owner tree paints. Retained popup requests can then reconcile, layout,
+    // and append their own persistent overlay trees in the same frame.
+    retained.popup_mounts.resolve_and_sync(
+        &logical_window_id,
+        presentation_generation,
+        popup_viewport,
+        crate::popup_backend_capabilities(),
+    );
+    retained
+        .popup_mounts
+        .layout(retained.scale, &mut retained.text_system);
+    let popup_intents_changed = retained.popup_mounts.apply_pending_popup_intents();
+    let owner_intents_changed = retained.input.apply_pending_popup_intents_for_presentation(
+        &retained.runtime.tree,
+        runtime_handle,
+        &logical_window_id,
+        presentation_generation,
+    );
+    let owner_blurred = blur_owner_for_focused_popup(retained);
+    if popup_intents_changed || owner_intents_changed || owner_blurred {
+        let input = retained.input.snapshot();
+        scene = retained
+            .runtime
+            .paint_with_input(&mut retained.text_system, input, frame_time_ms);
+    }
+    retained
+        .popup_mounts
+        .append_to_scene(&mut scene, &mut retained.text_system, frame_time_ms);
+    scene
+}
+
+fn blur_owner_for_focused_popup<A: 'static>(retained: &mut RetainedWindowState<A>) -> bool {
+    if !retained.popup_mounts.has_focus() {
+        return false;
+    }
+    retained
+        .input
+        .blur_tree(&retained.runtime.tree, retained.runtime.runtime.clone())
+}
+
 fn window_viewport_logical<A>(state: &WindowState<A>) -> Rect {
     let physical = state.window.inner_size();
     Rect::new(
@@ -1485,8 +3043,19 @@ fn render_error_action(error: &RendererError) -> RenderErrorAction {
         RendererError::SurfaceAcquireLost | RendererError::SurfaceAcquireOutdated => {
             RenderErrorAction::ReconfigureSurface
         }
+        RendererError::SurfaceConfigFailed | RendererError::SurfaceRecreationRequired(_) => {
+            RenderErrorAction::ReconfigureSurface
+        }
         RendererError::SurfaceAcquireOutOfMemory => RenderErrorAction::Fatal,
         _ => RenderErrorAction::Fatal,
+    }
+}
+
+fn presentation_recreation_cause(error: &RendererError) -> PresentationRecreationCause {
+    match error {
+        RendererError::SurfaceAcquireLost => PresentationRecreationCause::Lost,
+        RendererError::SurfaceAcquireOutdated => PresentationRecreationCause::Outdated,
+        _ => PresentationRecreationCause::ReconfigureFailed,
     }
 }
 
@@ -1503,14 +3072,37 @@ fn render_timeout_retry_delay(streak: u32, min_delay: Duration) -> Duration {
     delay.min(RENDER_TIMEOUT_RETRY_MAX_DELAY)
 }
 
-fn record_ui_frame_metrics(layout_us: u128, paint_us: u128, render_us: u128, draw_text_cmds: u32) {
+fn record_ui_frame_metrics(
+    logical_window_id: &str,
+    presentation_generation: PresentationGeneration,
+    layout_us: u128,
+    paint_us: u128,
+    render_us: u128,
+    draw_text_cmds: u32,
+) {
     if !InputBenchCounters::metrics_enabled() {
         return;
     }
-    ailloli_ui_bench::metric("ui.layout_us", layout_us as f64);
-    ailloli_ui_bench::metric("ui.paint_us", paint_us as f64);
-    ailloli_ui_bench::metric("ui.render_us", render_us as f64);
-    ailloli_ui_bench::metric("ui.draw_text_cmds", draw_text_cmds as f64);
+    let Ok(Some(frame_id)) = ailloli_ui_bench::try_allocate_frame_id() else {
+        return;
+    };
+    let context = ailloli_ui_bench::EventContext::default()
+        .with_frame(frame_id)
+        .with_window(ailloli_ui_bench::BenchWindowId::new(logical_window_id))
+        .with_surface(
+            ailloli_ui_bench::BenchSurfaceId::new(logical_window_id),
+            presentation_generation.get(),
+        );
+    let _ = ailloli_ui_bench::try_record(
+        ailloli_ui_bench::Event::TextPipelineFrame {
+            ts_ms: now_ms(),
+            layout_us,
+            paint_us,
+            render_us,
+            draw_text_cmds,
+        },
+        context,
+    );
 }
 
 fn runtime_has_root_layout<A>(runtime: &Runtime<A>) -> bool {
@@ -1566,6 +3158,13 @@ fn cursor_icon_for_hover_state(
 }
 
 fn cursor_icon_for_pointer_state<A: 'static>(state: &WindowState<A>, pos: Point) -> CursorIcon {
+    if let Some(role) = state
+        .retained
+        .popup_mounts
+        .hovered_cursor_role_at_global(pos)
+    {
+        return cursor_icon_for_hover_role(role);
+    }
     let resize_edge = if state.client_edge_resize {
         let bounds = root_client_bounds_logical(state);
         hit_resize_frame(bounds, CLIENT_RESIZE_BORDER_LOGICAL_PX, pos, true)
@@ -1576,6 +3175,72 @@ fn cursor_icon_for_pointer_state<A: 'static>(state: &WindowState<A>, pos: Point)
         resize_edge,
         state.input.hovered_cursor_role_at(&state.runtime.tree, pos),
     )
+}
+
+fn presentation_cursor_for_pointer_state<A: 'static>(
+    state: &WindowState<A>,
+    pos: Point,
+) -> PresentationCursor {
+    if let Some(role) = state
+        .retained
+        .popup_mounts
+        .hovered_cursor_role_at_global(pos)
+    {
+        return presentation_cursor_for_hover_role(role);
+    }
+    if state.client_edge_resize {
+        let bounds = root_client_bounds_logical(state);
+        match hit_resize_frame(bounds, CLIENT_RESIZE_BORDER_LOGICAL_PX, pos, true) {
+            Some(ResizeEdge::E | ResizeEdge::W) => return PresentationCursor::ResizeX,
+            Some(ResizeEdge::N | ResizeEdge::S) => return PresentationCursor::ResizeY,
+            Some(ResizeEdge::NE | ResizeEdge::NW | ResizeEdge::SE | ResizeEdge::SW) => {
+                // The provider-neutral v1 cursor contract has no diagonal role.
+                return PresentationCursor::Default;
+            }
+            None => {}
+        }
+    }
+    presentation_cursor_for_hover_role(state.input.hovered_cursor_role_at(&state.runtime.tree, pos))
+}
+
+fn presentation_cursor_for_hover_role(role: HoverCursorRole) -> PresentationCursor {
+    match role {
+        HoverCursorRole::Pointer => PresentationCursor::Pointer,
+        HoverCursorRole::Text => PresentationCursor::Text,
+        HoverCursorRole::ResizeX => PresentationCursor::ResizeX,
+        HoverCursorRole::ResizeY => PresentationCursor::ResizeY,
+        HoverCursorRole::Inherit | HoverCursorRole::Default => PresentationCursor::Default,
+    }
+}
+
+/// Returns whether an open popup must see this pointer press before native
+/// titlebar/resize gestures are considered.
+///
+/// Native chrome handling runs outside the element router. Without this gate,
+/// an outside press intended to dismiss a menu could start moving or resizing
+/// the window before the popup portal consumes the gesture.
+fn popup_blocks_native_window_gesture<A: 'static>(state: &WindowState<A>, event: &Event) -> bool {
+    if !matches!(
+        event,
+        Event::Pointer(PointerEvent::Button { pressed: true, .. })
+    ) {
+        return false;
+    }
+
+    let logical_window_id =
+        ailloli_ui_core::LogicalWindowId::new(state.retained.logical_window_id.clone());
+    let portal = state.runtime.runtime.popup_portal();
+    let portal = portal.borrow();
+    let blocked = portal.open_ids().rev().any(|popup_id| {
+        portal.request(popup_id).is_some_and(|request| {
+            request
+                .owner()
+                .belongs_to(&logical_window_id, state.presentation_generation)
+                && (request.semantics().consumes_pointer_input()
+                    || request.semantics().dismisses_on_outside_press())
+        })
+    });
+    blocked
 }
 
 fn handle_client_edge_resize_input<A: 'static>(
@@ -1714,9 +3379,66 @@ fn handle_client_titlebar_drag_press<A: 'static>(
     })
 }
 
+fn route_retained_envelope<A: 'static>(
+    retained: &mut RetainedWindowState<A>,
+    envelope: &EventEnvelope,
+) -> ailloli_ui_runtime::input::RouteOutcome {
+    let logical_window_id =
+        ailloli_ui_core::LogicalWindowId::new(retained.logical_window_id.clone());
+    let presentation_generation = retained.presentation_generation;
+    let runtime_handle = retained.runtime.runtime.clone();
+    runtime_handle.set_presentation_scope(logical_window_id.clone(), presentation_generation);
+    runtime_handle.close_stale_popup_presentations(&logical_window_id, presentation_generation);
+    let sync_before = retained
+        .popup_mounts
+        .sync(&logical_window_id, presentation_generation);
+    let popup_intents_before = retained.popup_mounts.apply_pending_popup_intents();
+    let owner_intents_before = retained.input.apply_pending_popup_intents_for_presentation(
+        &retained.runtime.tree,
+        runtime_handle.clone(),
+        &logical_window_id,
+        presentation_generation,
+    );
+    let owner_blurred_before = blur_owner_for_focused_popup(retained);
+    let popup_outcome = retained.popup_mounts.route_envelope(envelope);
+    let mut outcome = if popup_outcome.consumed() {
+        popup_outcome.route().clone()
+    } else {
+        let mut outcome =
+            retained
+                .input
+                .route_envelope(&retained.runtime.tree, runtime_handle.clone(), envelope);
+        outcome.interaction_changed |= popup_outcome.route().interaction_changed;
+        outcome.event_dispatched |= popup_outcome.route().event_dispatched;
+        outcome
+    };
+    let sync_after = retained
+        .popup_mounts
+        .sync(&logical_window_id, presentation_generation);
+    let popup_intents_after = retained.popup_mounts.apply_pending_popup_intents();
+    let owner_intents_after = retained.input.apply_pending_popup_intents_for_presentation(
+        &retained.runtime.tree,
+        runtime_handle,
+        &logical_window_id,
+        presentation_generation,
+    );
+    let owner_blurred_after = blur_owner_for_focused_popup(retained);
+    outcome.interaction_changed |= sync_before.changed()
+        || sync_after.changed()
+        || popup_intents_before
+        || owner_intents_before
+        || owner_blurred_before
+        || popup_intents_after
+        || owner_intents_after
+        || owner_blurred_after;
+    outcome
+}
+
 fn route_window_event<A: 'static>(
     state: &mut WindowState<A>,
     event: &WindowEvent,
+    event_id: EventId,
+    event_timestamp: EventTimestamp,
 ) -> RouteWindowRedraw {
     if matches!(event, WindowEvent::KeyboardInput { .. }) {
         state.input_bench.record_keyboard();
@@ -1725,9 +3447,20 @@ fn route_window_event<A: 'static>(
         state.input_bench.record_ime(ime);
     }
 
-    let Some(event) = translate_window_event(state, event) else {
+    let Some((event, pointer_sample)) = translate_window_event(state, event) else {
         return RouteWindowRedraw::default();
     };
+
+    let mut event_meta = EventMeta::new(
+        event_id,
+        event_timestamp,
+        state.logical_window_id.as_str(),
+        state.presentation_generation,
+    );
+    if let Some(pointer_sample) = pointer_sample {
+        event_meta = event_meta.with_pointer(pointer_sample);
+    }
+    let envelope = EventEnvelope::new(event_meta, event.clone());
 
     #[cfg(feature = "devtools")]
     if state.devtools.handle_event(&event) {
@@ -1746,21 +3479,21 @@ fn route_window_event<A: 'static>(
             .record_layout_before_event_us(layout_start.elapsed().as_micros());
     }
 
-    if state.client_edge_resize {
+    let popup_owns_press = popup_blocks_native_window_gesture(state, &event);
+    if state.client_edge_resize && !popup_owns_press {
         if let Some(r) = handle_client_edge_resize_input(state, &event) {
             return r;
         }
     }
 
-    if let Some(r) = handle_client_titlebar_drag_press(state, &event) {
-        return r;
+    if !popup_owns_press {
+        if let Some(r) = handle_client_titlebar_drag_press(state, &event) {
+            return r;
+        }
     }
 
     let route_start = Instant::now();
-    let outcome =
-        state
-            .input
-            .route_event(&state.runtime.tree, state.runtime.runtime.clone(), &event);
+    let outcome = route_retained_envelope(&mut state.retained, &envelope);
     state
         .input_bench
         .record_route_event_us(route_start.elapsed().as_micros());
@@ -1769,9 +3502,10 @@ fn route_window_event<A: 'static>(
         update_ime_state(state);
     }
     if let Event::Pointer(PointerEvent::Moved { pos, .. }) = &event {
-        state
-            .window
-            .set_cursor(cursor_icon_for_pointer_state(state, *pos));
+        let cursor = cursor_icon_for_pointer_state(state, *pos);
+        let retained_cursor = presentation_cursor_for_pointer_state(state, *pos);
+        state.retained.current_cursor = retained_cursor;
+        state.window.set_cursor(cursor);
     }
 
     let from_route = outcome.needs_redraw();
@@ -1793,7 +3527,10 @@ fn should_update_ime_after_event(
     !matches!(event, Event::Keyboard(_) | Event::Ime(_))
 }
 
-fn translate_window_event<A>(state: &mut WindowState<A>, event: &WindowEvent) -> Option<Event> {
+fn translate_window_event<A>(
+    state: &mut WindowState<A>,
+    event: &WindowEvent,
+) -> Option<(Event, Option<PointerSample>)> {
     match event {
         WindowEvent::ModifiersChanged(modifiers) => {
             state.modifiers = convert_modifiers(modifiers.state());
@@ -1802,10 +3539,13 @@ fn translate_window_event<A>(state: &mut WindowState<A>, event: &WindowEvent) ->
         WindowEvent::CursorMoved { position, .. } => {
             let pos = physical_position_to_logical(*position, state.scale);
             state.cursor_pos = Some(pos);
-            Some(Event::Pointer(PointerEvent::Moved {
-                pos,
-                modifiers: state.modifiers,
-            }))
+            Some((
+                Event::Pointer(PointerEvent::Moved {
+                    pos,
+                    modifiers: state.modifiers,
+                }),
+                mouse_pointer_sample(pos),
+            ))
         }
         WindowEvent::MouseInput {
             state: input,
@@ -1813,48 +3553,106 @@ fn translate_window_event<A>(state: &mut WindowState<A>, event: &WindowEvent) ->
             ..
         } => {
             let pos = state.cursor_pos?;
-            Some(Event::Pointer(PointerEvent::Button {
-                pos,
-                button: convert_mouse_button(*button),
-                pressed: *input == ElementState::Pressed,
-                modifiers: state.modifiers,
-            }))
+            Some((
+                Event::Pointer(PointerEvent::Button {
+                    pos,
+                    button: convert_mouse_button(*button),
+                    pressed: *input == ElementState::Pressed,
+                    modifiers: state.modifiers,
+                }),
+                mouse_pointer_sample(pos),
+            ))
         }
         WindowEvent::MouseWheel { delta, .. } => {
             let pos = state.cursor_pos?;
-            Some(Event::Pointer(PointerEvent::Wheel {
-                pos,
-                delta: convert_wheel_delta(delta, state.scale),
-                modifiers: state.modifiers,
-                precise: matches!(delta, MouseScrollDelta::PixelDelta(_)),
-            }))
+            Some((
+                Event::Pointer(PointerEvent::Wheel {
+                    pos,
+                    delta: convert_wheel_delta(delta, state.scale),
+                    modifiers: state.modifiers,
+                    precise: matches!(delta, MouseScrollDelta::PixelDelta(_)),
+                }),
+                mouse_pointer_sample(pos),
+            ))
         }
-        WindowEvent::KeyboardInput { event, .. } => Some(Event::Keyboard(convert_key_event(
-            event,
+        WindowEvent::Touch(touch) => translate_touch_event(
+            touch,
+            state.scale,
             state.modifiers,
-            state.cursor_pos,
-        ))),
-        WindowEvent::Ime(ime) => convert_ime_event(ime),
-        WindowEvent::Focused(focused) => Some(Event::Window(
-            ailloli_ui_core::event::WindowEvent::Focused { focused: *focused },
+            &mut state.touch_primary,
+        )
+        .map(|(event, sample)| (event, Some(sample))),
+        WindowEvent::KeyboardInput { event, .. } => Some((
+            Event::Keyboard(convert_key_event(event, state.modifiers, state.cursor_pos)),
+            None,
         )),
-        WindowEvent::HoveredFile(path) => {
-            let pos = state.cursor_pos?;
-            Some(Event::File(FileEvent::Hover {
-                pos,
-                files: vec![ailloli_ui_core::UploadFile::from_path(path.clone())],
-            }))
+        WindowEvent::Ime(ime) => convert_ime_event(ime).map(|event| (event, None)),
+        WindowEvent::Focused(focused) => {
+            if !*focused {
+                state.touch_primary.clear();
+            }
+            Some((
+                Event::Window(ailloli_ui_core::event::WindowEvent::Focused { focused: *focused }),
+                None,
+            ))
         }
-        WindowEvent::HoveredFileCancelled => Some(Event::File(FileEvent::HoverCancelled)),
-        WindowEvent::DroppedFile(path) => {
-            let pos = state.cursor_pos?;
-            Some(Event::File(FileEvent::Drop {
-                pos,
+        WindowEvent::HoveredFile(path) => Some((
+            Event::File(FileEvent::Entered {
+                pos: None,
                 files: vec![ailloli_ui_core::UploadFile::from_path(path.clone())],
-            }))
-        }
+            }),
+            None,
+        )),
+        WindowEvent::HoveredFileCancelled => Some((Event::File(FileEvent::Left), None)),
+        WindowEvent::DroppedFile(path) => Some((
+            Event::File(FileEvent::Dropped {
+                pos: None,
+                files: vec![ailloli_ui_core::UploadFile::from_path(path.clone())],
+            }),
+            None,
+        )),
         _ => None,
     }
+}
+
+fn mouse_pointer_sample(pos: Point) -> Option<PointerSample> {
+    PointerSample::new_with_primary(PointerId::MOUSE, PointerSource::Mouse, pos, true).ok()
+}
+
+fn translate_touch_event(
+    touch: &winit::event::Touch,
+    scale: Scale,
+    modifiers: Modifiers,
+    primary: &mut TouchPrimaryTracker,
+) -> Option<(Event, PointerSample)> {
+    let pos = physical_position_to_logical(touch.location, scale);
+    let pointer_id = PointerId::new(touch.id.saturating_add(1));
+    let mut sample =
+        PointerSample::new_with_primary(pointer_id, PointerSource::Touch, pos, false).ok()?;
+    sample = sample.with_primary(primary.classify(touch.id, touch.phase));
+    if let Some(force) = touch.force {
+        let pressure = force.normalized() as f32;
+        if pressure.is_finite() {
+            sample = sample.with_pressure(pressure.clamp(0.0, 1.0)).ok()?;
+        }
+    }
+    let pointer = match touch.phase {
+        TouchPhase::Started => PointerEvent::Button {
+            pos,
+            button: MouseButton::Left,
+            pressed: true,
+            modifiers,
+        },
+        TouchPhase::Moved => PointerEvent::Moved { pos, modifiers },
+        TouchPhase::Ended => PointerEvent::Button {
+            pos,
+            button: MouseButton::Left,
+            pressed: false,
+            modifiers,
+        },
+        TouchPhase::Cancelled => PointerEvent::Cancelled { pos, modifiers },
+    };
+    Some((Event::Pointer(pointer), sample))
 }
 
 fn physical_position_to_logical(position: PhysicalPosition<f64>, scale: Scale) -> Point {
@@ -1948,20 +3746,13 @@ fn convert_named_key(key: &WinitNamedKey) -> NamedKey {
 
 fn convert_ime_event(ime: &Ime) -> Option<Event> {
     match ime {
-        Ime::Enabled => None,
+        Ime::Enabled => Some(Event::Ime(ImeEvent::Enabled)),
         Ime::Preedit(text, selection) => {
-            let preedit = ImePreedit {
-                text: text.clone(),
-                selection: *selection,
-            };
-            Some(Event::Ime(if preedit.text.is_empty() {
-                ImeEvent::End
-            } else {
-                ImeEvent::Preedit { preedit, pos: None }
-            }))
+            let preedit = ImePreedit::try_new(text.clone(), *selection).ok()?;
+            Some(Event::Ime(ImeEvent::Preedit { preedit, pos: None }))
         }
         Ime::Commit(text) => Some(Event::Ime(ImeEvent::Commit { text: text.clone() })),
-        Ime::Disabled => Some(Event::Ime(ImeEvent::End)),
+        Ime::Disabled => Some(Event::Ime(ImeEvent::Disabled)),
     }
 }
 
@@ -1981,7 +3772,12 @@ fn convert_wheel_delta(
 }
 
 fn update_ime_state<A: 'static>(state: &mut WindowState<A>) {
-    let role = state.input.focused_input_role(&state.runtime.tree);
+    let popup_has_focus = state.retained.popup_mounts.has_focus();
+    let role = if popup_has_focus {
+        state.retained.popup_mounts.focused_input_role()
+    } else {
+        state.input.focused_input_role(&state.runtime.tree)
+    };
     let should_allow = matches!(role, InputRole::TextSingleLine | InputRole::TextMultiLine);
     if state.ime_allowed != should_allow {
         state.window.set_ime_allowed(should_allow);
@@ -1995,7 +3791,11 @@ fn update_ime_state<A: 'static>(state: &mut WindowState<A>) {
     }
 
     let cursor_start = Instant::now();
-    let rect = state.input.focused_ime_cursor_rect(&state.runtime.tree);
+    let rect = if popup_has_focus {
+        state.retained.popup_mounts.focused_ime_cursor_rect_global()
+    } else {
+        state.input.focused_ime_cursor_rect(&state.runtime.tree)
+    };
     state
         .input_bench
         .record_ime_cursor_rect_us(cursor_start.elapsed().as_micros());
@@ -2044,12 +3844,117 @@ fn convert_mouse_button(button: winit::event::MouseButton) -> MouseButton {
 mod tests {
     use super::*;
 
+    fn touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> winit::event::Touch {
+        winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        }
+    }
+
     #[test]
     fn pointer_physical_position_is_converted_to_logical() {
         let pos =
             physical_position_to_logical(PhysicalPosition::new(200.0, 100.0), Scale::new(2.0));
 
         assert_eq!(pos, Point::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn mouse_translation_is_explicitly_primary() {
+        let sample = mouse_pointer_sample(Point::new(4.0, 8.0)).expect("mouse sample");
+
+        assert_eq!(sample.id(), PointerId::MOUSE);
+        assert_eq!(sample.source(), PointerSource::Mouse);
+        assert!(sample.is_primary());
+    }
+
+    #[test]
+    fn touch_translation_marks_only_the_first_contact_primary() {
+        let mut primary = TouchPrimaryTracker::default();
+        let modifiers = Modifiers::default();
+
+        let (_, first) = translate_touch_event(
+            &touch(7, TouchPhase::Started, 20.0, 10.0),
+            Scale::new(2.0),
+            modifiers,
+            &mut primary,
+        )
+        .expect("first touch");
+        let (_, second) = translate_touch_event(
+            &touch(9, TouchPhase::Started, 40.0, 20.0),
+            Scale::new(2.0),
+            modifiers,
+            &mut primary,
+        )
+        .expect("second touch");
+        let (_, first_end) = translate_touch_event(
+            &touch(7, TouchPhase::Ended, 22.0, 12.0),
+            Scale::new(2.0),
+            modifiers,
+            &mut primary,
+        )
+        .expect("primary touch end");
+        let (_, second_move) = translate_touch_event(
+            &touch(9, TouchPhase::Moved, 42.0, 22.0),
+            Scale::new(2.0),
+            modifiers,
+            &mut primary,
+        )
+        .expect("secondary touch move");
+
+        assert_eq!(first.id(), PointerId::new(8));
+        assert_eq!(first.position(), Point::new(10.0, 5.0));
+        assert!(first.is_primary());
+        assert!(!second.is_primary());
+        assert!(first_end.is_primary());
+        assert!(!second_move.is_primary());
+
+        let (_, second_end) = translate_touch_event(
+            &touch(9, TouchPhase::Cancelled, 42.0, 22.0),
+            Scale::new(2.0),
+            modifiers,
+            &mut primary,
+        )
+        .expect("secondary touch cancellation");
+        let (_, next_sequence) = translate_touch_event(
+            &touch(11, TouchPhase::Started, 60.0, 30.0),
+            Scale::new(2.0),
+            modifiers,
+            &mut primary,
+        )
+        .expect("next touch sequence");
+
+        assert!(!second_end.is_primary());
+        assert!(next_sequence.is_primary());
+    }
+
+    #[test]
+    fn clearing_touch_state_starts_a_new_primary_sequence() {
+        let mut primary = TouchPrimaryTracker::default();
+        assert!(primary.classify(1, TouchPhase::Started));
+        assert!(!primary.classify(2, TouchPhase::Started));
+
+        primary.clear();
+
+        assert!(primary.classify(2, TouchPhase::Started));
+    }
+
+    #[test]
+    fn forced_input_bench_flush_drains_subsecond_counters() {
+        let started = Instant::now();
+        let mut counters = InputBenchCounters::new(started);
+        counters.event_keyboard = 2;
+        counters.route_event_us = 17;
+
+        let teardown = started + Duration::from_millis(10);
+        counters.flush_values(teardown);
+
+        assert_eq!(counters.event_keyboard, 0);
+        assert_eq!(counters.route_event_us, 0);
+        assert_eq!(counters.last_flush, teardown);
     }
 
     #[test]
@@ -2073,14 +3978,33 @@ mod tests {
     }
 
     #[test]
-    fn winit_ime_preedit_empty_clears_composition() {
+    fn winit_ime_preserves_empty_preedit_and_explicit_lifecycle() {
         assert_eq!(
             convert_ime_event(&Ime::Preedit(String::new(), None)),
-            Some(Event::Ime(ImeEvent::End))
+            Some(Event::Ime(ImeEvent::Preedit {
+                preedit: ImePreedit::try_new(String::new(), None).unwrap(),
+                pos: None,
+            }))
         );
         assert_eq!(
             convert_ime_event(&Ime::Commit("é".into())),
             Some(Event::Ime(ImeEvent::Commit { text: "é".into() }))
+        );
+        assert_eq!(
+            convert_ime_event(&Ime::Enabled),
+            Some(Event::Ime(ImeEvent::Enabled))
+        );
+        assert_eq!(
+            convert_ime_event(&Ime::Disabled),
+            Some(Event::Ime(ImeEvent::Disabled))
+        );
+    }
+
+    #[test]
+    fn winit_ime_rejects_invalid_utf8_selection() {
+        assert_eq!(
+            convert_ime_event(&Ime::Preedit("é".into(), Some((1, 2)))),
+            None
         );
     }
 
@@ -2113,6 +4037,16 @@ mod tests {
         );
         assert_eq!(
             render_error_action(&RendererError::SurfaceAcquireOutdated),
+            RenderErrorAction::ReconfigureSurface
+        );
+        assert_eq!(
+            render_error_action(&RendererError::SurfaceConfigFailed),
+            RenderErrorAction::ReconfigureSurface
+        );
+        assert_eq!(
+            render_error_action(&RendererError::SurfaceRecreationRequired(
+                "surface format changed"
+            )),
             RenderErrorAction::ReconfigureSurface
         );
         assert_eq!(
@@ -2209,6 +4143,26 @@ mod tests {
         assert_eq!(
             cursor_icon_for_hover_role(HoverCursorRole::ResizeY),
             CursorIcon::from(resize_edge_to_winit(ResizeEdge::S))
+        );
+        assert_eq!(
+            presentation_cursor_for_hover_role(HoverCursorRole::Pointer),
+            PresentationCursor::Pointer
+        );
+        assert_eq!(
+            presentation_cursor_for_hover_role(HoverCursorRole::Text),
+            PresentationCursor::Text
+        );
+        assert_eq!(
+            presentation_cursor_for_hover_role(HoverCursorRole::ResizeX),
+            PresentationCursor::ResizeX
+        );
+        assert_eq!(
+            presentation_cursor_for_hover_role(HoverCursorRole::ResizeY),
+            PresentationCursor::ResizeY
+        );
+        assert_eq!(
+            presentation_cursor_for_hover_role(HoverCursorRole::Default),
+            PresentationCursor::Default
         );
     }
 
@@ -2425,5 +4379,224 @@ mod tests {
             .expect("document");
 
         assert_eq!(read.snapshot_for("main"), Some(&snapshot));
+    }
+
+    mod surface_lifecycle {
+        use super::*;
+
+        fn retained_fixture() -> RetainedWindowState<u32> {
+            let mut app = UiApp::<u32>::new();
+            app.retain_pending_window(PendingWindow {
+                options: WindowOptions {
+                    logical_window_id: "main".to_string(),
+                    ..Default::default()
+                },
+                root: View::empty(),
+                clear: Color::BLACK,
+            })
+        }
+
+        #[test]
+        fn suspend_resume_retains_runtime_and_increments_generation_once_per_attach() {
+            let mut retained = retained_fixture();
+            UiApp::<u32>::allow_presentation_creation(&mut retained).unwrap();
+            UiApp::<u32>::complete_attachment(&mut retained).unwrap();
+            assert_eq!(retained.lifecycle.state(), PresentationState::Ready);
+            assert_eq!(
+                retained.lifecycle.generation(),
+                PresentationGeneration::new(1)
+            );
+
+            retained.runtime.runtime.dispatch(42);
+            prepare_retained_for_detach(&mut retained, Size::new(800.0, 600.0));
+
+            assert_eq!(retained.lifecycle.state(), PresentationState::Suspended);
+            assert_eq!(
+                retained.lifecycle.generation(),
+                PresentationGeneration::new(1)
+            );
+            assert_eq!(retained.runtime.runtime.take_actions(), vec![42]);
+
+            UiApp::<u32>::allow_presentation_creation(&mut retained).unwrap();
+            UiApp::<u32>::complete_attachment(&mut retained).unwrap();
+            assert_eq!(retained.lifecycle.state(), PresentationState::Ready);
+            assert_eq!(
+                retained.lifecycle.generation(),
+                PresentationGeneration::new(2)
+            );
+        }
+
+        #[test]
+        fn detach_coalesces_size_cursor_and_redraw_intents() {
+            let mut retained = retained_fixture();
+            retained.current_cursor = PresentationCursor::Pointer;
+            prepare_retained_for_detach(&mut retained, Size::new(1024.0, 768.0));
+
+            let intents = retained.presentation_intents.drain();
+            assert_eq!(
+                intents,
+                vec![
+                    PresentationIntent::SetInnerSize(Size::new(1024.0, 768.0)),
+                    PresentationIntent::SetCursor(PresentationCursor::Pointer),
+                    PresentationIntent::Redraw,
+                ]
+            );
+        }
+
+        #[test]
+        fn lost_surface_uses_unavailable_retry_and_new_generation() {
+            let mut retained = retained_fixture();
+            UiApp::<u32>::allow_presentation_creation(&mut retained).unwrap();
+            UiApp::<u32>::complete_attachment(&mut retained).unwrap();
+            prepare_retained_for_detach(&mut retained, Size::new(640.0, 480.0));
+            UiApp::<u32>::mark_attachment_unavailable(
+                &mut retained,
+                PresentationUnavailableReason::SurfaceLost,
+            );
+
+            assert_eq!(
+                retained.lifecycle.state(),
+                PresentationState::Unavailable(PresentationUnavailableReason::SurfaceLost)
+            );
+            UiApp::<u32>::allow_presentation_creation(&mut retained).unwrap();
+            assert_eq!(
+                retained.lifecycle.state(),
+                PresentationState::CreationAllowed
+            );
+            UiApp::<u32>::complete_attachment(&mut retained).unwrap();
+            assert_eq!(
+                retained.lifecycle.generation(),
+                PresentationGeneration::new(2)
+            );
+        }
+
+        #[test]
+        fn zero_extent_remains_unavailable_until_nonzero_surface_apply() {
+            let mut retained = retained_fixture();
+            UiApp::<u32>::allow_presentation_creation(&mut retained).unwrap();
+            UiApp::<u32>::complete_attachment(&mut retained).unwrap();
+
+            UiApp::<u32>::mark_attachment_unavailable(
+                &mut retained,
+                PresentationUnavailableReason::ZeroExtent,
+            );
+            UiApp::<u32>::mark_attachment_unavailable(
+                &mut retained,
+                PresentationUnavailableReason::ZeroExtent,
+            );
+            assert_eq!(
+                retained.lifecycle.state(),
+                PresentationState::Unavailable(PresentationUnavailableReason::ZeroExtent)
+            );
+            assert_eq!(
+                retained.presentation_generation,
+                PresentationGeneration::new(1)
+            );
+
+            UiApp::<u32>::complete_zero_extent_recovery(&mut retained).unwrap();
+            assert_eq!(retained.lifecycle.state(), PresentationState::Ready);
+            assert_eq!(
+                retained.presentation_generation,
+                PresentationGeneration::new(2)
+            );
+        }
+
+        #[test]
+        fn redraw_is_retained_while_no_native_presentation_exists() {
+            let mut app = UiApp::<u32>::new();
+            app.retained_windows.push(retained_fixture());
+            let logical_window_id = ailloli_ui_core::LogicalWindowId::new("main");
+
+            assert!(app.request_window_redraw(&logical_window_id));
+            assert_eq!(
+                app.retained_windows[0].presentation_intents.drain(),
+                vec![PresentationIntent::Redraw]
+            );
+        }
+
+        #[test]
+        fn stale_generation_is_rejected_by_ready_lifecycle() {
+            let mut retained = retained_fixture();
+            UiApp::<u32>::allow_presentation_creation(&mut retained).unwrap();
+            UiApp::<u32>::complete_attachment(&mut retained).unwrap();
+
+            assert!(retained.lifecycle.accepts(PresentationGeneration::new(1)));
+            assert!(!retained.lifecycle.accepts(PresentationGeneration::INITIAL));
+            prepare_retained_for_detach(&mut retained, Size::new(320.0, 240.0));
+            assert!(!retained.lifecycle.accepts(PresentationGeneration::new(1)));
+        }
+
+        #[cfg(feature = "test-support")]
+        #[test]
+        fn surface_reattach_outcomes_distinguish_context_reuse_from_rebuild() {
+            let mut app = UiApp::<u32>::new();
+            app.record_gpu_reattach_outcome("main", SurfaceReattachOutcome::ReusedGpuContext);
+            app.record_gpu_reattach_outcome(
+                "main",
+                SurfaceReattachOutcome::RebuiltGpuContext {
+                    reason: ailloli_ui_render_wgpu::SurfaceContextReuseFailure::FormatUnsupported,
+                },
+            );
+
+            let counters = app
+                .presentation_test_counters
+                .get(&ailloli_ui_core::LogicalWindowId::new("main"))
+                .copied()
+                .expect("reattach counters");
+            assert_eq!(counters.gpu_context_reuse_count, 1);
+            assert_eq!(counters.gpu_context_rebuild_count, 1);
+        }
+
+        #[test]
+        fn consecutive_file_events_are_batched_by_window_and_kind() {
+            let mut app = UiApp::<u32>::new();
+            let window_id = WindowId::dummy();
+            app.queue_file_batch(
+                window_id,
+                PendingFileBatchKind::Entered,
+                Some(ailloli_ui_core::UploadFile::from_path("one.txt".into())),
+            );
+            app.queue_file_batch(
+                window_id,
+                PendingFileBatchKind::Entered,
+                Some(ailloli_ui_core::UploadFile::from_path("two.txt".into())),
+            );
+            app.queue_file_batch(
+                window_id,
+                PendingFileBatchKind::Dropped,
+                Some(ailloli_ui_core::UploadFile::from_path("two.txt".into())),
+            );
+
+            assert_eq!(app.pending_file_batches.len(), 2);
+            assert_eq!(
+                app.pending_file_batches[0].kind,
+                PendingFileBatchKind::Entered
+            );
+            assert_eq!(app.pending_file_batches[0].files.len(), 2);
+            assert_eq!(
+                app.pending_file_batches[1].kind,
+                PendingFileBatchKind::Dropped
+            );
+            assert_eq!(app.pending_file_batches[1].files.len(), 1);
+        }
+
+        #[cfg(feature = "test-support")]
+        #[test]
+        fn presentation_fault_can_be_queued_before_first_resume() {
+            let logical_window_id = ailloli_ui_core::LogicalWindowId::new("main");
+            let mut app = UiApp::<u32>::new().window(
+                WindowOptions {
+                    logical_window_id: logical_window_id.as_str().to_string(),
+                    ..Default::default()
+                },
+                View::empty(),
+            );
+
+            assert!(app.inject_presentation_fault(
+                &logical_window_id,
+                PresentationTestFault::DetachReattach
+            ));
+            assert_eq!(app.presentation_test_faults.len(), 1);
+        }
     }
 }

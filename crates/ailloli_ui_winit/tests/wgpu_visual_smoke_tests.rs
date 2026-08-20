@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use ailloli_ui_core::{ClipShape, Color, Rect};
-use ailloli_ui_render_wgpu::{CaptureParams, LayerPass, Renderer, RendererOptions};
+use ailloli_ui_render_wgpu::{CaptureParams, LayerPass, RendererOptions};
 use ailloli_ui_runtime::{DrawCmd, DrawRect};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
@@ -99,7 +99,7 @@ fn capture_round_clip_with_forced_mode(shader: bool, stencil: bool, stencil_aa: 
         )
         .expect("window"),
     );
-    let mut renderer = Renderer::new_with_options(
+    let mut renderer = ailloli_ui_winit::renderer_from_window_with_options(
         window.clone(),
         RendererOptions {
             transparent: true,
@@ -151,7 +151,7 @@ fn visual_smoke_red_bg_blue_square_writes_png_and_pixels_match() {
         )
         .expect("window"),
     );
-    let mut renderer = Renderer::new(window.clone()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window(window.clone()).expect("renderer");
 
     // Draw: full red bg + centered blue square.
     let bg_red = Color::new(1.0, 0.0, 0.0, 1.0);

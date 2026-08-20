@@ -198,7 +198,7 @@ impl OpenXrSmokeApp {
                                 exit_reason: OpenXrSmokeExitReason::XrExit,
                             });
                         }
-                        other => log::info!("Ailloli UI smoke XR session state {:?}", other),
+                        other => log::info!("Ailloli UI smoke XR session state {other:?}"),
                     },
                     InstanceLossPending(_) => {
                         self.host.clear_input();

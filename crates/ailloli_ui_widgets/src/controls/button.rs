@@ -10,7 +10,9 @@ use ailloli_ui_core::style::{
 };
 use ailloli_ui_core::{Color, FontId, Offset, TextStyle, Theme};
 use ailloli_ui_runtime::component::{Binding, IntoView, Memo, View, Widget};
-use ailloli_ui_runtime::input::{ClickAction, EventCtx, FocusPolicy, IntoClickAction};
+use ailloli_ui_runtime::input::{
+    ActivationPolicy, ClickAction, EventCtx, FocusPolicy, IntoClickAction,
+};
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawRRect, DrawText};
@@ -789,6 +791,10 @@ impl<A: 'static> Widget<A> for ButtonWidget<A> {
 
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::Focusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
     }
 }
 

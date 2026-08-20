@@ -13,7 +13,7 @@ use ailloli_ui_runtime::component::{IntoView, IntoViewKeyExt};
 use ailloli_ui_widgets::layout::{Column, Container};
 use ailloli_ui_widgets::text::Text;
 use ailloli_ui_winit::{new_event_loop_allow_any_thread, run_app_on_event_loop};
-use ailloli_ui_winit::{CaptureHandle, UiApp, WindowOptions};
+use ailloli_ui_winit::{CaptureHandle, NoopHostDriver, UiApp, WindowOptions, WinitHost};
 use winit::dpi::LogicalSize;
 use winit::event_loop::ControlFlow;
 
@@ -68,7 +68,7 @@ fn devtools_overlay_capture_shows_text_buttons_and_warning_outline() {
     let window_capture = capture.request_window("main");
 
     let event_loop = new_event_loop_allow_any_thread().expect("event loop");
-    let mut app = UiApp::new()
+    let ui = UiApp::new()
         .capture_handle(capture.clone())
         .devtools_remote_addr("127.0.0.1:0".parse().expect("loopback addr"))
         .window(
@@ -80,6 +80,7 @@ fn devtools_overlay_capture_shows_text_buttons_and_warning_outline() {
             },
             sample_app_like_root(),
         );
+    let mut app = WinitHost::new(ui, NoopHostDriver);
 
     run_app_on_event_loop(event_loop, &mut app, ControlFlow::Wait).expect("run app");
 

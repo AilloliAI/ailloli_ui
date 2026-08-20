@@ -386,8 +386,11 @@ fn phase31_isolated_compositor_visual_regressions() {
         .expect("window"),
     );
 
-    let mut renderer =
-        Renderer::new_with_options(window.clone(), RendererOptions::default()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window_with_options(
+        window.clone(),
+        RendererOptions::default(),
+    )
+    .expect("renderer");
 
     let mut report = ScenarioReport::default();
     scenario_h_opacity_clipped(&mut renderer, &mut report);

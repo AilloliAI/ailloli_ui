@@ -1,13 +1,18 @@
+use std::time::Duration;
+
 use ailloli_ui_core::event::{
-    Event, Key, KeyEvent, KeyState, Modifiers, MouseButton, PointerEvent, WheelDelta,
+    Event, ImeEvent, ImePreedit, Key, KeyEvent, KeyState, Modifiers, MouseButton, PointerEvent,
+    WheelDelta,
 };
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::{ClipShape, Point, Rect};
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, State, View, ViewKind};
 use ailloli_ui_runtime::element::ElementKind;
-use ailloli_ui_runtime::input::{InputRouter, InputSnapshot};
+use ailloli_ui_runtime::input::{
+    EventEnvelope, EventId, EventMeta, EventTimestamp, InputRouter, InputSnapshot,
+};
 use ailloli_ui_runtime::layout::LayoutArtifact;
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::DrawCmd;
@@ -37,6 +42,94 @@ fn code_editor_accepts_public_document_binding() {
     let view: View<()> = CodeEditor::new(document).into_view();
 
     assert!(matches!(view.kind, ViewKind::Component(_)));
+}
+
+#[test]
+fn editor_disabled_ends_preedit() {
+    let buffer = State::new(TextBuffer::from_string("stable"));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(Editor::new(buffer.clone()).into_view());
+
+    assert_disabled_ends_editor_preedit(&mut app, runtime, Point::new(20.0, 20.0));
+    assert_eq!(buffer.read().as_str(), "stable");
+}
+
+#[test]
+fn code_editor_disabled_ends_preedit() {
+    let document = State::new(Document::new(
+        DocumentId(2),
+        TextBuffer::from_string("stable"),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(CodeEditor::new(document.clone()).into_view());
+
+    assert_disabled_ends_editor_preedit(&mut app, runtime, Point::new(80.0, 20.0));
+    assert_eq!(document.read().buffer.as_str(), "stable");
+}
+
+fn assert_disabled_ends_editor_preedit(
+    app: &mut Runtime<()>,
+    runtime: RuntimeHandle<()>,
+    focus_pos: Point,
+) {
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(320.0, 160.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Button {
+            pos: focus_pos,
+            button: MouseButton::Left,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Ime(ImeEvent::Preedit {
+            preedit: ImePreedit::new("PREEDIT-MARKER"),
+            pos: None,
+        }),
+    );
+    app.layout(
+        Constraints::tight(320.0, 160.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let during_preedit = app.paint_with_input(&mut text_system, router.snapshot(), 0);
+    assert!(scene_contains_text_fragment(
+        &during_preedit,
+        "PREEDIT-MARKER"
+    ));
+
+    router.route_event(&app.tree, runtime, &Event::Ime(ImeEvent::Disabled));
+    app.layout(
+        Constraints::tight(320.0, 160.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let after_disabled = app.paint_with_input(&mut text_system, router.snapshot(), 0);
+    assert!(!scene_contains_text_fragment(
+        &after_disabled,
+        "PREEDIT-MARKER"
+    ));
+}
+
+fn scene_contains_text_fragment(scene: &ailloli_ui_runtime::Scene, needle: &str) -> bool {
+    scene.layers.iter().any(|layer| {
+        layer
+            .cmds
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text().contains(needle)))
+    })
 }
 
 #[test]
@@ -1699,8 +1792,32 @@ fn editor_double_click_word_selection_replaces_selected_word() {
 
     let mut router = InputRouter::default();
     let pos = Point::new(18.0, 18.0);
-    click_left(&mut router, &app, runtime.clone(), pos);
-    click_left(&mut router, &app, runtime.clone(), pos);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 600);
+    type_char(&mut router, &app, runtime, pos, "x");
+
+    assert_eq!(buffer.read().as_str(), "x world");
+}
+
+#[test]
+fn editor_envelope_click_threshold_resets_before_a_new_double_click() {
+    let buffer = State::new(TextBuffer::from_string("hello world"));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(Editor::new(buffer.clone()).into_view());
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 120.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let _ = app.paint(&mut text_system);
+
+    let mut router = InputRouter::default();
+    let pos = Point::new(18.0, 18.0);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 601);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 1_101);
     type_char(&mut router, &app, runtime, pos, "x");
 
     assert_eq!(buffer.read().as_str(), "x world");
@@ -1722,9 +1839,9 @@ fn editor_triple_click_line_selection_replaces_logical_line() {
 
     let mut router = InputRouter::default();
     let pos = Point::new(18.0, 18.0);
-    click_left(&mut router, &app, runtime.clone(), pos);
-    click_left(&mut router, &app, runtime.clone(), pos);
-    click_left(&mut router, &app, runtime.clone(), pos);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 300);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 500);
     type_char(&mut router, &app, runtime, pos, "x");
 
     assert_eq!(buffer.read().as_str(), "x\nsecond");
@@ -1758,11 +1875,46 @@ fn code_editor_double_click_uses_rust_token_selection() {
 
     let mut router = InputRouter::default();
     let pos = Point::new(84.0, 18.0);
-    click_left(&mut router, &app, runtime.clone(), pos);
-    click_left(&mut router, &app, runtime.clone(), pos);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 600);
     type_char(&mut router, &app, runtime, pos, "x");
 
     assert_eq!(document.read().buffer.as_str(), "fn x() {}\n");
+}
+
+#[test]
+fn code_editor_triple_click_selects_the_logical_line() {
+    let document = State::new(
+        Document::new(
+            DocumentId(603),
+            TextBuffer::from_string("fn helper_name() {}\nsecond\n"),
+        )
+        .with_language(EditorLanguage::Rust),
+    );
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document.clone())
+            .width(360.0)
+            .height(140.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(360.0, 140.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let _ = app.paint(&mut text_system);
+
+    let mut router = InputRouter::default();
+    let pos = Point::new(84.0, 18.0);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 300);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 500);
+    type_char(&mut router, &app, runtime, pos, "x");
+
+    assert_eq!(document.read().buffer.as_str(), "x\nsecond\n");
 }
 
 #[test]
@@ -1789,8 +1941,8 @@ fn code_editor_double_click_gutter_selects_logical_line() {
 
     let mut router = InputRouter::default();
     let pos = Point::new(20.0, 18.0);
-    click_left(&mut router, &app, runtime.clone(), pos);
-    click_left(&mut router, &app, runtime.clone(), pos);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 600);
     type_char(&mut router, &app, runtime, pos, "x");
 
     assert_eq!(document.read().buffer.as_str(), "x\nsecond\n");
@@ -1814,27 +1966,34 @@ fn text_layout_artifact_variant_still_supports_other_widgets() {
     assert!(matches!(artifact, LayoutArtifact::Text(_)));
 }
 
-fn click_left(router: &mut InputRouter, app: &Runtime<()>, runtime: RuntimeHandle<()>, pos: Point) {
-    router.route_event(
-        &app.tree,
-        runtime.clone(),
-        &Event::Pointer(PointerEvent::Button {
-            pos,
-            button: MouseButton::Left,
-            pressed: true,
-            modifiers: Modifiers::default(),
-        }),
-    );
-    router.route_event(
-        &app.tree,
-        runtime,
-        &Event::Pointer(PointerEvent::Button {
-            pos,
-            button: MouseButton::Left,
-            pressed: false,
-            modifiers: Modifiers::default(),
-        }),
-    );
+fn click_left_at(
+    router: &mut InputRouter,
+    app: &Runtime<()>,
+    runtime: RuntimeHandle<()>,
+    pos: Point,
+    timestamp_ms: u64,
+) {
+    let event_id = timestamp_ms.saturating_mul(2);
+    for (offset, pressed) in [(0, true), (1, false)] {
+        router.route_envelope(
+            &app.tree,
+            runtime.clone(),
+            &EventEnvelope::new(
+                EventMeta::new(
+                    EventId::new(event_id + offset),
+                    EventTimestamp::new(Duration::from_millis(timestamp_ms)),
+                    "editor-test",
+                    PresentationGeneration::INITIAL,
+                ),
+                Event::Pointer(PointerEvent::Button {
+                    pos,
+                    button: MouseButton::Left,
+                    pressed,
+                    modifiers: Modifiers::default(),
+                }),
+            ),
+        );
+    }
 }
 
 fn type_char(

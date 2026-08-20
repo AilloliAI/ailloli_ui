@@ -1,7 +1,26 @@
-use winit::dpi::PhysicalSize;
-
 use crate::error::RendererError;
 use crate::pipeline_cache::ResizeOutcome;
+
+/// Physical pixel dimensions of a render destination.
+///
+/// This renderer-local type keeps presentation adapters such as winit or
+/// OpenXR outside the render-target contract. Hosts convert their native size
+/// type at the adapter boundary.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PhysicalExtent {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PhysicalExtent {
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    pub const fn is_zero(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+}
 
 /// One acquired render destination from a host target.
 pub struct RenderFrame {
@@ -9,7 +28,7 @@ pub struct RenderFrame {
     pub view: wgpu::TextureView,
     source: RenderFrameSource,
     /// Active frame dimensions.
-    pub size: PhysicalSize<u32>,
+    pub size: PhysicalExtent,
     /// Output format for this frame.
     pub format: wgpu::TextureFormat,
     present: Option<Box<dyn FnOnce()>>, // no-op for targets that do not need explicit present.
@@ -45,7 +64,7 @@ impl RenderFrame {
     fn new(
         view: wgpu::TextureView,
         source: RenderFrameSource,
-        size: PhysicalSize<u32>,
+        size: PhysicalExtent,
         format: wgpu::TextureFormat,
         present: Option<Box<dyn FnOnce()>>,
     ) -> Self {
@@ -66,7 +85,7 @@ impl RenderFrame {
     #[allow(dead_code)]
     pub(crate) fn from_unknown_view(
         view: wgpu::TextureView,
-        size: PhysicalSize<u32>,
+        size: PhysicalExtent,
         format: wgpu::TextureFormat,
         present: Option<Box<dyn FnOnce()>>,
     ) -> Self {
@@ -76,7 +95,7 @@ impl RenderFrame {
     pub(crate) fn from_surface_texture(
         view: wgpu::TextureView,
         frame: wgpu::SurfaceTexture,
-        size: PhysicalSize<u32>,
+        size: PhysicalExtent,
         format: wgpu::TextureFormat,
         present: Option<Box<dyn FnOnce()>>,
     ) -> Self {
@@ -92,7 +111,7 @@ impl RenderFrame {
     pub fn from_texture(
         view: wgpu::TextureView,
         texture: wgpu::Texture,
-        size: PhysicalSize<u32>,
+        size: PhysicalExtent,
         format: wgpu::TextureFormat,
         present: Option<Box<dyn FnOnce()>>,
     ) -> Self {
@@ -116,7 +135,7 @@ impl RenderFrame {
 
 /// Host-agnostic render target that owns swapchain-like image acquisition.
 pub trait RenderTarget {
-    fn size(&self) -> PhysicalSize<u32>;
+    fn size(&self) -> PhysicalExtent;
 
     fn format(&self) -> wgpu::TextureFormat;
 
@@ -124,7 +143,27 @@ pub trait RenderTarget {
 
     fn pre_present_notify(&self) {}
 
-    fn try_resize(&mut self, _size: PhysicalSize<u32>) -> Result<ResizeOutcome, RendererError> {
+    fn try_resize(&mut self, _size: PhysicalExtent) -> Result<ResizeOutcome, RendererError> {
         Ok(ResizeOutcome::Unchanged)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PhysicalExtent;
+
+    #[test]
+    fn physical_extent_preserves_host_pixels() {
+        let extent = PhysicalExtent::new(1920, 1080);
+
+        assert_eq!(extent.width, 1920);
+        assert_eq!(extent.height, 1080);
+        assert!(!extent.is_zero());
+    }
+
+    #[test]
+    fn physical_extent_is_zero_when_either_axis_is_zero() {
+        assert!(PhysicalExtent::new(0, 10).is_zero());
+        assert!(PhysicalExtent::new(10, 0).is_zero());
     }
 }

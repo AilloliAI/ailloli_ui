@@ -1,18 +1,27 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
-use ailloli_ui_core::event::{Key, KeyEvent, KeyState, Modifiers, WheelDelta};
+use ailloli_ui_core::event::pointer::{
+    MouseButton, PointerEvent, PointerId, PointerSample, PointerSource,
+};
+use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, WheelDelta};
 use ailloli_ui_core::geometry::{Constraints, Rect};
 use ailloli_ui_core::ids::ElementId;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::{
     ChatItemId, ChatMessage, ChatMessageKind, ChatMessageStatus, ChatRequestId, ChatRole,
-    ChatSessionId, ChatSessionState, ChatSessionStatus, Point,
+    ChatSessionId, ChatSessionState, ChatSessionStatus, LogicalWindowId, Point,
 };
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, State, View};
 use ailloli_ui_runtime::element::ElementKind;
-use ailloli_ui_runtime::input::{absolute_paint_bounds, dispatch_event_to_target, InputRouter};
+use ailloli_ui_runtime::input::{
+    absolute_paint_bounds, dispatch_event_to_target, EventEnvelope, EventId, EventMeta,
+    EventTimestamp, InputRouter,
+};
+use ailloli_ui_runtime::popup::{PopupId, HEADLESS_POPUP_WINDOW_ID};
+use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{ChatComposerControls, ChatWidget, ChatWidgetAction};
@@ -581,51 +590,41 @@ fn chat_composer_selects_dispatch_actions() {
     let mut selects = widget_id_bounds(&app, "Select");
     selects.sort_by(|(_, a), (_, b)| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     assert_eq!(selects.len(), 3);
-    let (permission_id, permission_bounds) = selects[0];
-    dispatch_event_to_target(
-        &app.tree,
+    let mut router = InputRouter::default();
+    let (_, permission_bounds) = selects[0];
+    click(
+        &mut router,
+        &app,
         runtime.clone(),
-        permission_id,
-        &pointer_button(
-            permission_bounds.x + permission_bounds.w * 0.5,
-            permission_bounds.y + permission_bounds.h * 0.5,
-            false,
-        ),
+        permission_bounds.x + permission_bounds.w * 0.5,
+        permission_bounds.y + permission_bounds.h * 0.5,
     );
     layout_app(&mut app);
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        permission_id,
-        &pointer_button(
-            permission_bounds.x + 12.0,
-            popup_option_y(&app, permission_id, permission_bounds, 3, 1),
-            false,
-        ),
+    let (mut permission_popup, _, permission_popup_id, permission_popup_bounds) =
+        mount_open_popup(&app);
+    click_popup(
+        &mut permission_popup,
+        1,
+        popup_option_point(permission_popup_bounds, 3, 1),
     );
+    assert!(!runtime.popup_is_open(permission_popup_id));
 
-    let (model_id, model_bounds) = selects[1];
-    dispatch_event_to_target(
-        &app.tree,
+    let (_, model_bounds) = selects[1];
+    click(
+        &mut router,
+        &app,
         runtime.clone(),
-        model_id,
-        &pointer_button(
-            model_bounds.x + model_bounds.w * 0.5,
-            model_bounds.y + model_bounds.h * 0.5,
-            false,
-        ),
+        model_bounds.x + model_bounds.w * 0.5,
+        model_bounds.y + model_bounds.h * 0.5,
     );
     layout_app(&mut app);
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        model_id,
-        &pointer_button(
-            model_bounds.x + 12.0,
-            popup_option_y(&app, model_id, model_bounds, 2, 1),
-            false,
-        ),
+    let (mut model_popup, _, model_popup_id, model_popup_bounds) = mount_open_popup(&app);
+    click_popup(
+        &mut model_popup,
+        3,
+        popup_option_point(model_popup_bounds, 2, 1),
     );
+    assert!(!runtime.popup_is_open(model_popup_id));
 
     let actions = runtime.take_actions();
     assert!(actions.iter().any(|action| {
@@ -671,28 +670,24 @@ fn chat_composer_runtime_controls() {
     let mut selects = widget_id_bounds(&app, "Select");
     selects.sort_by(|(_, a), (_, b)| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     assert_eq!(selects.len(), 3);
-    let (reasoning_id, reasoning_bounds) = selects[2];
-    dispatch_event_to_target(
-        &app.tree,
+    let mut router = InputRouter::default();
+    let (_, reasoning_bounds) = selects[2];
+    click(
+        &mut router,
+        &app,
         runtime.clone(),
-        reasoning_id,
-        &pointer_button(
-            reasoning_bounds.x + reasoning_bounds.w * 0.5,
-            reasoning_bounds.y + reasoning_bounds.h * 0.5,
-            false,
-        ),
+        reasoning_bounds.x + reasoning_bounds.w * 0.5,
+        reasoning_bounds.y + reasoning_bounds.h * 0.5,
     );
     layout_app(&mut app);
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        reasoning_id,
-        &pointer_button(
-            reasoning_bounds.x + 12.0,
-            popup_option_y(&app, reasoning_id, reasoning_bounds, 3, 1),
-            false,
-        ),
+    let (mut reasoning_popup, _, reasoning_popup_id, reasoning_popup_bounds) =
+        mount_open_popup(&app);
+    click_popup(
+        &mut reasoning_popup,
+        1,
+        popup_option_point(reasoning_popup_bounds, 3, 1),
     );
+    assert!(!runtime.popup_is_open(reasoning_popup_id));
 
     assert!(runtime.take_actions().iter().any(|action| {
         matches!(
@@ -953,20 +948,63 @@ fn widget_id_bounds<A: 'static>(
         .collect()
 }
 
-fn popup_option_y<A: 'static>(
+fn mount_open_popup<A: 'static>(
     app: &Runtime<A>,
-    select_id: ElementId,
-    bounds: ailloli_ui_core::Rect,
-    option_count: usize,
-    index: usize,
-) -> f32 {
-    let popup = app
-        .tree
-        .get(select_id)
-        .and_then(|el| el.layout.as_ref())
-        .and_then(|layout| layout.overlay_hit_bounds.first().copied())
-        .expect("open select popup bounds");
-    bounds.y + popup.y + (index as f32 + 0.5) * (popup.h / option_count as f32)
+) -> (PopupOverlayMounts<A>, TextSystem, PopupId, Rect) {
+    let mut text_system = TextSystem::new();
+    let _owner_scene = app.paint(&mut text_system);
+    let (popup_id, bounds) = {
+        let portal = app.runtime.popup_portal();
+        let portal = portal.borrow();
+        let popup_id = portal.open_ids().next().expect("one open popup");
+        let bounds = portal.bounds(popup_id).expect("published popup bounds");
+        (popup_id, bounds)
+    };
+    let mut mounts = PopupOverlayMounts::new(app.runtime.clone());
+    mounts.sync(
+        &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+        PresentationGeneration::INITIAL,
+    );
+    mounts.layout(Scale::new(1.0), &mut text_system);
+    assert!(mounts.contains(popup_id));
+    (mounts, text_system, popup_id, bounds)
+}
+
+fn popup_option_point(bounds: Rect, option_count: usize, index: usize) -> Point {
+    Point::new(
+        bounds.x + 12.0,
+        bounds.y + (index as f32 + 0.5) * (bounds.h / option_count as f32),
+    )
+}
+
+fn popup_pointer_envelope(id: u64, point: Point, event: PointerEvent) -> EventEnvelope {
+    let pointer = PointerSample::new(PointerId::MOUSE, PointerSource::Mouse, point).unwrap();
+    EventEnvelope::new(
+        EventMeta::new(
+            EventId::new(id),
+            EventTimestamp::new(Duration::from_millis(id)),
+            HEADLESS_POPUP_WINDOW_ID,
+            PresentationGeneration::INITIAL,
+        )
+        .with_pointer(pointer),
+        Event::Pointer(event),
+    )
+}
+
+fn click_popup<A: 'static>(mounts: &mut PopupOverlayMounts<A>, id: u64, point: Point) {
+    let press = mounts.route_envelope(&popup_pointer_envelope(
+        id,
+        point,
+        PointerEvent::button(point, MouseButton::Left, true, Modifiers::default()),
+    ));
+    assert!(press.consumed());
+    let release = mounts.route_envelope(&popup_pointer_envelope(
+        id + 1,
+        point,
+        PointerEvent::button(point, MouseButton::Left, false, Modifiers::default()),
+    ));
+    assert!(release.consumed());
+    assert!(release.route().event_dispatched);
 }
 
 fn scroll_child_offset<A: 'static>(app: &Runtime<A>) -> f32 {

@@ -1,11 +1,22 @@
+use std::time::Duration;
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
-use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, NamedKey};
+use ailloli_ui_core::event::{
+    Event, Key, KeyEvent, KeyState, Modifiers, NamedKey, PointerId, PointerSample, PointerSource,
+    WheelDelta,
+};
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
-use ailloli_ui_core::{Point, Theme};
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_core::{LogicalWindowId, Point, Rect, Theme};
+use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, State, View};
-use ailloli_ui_runtime::input::{dispatch_event_to_target, InputRouter};
+use ailloli_ui_runtime::input::{
+    dispatch_event_to_target, EventEnvelope, EventId, EventMeta, EventTimestamp, HoverCursorRole,
+    InputRouter,
+};
+use ailloli_ui_runtime::popup::{PopupId, PopupMountPolicy, PopupRole, HEADLESS_POPUP_WINDOW_ID};
+use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
+use ailloli_ui_runtime::scene::LayerKind;
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{
@@ -62,12 +73,42 @@ fn open_combobox_popup_is_overlay_only() {
     let layout = app.tree.get(combo).unwrap().layout.as_ref().unwrap();
 
     assert_eq!(layout.size.h, 36.0);
-    assert_eq!(layout.overlay_hit_bounds.len(), 1);
-    assert!(layout.overlay_hit_bounds[0].y >= layout.size.h);
+    assert!(layout.overlay_hit_bounds.is_empty());
 
-    let scene = paint_scene(&app);
-    assert!(scene.iter().any(|cmd| matches!(cmd, DrawCmd::BoxShadow(_))));
-    assert!(scene.iter().any(|cmd| matches!(cmd, DrawCmd::Text(_))));
+    let owner_scene = paint_scene(&app);
+    assert!(!owner_scene
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::BoxShadow(_))));
+
+    let (mounts, mut text_system, popup_id, _) = mount_open_popup(&app);
+    let request = app
+        .runtime
+        .popup_portal()
+        .borrow()
+        .request(popup_id)
+        .unwrap()
+        .clone();
+    assert_eq!(request.mount_policy(), PopupMountPolicy::RetainedOverlay);
+    assert_eq!(request.semantics().role(), PopupRole::Listbox);
+    let scene = mounts.paint(&mut text_system, 0);
+    assert!(scene
+        .layers
+        .iter()
+        .all(|layer| layer.kind == LayerKind::Overlay));
+    assert!(scene
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.cmds)
+        .any(|cmd| matches!(cmd, DrawCmd::BoxShadow(_))));
+    assert!(scene
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.cmds)
+        .filter_map(|cmd| match cmd {
+            DrawCmd::Text(text) => Some(text.layout.text()),
+            _ => None,
+        })
+        .any(|text| text == "Apple"));
 }
 
 #[test]
@@ -87,20 +128,16 @@ fn combobox_filters_selects_enabled_option_and_dispatches() {
             .into_view(),
     );
     layout_app(&mut app, 360.0, 280.0);
-    let combo = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        combo,
-        &pointer_button(20.0, 84.0, false),
-    );
+    let _combo = first_child(&app, root);
+    let (mut mounts, _text_system, popup_id, popup) = mount_open_popup(&app);
+    click_popup(&mut mounts, 10, Point::new(popup.x + 20.0, popup.y + 48.0));
 
     assert_eq!(selected.read(), Choice::Apricot);
     assert_eq!(
         runtime.take_actions(),
         vec![Action::SetChoice(Choice::Apricot)]
     );
+    assert!(!runtime.popup_is_open(popup_id));
 }
 
 #[test]
@@ -119,17 +156,13 @@ fn combobox_ignores_disabled_option_and_no_results_enter() {
             .into_view(),
     );
     layout_app(&mut app, 360.0, 280.0);
-    let combo = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        combo,
-        &pointer_button(20.0, 84.0, false),
-    );
+    let _combo = first_child(&app, root);
+    let (mut mounts, _text_system, popup_id, popup) = mount_open_popup(&app);
+    click_popup(&mut mounts, 20, Point::new(popup.x + 20.0, popup.y + 48.0));
 
     assert_eq!(selected.read(), Choice::Apple);
     assert!(runtime.take_actions().is_empty());
+    assert!(runtime.popup_is_open(popup_id));
 
     let root = app.reconcile(
         ComboBox::<Choice, Action>::new()
@@ -170,20 +203,43 @@ fn autocomplete_keeps_free_text_and_selects_suggestion() {
             .into_view(),
     );
     layout_app(&mut app, 360.0, 280.0);
-    let autocomplete = first_child(&app, root);
-
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        autocomplete,
-        &pointer_button(20.0, 116.0, false),
+    let _autocomplete = first_child(&app, root);
+    let (mut mounts, _text_system, popup_id, popup) = mount_open_popup(&app);
+    let disabled_point = Point::new(popup.x + 20.0, popup.y + 48.0);
+    let enabled_point = Point::new(popup.x + 20.0, popup.y + 80.0);
+    mounts.route_envelope(&pointer_envelope(
+        28,
+        disabled_point,
+        PointerEvent::Moved {
+            pos: disabled_point,
+            modifiers: Modifiers::default(),
+        },
+    ));
+    assert_eq!(
+        mounts.hovered_cursor_role_at_global(disabled_point),
+        Some(HoverCursorRole::Default),
+        "disabled retained rows must not expose a pointer cursor"
     );
+    mounts.route_envelope(&pointer_envelope(
+        29,
+        enabled_point,
+        PointerEvent::Moved {
+            pos: enabled_point,
+            modifiers: Modifiers::default(),
+        },
+    ));
+    assert_eq!(
+        mounts.hovered_cursor_role_at_global(enabled_point),
+        Some(HoverCursorRole::Pointer)
+    );
+    click_popup(&mut mounts, 30, enabled_point);
 
     assert_eq!(value.read(), "Banana");
     assert_eq!(
         runtime.take_actions(),
         vec![Action::SetText("Banana".into())]
     );
+    assert!(!runtime.popup_is_open(popup_id));
 }
 
 #[test]
@@ -212,7 +268,124 @@ fn autocomplete_typing_updates_bound_text_and_opens_popup() {
 
     assert_eq!(value.read(), "b");
     let layout = app.tree.get(autocomplete).unwrap().layout.as_ref().unwrap();
-    assert!(!layout.overlay_hit_bounds.is_empty());
+    assert!(layout.overlay_hit_bounds.is_empty());
+
+    let (mounts, mut text_system, _, _) = mount_open_popup(&app);
+    let labels: Vec<String> = mounts
+        .paint(&mut text_system, 0)
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.cmds)
+        .filter_map(|cmd| match cmd {
+            DrawCmd::Text(text) => Some(text.layout.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, vec!["Banana"]);
+}
+
+#[test]
+fn retained_combobox_popup_tracks_hover_and_scrolls_before_selection() {
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let mut style = ComboBoxStyle::default();
+    style.popup.popup_max_height = 64.0;
+    app.reconcile(
+        ComboBox::<Choice, Action>::new()
+            .default_open(true)
+            .combo_style(style.clone())
+            .option(Choice::Apple, "Apple")
+            .option(Choice::Apricot, "Apricot")
+            .option(Choice::Banana, "Banana")
+            .option(Choice::Apple, "Cherry")
+            .on_change(Action::SetChoice)
+            .into_view(),
+    );
+    layout_app(&mut app, 360.0, 280.0);
+    let (mut mounts, mut text_system, popup_id, popup) = mount_open_popup(&app);
+    let point = Point::new(popup.x + 20.0, popup.y + 16.0);
+
+    let moved = mounts.route_envelope(&pointer_envelope(
+        40,
+        point,
+        PointerEvent::Moved {
+            pos: point,
+            modifiers: Modifiers::default(),
+        },
+    ));
+    assert!(moved.consumed());
+    assert_eq!(
+        mounts.hovered_cursor_role_at_global(point),
+        Some(HoverCursorRole::Pointer)
+    );
+    assert!(mounts
+        .paint(&mut text_system, 0)
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.cmds)
+        .any(|cmd| matches!(cmd, DrawCmd::Rect(rect) if rect.color == style.popup.option_active)));
+
+    let wheel = mounts.route_envelope(&pointer_envelope(
+        41,
+        point,
+        PointerEvent::wheel(
+            point,
+            WheelDelta::PixelDelta { x: 0.0, y: -64.0 },
+            Modifiers::default(),
+            true,
+        ),
+    ));
+    assert!(wheel.consumed());
+    click_popup(&mut mounts, 42, point);
+
+    assert_eq!(
+        runtime.take_actions(),
+        vec![Action::SetChoice(Choice::Banana)]
+    );
+    assert!(!runtime.popup_is_open(popup_id));
+}
+
+#[test]
+fn retained_autocomplete_popup_scrolls_before_selecting_a_suggestion() {
+    let value = State::new(String::new());
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let mut style = AutocompleteStyle::default();
+    style.popup.popup_max_height = 64.0;
+    app.reconcile(
+        Autocomplete::<Action>::new()
+            .bind(value.clone())
+            .default_open(true)
+            .autocomplete_style(style)
+            .suggestion("Apple")
+            .suggestion("Apricot")
+            .suggestion("Banana")
+            .suggestion("Cherry")
+            .on_select(Action::SetText)
+            .into_view(),
+    );
+    layout_app(&mut app, 360.0, 280.0);
+    let (mut mounts, _text_system, popup_id, popup) = mount_open_popup(&app);
+    let point = Point::new(popup.x + 20.0, popup.y + 16.0);
+    let wheel = mounts.route_envelope(&pointer_envelope(
+        50,
+        point,
+        PointerEvent::wheel(
+            point,
+            WheelDelta::PixelDelta { x: 0.0, y: -64.0 },
+            Modifiers::default(),
+            true,
+        ),
+    ));
+    assert!(wheel.consumed());
+    click_popup(&mut mounts, 51, point);
+
+    assert_eq!(value.read(), "Banana");
+    assert_eq!(
+        runtime.take_actions(),
+        vec![Action::SetText("Banana".into())]
+    );
+    assert!(!runtime.popup_is_open(popup_id));
 }
 
 fn layout_view(view: View<()>) -> (Runtime<()>, ailloli_ui_core::ElementId) {
@@ -245,6 +418,58 @@ fn paint_scene(app: &Runtime<()>) -> Vec<DrawCmd> {
         .iter()
         .flat_map(|layer| layer.cmds.iter().cloned())
         .collect()
+}
+
+fn mount_open_popup<A: 'static>(
+    app: &Runtime<A>,
+) -> (PopupOverlayMounts<A>, TextSystem, PopupId, Rect) {
+    let mut text_system = TextSystem::new();
+    let _owner_scene = app.paint(&mut text_system);
+    let (popup_id, bounds) = {
+        let portal = app.runtime.popup_portal();
+        let portal = portal.borrow();
+        let popup_id = portal.open_ids().next().expect("one open popup");
+        let bounds = portal.bounds(popup_id).expect("published popup bounds");
+        (popup_id, bounds)
+    };
+    let mut mounts = PopupOverlayMounts::new(app.runtime.clone());
+    mounts.sync(
+        &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
+        PresentationGeneration::INITIAL,
+    );
+    mounts.layout(Scale::new(1.0), &mut text_system);
+    assert!(mounts.contains(popup_id));
+    (mounts, text_system, popup_id, bounds)
+}
+
+fn pointer_envelope(id: u64, point: Point, event: PointerEvent) -> EventEnvelope {
+    let pointer = PointerSample::new(PointerId::MOUSE, PointerSource::Mouse, point).unwrap();
+    EventEnvelope::new(
+        EventMeta::new(
+            EventId::new(id),
+            EventTimestamp::new(Duration::from_millis(id)),
+            HEADLESS_POPUP_WINDOW_ID,
+            PresentationGeneration::INITIAL,
+        )
+        .with_pointer(pointer),
+        Event::Pointer(event),
+    )
+}
+
+fn click_popup<A: 'static>(mounts: &mut PopupOverlayMounts<A>, id: u64, point: Point) {
+    let press = mounts.route_envelope(&pointer_envelope(
+        id,
+        point,
+        PointerEvent::button(point, MouseButton::Left, true, Modifiers::default()),
+    ));
+    assert!(press.consumed());
+    let release = mounts.route_envelope(&pointer_envelope(
+        id + 1,
+        point,
+        PointerEvent::button(point, MouseButton::Left, false, Modifiers::default()),
+    ));
+    assert!(release.consumed());
+    assert!(release.route().event_dispatched);
 }
 
 fn pointer_button(x: f32, y: f32, pressed: bool) -> Event {

@@ -8,7 +8,7 @@ use ailloli_ui_devtools_core::{
 use ailloli_ui_devtools_ui::{
     build_devtools_overlay, DevToolsAction, DevToolsState, DEVTOOLS_PANEL_KEY,
 };
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_runtime::app::{Runtime, RuntimeHandle, UiWake, UiWakeError};
 use ailloli_ui_runtime::element::ElementTree;
 use ailloli_ui_runtime::input::{absolute_paint_bounds, InputRouter};
 use ailloli_ui_runtime::scene::{ClipStackSnapshot, DrawCmd, DrawRect, Layer, Scene};
@@ -16,7 +16,9 @@ use ailloli_ui_text::TextSystem;
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -35,6 +37,7 @@ pub struct DevToolsWindowState {
     last_snapshot: Option<DebugSnapshot>,
     last_panel_bounds: Option<Rect>,
     remote: Option<DevToolsRemote>,
+    host_wake: Option<Arc<dyn UiWake>>,
 }
 
 impl DevToolsWindowState {
@@ -52,14 +55,37 @@ impl DevToolsWindowState {
             last_snapshot: None,
             last_panel_bounds: None,
             remote,
+            host_wake: None,
         }
     }
 
     pub fn set_remote_addr(&mut self, addr: Option<SocketAddr>) {
         self.remote = addr.and_then(DevToolsRemote::start);
-        if self.remote.is_some() {
+        if let Some(remote) = self.remote.as_ref() {
+            if let Some(wake) = self.host_wake.as_ref() {
+                let _ = remote.install_wake(wake.clone());
+            }
             self.enabled = true;
         }
+    }
+
+    pub(crate) fn install_host_wake(&mut self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
+        self.host_wake = Some(wake.clone());
+        self.remote
+            .as_ref()
+            .map_or(Ok(()), |remote| remote.install_wake(wake))
+    }
+
+    pub(crate) fn begin_host_service(&self) -> bool {
+        self.remote
+            .as_ref()
+            .is_some_and(DevToolsRemote::begin_host_service)
+    }
+
+    pub(crate) fn take_wake_error(&self) -> Option<UiWakeError> {
+        self.remote
+            .as_ref()
+            .and_then(DevToolsRemote::take_wake_error)
     }
 
     pub fn handle_event(&mut self, event: &Event) -> bool {
@@ -305,6 +331,7 @@ fn outline_rect(rect: Rect, color: Color, thickness: f32) -> Vec<DrawCmd> {
 pub struct DevToolsRemote {
     events: Sender<RemoteEvent>,
     commands: Receiver<DevToolsClientMessage>,
+    command_wake: Arc<DevToolsCommandWake>,
 }
 
 impl DevToolsRemote {
@@ -324,10 +351,16 @@ impl DevToolsRemote {
         listener.set_nonblocking(true).ok()?;
         let (events_tx, events_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
-        thread::spawn(move || run_remote_server(listener, events_rx, commands_tx));
+        let command_wake = Arc::new(DevToolsCommandWake::default());
+        let command_sender = DevToolsCommandSender {
+            commands: commands_tx,
+            wake: command_wake.clone(),
+        };
+        thread::spawn(move || run_remote_server(listener, events_rx, command_sender));
         Some(Self {
             events: events_tx,
             commands: commands_rx,
+            command_wake,
         })
     }
 
@@ -338,9 +371,121 @@ impl DevToolsRemote {
     pub fn drain_commands(&self) -> Vec<DevToolsClientMessage> {
         let mut out = Vec::new();
         while let Ok(cmd) = self.commands.try_recv() {
+            self.command_wake.command_drained();
             out.push(cmd);
         }
         out
+    }
+
+    fn install_wake(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
+        self.command_wake.install(wake)
+    }
+
+    fn begin_host_service(&self) -> bool {
+        self.command_wake.begin_host_service()
+    }
+
+    fn take_wake_error(&self) -> Option<UiWakeError> {
+        self.command_wake.take_error()
+    }
+}
+
+#[derive(Default)]
+struct DevToolsCommandWakeState {
+    wake: Option<Arc<dyn UiWake>>,
+    signaled: bool,
+    error: Option<UiWakeError>,
+}
+
+#[derive(Default)]
+struct DevToolsCommandWake {
+    state: Mutex<DevToolsCommandWakeState>,
+    pending_commands: AtomicUsize,
+}
+
+impl DevToolsCommandWake {
+    fn reserve_command(&self) {
+        self.pending_commands.fetch_add(1, Ordering::Release);
+    }
+
+    fn cancel_command(&self) {
+        self.command_drained();
+    }
+
+    fn command_drained(&self) {
+        let _ =
+            self.pending_commands
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                    Some(pending.saturating_sub(1))
+                });
+    }
+
+    fn signal(&self) -> Result<(), UiWakeError> {
+        let wake = {
+            let mut state = self.state.lock().expect("devtools wake lock poisoned");
+            if state.signaled {
+                None
+            } else {
+                let wake = state.wake.clone();
+                state.signaled = wake.is_some();
+                wake
+            }
+        };
+        self.invoke(wake)
+    }
+
+    fn install(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
+        let wake = {
+            let mut state = self.state.lock().expect("devtools wake lock poisoned");
+            state.wake = Some(wake.clone());
+            state.signaled = self.pending_commands.load(Ordering::Acquire) > 0;
+            state.signaled.then_some(wake)
+        };
+        self.invoke(wake)
+    }
+
+    fn begin_host_service(&self) -> bool {
+        if let Ok(mut state) = self.state.lock() {
+            state.signaled = false;
+        }
+        self.pending_commands.load(Ordering::Acquire) > 0
+    }
+
+    fn take_error(&self) -> Option<UiWakeError> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.error.take())
+    }
+
+    fn invoke(&self, wake: Option<Arc<dyn UiWake>>) -> Result<(), UiWakeError> {
+        let Some(wake) = wake else {
+            return Ok(());
+        };
+        if let Err(error) = wake.wake() {
+            if let Ok(mut state) = self.state.lock() {
+                state.signaled = false;
+                state.error.get_or_insert(error);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+struct DevToolsCommandSender {
+    commands: Sender<DevToolsClientMessage>,
+    wake: Arc<DevToolsCommandWake>,
+}
+
+impl DevToolsCommandSender {
+    fn send(&self, command: DevToolsClientMessage) {
+        self.wake.reserve_command();
+        if self.commands.send(command).is_err() {
+            self.wake.cancel_command();
+            return;
+        }
+        let _ = self.wake.signal();
     }
 }
 
@@ -356,7 +501,7 @@ struct Client {
 fn run_remote_server(
     listener: TcpListener,
     events: Receiver<RemoteEvent>,
-    commands: Sender<DevToolsClientMessage>,
+    commands: DevToolsCommandSender,
 ) {
     let mut clients = Vec::<Client>::new();
     loop {
@@ -398,7 +543,7 @@ fn write_jsonl(stream: &mut TcpStream, message: &DevToolsServerMessage) -> std::
     stream.write_all(&line)
 }
 
-fn read_client_commands(client: &mut Client, commands: &Sender<DevToolsClientMessage>) -> bool {
+fn read_client_commands(client: &mut Client, commands: &DevToolsCommandSender) -> bool {
     let mut buf = [0u8; 4096];
     loop {
         match client.stream.read(&mut buf) {
@@ -438,7 +583,7 @@ fn read_client_commands(client: &mut Client, commands: &Sender<DevToolsClientMes
                             }
                         }
                         Ok(cmd) => {
-                            let _ = commands.send(cmd);
+                            commands.send(cmd);
                         }
                         Err(err) => {
                             let message = DevToolsServerMessage::Error {
@@ -461,6 +606,7 @@ fn read_client_commands(client: &mut Client, commands: &Sender<DevToolsClientMes
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
+    use std::sync::atomic::AtomicUsize;
 
     use ailloli_ui_core::event::keyboard::Modifiers;
     use ailloli_ui_core::math::Scale;
@@ -470,6 +616,41 @@ mod tests {
     use ailloli_ui_runtime::scene::DrawCmd;
     use ailloli_ui_widgets::layout::Container;
     use ailloli_ui_widgets::text::Text;
+
+    #[derive(Default)]
+    struct CountingWake(AtomicUsize);
+
+    impl UiWake for CountingWake {
+        fn wake(&self) -> Result<(), UiWakeError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    struct FailingWake;
+
+    impl UiWake for FailingWake {
+        fn wake(&self) -> Result<(), UiWakeError> {
+            Err(UiWakeError::TargetClosed)
+        }
+    }
+
+    fn command_channel() -> (
+        DevToolsCommandSender,
+        Receiver<DevToolsClientMessage>,
+        Arc<DevToolsCommandWake>,
+    ) {
+        let (commands, receiver) = mpsc::channel();
+        let wake = Arc::new(DevToolsCommandWake::default());
+        (
+            DevToolsCommandSender {
+                commands,
+                wake: wake.clone(),
+            },
+            receiver,
+            wake,
+        )
+    }
 
     fn app_runtime() -> (Runtime<()>, TextSystem) {
         let mut runtime = Runtime::new(RuntimeHandle::new());
@@ -539,7 +720,9 @@ mod tests {
     #[test]
     fn remote_reader_accepts_select_command() {
         let (mut server_client, mut client_stream) = connected_client();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (commands_tx, commands_rx, command_wake) = command_channel();
+        let wake = Arc::new(CountingWake::default());
+        command_wake.install(wake.clone()).unwrap();
 
         client_stream
             .write_all(br#"{"type":"select","id":42}"#)
@@ -551,12 +734,13 @@ mod tests {
             commands_rx.try_recv().expect("command queued"),
             DevToolsClientMessage::Select { id: Some(42) }
         );
+        assert_eq!(wake.0.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn remote_reader_replies_to_ping() {
         let (mut server_client, mut client_stream) = connected_client();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (commands_tx, commands_rx, _) = command_channel();
 
         client_stream
             .write_all(br#"{"type":"ping"}"#)
@@ -576,7 +760,7 @@ mod tests {
     #[test]
     fn remote_reader_reports_unknown_message() {
         let (mut server_client, mut client_stream) = connected_client();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (commands_tx, commands_rx, _) = command_channel();
 
         client_stream
             .write_all(br#"{"type":"unknown"}"#)
@@ -597,7 +781,7 @@ mod tests {
     #[test]
     fn remote_reader_disconnects_when_input_exceeds_limit() {
         let (mut server_client, mut client_stream) = connected_client();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (commands_tx, commands_rx, _) = command_channel();
         server_client.read_buf = "x".repeat(MAX_DEVTOOLS_MESSAGE_BYTES + 1);
         client_stream.write_all(b"x").expect("write trigger byte");
 
@@ -618,6 +802,48 @@ mod tests {
             .parse()
             .expect("reserved documentation address");
         assert!(DevToolsRemote::start(addr).is_none());
+    }
+
+    #[test]
+    fn remote_command_queued_before_host_wake_is_late_bound_and_drained_once() {
+        let (commands, receiver, command_wake) = command_channel();
+        commands.send(DevToolsClientMessage::Select { id: Some(7) });
+        assert_eq!(command_wake.pending_commands.load(Ordering::Acquire), 1);
+
+        let wake = Arc::new(CountingWake::default());
+        command_wake.install(wake.clone()).unwrap();
+        assert_eq!(wake.0.load(Ordering::Relaxed), 1);
+        assert!(command_wake.begin_host_service());
+
+        let (events, _) = mpsc::channel();
+        let remote = DevToolsRemote {
+            events,
+            commands: receiver,
+            command_wake: command_wake.clone(),
+        };
+        assert_eq!(
+            remote.drain_commands(),
+            vec![DevToolsClientMessage::Select { id: Some(7) }]
+        );
+        assert!(!remote.begin_host_service());
+        assert_eq!(command_wake.pending_commands.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn failed_devtools_wake_is_diagnosable_and_replacement_retries_pending_work() {
+        let (commands, _receiver, command_wake) = command_channel();
+        commands.send(DevToolsClientMessage::Hover { id: Some(9) });
+
+        assert_eq!(
+            command_wake.install(Arc::new(FailingWake)),
+            Err(UiWakeError::TargetClosed)
+        );
+        assert_eq!(command_wake.take_error(), Some(UiWakeError::TargetClosed));
+
+        let wake = Arc::new(CountingWake::default());
+        command_wake.install(wake.clone()).unwrap();
+        assert_eq!(wake.0.load(Ordering::Relaxed), 1);
+        assert!(command_wake.begin_host_service());
     }
 
     #[test]

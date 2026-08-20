@@ -1,16 +1,24 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use ailloli_ui_core::event::{
-    Event, FileEvent, Key, KeyEvent, KeyState, Modifiers, MouseButton, PointerEvent,
+    Event, FileEvent, Key, KeyEvent, KeyState, Modifiers, MouseButton, PointerEvent, PointerId,
+    PointerSample, PointerSource,
 };
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::{Offset, Point};
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{ComponentNode, Context, Signal, View, Widget};
-use ailloli_ui_runtime::input::{FocusPolicy, HoverCursorRole, InputRole, InputRouter};
+use ailloli_ui_runtime::input::{
+    EventEnvelope, EventId, EventMeta, EventTimestamp, FocusPolicy, HoverCursorRole, InputRole,
+    InputRouter,
+};
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutEngine, LayoutResult};
+use ailloli_ui_runtime::popup::{
+    PopupContent, PopupId, PopupMountPolicy, PopupOwner, PopupRequest, HEADLESS_POPUP_WINDOW_ID,
+};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_text::TextSystem;
 
@@ -139,6 +147,85 @@ fn focus_change_dispatches_blur_then_focus_events() {
 }
 
 #[test]
+fn host_blur_tree_dispatches_blur_once_and_clears_focus() {
+    let (app, _root_id, left_log, right_log) = app_with_two_children(
+        TestLeaf::focusable("left", InputRole::TextSingleLine),
+        TestLeaf::focusable("right", InputRole::None),
+    );
+    let runtime = RuntimeHandle::new();
+    let mut router = InputRouter::default();
+
+    assert!(router.cycle_focus_descendant(&app.tree, runtime.clone(), false, true));
+    left_log.borrow_mut().clear();
+    right_log.borrow_mut().clear();
+
+    assert!(router.blur_tree(&app.tree, runtime.clone()));
+    assert_eq!(router.focused(), None);
+    assert_eq!(left_log.borrow().as_slice(), ["left:blur"]);
+    assert!(right_log.borrow().is_empty());
+
+    assert!(!router.blur_tree(&app.tree, runtime));
+    assert_eq!(left_log.borrow().as_slice(), ["left:blur"]);
+}
+
+#[test]
+fn focus_cycle_uses_depth_first_order_and_wraps_for_tab_directions() {
+    let first = TestLeaf::focusable("first", InputRole::None);
+    let first_log = first.log.clone();
+    let second = TestLeaf::focusable("second", InputRole::None);
+    let second_log = second.log.clone();
+    let third = TestLeaf::focusable("third", InputRole::None);
+    let third_log = third.log.clone();
+    let runtime = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let root = app.reconcile(View::node(
+        TestColumn { gap: 2.0 },
+        vec![
+            View::node(
+                TestColumn { gap: 2.0 },
+                vec![View::leaf(first), View::leaf(second)],
+            ),
+            View::leaf(third),
+        ],
+    ));
+    layout(&mut app);
+    let nested = app.tree.children_of(root)[0];
+    let first_id = app.tree.children_of(nested)[0];
+    let second_id = app.tree.children_of(nested)[1];
+    let third_id = app.tree.children_of(root)[1];
+    let mut router = InputRouter::default();
+
+    assert!(router.cycle_focus_descendant(&app.tree, runtime.clone(), false, true));
+    assert_eq!(router.focused(), Some(first_id));
+    assert!(router.cycle_focus_descendant(&app.tree, runtime.clone(), false, true));
+    assert_eq!(router.focused(), Some(second_id));
+    assert!(router.cycle_focus_descendant(&app.tree, runtime.clone(), false, true));
+    assert_eq!(router.focused(), Some(third_id));
+    assert!(!router.cycle_focus_descendant(&app.tree, runtime.clone(), false, false));
+    assert_eq!(router.focused(), Some(third_id));
+
+    assert!(router.cycle_focus_descendant(&app.tree, runtime.clone(), false, true));
+    assert_eq!(router.focused(), Some(first_id));
+    assert!(router.cycle_focus_descendant(&app.tree, runtime.clone(), true, true));
+    assert_eq!(router.focused(), Some(third_id));
+    assert!(router.cycle_focus_descendant(&app.tree, runtime, true, false));
+    assert_eq!(router.focused(), Some(second_id));
+
+    assert_eq!(
+        first_log.borrow().as_slice(),
+        ["first:focus", "first:blur", "first:focus", "first:blur"]
+    );
+    assert_eq!(
+        second_log.borrow().as_slice(),
+        ["second:focus", "second:blur", "second:focus"]
+    );
+    assert_eq!(
+        third_log.borrow().as_slice(),
+        ["third:focus", "third:blur", "third:focus", "third:blur"]
+    );
+}
+
+#[test]
 fn overlay_hit_bounds_are_tested_before_normal_bounds() {
     let mut overlay = TestLeaf::focusable("overlay", InputRole::None);
     overlay.overlay_hit_bounds = vec![Rect::new(0.0, 20.0, 40.0, 20.0)];
@@ -160,6 +247,70 @@ fn overlay_hit_bounds_are_tested_before_normal_bounds() {
         .iter()
         .any(|event| event == "overlay:button"));
     assert!(bottom_log.borrow().is_empty());
+}
+
+#[test]
+fn retained_popup_hit_cannot_dispatch_to_a_procedural_fallback_below_it() {
+    let mut procedural_leaf = TestLeaf::focusable("procedural", InputRole::None);
+    procedural_leaf.overlay_hit_bounds = vec![Rect::new(0.0, 20.0, 40.0, 20.0)];
+    let (app, root_id, procedural_log, retained_owner_log) = app_with_two_children(
+        procedural_leaf,
+        TestLeaf::focusable("retained-owner", InputRole::None),
+    );
+    let runtime = RuntimeHandle::new();
+    let procedural = PopupId::new(1);
+    let retained = PopupId::new(2);
+    let tree_id = runtime.element_tree_id();
+    let procedural_owner = app.tree.children_of(root_id)[0];
+    let retained_owner = app.tree.children_of(root_id)[1];
+    {
+        let portal = runtime.popup_portal();
+        let mut portal = portal.borrow_mut();
+        portal
+            .register(
+                PopupRequest::new(
+                    procedural,
+                    PopupOwner::new(
+                        HEADLESS_POPUP_WINDOW_ID,
+                        PresentationGeneration::INITIAL,
+                        tree_id,
+                        procedural_owner,
+                    ),
+                    PopupContent::new(View::empty),
+                )
+                .with_mount_policy(PopupMountPolicy::ProceduralFallback),
+            )
+            .unwrap();
+        portal
+            .register(PopupRequest::new(
+                retained,
+                PopupOwner::new(
+                    HEADLESS_POPUP_WINDOW_ID,
+                    PresentationGeneration::INITIAL,
+                    tree_id,
+                    retained_owner,
+                ),
+                PopupContent::new(View::empty),
+            ))
+            .unwrap();
+        portal.open(retained).unwrap();
+        portal.open(procedural).unwrap();
+        portal
+            .set_bounds(retained, Rect::new(0.0, 20.0, 40.0, 20.0))
+            .unwrap();
+    }
+
+    let outcome = InputRouter::default().route_event(
+        &app.tree,
+        runtime.clone(),
+        &pointer_button(Point::new(2.0, 24.0), true),
+    );
+
+    assert!(outcome.event_dispatched);
+    assert!(runtime.popup_is_open(retained));
+    assert!(runtime.popup_is_open(procedural));
+    assert!(procedural_log.borrow().is_empty());
+    assert!(retained_owner_log.borrow().is_empty());
 }
 
 #[test]
@@ -208,6 +359,176 @@ fn widget_requested_repaint_is_dirty_even_when_route_does_not_need_redraw() {
 
     assert!(!key.needs_redraw());
     assert!(runtime.has_dirty_elements());
+}
+
+#[test]
+fn envelopes_keep_pointer_state_isolated_by_pointer_id() {
+    let (app, root_id, _left_log, _right_log) = app_with_two_children(
+        TestLeaf::focusable("left", InputRole::None),
+        TestLeaf::focusable("right", InputRole::None),
+    );
+    let runtime = RuntimeHandle::new();
+    let mut router = InputRouter::default();
+    let left_id = app.tree.children_of(root_id)[0];
+    let right_id = app.tree.children_of(root_id)[1];
+
+    router.route_envelope(
+        &app.tree,
+        runtime.clone(),
+        &pointer_envelope(1, Point::new(2.0, 2.0), pointer_move(Point::new(2.0, 2.0))),
+    );
+    router.route_envelope(
+        &app.tree,
+        runtime.clone(),
+        &pointer_envelope(
+            2,
+            Point::new(2.0, 14.0),
+            pointer_move(Point::new(2.0, 14.0)),
+        ),
+    );
+    router.route_envelope(
+        &app.tree,
+        runtime.clone(),
+        &pointer_envelope(
+            1,
+            Point::new(2.0, 2.0),
+            pointer_button(Point::new(2.0, 2.0), true),
+        ),
+    );
+    router.route_envelope(
+        &app.tree,
+        runtime,
+        &pointer_envelope(
+            2,
+            Point::new(2.0, 14.0),
+            pointer_button(Point::new(2.0, 14.0), true),
+        ),
+    );
+
+    assert_eq!(router.hovered_for(PointerId::new(1)), Some(left_id));
+    assert_eq!(router.hovered_for(PointerId::new(2)), Some(right_id));
+    assert_eq!(
+        router.snapshot_for(PointerId::new(1)).pressed,
+        Some(left_id)
+    );
+    assert_eq!(
+        router.snapshot_for(PointerId::new(2)).pressed,
+        Some(right_id)
+    );
+    assert_eq!(
+        router.hovered(),
+        None,
+        "legacy mouse state remains isolated"
+    );
+}
+
+#[test]
+fn touch_end_and_cancel_remove_only_the_finished_pointer_state() {
+    let (app, root_id, _left_log, _right_log) = app_with_two_children(
+        TestLeaf::focusable("left", InputRole::None),
+        TestLeaf::focusable("right", InputRole::None),
+    );
+    let runtime = RuntimeHandle::new();
+    let mut router = InputRouter::default();
+    let left_id = app.tree.children_of(root_id)[0];
+    let right_id = app.tree.children_of(root_id)[1];
+
+    for (id, pos) in [(1, Point::new(2.0, 2.0)), (2, Point::new(2.0, 14.0))] {
+        router.route_envelope(
+            &app.tree,
+            runtime.clone(),
+            &pointer_envelope(id, pos, pointer_move(pos)),
+        );
+        router.route_envelope(
+            &app.tree,
+            runtime.clone(),
+            &pointer_envelope(id, pos, pointer_button(pos, true)),
+        );
+    }
+
+    assert_eq!(router.hovered_for(PointerId::new(1)), Some(left_id));
+    assert_eq!(router.hovered_for(PointerId::new(2)), Some(right_id));
+
+    router.route_envelope(
+        &app.tree,
+        runtime.clone(),
+        &pointer_envelope(
+            1,
+            Point::new(2.0, 2.0),
+            pointer_button(Point::new(2.0, 2.0), false),
+        ),
+    );
+
+    assert_eq!(
+        router.active_pointer_ids().collect::<Vec<_>>(),
+        vec![PointerId::new(2)],
+        "a touch Ended transition must remove hover, press, and capture only for that id"
+    );
+    assert_eq!(
+        router.snapshot_for(PointerId::new(1)),
+        ailloli_ui_runtime::input::InputSnapshot {
+            focused: router.focused(),
+            ..Default::default()
+        }
+    );
+    assert_eq!(router.hovered_for(PointerId::new(2)), Some(right_id));
+    assert_eq!(
+        router.snapshot_for(PointerId::new(2)).pressed,
+        Some(right_id)
+    );
+
+    router.route_envelope(
+        &app.tree,
+        runtime,
+        &pointer_envelope(
+            2,
+            Point::new(2.0, 14.0),
+            pointer_cancelled(Point::new(2.0, 14.0)),
+        ),
+    );
+
+    assert_eq!(router.active_pointer_ids().count(), 0);
+    assert_eq!(router.hovered_for(PointerId::new(2)), None);
+    assert_eq!(router.snapshot_for(PointerId::new(2)).pressed, None);
+}
+
+#[test]
+fn envelope_metadata_is_visible_to_the_dispatched_widget() {
+    let (app, _root_id, left_log, _right_log) = app_with_two_children(
+        TestLeaf::focusable("left", InputRole::None),
+        TestLeaf::focusable("right", InputRole::None),
+    );
+    let runtime = RuntimeHandle::new();
+    let mut router = InputRouter::default();
+    let sample = PointerSample::new(
+        PointerId::new(11),
+        PointerSource::Touch,
+        Point::new(2.0, 2.0),
+    )
+    .unwrap()
+    .with_primary(false);
+    let meta = EventMeta::new(
+        EventId::new(77),
+        EventTimestamp::new(Duration::from_millis(123)),
+        "main",
+        PresentationGeneration::new(4),
+    )
+    .with_pointer(sample);
+    let envelope = EventEnvelope::new(meta, pointer_button(Point::new(2.0, 2.0), true));
+
+    assert_eq!(envelope.pointer_is_primary(), Some(false));
+    assert_eq!(envelope.meta().pointer_is_primary(), Some(false));
+
+    router.route_envelope(&app.tree, runtime, &envelope);
+
+    assert!(left_log
+        .borrow()
+        .iter()
+        .any(|entry| entry == "left:meta:77:main:4:11"));
+    assert!(left_log
+        .borrow()
+        .iter()
+        .any(|entry| entry == "left:pointer-primary:false"));
 }
 
 #[test]
@@ -594,6 +915,27 @@ fn pointer_move(pos: Point) -> Event {
     })
 }
 
+fn pointer_cancelled(pos: Point) -> Event {
+    Event::Pointer(PointerEvent::Cancelled {
+        pos,
+        modifiers: Modifiers::default(),
+    })
+}
+
+fn pointer_envelope(id: u64, pos: Point, event: Event) -> EventEnvelope {
+    let pointer = PointerSample::new(PointerId::new(id), PointerSource::Touch, pos).unwrap();
+    EventEnvelope::new(
+        EventMeta::new(
+            EventId::new(id),
+            EventTimestamp::new(Duration::from_millis(id)),
+            "main",
+            PresentationGeneration::new(1),
+        )
+        .with_pointer(pointer),
+        event,
+    )
+}
+
 fn keyboard_a() -> Event {
     Event::Keyboard(KeyEvent {
         state: KeyState::Pressed,
@@ -695,6 +1037,25 @@ impl Widget<()> for TestLeaf {
             _ => "other",
         };
         self.log.borrow_mut().push(format!("{}:{kind}", self.name));
+        if let Some(meta) = ctx.event_meta() {
+            let pointer_id = meta
+                .pointer()
+                .map(|pointer| pointer.id().get())
+                .unwrap_or(u64::MAX);
+            self.log.borrow_mut().push(format!(
+                "{}:meta:{}:{}:{}:{}",
+                self.name,
+                meta.id().get(),
+                meta.logical_window_id(),
+                meta.presentation_generation().get(),
+                pointer_id
+            ));
+            if let Some(is_primary) = meta.pointer_is_primary() {
+                self.log
+                    .borrow_mut()
+                    .push(format!("{}:pointer-primary:{is_primary}", self.name));
+            }
+        }
         if self.stop {
             ctx.stop_propagation();
         }

@@ -6,7 +6,7 @@ use ailloli_ui_core::geometry::{Constraints, Point, Rect, Size};
 use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint, LayoutStyle};
 use ailloli_ui_core::{Offset, Theme};
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, View, Widget};
-use ailloli_ui_runtime::input::{EventCtx, HoverCursorRole};
+use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, HoverCursorRole};
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutEngine, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 
@@ -347,8 +347,18 @@ impl<A: 'static> Widget<A> for SplitPaneWidget<A> {
                     ctx.stop_propagation();
                 }
             }
+            Event::Pointer(PointerEvent::Cancelled { .. }) if self.drag.read().is_some() => {
+                self.drag.set(None);
+                self.hover_seam.set(false);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
             _ => {}
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::AllowOnFocusOnly
     }
 
     fn hover_cursor_role_at(

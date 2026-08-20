@@ -35,12 +35,19 @@ impl<A: 'static> Context<A> {
             runtime.mark_dirty(element_id);
         });
 
-        self.runtime.inner.borrow_mut().states.borrow_mut().signal(
-            self.element_id,
-            slot_index,
-            initial,
-            invalidate,
-        )
+        let element_tree_id = self.runtime.element_tree_id();
+        self.runtime
+            .inner
+            .borrow_mut()
+            .states
+            .borrow_mut()
+            .signal_scoped(
+                element_tree_id,
+                self.element_id,
+                slot_index,
+                initial,
+                invalidate,
+            )
     }
 
     pub fn state<T: 'static>(&mut self, initial: T) -> State<T> {

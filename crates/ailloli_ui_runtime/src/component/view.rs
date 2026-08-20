@@ -1,6 +1,6 @@
 use crate::component::context::Context;
 use crate::input::EventCtx;
-use crate::input::{FocusPolicy, HoverCursorRole, InputRole};
+use crate::input::{ActivationPolicy, FocusPolicy, HoverCursorRole, InputRole};
 use crate::layout::LayoutEngine;
 use crate::layout::LayoutResult;
 use crate::layout::{LayoutChild, LayoutCtx};
@@ -170,6 +170,14 @@ pub trait Widget<A>: 'static {
 
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::NotFocusable
+    }
+
+    /// Policy used for provider-neutral focus-only pointer gestures.
+    ///
+    /// The default inherits from the parent; the input router falls back to
+    /// suppression at the root so custom action widgets are safe by default.
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::Inherit
     }
 
     fn input_role(&self) -> InputRole {

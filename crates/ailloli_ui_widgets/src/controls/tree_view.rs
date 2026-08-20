@@ -838,10 +838,26 @@ struct TreeDragState<T> {
 
 #[derive(Clone)]
 struct TreeClickState<T> {
-    at: Instant,
+    at: TreeClickTimestamp,
     pos: Point,
     id: T,
     count: u8,
+}
+
+#[derive(Clone, Copy)]
+enum TreeClickTimestamp {
+    Event(Duration),
+    Legacy(Instant),
+}
+
+impl TreeClickTimestamp {
+    fn elapsed_since(self, earlier: Self) -> Option<Duration> {
+        match (self, earlier) {
+            (Self::Event(now), Self::Event(earlier)) => now.checked_sub(earlier),
+            (Self::Legacy(now), Self::Legacy(earlier)) => now.checked_duration_since(earlier),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1465,7 +1481,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         if node.branch && self.chevron_rect(row, node).contains(pos.x, pos.y) {
             self.toggle_node(ctx, node);
         } else {
-            let click_count = self.register_row_click(node, pos);
+            let click_count = self.register_row_click(ctx, node, pos);
             self.select_node(ctx, node);
             if click_count == 2 {
                 self.activate_node(ctx, node);
@@ -1831,14 +1847,19 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
-    fn register_row_click(&self, node: &FlatNode<T>, pos: Point) -> u8 {
-        let now = Instant::now();
+    fn register_row_click(&self, ctx: &EventCtx<A>, node: &FlatNode<T>, pos: Point) -> u8 {
+        let now = ctx
+            .event_meta()
+            .map(|meta| TreeClickTimestamp::Event(meta.timestamp().duration()))
+            .unwrap_or_else(|| TreeClickTimestamp::Legacy(Instant::now()));
         let next = self
             .last_click
             .read()
             .filter(|last| {
                 last.id == node.id
-                    && now.duration_since(last.at) <= TREE_ACTIVATE_MAX_DELAY
+                    && now
+                        .elapsed_since(last.at)
+                        .is_some_and(|elapsed| elapsed <= TREE_ACTIVATE_MAX_DELAY)
                     && point_distance_sq(last.pos, pos)
                         <= TREE_ACTIVATE_MAX_DISTANCE * TREE_ACTIVATE_MAX_DISTANCE
             })

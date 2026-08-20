@@ -42,8 +42,12 @@ pub mod capture;
 /// Ergonomic imports for building views (`use ailloli_ui::prelude::*`).
 pub mod prelude;
 
+pub use ailloli_ui_runtime::app::{
+    RuntimeInbox, RuntimeInboxStats, RuntimeSendError, RuntimeSender, UiWake, UiWakeError,
+};
 pub use app::{
-    ActionSchema, App, AppBuilder, Command, Commands, Result, Window, WindowChrome, Windows,
+    ActionSchema, App, AppBuilder, Command, Commands, Result, RuntimeInboxAttachError, Window,
+    WindowChrome, Windows,
 };
 
 /// Embeds the conventional application icon from `src/assets/icons/icon.svg` in the
@@ -107,8 +111,10 @@ pub use ailloli_ui_text::{ApproxTextMeasure, FontMetrics, TextBuffer, TextMeasur
 pub use ailloli_ui_widgets::controls::{
     terminal_key_bytes, terminal_key_bytes_with_modes, terminal_selection_text,
     ChatMessageRenderer, ChatWidget, ChatWidgetAction, ChatWidgetActionHandler,
-    ChatWidgetCopyHandler, ChatWidgetRetryHandler, ChatWidgetSendHandler, ChatWidgetStyle, Link,
-    LinkStyle, Terminal, TerminalSelectionMode, TerminalWidgetStyle,
+    ChatWidgetCopyHandler, ChatWidgetRetryHandler, ChatWidgetSendHandler, ChatWidgetStyle,
+    ContextMenu, ContextMenuEntry, ContextMenuItem, ContextMenuStyle, Link, LinkStyle,
+    PopupAlignment, PopupPlacement, Terminal, TerminalSelectionMode, TerminalWidgetStyle, Tooltip,
+    TooltipStyle,
 };
 pub use ailloli_ui_widgets::editor::{
     CodeEditorFeatureFlags, CodeFileSummary, CodeSymbol, Diagnostic, DiagnosticHit,

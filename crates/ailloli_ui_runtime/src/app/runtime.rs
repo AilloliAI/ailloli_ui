@@ -17,10 +17,16 @@ pub struct Runtime<A> {
     pub root: Option<ailloli_ui_core::ids::ElementId>,
 }
 
+impl<A> Drop for Runtime<A> {
+    fn drop(&mut self) {
+        self.runtime.release_element_tree_scope();
+    }
+}
+
 impl<A: 'static> Runtime<A> {
     pub fn new(runtime: RuntimeHandle<A>) -> Self {
         Self {
-            runtime,
+            runtime: runtime.allocate_element_tree_scope(),
             tree: ElementTree::new(),
             root: None,
         }
@@ -33,6 +39,7 @@ impl<A: 'static> Runtime<A> {
     pub fn reconcile_view(&mut self, root_view: View<A>) -> ailloli_ui_core::ids::ElementId {
         let root_id = reconcile_root(&mut self.tree, &self.runtime, root_view);
         self.root = Some(root_id);
+        self.prune_stale_popup_owners();
         root_id
     }
 
@@ -120,6 +127,12 @@ impl<A: 'static> Runtime<A> {
         for component_id in selected {
             let _ = reconcile_existing_component(&mut self.tree, &self.runtime, component_id);
         }
+        self.prune_stale_popup_owners();
+    }
+
+    fn prune_stale_popup_owners(&self) {
+        self.runtime
+            .prune_stale_popup_owners(|element_id| self.tree.get(element_id).is_some());
     }
 
     fn owner_component(

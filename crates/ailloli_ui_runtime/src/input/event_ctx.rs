@@ -1,11 +1,15 @@
 use crate::app::runtime_handle::RuntimeHandle;
 use crate::app::{ExternalUrl, OpenUrlError};
-use ailloli_ui_core::ids::ElementId;
+use ailloli_ui_core::ids::{ElementId, LogicalWindowId};
+use std::sync::Arc;
 use std::time::Duration;
+
+use super::EventMeta;
 
 pub struct EventContext<A> {
     runtime: RuntimeHandle<A>,
     target: ElementId,
+    event_meta: Option<Arc<EventMeta>>,
     propagation_stopped: bool,
 }
 
@@ -16,12 +20,32 @@ impl<A> EventContext<A> {
         Self {
             runtime,
             target,
+            event_meta: None,
+            propagation_stopped: false,
+        }
+    }
+
+    pub(crate) fn new_with_event_meta(
+        runtime: RuntimeHandle<A>,
+        target: ElementId,
+        event_meta: Arc<EventMeta>,
+    ) -> Self {
+        Self {
+            runtime,
+            target,
+            event_meta: Some(event_meta),
             propagation_stopped: false,
         }
     }
 
     pub fn target(&self) -> ElementId {
         self.target
+    }
+
+    /// Metadata for the currently routed event. Legacy direct dispatches do not
+    /// have host metadata and return `None`.
+    pub fn event_meta(&self) -> Option<&EventMeta> {
+        self.event_meta.as_deref()
     }
 
     pub fn dispatch(&mut self, action: A) {
@@ -36,11 +60,11 @@ impl<A> EventContext<A> {
         self.runtime.request_close();
     }
 
-    pub fn request_minimize_window(&self, logical_window_id: impl Into<String>) {
+    pub fn request_minimize_window(&self, logical_window_id: impl Into<LogicalWindowId>) {
         self.runtime.request_window_minimize(logical_window_id);
     }
 
-    pub fn request_toggle_maximize_window(&self, logical_window_id: impl Into<String>) {
+    pub fn request_toggle_maximize_window(&self, logical_window_id: impl Into<LogicalWindowId>) {
         self.runtime
             .request_window_toggle_maximize(logical_window_id);
     }

@@ -35,6 +35,7 @@ pub mod terminal_widget;
 pub(crate) mod text_field_core;
 pub mod text_input;
 pub mod toast;
+pub mod tooltip;
 pub mod tree_view;
 pub mod upload_dropzone;
 
@@ -68,7 +69,7 @@ pub use pickers::{
     ColorPicker, ColorPickerSize, ColorPickerStyle, DatePicker, DatePickerSize, DatePickerStyle,
     TimePicker, TimePickerSize, TimePickerStyle,
 };
-pub use popup::PopupPlacement;
+pub use popup::{PopupAlignment, PopupPlacement};
 pub use progress::{CircularProgress, ProgressBar, ProgressSize, ProgressStyle, ProgressVariant};
 pub use radio::{RadioButton, RadioDirection, RadioGroup, RadioOption, RadioSize, RadioStyle};
 pub use segmented::{SegmentedControl, SegmentedOption, SegmentedSize, SegmentedStyle};
@@ -96,6 +97,7 @@ pub use terminal_widget::{
 };
 pub use text_input::{TextInput, TextInputStyle};
 pub use toast::{Toast, ToastHost, ToastPosition, ToastStyle, ToastTone};
+pub use tooltip::{Tooltip, TooltipStyle};
 pub use tree_view::{
     TreeContextMenu, TreeCreate, TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition,
     TreeMove, TreeMutationMode, TreeNode, TreeNodeTrailingAction, TreeRename, TreeShortcut,

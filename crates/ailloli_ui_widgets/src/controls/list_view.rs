@@ -8,7 +8,9 @@ use ailloli_ui_core::style::{
 };
 use ailloli_ui_core::{Color, FontId, IconId, TextStyle, Theme};
 use ailloli_ui_runtime::component::{Binding, IntoView, View, Widget};
-use ailloli_ui_runtime::input::{ClickAction, EventCtx, FocusPolicy, IntoClickAction};
+use ailloli_ui_runtime::input::{
+    ActivationPolicy, ClickAction, EventCtx, FocusPolicy, IntoClickAction,
+};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawImage, DrawRRect, DrawText};
@@ -460,6 +462,10 @@ impl<A: 'static> Widget<A> for ListItemWidget<A> {
         } else {
             FocusPolicy::NotFocusable
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
     }
 }
 

@@ -1,11 +1,16 @@
+use std::time::Duration;
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, NamedKey};
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::{Color, IconId, Point, Theme};
-use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, State, View};
-use ailloli_ui_runtime::input::{dispatch_event_to_target, InputRouter};
+use ailloli_ui_runtime::input::{
+    dispatch_event_envelope_to_target, dispatch_event_to_target, EventEnvelope, EventId, EventMeta,
+    EventTimestamp, InputRouter,
+};
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{
@@ -508,24 +513,32 @@ fn tree_view_activate_uses_double_click_and_enter_when_configured() {
     layout_app(&mut app, 360.0, 260.0);
     let tree = first_child(&app, root);
 
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        tree,
-        &pointer_button(70.0, 72.0, false),
-    );
+    dispatch_pointer_at(&app, runtime.clone(), tree, 70.0, 72.0, 100);
     assert_eq!(selected.read(), NodeId::Cargo);
     assert_eq!(
         runtime.take_actions(),
         vec![Action::SelectNode(NodeId::Cargo)]
     );
 
-    dispatch_event_to_target(
-        &app.tree,
-        runtime.clone(),
-        tree,
-        &pointer_button(70.0, 72.0, false),
+    dispatch_pointer_at(&app, runtime.clone(), tree, 70.0, 72.0, 600);
+    assert_eq!(
+        runtime.take_actions(),
+        vec![Action::ActivateNode(NodeId::Cargo)]
     );
+
+    dispatch_pointer_at(&app, runtime.clone(), tree, 70.0, 72.0, 700);
+    assert!(
+        runtime.take_actions().is_empty(),
+        "a third click must not activate"
+    );
+
+    dispatch_pointer_at(&app, runtime.clone(), tree, 70.0, 72.0, 1_201);
+    assert!(
+        runtime.take_actions().is_empty(),
+        "a click beyond the threshold must start a new sequence"
+    );
+
+    dispatch_pointer_at(&app, runtime.clone(), tree, 70.0, 72.0, 1_701);
     assert_eq!(
         runtime.take_actions(),
         vec![Action::ActivateNode(NodeId::Cargo)]
@@ -1247,6 +1260,30 @@ fn pointer_button(x: f32, y: f32, pressed: bool) -> Event {
         pressed,
         modifiers: Modifiers::default(),
     })
+}
+
+fn dispatch_pointer_at<A: 'static>(
+    app: &Runtime<A>,
+    runtime: RuntimeHandle<A>,
+    target: ailloli_ui_core::ElementId,
+    x: f32,
+    y: f32,
+    timestamp_ms: u64,
+) {
+    dispatch_event_envelope_to_target(
+        &app.tree,
+        runtime,
+        target,
+        &EventEnvelope::new(
+            EventMeta::new(
+                EventId::new(timestamp_ms),
+                EventTimestamp::new(Duration::from_millis(timestamp_ms)),
+                "tree-test",
+                PresentationGeneration::INITIAL,
+            ),
+            pointer_button(x, y, false),
+        ),
+    );
 }
 
 fn pointer_move(x: f32, y: f32) -> Event {

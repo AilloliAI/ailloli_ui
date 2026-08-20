@@ -307,7 +307,7 @@ fn scenario_ab_nested_no_backdrop(renderer: &mut Renderer, rep: &mut ScenarioRep
 }
 
 fn make_renderer(window: &Arc<winit::window::Window>, options: RendererOptions) -> Renderer {
-    Renderer::new_with_options(window.clone(), options).expect("renderer")
+    ailloli_ui_winit::renderer_from_window_with_options(window.clone(), options).expect("renderer")
 }
 
 #[test]

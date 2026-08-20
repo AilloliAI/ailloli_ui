@@ -40,7 +40,11 @@ use crate::runtime::component::{IntoView, View};
 use ailloli_ui_app_storage::AppStorage;
 #[cfg(feature = "winit")]
 use ailloli_ui_app_storage::WindowStateDocument;
-use ailloli_ui_core::{AppIcon, AppIdentity, ValidatedAppIdentity};
+#[cfg(feature = "winit")]
+use ailloli_ui_core::Size;
+#[cfg(feature = "winit")]
+use ailloli_ui_core::ValidatedAppIdentity;
+use ailloli_ui_core::{AppIcon, AppIdentity};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::time::Duration;
@@ -56,10 +60,85 @@ use std::time::Instant;
 /// Application result type (boxed error for ergonomic `?` in `main`).
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[cfg(feature = "winit")]
+enum AppIconConfigurationSite {
+    AppIdentity,
+    Window { logical_id: String },
+}
+
+#[cfg(feature = "winit")]
+impl std::fmt::Display for AppIconConfigurationSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AppIdentity => f.write_str("`AppIdentity::icon(...)`"),
+            Self::Window { logical_id } => {
+                write!(f, "`Window::icon(...)` for window {logical_id:?}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "winit")]
+struct AppIconConfigurationError {
+    site: AppIconConfigurationSite,
+    source_path: String,
+    source: ailloli_ui_icon::IconError,
+}
+
+// `main() -> Result<_, Box<dyn Error>>` renders errors through `Debug`. Keep it
+// identical to the actionable Display message instead of exposing the inner
+// enum variant as only `NonSquare(...)`.
+#[cfg(feature = "winit")]
+impl std::fmt::Debug for AppIconConfigurationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+#[cfg(feature = "winit")]
+impl std::fmt::Display for AppIconConfigurationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid application icon supplied to {} from {:?}: {}",
+            self.site, self.source_path, self.source
+        )?;
+        if self.source_path == ailloli_ui_core::CONVENTIONAL_APP_ICON_PATH {
+            write!(
+                f,
+                "; `app_icon!()` embeds this image from `<application crate>/{}`",
+                ailloli_ui_core::CONVENTIONAL_APP_ICON_PATH
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "winit")]
+impl std::error::Error for AppIconConfigurationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+#[cfg(feature = "winit")]
+fn validate_configured_app_icon(
+    icon: &AppIcon,
+    site: AppIconConfigurationSite,
+) -> std::result::Result<(), AppIconConfigurationError> {
+    ailloli_ui_icon::validate_app_icon(icon)
+        .map(|_| ())
+        .map_err(|source| AppIconConfigurationError {
+            site,
+            source_path: icon.source_path().to_owned(),
+            source,
+        })
+}
+
 /// Window decoration mode: native OS chrome vs Ailloli UI client chrome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowChrome {
-    /// Native title bar and window borders ([`winit`] decorations).
+    /// Native title bar and window borders (host-window decorations).
     #[default]
     Os,
     /// No OS decorations; built-in Ailloli UI title bar
@@ -487,6 +566,23 @@ impl<A> Default for Windows<A> {
     }
 }
 
+#[cfg(any(feature = "winit", test))]
+fn validate_unique_window_ids<A>(windows: &Windows<A>) -> std::io::Result<()> {
+    let mut logical_window_ids = std::collections::HashSet::new();
+    for window in windows.iter() {
+        if !logical_window_ids.insert(window.id()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "ailloli_ui::App requires unique logical window ids; {:?} is declared more than once",
+                    window.id()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Entry point for building an Ailloli UI desktop application.
 ///
 /// Start with [`App::new`], then chain [`state`](Self::state), [`actions`](Self::actions),
@@ -508,6 +604,7 @@ impl App {
                 startup_actions: Vec::new(),
                 storage: None,
                 identity: None,
+                runtime_inbox: None,
                 #[cfg(feature = "winit")]
                 capture_session: CaptureSession::default(),
                 #[cfg(all(feature = "winit", feature = "devtools"))]
@@ -567,6 +664,15 @@ impl App {
     pub fn windows(self, windows: Windows<()>) -> AppBuilder<(), (), ()> {
         self.builder.windows(windows)
     }
+
+    /// Attaches the bounded cross-thread runtime mailbox used by the native host.
+    #[cfg(feature = "winit")]
+    pub fn try_runtime_inbox(
+        self,
+        inbox: ailloli_ui_runtime::app::RuntimeInbox<()>,
+    ) -> std::result::Result<AppBuilder<(), (), ()>, RuntimeInboxAttachError> {
+        self.builder.try_runtime_inbox(inbox)
+    }
 }
 
 impl Default for App {
@@ -585,6 +691,7 @@ impl Default for AppBuilder<(), (), ()> {
             startup_actions: Vec::new(),
             storage: None,
             identity: None,
+            runtime_inbox: None,
             #[cfg(feature = "winit")]
             capture_session: CaptureSession::default(),
             #[cfg(all(feature = "winit", feature = "devtools"))]
@@ -610,6 +717,7 @@ pub struct AppBuilder<S, A, Sv> {
     startup_actions: Vec<A>,
     storage: Option<AppStorage>,
     identity: Option<AppIdentity>,
+    runtime_inbox: Option<ailloli_ui_runtime::app::RuntimeInbox<A>>,
     #[cfg(feature = "winit")]
     capture_session: CaptureSession,
     #[cfg(all(feature = "winit", feature = "devtools"))]
@@ -628,6 +736,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             startup_actions: self.startup_actions,
             storage: self.storage,
             identity: self.identity,
+            runtime_inbox: self.runtime_inbox,
             #[cfg(feature = "winit")]
             capture_session: self.capture_session,
             #[cfg(all(feature = "winit", feature = "devtools"))]
@@ -647,6 +756,9 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             startup_actions: Vec::new(),
             storage: self.storage,
             identity: self.identity,
+            // The mailbox is action-typed. Select the action schema before
+            // attaching it so changing `A` cannot reinterpret queued payloads.
+            runtime_inbox: None,
             #[cfg(feature = "winit")]
             capture_session: self.capture_session,
             #[cfg(all(feature = "winit", feature = "devtools"))]
@@ -665,6 +777,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             startup_actions: self.startup_actions,
             storage: self.storage,
             identity: self.identity,
+            runtime_inbox: self.runtime_inbox,
             #[cfg(feature = "winit")]
             capture_session: self.capture_session,
             #[cfg(all(feature = "winit", feature = "devtools"))]
@@ -732,6 +845,22 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
         self
     }
 
+    /// Attaches the single bounded cross-thread mailbox consumed by `App::run`.
+    ///
+    /// Call this after [`actions`](Self::actions), because the mailbox payload is
+    /// the application's selected action type.
+    #[cfg(feature = "winit")]
+    pub fn try_runtime_inbox(
+        mut self,
+        inbox: ailloli_ui_runtime::app::RuntimeInbox<A>,
+    ) -> std::result::Result<Self, RuntimeInboxAttachError> {
+        if self.runtime_inbox.is_some() {
+            return Err(RuntimeInboxAttachError);
+        }
+        self.runtime_inbox = Some(inbox);
+        Ok(self)
+    }
+
     /// Runs the winit event loop until exit (requires **`winit`** feature).
     ///
     /// At least one window with [`Window::content`] is required. Composes chrome,
@@ -743,11 +872,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
         A: 'static,
         Sv: 'static,
     {
-        use ailloli_ui_winit::{
-            new_event_loop_allow_any_thread, run_app_on_event_loop, UiApp, WindowOptions,
-        };
-        use winit::dpi::LogicalSize;
-        use winit::event_loop::ControlFlow;
+        use ailloli_ui_winit::{run_winit_host, UiApp, WindowOptions, WinitHost};
 
         let AppBuilder {
             state,
@@ -757,6 +882,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             startup_actions,
             storage,
             identity,
+            runtime_inbox,
             capture_session,
             #[cfg(all(feature = "winit", feature = "devtools"))]
             devtools_remote_addr,
@@ -770,8 +896,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
 
         if let Some(identity) = validated_identity.as_ref() {
-            ailloli_ui_icon::validate_app_icon(identity.icon())
-                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            validate_configured_app_icon(identity.icon(), AppIconConfigurationSite::AppIdentity)?;
         }
 
         let package_metadata_path =
@@ -796,6 +921,8 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             .into());
         }
 
+        validate_unique_window_ids(&windows)?;
+
         let window_sources: Vec<WindowCaptureSource> = windows
             .windows
             .iter()
@@ -816,9 +943,9 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
                 .iter()
                 .any(|source| !source.captures.is_empty());
 
-        let _ = ailloli_ui_winit::init_ailloli_ui_bench_from_env(
+        let bench = ailloli_ui_winit::try_init_ailloli_ui_bench_from_env(
             "artifacts/bench/ailloli_ui_app.jsonl",
-        );
+        )?;
 
         let restored_window_state =
             storage
@@ -831,7 +958,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
                     }
                 });
 
-        let mut app = UiApp::<A>::with_control_flow(ControlFlow::Wait);
+        let mut app = UiApp::<A>::new();
         #[cfg(all(feature = "winit", feature = "devtools"))]
         if let Some(addr) = devtools_remote_addr {
             app = app.devtools_remote_addr(addr);
@@ -852,15 +979,19 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
                 native_overlay,
                 ..
             } = window.into_parts();
+            if let Some(icon) = icon.as_ref() {
+                validate_configured_app_icon(
+                    icon,
+                    AppIconConfigurationSite::Window {
+                        logical_id: id.clone(),
+                    },
+                )?;
+            }
             let effective_icon = icon.or_else(|| {
                 validated_identity
                     .as_ref()
                     .map(|identity| identity.icon().clone())
             });
-            if let Some(icon) = effective_icon.as_ref() {
-                ailloli_ui_icon::validate_app_icon(icon)
-                    .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-            }
             let Some(content) = content else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -900,11 +1031,9 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
                 .map(|size| (size.width as f32, size.height as f32));
             let effective_size = restored_size.or(size);
 
-            let options = WindowOptions {
+            let mut options = WindowOptions {
                 title,
                 logical_window_id: id,
-                inner_size: effective_size
-                    .map(|(w, h)| LogicalSize::new(w.max(1.0) as f64, h.max(1.0) as f64)),
                 decorations,
                 resizable,
                 has_client_title_row,
@@ -920,6 +1049,9 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
                 native_overlay,
                 ..Default::default()
             };
+            if let Some((width, height)) = effective_size {
+                options = options.with_logical_inner_size(Size::new(width, height));
+            }
             app = app.window(options, root_view);
         }
 
@@ -932,32 +1064,46 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             runtime.dispatch(action);
         }
 
-        let mut app = DxAppHandler {
-            ui: app,
+        let driver = DxAppDriver {
             state,
             services,
             update,
             delayed_actions: Vec::new(),
             capture_session,
         };
+        let mut app = WinitHost::new(app, driver);
+        if let Some(inbox) = runtime_inbox {
+            app = app.runtime_inbox(inbox);
+        }
 
-        let event_loop = new_event_loop_allow_any_thread()?;
-        run_app_on_event_loop(event_loop, &mut app, ControlFlow::Wait)?;
+        let event_loop_error = run_winit_host(&mut app).err();
         let app_error = app.take_error();
-        let capture_error = app.capture_session.take_first_io_error();
-        if app_error.is_none() && capture_error.is_none() {
+        let inbox_wake_error = app.take_inbox_wake_error();
+        let capture_error = app.driver_mut().capture_session.take_first_io_error();
+        let mut primary_error: Option<Box<dyn std::error::Error>> = event_loop_error
+            .map(|error| Box::new(error) as Box<dyn std::error::Error>)
+            .or_else(|| app_error.map(|error| Box::new(error) as Box<dyn std::error::Error>))
+            .or_else(|| inbox_wake_error.map(|error| Box::new(error) as Box<dyn std::error::Error>))
+            .or_else(|| capture_error.map(|error| Box::new(error) as Box<dyn std::error::Error>));
+        if primary_error.is_none() {
             if let Some(storage) = storage.as_ref() {
-                let snapshots = app.ui.window_snapshots();
-                storage.write_window_state(&WindowStateDocument::new(snapshots))?;
+                let snapshots = app.ui().window_snapshots();
+                if let Err(error) = storage.write_window_state(&WindowStateDocument::new(snapshots))
+                {
+                    primary_error = Some(Box::new(error));
+                }
             }
         }
-        if let Some(error) = app_error {
-            return Err(error.into());
+        let bench_error = bench
+            .finish()
+            .err()
+            .map(|error| Box::new(error) as Box<dyn std::error::Error>);
+        match (primary_error, bench_error) {
+            (Some(primary), Some(bench)) => Err(Box::new(AppRunAndBenchError { primary, bench })),
+            (Some(primary), None) => Err(primary),
+            (None, Some(bench)) => Err(bench),
+            (None, None) => Ok(()),
         }
-        if let Some(io_err) = capture_error {
-            return Err(io_err.into());
-        }
-        Ok(())
     }
 
     /// Stub when the `winit` feature is disabled.
@@ -969,6 +1115,49 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             "ailloli_ui::App::run requires the `winit` feature",
         )
         .into())
+    }
+}
+
+/// Returned when a second runtime inbox is attached to one application builder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeInboxAttachError;
+
+impl std::fmt::Display for RuntimeInboxAttachError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("an AppBuilder can attach only one runtime inbox")
+    }
+}
+
+impl std::error::Error for RuntimeInboxAttachError {}
+
+#[cfg(feature = "winit")]
+struct AppRunAndBenchError {
+    primary: Box<dyn std::error::Error>,
+    bench: Box<dyn std::error::Error>,
+}
+
+#[cfg(feature = "winit")]
+impl std::fmt::Display for AppRunAndBenchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "application failed: {}; benchmark finalization also failed: {}",
+            self.primary, self.bench
+        )
+    }
+}
+
+#[cfg(feature = "winit")]
+impl std::fmt::Debug for AppRunAndBenchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, formatter)
+    }
+}
+
+#[cfg(feature = "winit")]
+impl std::error::Error for AppRunAndBenchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.primary.as_ref())
     }
 }
 
@@ -1148,8 +1337,7 @@ fn drain_runtime_actions<S, A, Sv>(
 }
 
 #[cfg(feature = "winit")]
-struct DxAppHandler<S, A, Sv> {
-    ui: ailloli_ui_winit::UiApp<A>,
+struct DxAppDriver<S, A, Sv> {
     state: S,
     services: Sv,
     update: Option<UpdateFn<S, Sv, A>>,
@@ -1165,83 +1353,40 @@ struct DelayedAction<A> {
 }
 
 #[cfg(feature = "winit")]
-impl<S, A, Sv> DxAppHandler<S, A, Sv>
+impl<S, A, Sv> ailloli_ui_winit::HostDriver<A> for DxAppDriver<S, A, Sv>
 where
+    S: 'static,
     A: 'static,
+    Sv: 'static,
 {
-    fn take_error(&mut self) -> Option<ailloli_ui_winit::UiAppError> {
-        self.ui.take_error()
-    }
-
-    fn drain_actions(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let runtime = self.ui.runtime();
+    fn service(
+        &mut self,
+        runtime: &RuntimeHandle<A>,
+        now: Instant,
+    ) -> ailloli_ui_winit::HostOutcome {
+        dispatch_due_delayed_actions(runtime, &mut self.delayed_actions, now);
+        let mut outcome = ailloli_ui_winit::HostOutcome::default();
         let mut delayed_actions = Vec::new();
         drain_runtime_actions(
-            &runtime,
+            runtime,
             &mut self.state,
             &mut self.services,
             self.update,
             |command| match command {
-                Command::Quit => event_loop.exit(),
-                Command::Redraw => self.ui.request_redraw_all(),
+                Command::Quit => outcome.exit = true,
+                Command::Redraw => outcome.redraw_all = true,
                 Command::Dispatch(action) => runtime.dispatch(action),
                 Command::DispatchAfter { action, delay } => {
                     delayed_actions.push(DelayedAction {
-                        due: Instant::now() + delay,
+                        due: now + delay,
                         action,
                     });
                 }
             },
         );
         self.delayed_actions.extend(delayed_actions);
-        if runtime.take_close_requested() {
-            event_loop.exit();
-        }
-    }
-
-    fn dispatch_due_delayed_actions(&mut self) {
-        let runtime = self.ui.runtime();
-        dispatch_due_delayed_actions(&runtime, &mut self.delayed_actions, Instant::now());
-    }
-
-    fn next_delayed_action_due(&self) -> Option<Instant> {
-        next_delayed_action_due(&self.delayed_actions)
-    }
-}
-
-#[cfg(feature = "winit")]
-impl<S, A, Sv> winit::application::ApplicationHandler for DxAppHandler<S, A, Sv>
-where
-    S: 'static,
-    A: 'static,
-    Sv: 'static,
-{
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.ui.resumed(event_loop);
-        self.drain_actions(event_loop);
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        id: winit::window::WindowId,
-        event: winit::event::WindowEvent,
-    ) {
-        self.ui.window_event(event_loop, id, event);
-        self.drain_actions(event_loop);
-    }
-
-    fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: ()) {
-        self.ui.user_event(event_loop, event);
-        self.drain_actions(event_loop);
-    }
-
-    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        self.dispatch_due_delayed_actions();
-        self.drain_actions(event_loop);
-        self.ui
-            .about_to_wait_with_wakeup(event_loop, self.next_delayed_action_due());
-        self.drain_actions(event_loop);
+        outcome.next_wake = next_delayed_action_due(&self.delayed_actions);
+        outcome
     }
 }
 
@@ -1317,6 +1462,38 @@ mod tests {
     #[test]
     fn actions_accepts_action_schema_registry() {
         let _builder = App::new().state(TestState::default()).actions(TestActions);
+    }
+
+    #[test]
+    fn duplicate_logical_window_ids_are_rejected_before_native_creation() {
+        let windows = Windows::<()>::new()
+            .push(Window::new("main"))
+            .push(Window::new("main"));
+        let error = validate_unique_window_ids(&windows).expect_err("duplicate ids must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error
+            .to_string()
+            .contains("\"main\" is declared more than once"));
+    }
+
+    #[cfg(feature = "winit")]
+    #[test]
+    fn app_builder_rejects_a_second_runtime_inbox() {
+        let (_, first) = ailloli_ui_runtime::app::RuntimeInbox::<()>::channel(
+            std::num::NonZeroUsize::new(4).unwrap(),
+        );
+        let (_, second) = ailloli_ui_runtime::app::RuntimeInbox::<()>::channel(
+            std::num::NonZeroUsize::new(4).unwrap(),
+        );
+
+        let builder = AppBuilder::default().try_runtime_inbox(first).unwrap();
+        let error = builder.try_runtime_inbox(second).err().unwrap();
+
+        assert_eq!(error, RuntimeInboxAttachError);
+        assert_eq!(
+            error.to_string(),
+            "an AppBuilder can attach only one runtime inbox"
+        );
     }
 
     #[test]
@@ -1603,6 +1780,65 @@ mod tests {
         let identity = builder.identity.as_ref().expect("identity retained");
         assert_eq!(identity.id_str(), Some("org.example.app"));
         assert_eq!(identity.name_str(), Some("Example"));
+    }
+
+    #[cfg(feature = "winit")]
+    #[test]
+    fn app_identity_icon_error_reports_the_svg_path_and_human_cause() {
+        const NON_SQUARE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 79.375436 79.375"><title>DO_NOT_LEAK_ICON_BYTES</title><rect width="1" height="1"/></svg>"#;
+        let icon = AppIcon::from_static_svg(NON_SQUARE_SVG, "path/of/image/assets/icons/icon.svg");
+
+        let error = validate_configured_app_icon(&icon, AppIconConfigurationSite::AppIdentity)
+            .expect_err("the non-square viewBox must be rejected");
+        let display = error.to_string();
+
+        assert!(display.contains("`AppIdentity::icon(...)`"));
+        assert!(display.contains("\"path/of/image/assets/icons/icon.svg\""));
+        assert!(display.contains("viewBox must be square"));
+        assert!(display.contains("79.375436x79.375"));
+        assert!(!display.contains("DO_NOT_LEAK_ICON_BYTES"));
+        assert_eq!(format!("{error:?}"), display);
+        assert!(matches!(
+            std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<ailloli_ui_icon::IconError>()),
+            Some(ailloli_ui_icon::IconError::NonSquare(width, height))
+                if *width == 79.375436 && *height == 79.375
+        ));
+
+        let boxed: Box<dyn std::error::Error> = Box::new(error);
+        assert_eq!(format!("{boxed:?}"), display);
+    }
+
+    #[cfg(feature = "winit")]
+    #[test]
+    fn configured_icon_error_distinguishes_macro_and_window_sources() {
+        const NON_SQUARE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 1"><rect width="2" height="1"/></svg>"#;
+        let conventional =
+            AppIcon::from_static_svg(NON_SQUARE_SVG, ailloli_ui_core::CONVENTIONAL_APP_ICON_PATH);
+        let identity_error =
+            validate_configured_app_icon(&conventional, AppIconConfigurationSite::AppIdentity)
+                .expect_err("the conventional non-square icon must be rejected")
+                .to_string();
+        assert!(identity_error.contains(
+            "`app_icon!()` embeds this image from `<application crate>/src/assets/icons/icon.svg`"
+        ));
+
+        let override_icon = AppIcon::from_static_svg(
+            NON_SQUARE_SVG,
+            "path/of/image/assets/icons/override.svg\nnot-a-second-log-line",
+        );
+        let window_error = validate_configured_app_icon(
+            &override_icon,
+            AppIconConfigurationSite::Window {
+                logical_id: "main\nnot-a-second-log-line".to_owned(),
+            },
+        )
+        .expect_err("the window override must be rejected")
+        .to_string();
+        assert!(window_error.contains("`Window::icon(...)` for window \"main\\n"));
+        assert!(window_error.contains("override.svg\\nnot-a-second-log-line"));
+        assert!(!window_error.contains("AppIdentity::icon"));
+        assert_eq!(window_error.lines().count(), 1);
     }
 
     #[test]

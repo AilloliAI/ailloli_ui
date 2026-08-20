@@ -2,11 +2,13 @@ use ailloli_ui_core::event::Event;
 use ailloli_ui_core::ids::ElementId;
 use ailloli_ui_core::Offset;
 use ailloli_ui_core::{ClipShape, Point, Rect};
+use std::sync::Arc;
 
 use crate::app::RuntimeHandle;
 use crate::element::{ElementKind, ElementTree};
 use crate::input::EventCtx;
 use crate::input::HitTestEngine;
+use crate::input::{EventEnvelope, EventMeta};
 
 pub fn collect_hit_rects<A>(tree: &ElementTree<A>) -> Vec<(ElementId, Rect)> {
     let mut out = Vec::new();
@@ -25,7 +27,22 @@ pub fn dispatch_event_to_target<A: 'static>(
     target: ElementId,
     event: &Event,
 ) {
-    let _ = dispatch_event_to_single_target(tree, runtime, target, event);
+    let _ = dispatch_event_to_single_target(tree, runtime, target, event, None);
+}
+
+pub fn dispatch_event_envelope_to_target<A: 'static>(
+    tree: &ElementTree<A>,
+    runtime: RuntimeHandle<A>,
+    target: ElementId,
+    envelope: &EventEnvelope,
+) {
+    let _ = dispatch_event_to_single_target(
+        tree,
+        runtime,
+        target,
+        envelope.event(),
+        Some(Arc::new(envelope.meta().clone())),
+    );
 }
 
 fn dispatch_event_to_single_target<A: 'static>(
@@ -33,6 +50,7 @@ fn dispatch_event_to_single_target<A: 'static>(
     runtime: RuntimeHandle<A>,
     target: ElementId,
     event: &Event,
+    event_meta: Option<Arc<EventMeta>>,
 ) -> bool {
     let Some(el) = tree.get(target) else {
         return false;
@@ -43,7 +61,10 @@ fn dispatch_event_to_single_target<A: 'static>(
     let bounds = absolute_paint_bounds(tree, target).unwrap_or(layout.paint_bounds);
 
     if let ElementKind::Widget(widget) = &el.kind {
-        let mut ctx = EventCtx::new(runtime, target);
+        let mut ctx = match event_meta {
+            Some(event_meta) => EventCtx::new_with_event_meta(runtime, target, event_meta),
+            None => EventCtx::new(runtime, target),
+        };
         widget.event(&mut ctx, event, bounds, layout);
         return ctx.is_propagation_stopped();
     }
@@ -57,9 +78,34 @@ pub fn dispatch_event_bubbling<A: 'static>(
     target: ElementId,
     event: &Event,
 ) {
+    dispatch_event_bubbling_impl(tree, runtime, target, event, None);
+}
+
+pub fn dispatch_event_envelope_bubbling<A: 'static>(
+    tree: &ElementTree<A>,
+    runtime: RuntimeHandle<A>,
+    target: ElementId,
+    envelope: &EventEnvelope,
+) {
+    dispatch_event_bubbling_impl(
+        tree,
+        runtime,
+        target,
+        envelope.event(),
+        Some(Arc::new(envelope.meta().clone())),
+    );
+}
+
+fn dispatch_event_bubbling_impl<A: 'static>(
+    tree: &ElementTree<A>,
+    runtime: RuntimeHandle<A>,
+    target: ElementId,
+    event: &Event,
+    event_meta: Option<Arc<EventMeta>>,
+) {
     let mut current = Some(target);
     while let Some(id) = current {
-        if dispatch_event_to_single_target(tree, runtime.clone(), id, event) {
+        if dispatch_event_to_single_target(tree, runtime.clone(), id, event, event_meta.clone()) {
             break;
         }
         current = tree.parent_of(id);
@@ -162,6 +208,15 @@ pub fn hit_test_target<A>(
         clips.push(clip);
     }
     hit_test_element(tree, root, pos, Offset::default(), clips)
+}
+
+/// Hit-tests only retained overlay regions, preserving their paint z-order.
+///
+/// Popup routing uses this as backend-confirmed evidence before the first
+/// paint has committed global popup bounds to the semantic portal.
+pub fn hit_test_overlay_target<A>(tree: &ElementTree<A>, pos: Point) -> Option<ElementId> {
+    let root = tree.root()?;
+    hit_test_overlay_bounds(tree, root, pos, Offset::default())
 }
 
 fn hit_test_overlay_bounds<A>(

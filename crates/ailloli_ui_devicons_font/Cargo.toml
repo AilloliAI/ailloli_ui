@@ -2,6 +2,7 @@
 name = "ailloli_ui_devicons_font"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "License-audited file-icon font bytes for Ailloli UI rendering"
 publish = false

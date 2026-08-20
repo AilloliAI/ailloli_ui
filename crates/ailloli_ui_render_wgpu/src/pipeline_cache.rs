@@ -2,10 +2,8 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use winit::dpi::PhysicalSize;
-
 use crate::error::RendererError;
-use crate::render_target::{RenderFrame, RenderTarget};
+use crate::render_target::{PhysicalExtent, RenderFrame, RenderTarget};
 use crate::vertices::{
     BorderRRectVertex, BoxShadowVertex, RRectVertex, RingProgressVertex, StrokeVertex, TexVertex,
     Vertex,
@@ -14,6 +12,8 @@ use crate::vertices::{
 /// Why surface configuration was deferred during resize/bootstrap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceConfigDeferredReason {
+    /// No native surface is currently attached to the reusable GPU context.
+    Detached,
     NoFormats,
     NoPresentModes,
 }
@@ -21,9 +21,75 @@ pub enum SurfaceConfigDeferredReason {
 impl SurfaceConfigDeferredReason {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Detached => "presentation surface is detached",
             Self::NoFormats => "surface capabilities reported no formats",
             Self::NoPresentModes => "surface capabilities reported no present modes",
         }
+    }
+}
+
+/// Whether a reusable surface renderer currently owns a native attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceAttachmentState {
+    Attached,
+    Detached,
+}
+
+/// Why a newly-created surface could not reuse the current GPU context.
+///
+/// These conditions are not fatal by themselves: reattachment falls back to
+/// selecting another adapter and rebuilding device-bound renderer resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SurfaceContextReuseFailure {
+    AdapterUnsupported,
+    CapabilitiesDeferred(SurfaceConfigDeferredReason),
+    FormatUnsupported,
+    ConfigureFailed,
+}
+
+/// Result of attaching a new native surface to an existing renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SurfaceReattachOutcome {
+    /// Instance, adapter, device, queue, pipelines, atlases, and caches were reused.
+    ReusedGpuContext,
+    /// The retained adapter was incompatible, so the GPU context was rebuilt.
+    RebuiltGpuContext { reason: SurfaceContextReuseFailure },
+}
+
+#[derive(Debug)]
+struct SurfaceAttachmentSlot<T> {
+    value: Option<T>,
+}
+
+impl<T> SurfaceAttachmentSlot<T> {
+    fn attached(value: T) -> Self {
+        Self { value: Some(value) }
+    }
+
+    fn state(&self) -> SurfaceAttachmentState {
+        if self.value.is_some() {
+            SurfaceAttachmentState::Attached
+        } else {
+            SurfaceAttachmentState::Detached
+        }
+    }
+
+    fn as_ref(&self) -> Option<&T> {
+        self.value.as_ref()
+    }
+
+    fn as_mut(&mut self) -> Option<&mut T> {
+        self.value.as_mut()
+    }
+
+    fn detach(&mut self) -> Option<T> {
+        self.value.take()
+    }
+
+    fn attach(&mut self, value: T) -> Option<T> {
+        self.value.replace(value)
     }
 }
 
@@ -34,6 +100,20 @@ pub enum ResizeOutcome {
     Unchanged,
     SkippedZero,
     Deferred(SurfaceConfigDeferredReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceConfigureMode {
+    Resize,
+    Force,
+}
+
+fn surface_configure_required(
+    current: PhysicalExtent,
+    requested: PhysicalExtent,
+    mode: SurfaceConfigureMode,
+) -> bool {
+    mode == SurfaceConfigureMode::Force || current != requested
 }
 
 /// GPU bundle for rendering when a presentation surface is managed externally.
@@ -86,7 +166,7 @@ impl WgpuRenderContext {
     }
 
     /// Resize the virtual config (no swapchain reconfigure side effects).
-    pub fn try_resize(&mut self, new_size: PhysicalSize<u32>) -> ResizeOutcome {
+    pub fn try_resize(&mut self, new_size: PhysicalExtent) -> ResizeOutcome {
         if new_size.width == 0 || new_size.height == 0 {
             return ResizeOutcome::SkippedZero;
         }
@@ -1079,88 +1159,138 @@ fn adapter_bootstrap_rank(device_type: wgpu::DeviceType) -> u8 {
     }
 }
 
-/// GPU device, queue, surface, and pipelines bootstrapped from a winit window.
+/// Device-bound state that can outlive a native presentation surface.
 ///
-/// `window` is stored in `Arc` so the `Surface` never outlives the raw window handle.
-/// Without shared ownership, the surface could reference freed memory — flaky Wayland segfaults.
-pub struct WgpuSurfaceBundle {
-    pub surface: wgpu::Surface<'static>,
+/// Keeping the instance and adapter here lets a suspended host discard only
+/// [`SurfaceAttachment`] while retaining the device, queue, and pipeline cache.
+pub struct SurfaceGpuContext {
+    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub config: wgpu::SurfaceConfiguration,
-    pub pipelines: PipelineCache,
-    transparent: bool,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipelines: PipelineCache,
+    format: wgpu::TextureFormat,
+}
+
+impl SurfaceGpuContext {
+    pub fn instance(&self) -> &wgpu::Instance {
+        &self.instance
+    }
+
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        &self.adapter
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    pub fn pipelines(&self) -> &PipelineCache {
+        &self.pipelines
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    pub fn adapter_info(&self) -> wgpu::AdapterInfo {
+        self.adapter.get_info()
+    }
+}
+
+/// Native presentation resources that are discarded on host suspension.
+///
+/// The surface keeps the owned raw-window-handle provider alive. Configuration,
+/// capabilities, and the host pre-present callback therefore share exactly the
+/// same lifetime and are dropped before the native target owner can be released.
+pub struct SurfaceAttachment {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    capabilities: wgpu::SurfaceCapabilities,
     pre_present: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
+impl std::fmt::Debug for SurfaceAttachment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SurfaceAttachment")
+            .field("surface", &self.surface)
+            .field("config", &self.config)
+            .field("capabilities", &self.capabilities)
+            .field("has_pre_present", &self.pre_present.is_some())
+            .finish()
+    }
+}
+
+impl SurfaceAttachment {
+    pub fn config(&self) -> &wgpu::SurfaceConfiguration {
+        &self.config
+    }
+
+    pub fn capabilities(&self) -> &wgpu::SurfaceCapabilities {
+        &self.capabilities
+    }
+
+    fn pre_present_notify(&self) {
+        if let Some(pre_present) = &self.pre_present {
+            pre_present();
+        }
+    }
+}
+
+enum SurfaceAttachAttemptError {
+    Fatal(RendererError),
+    RequiresRebuild(SurfaceContextReuseFailure),
+}
+
+/// Reusable GPU context plus an optional host-owned surface attachment.
+///
+/// The target passed to [`Self::new_with_surface_target`] or
+/// [`Self::reattach_surface_target`] is stored by wgpu's surface so its raw
+/// handles remain valid for the entire attachment lifetime.
+pub struct WgpuSurfaceBundle {
+    // Declared first so Rust's field drop order releases the surface (and its
+    // owned raw-handle target) before the reusable GPU context on full teardown.
+    attachment: SurfaceAttachmentSlot<SurfaceAttachment>,
+    context: SurfaceGpuContext,
+    last_extent: PhysicalExtent,
+    transparent: bool,
+    bootstrap: SurfaceBootstrapConfig,
+}
+
 impl WgpuSurfaceBundle {
-    pub fn new(
-        window: std::sync::Arc<winit::window::Window>,
-    ) -> Result<Self, crate::error::RendererError> {
-        Self::new_with_transparency(window, false)
-    }
-
-    /// Creates a renderer bundle using a custom bootstrap configuration.
-    pub fn new_with_config(
-        window: std::sync::Arc<winit::window::Window>,
-        config: SurfaceBootstrapConfig,
-    ) -> Result<Self, crate::error::RendererError> {
-        Self::new_with_transparency_and_config(window, false, config)
-    }
-
-    /// Creates a renderer bundle with explicit transparency and bootstrap config.
-    pub fn new_with_transparency_and_config(
-        window: std::sync::Arc<winit::window::Window>,
-        transparent: bool,
-        config: SurfaceBootstrapConfig,
-    ) -> Result<Self, crate::error::RendererError> {
-        let size = window.inner_size();
-        let notify_window = window.clone();
-        Self::new_with_surface_target(
-            window,
-            size,
-            transparent,
-            config,
-            Some(std::sync::Arc::new(move || {
-                notify_window.pre_present_notify();
-            })),
-        )
-    }
-
     /// Creates a renderer bundle from any owned raw-window-handle provider.
-    ///
-    /// The owned `Arc<T>` is moved into wgpu's surface target, so the native
-    /// display and surface handles remain alive for the full surface lifetime.
     pub fn new_with_surface_target<T>(
         target: std::sync::Arc<T>,
-        size: winit::dpi::PhysicalSize<u32>,
+        size: PhysicalExtent,
         transparent: bool,
-        config: SurfaceBootstrapConfig,
+        bootstrap: SurfaceBootstrapConfig,
         pre_present: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
-    ) -> Result<Self, crate::error::RendererError>
+    ) -> Result<Self, RendererError>
     where
         T: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle + Send + Sync + 'static,
     {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-
         let surface = instance
             .create_surface(target)
-            .map_err(|_| crate::error::RendererError::SurfaceConfigFailed)?;
-
+            .map_err(|_| RendererError::SurfaceConfigFailed)?;
         let gpu_debug = gpu_debug_enabled();
 
         let mut candidates: Vec<wgpu::Adapter> = instance
-            .enumerate_adapters(config.requested_backends)
+            .enumerate_adapters(bootstrap.requested_backends)
             .into_iter()
-            .filter(|a| a.is_surface_supported(&surface))
+            .filter(|adapter| adapter.is_surface_supported(&surface))
             .collect();
 
-        if candidates.is_empty() && config.allow_fallback_backends {
+        if candidates.is_empty() && bootstrap.allow_fallback_backends {
             candidates = instance
                 .enumerate_adapters(wgpu::Backends::all())
                 .into_iter()
-                .filter(|a| a.is_surface_supported(&surface))
+                .filter(|adapter| adapter.is_surface_supported(&surface))
                 .collect();
         }
 
@@ -1168,8 +1298,8 @@ impl WgpuSurfaceBundle {
             if let Some(adapter) =
                 pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                     compatible_surface: Some(&surface),
-                    power_preference: config.power_preference,
-                    force_fallback_adapter: config.force_fallback_adapter,
+                    power_preference: bootstrap.power_preference,
+                    force_fallback_adapter: bootstrap.force_fallback_adapter,
                 }))
             {
                 if adapter.is_surface_supported(&surface) {
@@ -1179,14 +1309,14 @@ impl WgpuSurfaceBundle {
         }
 
         if candidates.is_empty() {
-            return Err(crate::error::RendererError::RequestAdapterFailed);
+            return Err(RendererError::RequestAdapterFailed);
         }
 
         candidates.sort_by(|a, b| {
             let ia = a.get_info();
             let ib = b.get_info();
-            bootstrap_adapter_rank(&ia, &config)
-                .cmp(&bootstrap_adapter_rank(&ib, &config))
+            bootstrap_adapter_rank(&ia, &bootstrap)
+                .cmp(&bootstrap_adapter_rank(&ib, &bootstrap))
                 .then_with(|| ia.name.cmp(&ib.name))
         });
 
@@ -1208,10 +1338,10 @@ impl WgpuSurfaceBundle {
             let (device, queue) =
                 match pollster::block_on(adapter.request_device(&device_desc, None)) {
                     Ok(pair) => pair,
-                    Err(e) => {
+                    Err(error) => {
                         if gpu_debug {
                             eprintln!(
-                                "ailloli_ui_render_wgpu: request_device failed for {}: {e:?}",
+                                "ailloli_ui_render_wgpu: request_device failed for {}: {error:?}",
                                 info.name
                             );
                         }
@@ -1219,9 +1349,9 @@ impl WgpuSurfaceBundle {
                     }
                 };
 
-            let caps = surface.get_capabilities(&adapter);
-            let config = match build_surface_config(&caps, size, 1, transparent) {
-                Ok(c) => c,
+            let capabilities = surface.get_capabilities(&adapter);
+            let surface_config = match build_surface_config(&capabilities, size, 1, transparent) {
+                Ok(config) => config,
                 Err(reason) => {
                     if gpu_debug {
                         eprintln!(
@@ -1240,9 +1370,10 @@ impl WgpuSurfaceBundle {
                 );
             }
 
-            // wgpu 0.20: validation failure on `configure` may panic — try the next adapter.
+            // wgpu 0.20 may panic on a fatal WSI validation failure. Trying the
+            // next compatible adapter keeps this failure at the adapter boundary.
             let configured_ok = catch_unwind(AssertUnwindSafe(|| {
-                surface.configure(&device, &config);
+                surface.configure(&device, &surface_config);
             }))
             .is_ok();
 
@@ -1256,137 +1387,312 @@ impl WgpuSurfaceBundle {
                 continue;
             }
 
-            let pipelines = PipelineCache::new(&device, config.format);
-
-            return Ok(Self {
-                surface,
+            let format = surface_config.format;
+            let pipelines = PipelineCache::new(&device, format);
+            let context = SurfaceGpuContext {
+                instance,
                 adapter,
                 device,
                 queue,
-                config,
                 pipelines,
-                transparent,
+                format,
+            };
+            let attachment = SurfaceAttachment {
+                surface,
+                config: surface_config,
+                capabilities,
                 pre_present,
+            };
+
+            return Ok(Self {
+                attachment: SurfaceAttachmentSlot::attached(attachment),
+                context,
+                last_extent: size,
+                transparent,
+                bootstrap,
             });
         }
 
-        Err(crate::error::RendererError::SurfaceConfigureExhausted)
+        Err(RendererError::SurfaceConfigureExhausted)
     }
 
-    pub fn new_with_transparency(
-        window: std::sync::Arc<winit::window::Window>,
+    pub fn context(&self) -> &SurfaceGpuContext {
+        &self.context
+    }
+
+    pub fn attachment(&self) -> Option<&SurfaceAttachment> {
+        self.attachment.as_ref()
+    }
+
+    pub fn attachment_state(&self) -> SurfaceAttachmentState {
+        self.attachment.state()
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        self.context.device()
+    }
+
+    pub fn queue(&self) -> &wgpu::Queue {
+        self.context.queue()
+    }
+
+    pub fn pipelines(&self) -> &PipelineCache {
+        self.context.pipelines()
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.context.format()
+    }
+
+    pub fn extent(&self) -> PhysicalExtent {
+        self.attachment
+            .as_ref()
+            .map(|attachment| {
+                PhysicalExtent::new(attachment.config.width, attachment.config.height)
+            })
+            .unwrap_or(self.last_extent)
+    }
+
+    pub fn config(&self) -> Option<&wgpu::SurfaceConfiguration> {
+        self.attachment.as_ref().map(SurfaceAttachment::config)
+    }
+
+    /// Drops only native presentation resources while retaining the GPU context.
+    pub fn detach_surface(&mut self) -> bool {
+        let Some(attachment) = self.attachment.detach() else {
+            return false;
+        };
+        self.last_extent = PhysicalExtent::new(attachment.config.width, attachment.config.height);
+        drop(attachment);
+        true
+    }
+
+    /// Attaches a new raw-window-handle target.
+    ///
+    /// The existing context is tried first. If its adapter or pipeline format
+    /// cannot present to the new surface, a complete context bootstrap is used
+    /// as a correctness fallback and the outcome tells the renderer to rebuild
+    /// every device-bound cache.
+    pub fn reattach_surface_target<T>(
+        &mut self,
+        target: std::sync::Arc<T>,
+        size: PhysicalExtent,
+        pre_present: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<SurfaceReattachOutcome, RendererError>
+    where
+        T: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle + Send + Sync + 'static,
+    {
+        self.detach_surface();
+
+        match Self::create_attachment_with_context(
+            &self.context,
+            target.clone(),
+            size,
+            self.transparent,
+            pre_present.clone(),
+        ) {
+            Ok(attachment) => {
+                let previous_attachment = self.attachment.attach(attachment);
+                debug_assert!(previous_attachment.is_none());
+                drop(previous_attachment);
+                self.last_extent = size;
+                Ok(SurfaceReattachOutcome::ReusedGpuContext)
+            }
+            Err(SurfaceAttachAttemptError::Fatal(error)) => Err(error),
+            Err(SurfaceAttachAttemptError::RequiresRebuild(reason)) => {
+                let replacement = Self::new_with_surface_target(
+                    target,
+                    size,
+                    self.transparent,
+                    self.bootstrap,
+                    pre_present,
+                )?;
+                *self = replacement;
+                Ok(SurfaceReattachOutcome::RebuiltGpuContext { reason })
+            }
+        }
+    }
+
+    fn create_attachment_with_context<T>(
+        context: &SurfaceGpuContext,
+        target: std::sync::Arc<T>,
+        size: PhysicalExtent,
         transparent: bool,
-    ) -> Result<Self, crate::error::RendererError> {
-        Self::new_with_transparency_and_config(
-            window,
-            transparent,
-            SurfaceBootstrapConfig::default(),
-        )
+        pre_present: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<SurfaceAttachment, SurfaceAttachAttemptError>
+    where
+        T: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle + Send + Sync + 'static,
+    {
+        let surface = context
+            .instance
+            .create_surface(target)
+            .map_err(|_| SurfaceAttachAttemptError::Fatal(RendererError::SurfaceConfigFailed))?;
+        let adapter_supported = context.adapter.is_surface_supported(&surface);
+        if !adapter_supported {
+            return Err(SurfaceAttachAttemptError::RequiresRebuild(
+                SurfaceContextReuseFailure::AdapterUnsupported,
+            ));
+        }
+        let capabilities = surface.get_capabilities(&context.adapter);
+        if let Some(reason) = surface_context_reuse_failure(true, context.format, &capabilities) {
+            return Err(SurfaceAttachAttemptError::RequiresRebuild(reason));
+        }
+
+        let config =
+            build_surface_config_for_format(&capabilities, size, 1, transparent, context.format)
+                .map_err(|reason| {
+                    SurfaceAttachAttemptError::RequiresRebuild(
+                        SurfaceContextReuseFailure::CapabilitiesDeferred(reason),
+                    )
+                })?;
+        let configured = catch_unwind(AssertUnwindSafe(|| {
+            surface.configure(&context.device, &config);
+        }));
+        if configured.is_err() {
+            return Err(SurfaceAttachAttemptError::RequiresRebuild(
+                SurfaceContextReuseFailure::ConfigureFailed,
+            ));
+        }
+
+        Ok(SurfaceAttachment {
+            surface,
+            config,
+            capabilities,
+            pre_present,
+        })
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+    pub fn resize(&mut self, new_size: PhysicalExtent) {
         let _ = self.try_resize(new_size);
     }
 
-    pub fn try_resize(
+    pub fn try_resize(&mut self, new_size: PhysicalExtent) -> Result<ResizeOutcome, RendererError> {
+        self.configure_surface(new_size, SurfaceConfigureMode::Resize)
+    }
+
+    /// Reconfigures the presentation surface even when its physical extent is
+    /// unchanged.
+    pub fn try_reconfigure(
         &mut self,
-        new_size: winit::dpi::PhysicalSize<u32>,
-    ) -> Result<ResizeOutcome, crate::error::RendererError> {
-        if new_size.width == 0 || new_size.height == 0 {
+        new_size: PhysicalExtent,
+    ) -> Result<ResizeOutcome, RendererError> {
+        self.configure_surface(new_size, SurfaceConfigureMode::Force)
+    }
+
+    fn configure_surface(
+        &mut self,
+        new_size: PhysicalExtent,
+        mode: SurfaceConfigureMode,
+    ) -> Result<ResizeOutcome, RendererError> {
+        if new_size.is_zero() {
             return Ok(ResizeOutcome::SkippedZero);
         }
-        let caps = self.surface.get_capabilities(&self.adapter);
-        if let Some(reason) = surface_config_deferred_reason(&caps) {
+        let Some(attachment) = self.attachment.as_mut() else {
+            return Err(RendererError::RenderTargetUnavailable(
+                "presentation surface is detached",
+            ));
+        };
+        let capabilities = attachment.surface.get_capabilities(&self.context.adapter);
+        if let Some(reason) = surface_config_deferred_reason(&capabilities) {
+            attachment.capabilities = capabilities;
             return Ok(ResizeOutcome::Deferred(reason));
         }
-        if self.config.width == new_size.width && self.config.height == new_size.height {
+        if !capabilities.formats.contains(&self.context.format) {
+            attachment.capabilities = capabilities;
+            return Err(RendererError::SurfaceRecreationRequired(
+                "surface no longer supports the pipeline format",
+            ));
+        }
+        let current_size = PhysicalExtent::new(attachment.config.width, attachment.config.height);
+        if !surface_configure_required(current_size, new_size, mode) {
             return Ok(ResizeOutcome::Unchanged);
         }
-        let next_config = match build_surface_config(
-            &caps,
+        let next_config = match build_surface_config_for_format(
+            &capabilities,
             new_size,
-            self.config.desired_maximum_frame_latency,
+            attachment.config.desired_maximum_frame_latency,
             self.transparent,
+            self.context.format,
         ) {
             Ok(config) => config,
-            Err(reason) => return Ok(ResizeOutcome::Deferred(reason)),
+            Err(reason) => {
+                attachment.capabilities = capabilities;
+                return Ok(ResizeOutcome::Deferred(reason));
+            }
         };
-        let t = std::time::Instant::now();
-        self.surface.configure(&self.device, &next_config);
-        self.config = next_config;
+        let start = std::time::Instant::now();
+        let configured = catch_unwind(AssertUnwindSafe(|| {
+            attachment
+                .surface
+                .configure(&self.context.device, &next_config);
+        }));
+        if configured.is_err() {
+            return Err(RendererError::SurfaceConfigFailed);
+        }
+        attachment.config = next_config;
+        attachment.capabilities = attachment.surface.get_capabilities(&self.context.adapter);
+        self.last_extent = new_size;
         ailloli_ui_bench::record(ailloli_ui_bench::Event::SurfaceConfigure {
             ts_ms: now_ms(),
             w: new_size.width,
             h: new_size.height,
-            dur_us: t.elapsed().as_micros(),
+            dur_us: start.elapsed().as_micros(),
         });
-        let caps = self.surface.get_capabilities(&self.adapter);
-        if let Some(reason) = surface_config_deferred_reason(&caps) {
+        if let Some(reason) = surface_config_deferred_reason(&attachment.capabilities) {
             return Ok(ResizeOutcome::Deferred(reason));
         }
         Ok(ResizeOutcome::Applied)
     }
 
-    pub fn reconfigure(&mut self) -> Result<ResizeOutcome, crate::error::RendererError> {
-        let size = PhysicalSize::new(self.config.width, self.config.height);
-        let caps = self.surface.get_capabilities(&self.adapter);
-        let next_config = match build_surface_config(
-            &caps,
-            size,
-            self.config.desired_maximum_frame_latency,
-            self.transparent,
-        ) {
-            Ok(config) => config,
-            Err(reason) => return Ok(ResizeOutcome::Deferred(reason)),
-        };
-        let t = std::time::Instant::now();
-        self.surface.configure(&self.device, &next_config);
-        self.config = next_config;
-        ailloli_ui_bench::record(ailloli_ui_bench::Event::SurfaceConfigure {
-            ts_ms: now_ms(),
-            w: size.width,
-            h: size.height,
-            dur_us: t.elapsed().as_micros(),
-        });
-        let caps = self.surface.get_capabilities(&self.adapter);
-        if let Some(reason) = surface_config_deferred_reason(&caps) {
-            return Ok(ResizeOutcome::Deferred(reason));
-        }
-        Ok(ResizeOutcome::Applied)
+    pub fn reconfigure(&mut self) -> Result<ResizeOutcome, RendererError> {
+        self.try_reconfigure(self.extent())
     }
 
     pub fn surface_capabilities(&self) -> wgpu::SurfaceCapabilities {
-        self.surface.get_capabilities(&self.adapter)
+        self.attachment
+            .as_ref()
+            .map(|attachment| attachment.surface.get_capabilities(&self.context.adapter))
+            .unwrap_or_default()
     }
 
     pub fn adapter_info(&self) -> wgpu::AdapterInfo {
-        self.adapter.get_info()
+        self.context.adapter_info()
     }
 
     pub fn surface_config_deferred_reason(&self) -> Option<SurfaceConfigDeferredReason> {
-        let caps = self.surface.get_capabilities(&self.adapter);
-        surface_config_deferred_reason(&caps)
+        let Some(attachment) = self.attachment.as_ref() else {
+            return Some(SurfaceConfigDeferredReason::Detached);
+        };
+        let capabilities = attachment.surface.get_capabilities(&self.context.adapter);
+        surface_config_deferred_reason(&capabilities)
     }
 
     pub fn pre_present_notify(&self) {
-        if let Some(pre_present) = &self.pre_present {
-            pre_present();
+        if let Some(attachment) = self.attachment.as_ref() {
+            attachment.pre_present_notify();
         }
     }
 }
 
 impl RenderTarget for WgpuSurfaceBundle {
-    fn size(&self) -> PhysicalSize<u32> {
-        PhysicalSize::new(self.config.width, self.config.height)
+    fn size(&self) -> PhysicalExtent {
+        self.extent()
     }
 
     fn format(&self) -> wgpu::TextureFormat {
-        self.config.format
+        self.context.format
     }
 
     fn acquire_frame(&mut self) -> Result<RenderFrame, RendererError> {
+        let size = self.extent();
+        let format = self.format();
+        let Some(attachment) = self.attachment.as_mut() else {
+            return Err(RendererError::RenderTargetUnavailable(
+                "presentation surface is detached",
+            ));
+        };
         let acquire_start = std::time::Instant::now();
-        let frame = match self.surface.get_current_texture() {
+        let frame = match attachment.surface.get_current_texture() {
             Ok(frame) => frame,
             Err(error) => {
                 ailloli_ui_bench::metric(
@@ -1408,11 +1714,7 @@ impl RenderTarget for WgpuSurfaceBundle {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         Ok(RenderFrame::from_surface_texture(
-            view,
-            frame,
-            self.size(),
-            self.format(),
-            None,
+            view, frame, size, format, None,
         ))
     }
 
@@ -1483,9 +1785,43 @@ pub fn choose_alpha_mode(
         .unwrap_or(wgpu::CompositeAlphaMode::Opaque)
 }
 
+fn surface_context_reuse_failure(
+    adapter_supported: bool,
+    pipeline_format: wgpu::TextureFormat,
+    capabilities: &wgpu::SurfaceCapabilities,
+) -> Option<SurfaceContextReuseFailure> {
+    if !adapter_supported {
+        return Some(SurfaceContextReuseFailure::AdapterUnsupported);
+    }
+    if let Some(reason) = surface_config_deferred_reason(capabilities) {
+        return Some(SurfaceContextReuseFailure::CapabilitiesDeferred(reason));
+    }
+    if !capabilities.formats.contains(&pipeline_format) {
+        return Some(SurfaceContextReuseFailure::FormatUnsupported);
+    }
+    None
+}
+
+fn build_surface_config_for_format(
+    capabilities: &wgpu::SurfaceCapabilities,
+    size: PhysicalExtent,
+    desired_maximum_frame_latency: u32,
+    transparent: bool,
+    format: wgpu::TextureFormat,
+) -> Result<wgpu::SurfaceConfiguration, SurfaceConfigDeferredReason> {
+    let mut config = build_surface_config(
+        capabilities,
+        size,
+        desired_maximum_frame_latency,
+        transparent,
+    )?;
+    config.format = format;
+    Ok(config)
+}
+
 pub fn build_surface_config(
     caps: &wgpu::SurfaceCapabilities,
-    size: PhysicalSize<u32>,
+    size: PhysicalExtent,
     desired_maximum_frame_latency: u32,
     transparent: bool,
 ) -> Result<wgpu::SurfaceConfiguration, SurfaceConfigDeferredReason> {
@@ -1549,7 +1885,7 @@ mod tests {
     fn present_mode_empty_capabilities_defer_instead_of_autovsync() {
         let caps = caps_with_present_modes(Vec::new());
 
-        let result = build_surface_config(&caps, PhysicalSize::new(100, 100), 1, false);
+        let result = build_surface_config(&caps, PhysicalExtent::new(100, 100), 1, false);
 
         assert_eq!(result, Err(SurfaceConfigDeferredReason::NoPresentModes));
     }
@@ -1598,7 +1934,7 @@ mod tests {
         ];
 
         let config =
-            build_surface_config(&caps, PhysicalSize::new(100, 100), 1, true).expect("config");
+            build_surface_config(&caps, PhysicalExtent::new(100, 100), 1, true).expect("config");
 
         assert_eq!(config.alpha_mode, wgpu::CompositeAlphaMode::PreMultiplied);
     }
@@ -1608,7 +1944,7 @@ mod tests {
         let caps = caps_with_present_modes(vec![wgpu::PresentMode::Fifo]);
 
         let config =
-            build_surface_config(&caps, PhysicalSize::new(100, 100), 1, true).expect("config");
+            build_surface_config(&caps, PhysicalExtent::new(100, 100), 1, true).expect("config");
 
         assert_eq!(config.alpha_mode, wgpu::CompositeAlphaMode::Opaque);
     }
@@ -1638,5 +1974,80 @@ mod tests {
             super::adapter_bootstrap_rank(wgpu::DeviceType::VirtualGpu)
                 < super::adapter_bootstrap_rank(wgpu::DeviceType::Cpu)
         );
+    }
+
+    #[test]
+    fn same_size_resize_skips_but_surface_recovery_forces_configure() {
+        let size = PhysicalExtent::new(1280, 720);
+
+        assert!(!surface_configure_required(
+            size,
+            size,
+            SurfaceConfigureMode::Resize
+        ));
+        assert!(surface_configure_required(
+            size,
+            size,
+            SurfaceConfigureMode::Force
+        ));
+    }
+
+    #[test]
+    fn attachment_slot_transitions_detach_and_reattach_without_native_handles() {
+        let mut slot = SurfaceAttachmentSlot::attached("first");
+
+        assert_eq!(slot.state(), SurfaceAttachmentState::Attached);
+        assert_eq!(slot.detach(), Some("first"));
+        assert_eq!(slot.state(), SurfaceAttachmentState::Detached);
+        assert_eq!(slot.detach(), None);
+        assert_eq!(slot.attach("second"), None);
+        assert_eq!(slot.state(), SurfaceAttachmentState::Attached);
+        assert_eq!(slot.as_ref(), Some(&"second"));
+    }
+
+    #[test]
+    fn surface_context_reuse_requires_adapter_and_pipeline_format_compatibility() {
+        let caps = caps_with_present_modes(vec![wgpu::PresentMode::Fifo]);
+
+        assert_eq!(
+            surface_context_reuse_failure(true, wgpu::TextureFormat::Bgra8UnormSrgb, &caps),
+            None
+        );
+        assert_eq!(
+            surface_context_reuse_failure(false, wgpu::TextureFormat::Bgra8UnormSrgb, &caps),
+            Some(SurfaceContextReuseFailure::AdapterUnsupported)
+        );
+        assert_eq!(
+            surface_context_reuse_failure(true, wgpu::TextureFormat::Rgba16Float, &caps),
+            Some(SurfaceContextReuseFailure::FormatUnsupported)
+        );
+    }
+
+    #[test]
+    fn surface_context_reuse_defers_empty_capabilities_before_format_check() {
+        let caps = wgpu::SurfaceCapabilities::default();
+
+        assert_eq!(
+            surface_context_reuse_failure(true, wgpu::TextureFormat::Bgra8UnormSrgb, &caps),
+            Some(SurfaceContextReuseFailure::CapabilitiesDeferred(
+                SurfaceConfigDeferredReason::NoFormats
+            ))
+        );
+    }
+
+    #[test]
+    fn reusable_surface_config_keeps_the_existing_pipeline_format() {
+        let caps = caps_with_present_modes(vec![wgpu::PresentMode::Fifo]);
+        let config = build_surface_config_for_format(
+            &caps,
+            PhysicalExtent::new(640, 480),
+            1,
+            false,
+            wgpu::TextureFormat::Bgra8Unorm,
+        )
+        .expect("surface config");
+
+        assert_eq!(config.format, wgpu::TextureFormat::Bgra8Unorm);
+        assert_eq!((config.width, config.height), (640, 480));
     }
 }

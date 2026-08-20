@@ -350,10 +350,7 @@ fn nowrap_hit_test_uses_scroll_x() {
 fn ime_preedit_builds_display_buffer_without_mutating_source() {
     let mut session = session_with_text("caf");
     session.edit.caret_byte = 3;
-    session.edit.preedit = Some(ImePreedit {
-        text: "é".into(),
-        selection: None,
-    });
+    session.edit.preedit = Some(ImePreedit::new("é"));
     let mut engine = EditorEngine::new();
     let mut text_system = TextSystem::new();
 
@@ -591,6 +588,49 @@ fn multi_click_state_counts_nearby_text_clicks_and_resets_by_zone() {
             EditorClickZone::Gutter
         ),
         1
+    );
+}
+
+#[test]
+fn multi_click_event_timestamps_are_deterministic_and_do_not_mix_with_legacy_time() {
+    use std::time::{Duration, Instant};
+
+    let mut session = session_with_text("abc");
+    let pos = Point::new(8.0, 8.0);
+
+    assert_eq!(
+        session.register_pointer_click_at(
+            Duration::from_millis(100),
+            pos,
+            1,
+            EditorClickZone::Text
+        ),
+        1
+    );
+    assert_eq!(
+        session.register_pointer_click_at(
+            Duration::from_millis(600),
+            pos,
+            1,
+            EditorClickZone::Text
+        ),
+        2,
+        "the exact 500 ms threshold remains a double click"
+    );
+    assert_eq!(
+        session.register_pointer_click_at(
+            Duration::from_millis(1_101),
+            pos,
+            1,
+            EditorClickZone::Text
+        ),
+        1,
+        "a delay above the threshold starts a new sequence"
+    );
+    assert_eq!(
+        session.register_pointer_click(Instant::now(), pos, 1, EditorClickZone::Text),
+        1,
+        "legacy dispatch cannot continue an envelope-timestamped sequence"
     );
 }
 

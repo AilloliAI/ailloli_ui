@@ -47,7 +47,9 @@
 //! }
 //! ```
 
-pub use crate::app::{ActionSchema, App, Commands, Window, WindowChrome, Windows};
+pub use crate::app::{
+    ActionSchema, App, Commands, RuntimeInboxAttachError, Window, WindowChrome, Windows,
+};
 pub use crate::app_icon;
 #[cfg(feature = "winit")]
 pub use crate::capture::{CaptureOpts, CapturedArtifact};
@@ -79,6 +81,7 @@ pub use crate::{
 pub use crate::{
     NativeOverlayInputMode, NativeOverlayOptions, NativeOverlayRect, NativeOverlayTarget,
 };
+pub use crate::{RuntimeInbox, RuntimeInboxStats, RuntimeSendError, RuntimeSender};
 
 pub use crate::runtime::component::{IntoView, IntoViewKeyExt, Memo, State, View};
 pub use crate::widgets::layout::FlexItemExt;
@@ -102,13 +105,14 @@ pub use crate::widgets::controls::{
     ChatWidgetCopyHandler, ChatWidgetRetryHandler, ChatWidgetSendHandler, ChatWidgetStyle, Chip,
     CircularProgress, ColorPicker, ColorPickerSize, ColorPickerStyle, ComboBox, ComboBoxOption,
     ComboBoxSize, ComboBoxStyle, CommandItem, CommandPalette, CommandPaletteSize,
-    CommandPaletteStyle, DatePicker, DatePickerSize, DatePickerStyle, Dialog, DialogStyle,
-    DialogTone, DisclosureRow, DisclosureRowStyle, DisclosureRowVariant, Divider,
-    DividerOrientation, DividerStyle, DividerVariant, Dropdown, DropdownItem, DropdownSize,
-    DropdownStyle, LineChart, Link, LinkStyle, ListItem, ListItemStyle, ListItemVariant, ListView,
-    ListViewStyle, NavItem, NavItemStyle, NavItemVariant, PopupPlacement, ProgressBar,
-    ProgressSize, ProgressStyle, ProgressVariant, RadialGauge, RadioButton, RadioDirection,
-    RadioGroup, RadioOption, RadioSize, RadioStyle, RangeSlider, SegmentedControl, SegmentedOption,
+    CommandPaletteStyle, ContextMenu, ContextMenuEntry, ContextMenuItem, ContextMenuStyle,
+    DatePicker, DatePickerSize, DatePickerStyle, Dialog, DialogStyle, DialogTone, DisclosureRow,
+    DisclosureRowStyle, DisclosureRowVariant, Divider, DividerOrientation, DividerStyle,
+    DividerVariant, Dropdown, DropdownItem, DropdownSize, DropdownStyle, LineChart, Link,
+    LinkStyle, ListItem, ListItemStyle, ListItemVariant, ListView, ListViewStyle, NavItem,
+    NavItemStyle, NavItemVariant, PopupAlignment, PopupPlacement, ProgressBar, ProgressSize,
+    ProgressStyle, ProgressVariant, RadialGauge, RadioButton, RadioDirection, RadioGroup,
+    RadioOption, RadioSize, RadioStyle, RangeSlider, SegmentedControl, SegmentedOption,
     SegmentedSize, SegmentedStyle, Select, SelectOption, SelectSize, SelectStyle, Sidebar,
     SidebarStyle, Slider, SliderOrientation, SliderSize, SliderStyle, StatusIndicator, StatusStyle,
     StatusTone, StatusVariant, Switch, SwitchOrientation, SwitchSize, SwitchStyle, TableAlign,
@@ -117,10 +121,10 @@ pub use crate::widgets::controls::{
     TerminalEventSource, TerminalLine, TerminalLineAttrs, TerminalLineKind, TerminalPosition,
     TerminalSearchMatch, TerminalSelection, TerminalSelectionMode, TerminalView, TerminalViewStyle,
     TerminalWidgetStyle, TextInput, TextInputStyle, TimePicker, TimePickerSize, TimePickerStyle,
-    Toast, ToastHost, ToastPosition, ToastStyle, ToastTone, TreeCreate, TreeCreateKind,
-    TreeCreateRequest, TreeDelete, TreeDropPosition, TreeMove, TreeNode, TreeNodeTrailingAction,
-    TreeRename, TreeView, TreeViewSize, TreeViewStyle, UploadDropzone, UploadDropzoneStyle,
-    UploadDropzoneVariant,
+    Toast, ToastHost, ToastPosition, ToastStyle, ToastTone, Tooltip, TooltipStyle, TreeCreate,
+    TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition, TreeMove, TreeNode,
+    TreeNodeTrailingAction, TreeRename, TreeView, TreeViewSize, TreeViewStyle, UploadDropzone,
+    UploadDropzoneStyle, UploadDropzoneVariant,
 };
 pub use crate::widgets::editor::{
     CodeEditor, CodeEditorConfig, CodeEditorFeatureFlags, CodeFileSummary, CodeSymbol, CodeTheme,

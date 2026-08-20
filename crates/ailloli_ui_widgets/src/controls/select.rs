@@ -12,17 +12,20 @@ use ailloli_ui_core::{Color, FontId, IconId, TextStyle, Theme};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Memo, Signal, View, Widget,
 };
-use ailloli_ui_runtime::input::{ClickAction, EventCtx, FocusPolicy, IntoClickAction};
+use ailloli_ui_runtime::input::{
+    ActivationPolicy, ClickAction, EventCtx, FocusPolicy, HoverCursorRole, IntoClickAction,
+};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
+use ailloli_ui_runtime::popup::{PopupContent, PopupDismissReason, PopupId};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawImage, DrawRRect};
 use ailloli_ui_text::TextSystem;
 use lucide_icons::Icon;
 
 use super::popup::{
-    apply_border_opacity, apply_opacity, max_border_width, measure_text, paint_popup_border,
-    paint_popup_row, paint_popup_shell, paint_text_in_rect, popup_rect_for_bounds,
-    popup_rect_for_size, popup_rect_for_size_with_placement, union_rect, PopupPlacement,
+    apply_border_opacity, apply_opacity, listbox_popup_semantics, max_border_width, measure_text,
+    menu_popup_semantics, paint_popup_border, paint_popup_row, paint_popup_shell,
+    paint_text_in_rect, popup_rect_for_bounds, union_rect, PopupPlacement, PopupPortalBridge,
     PopupRowState,
 };
 
@@ -335,6 +338,23 @@ struct SelectComponent<T, A> {
 
 impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for SelectComponent<T, A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
+        let active_index = context.signal(None);
+        let scroll = context.signal(ScrollState::new());
+        let popup_id = context
+            .runtime()
+            .popup_id_for_element(context.element_id())
+            .ok();
+        let popup_content = select_popup_content(RetainedSelectPopup {
+            options: self.options.clone(),
+            selected: self.selected.clone(),
+            bound: self.bound.clone(),
+            disabled: self.disabled.clone(),
+            on_change: self.on_change.clone(),
+            style: self.style.clone(),
+            active_index: active_index.clone(),
+            scroll: scroll.clone(),
+            popup_id,
+        });
         View::leaf(SelectWidget {
             layout: self.layout,
             placeholder: self.placeholder.clone(),
@@ -345,9 +365,13 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for SelectComp
             on_change: self.on_change.clone(),
             style: self.style.clone(),
             popup_placement: self.popup_placement,
-            open: context.signal(self.default_open),
-            active_index: context.signal(None),
-            scroll: context.signal(ScrollState::new()),
+            active_index,
+            popup: PopupPortalBridge::new_retained_with_content(
+                context,
+                listbox_popup_semantics(),
+                self.default_open,
+                popup_content,
+            ),
         })
     }
 }
@@ -383,9 +407,8 @@ struct SelectWidget<T, A> {
     on_change: Option<SelectChangeHandler<T, A>>,
     style: SelectStyle,
     popup_placement: PopupPlacement,
-    open: Signal<bool>,
     active_index: Signal<Option<usize>>,
-    scroll: Signal<ScrollState>,
+    popup: PopupPortalBridge<A>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A> {
@@ -406,17 +429,8 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
         );
         let size = apply_layout_size(intrinsic, self.layout, constraints);
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        let mut overlay_hit_bounds = Vec::new();
-        if self.open.read() && !self.disabled.read() {
-            let popup = popup_rect_for_size_with_placement(
-                size,
-                self.popup_width(size.w, None),
-                self.popup_height(),
-                self.style.popup_gap,
-                self.popup_placement,
-            );
-            overlay_hit_bounds.push(popup);
-            self.clamp_scroll(Size::new(popup.w, popup.h));
+        if self.disabled.read() {
+            self.popup.close(PopupDismissReason::Programmatic);
         }
 
         LayoutResult {
@@ -424,7 +438,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
             children: Vec::new(),
             paint_bounds,
             visual_bounds: self.style.visual_bounds(paint_bounds),
-            overlay_hit_bounds,
+            overlay_hit_bounds: Vec::new(),
             clip: None,
             is_window_root_clip: false,
             artifact: None,
@@ -440,22 +454,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
             self.disabled.read(),
             &self.style,
         );
-    }
-
-    fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        if !self.open.read() || self.disabled.read() {
-            return;
+        if self.popup.is_open() && !self.disabled.read() {
+            self.popup
+                .open_without_event(bounds, self.popup_rect(bounds));
         }
-        let popup = self.popup_rect(bounds);
-        paint_select_popup(
-            ctx,
-            popup,
-            &self.options,
-            self.selected_index(),
-            self.active_index.read(),
-            self.scroll.read().offset.y,
-            &self.style,
-        );
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
@@ -464,8 +466,8 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
         }
 
         match event {
-            Event::Focus(focus) if !focus.focused && self.open.read() => {
-                self.close();
+            Event::Focus(focus) if !focus.focused && self.popup.is_open() => {
+                self.close(PopupDismissReason::OutsidePress);
                 ctx.request_repaint();
             }
             Event::Pointer(PointerEvent::Button {
@@ -474,25 +476,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
                 pressed: false,
                 ..
             }) if bounds.contains(pos.x, pos.y) => {
-                self.toggle_open();
+                self.toggle_open(ctx, bounds);
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
-            Event::Pointer(PointerEvent::Button {
-                pos,
-                button: MouseButton::Left,
-                pressed: false,
-                ..
-            }) if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) => {
-                self.activate_pointer_option(ctx, bounds, *pos);
-            }
-            Event::Pointer(PointerEvent::Wheel { pos, delta, .. })
-                if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) =>
-            {
-                self.scroll_popup(ctx, bounds, *delta);
-            }
             Event::Keyboard(key) if key.state == KeyState::Pressed => {
-                self.handle_keyboard(ctx, &key.key);
+                self.handle_keyboard(ctx, &key.key, bounds);
             }
             _ => {}
         }
@@ -542,63 +531,23 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
         )
     }
 
-    fn clamp_scroll(&self, viewport: Size) {
-        let content = Size::new(
-            viewport.w,
-            self.options.len() as f32 * self.style.option_height,
-        );
-        let state = self.scroll.read();
-        let out = state.clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
-        if out.changed {
-            self.scroll.set(out.state());
-        }
-    }
-
-    fn open(&self) {
-        if !self.open.read() {
-            self.open.set(true);
-        }
+    fn open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         self.active_index
             .set(self.selected_index().or_else(|| self.first_enabled_index()));
+        self.popup.open(ctx, bounds, self.popup_rect(bounds));
     }
 
-    fn close(&self) {
-        self.open.set(false);
+    fn close(&self, reason: PopupDismissReason) {
         self.active_index.set(None);
+        self.popup.close(reason);
     }
 
-    fn toggle_open(&self) {
-        if self.open.read() {
-            self.close();
+    fn toggle_open(&self, ctx: &EventCtx<A>, bounds: Rect) {
+        if self.popup.is_open() {
+            self.close(PopupDismissReason::Programmatic);
         } else {
-            self.open();
+            self.open(ctx, bounds);
         }
-    }
-
-    fn activate_pointer_option(
-        &self,
-        ctx: &mut EventCtx<A>,
-        bounds: Rect,
-        pos: ailloli_ui_core::Point,
-    ) {
-        let Some(index) = self.option_at(bounds, pos) else {
-            return;
-        };
-        if self.options[index].disabled.read() {
-            ctx.stop_propagation();
-            return;
-        }
-        self.select_index(ctx, index);
-    }
-
-    fn option_at(&self, bounds: Rect, pos: ailloli_ui_core::Point) -> Option<usize> {
-        let popup = self.popup_rect(bounds);
-        if !popup.contains(pos.x, pos.y) {
-            return None;
-        }
-        let y = pos.y - popup.y + self.scroll.read().offset.y;
-        let index = (y / self.style.option_height).floor() as usize;
-        (index < self.options.len()).then_some(index)
     }
 
     fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
@@ -623,36 +572,13 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
             }
         }
 
-        self.close();
+        self.close(PopupDismissReason::Programmatic);
         ctx.request_repaint();
         ctx.stop_propagation();
     }
 
-    fn scroll_popup(&self, ctx: &mut EventCtx<A>, bounds: Rect, delta: WheelDelta) {
-        let popup = self.popup_rect(bounds);
-        let metrics = ScrollMetrics::new(
-            Size::new(popup.w, popup.h),
-            Size::new(
-                popup.w,
-                self.options.len() as f32 * self.style.option_height,
-            ),
-        );
-        let behavior =
-            ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(self.style.option_height);
-        let out = self.scroll.read().scroll_by(
-            behavior.wheel_delta(delta),
-            metrics,
-            ScrollAxes::VERTICAL,
-        );
-        if out.changed {
-            self.scroll.set(out.state());
-            ctx.request_repaint();
-            ctx.stop_propagation();
-        }
-    }
-
-    fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key) {
-        if !self.open.read() {
+    fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key, bounds: Rect) {
+        if !self.popup.is_open() {
             if matches!(
                 key,
                 Key::Named(NamedKey::Enter)
@@ -660,7 +586,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
                     | Key::Named(NamedKey::ArrowDown)
                     | Key::Named(NamedKey::ArrowUp)
             ) {
-                self.open();
+                self.open(ctx, bounds);
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
@@ -669,7 +595,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
 
         match key {
             Key::Named(NamedKey::Escape) => {
-                self.close();
+                self.close(PopupDismissReason::Escape);
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
@@ -869,15 +795,33 @@ struct DropdownComponent<A> {
 
 impl<A: 'static> ComponentNode<A> for DropdownComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
+        let active_index = context.signal(None);
+        let scroll = context.signal(ScrollState::new());
+        let popup_id = context
+            .runtime()
+            .popup_id_for_element(context.element_id())
+            .ok();
+        let popup_content = dropdown_popup_content(RetainedDropdownPopup {
+            items: self.items.clone(),
+            disabled: self.disabled.clone(),
+            style: self.style.clone(),
+            active_index: active_index.clone(),
+            scroll,
+            popup_id,
+        });
         View::leaf(DropdownWidget {
             layout: self.layout,
             label: self.label.clone(),
             items: self.items.clone(),
             disabled: self.disabled.clone(),
             style: self.style.clone(),
-            open: context.signal(self.default_open),
-            active_index: context.signal(None),
-            scroll: context.signal(ScrollState::new()),
+            active_index,
+            popup: PopupPortalBridge::new_retained_with_content(
+                context,
+                menu_popup_semantics(false),
+                self.default_open,
+                popup_content,
+            ),
         })
     }
 }
@@ -905,9 +849,8 @@ struct DropdownWidget<A> {
     items: Vec<DropdownItem<A>>,
     disabled: Binding<bool>,
     style: DropdownStyle,
-    open: Signal<bool>,
     active_index: Signal<Option<usize>>,
-    scroll: Signal<ScrollState>,
+    popup: PopupPortalBridge<A>,
 }
 
 impl<A: 'static> Widget<A> for DropdownWidget<A> {
@@ -933,19 +876,15 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
         );
         let size = apply_layout_size(intrinsic, self.layout, constraints);
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        let mut overlay_hit_bounds = Vec::new();
-        if self.open.read() && !self.disabled.read() {
-            let popup =
-                popup_rect_for_size(size, self.popup_width(size.w, None), self.popup_height());
-            overlay_hit_bounds.push(popup);
-            self.clamp_scroll(Size::new(popup.w, popup.h));
+        if self.disabled.read() {
+            self.popup.close(PopupDismissReason::Programmatic);
         }
         LayoutResult {
             size,
             children: Vec::new(),
             paint_bounds,
             visual_bounds: self.style.visual_bounds(paint_bounds),
-            overlay_hit_bounds,
+            overlay_hit_bounds: Vec::new(),
             clip: None,
             is_window_root_clip: false,
             artifact: None,
@@ -961,20 +900,10 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
             self.disabled.read(),
             &self.style,
         );
-    }
-
-    fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        if !self.open.read() || self.disabled.read() {
-            return;
+        if self.popup.is_open() && !self.disabled.read() {
+            self.popup
+                .open_without_event(bounds, self.popup_rect(bounds));
         }
-        paint_dropdown_popup(
-            ctx,
-            self.popup_rect(bounds),
-            &self.items,
-            self.active_index.read(),
-            self.scroll.read().offset.y,
-            &self.style,
-        );
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
@@ -983,8 +912,8 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
         }
 
         match event {
-            Event::Focus(focus) if !focus.focused && self.open.read() => {
-                self.close();
+            Event::Focus(focus) if !focus.focused && self.popup.is_open() => {
+                self.close(PopupDismissReason::OutsidePress);
                 ctx.request_repaint();
             }
             Event::Pointer(PointerEvent::Button {
@@ -993,25 +922,12 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
                 pressed: false,
                 ..
             }) if bounds.contains(pos.x, pos.y) => {
-                self.toggle_open();
+                self.toggle_open(ctx, bounds);
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
-            Event::Pointer(PointerEvent::Button {
-                pos,
-                button: MouseButton::Left,
-                pressed: false,
-                ..
-            }) if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) => {
-                self.activate_pointer_item(ctx, bounds, *pos);
-            }
-            Event::Pointer(PointerEvent::Wheel { pos, delta, .. })
-                if self.open.read() && self.popup_rect(bounds).contains(pos.x, pos.y) =>
-            {
-                self.scroll_popup(ctx, bounds, *delta);
-            }
             Event::Keyboard(key) if key.state == KeyState::Pressed => {
-                self.handle_keyboard(ctx, &key.key);
+                self.handle_keyboard(ctx, &key.key, bounds);
             }
             _ => {}
         }
@@ -1044,64 +960,22 @@ impl<A: 'static> DropdownWidget<A> {
         )
     }
 
-    fn clamp_scroll(&self, viewport: Size) {
-        let content = Size::new(
-            viewport.w,
-            self.items.len() as f32 * self.style.option_height,
-        );
-        let out = self
-            .scroll
-            .read()
-            .clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
-        if out.changed {
-            self.scroll.set(out.state());
-        }
-    }
-
-    fn open(&self) {
-        if !self.open.read() {
-            self.open.set(true);
-        }
+    fn open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         self.active_index.set(self.first_enabled_index());
+        self.popup.open(ctx, bounds, self.popup_rect(bounds));
     }
 
-    fn close(&self) {
-        self.open.set(false);
+    fn close(&self, reason: PopupDismissReason) {
         self.active_index.set(None);
+        self.popup.close(reason);
     }
 
-    fn toggle_open(&self) {
-        if self.open.read() {
-            self.close();
+    fn toggle_open(&self, ctx: &EventCtx<A>, bounds: Rect) {
+        if self.popup.is_open() {
+            self.close(PopupDismissReason::Programmatic);
         } else {
-            self.open();
+            self.open(ctx, bounds);
         }
-    }
-
-    fn activate_pointer_item(
-        &self,
-        ctx: &mut EventCtx<A>,
-        bounds: Rect,
-        pos: ailloli_ui_core::Point,
-    ) {
-        let Some(index) = self.item_at(bounds, pos) else {
-            return;
-        };
-        if self.items[index].disabled.read() {
-            ctx.stop_propagation();
-            return;
-        }
-        self.activate_item(ctx, index);
-    }
-
-    fn item_at(&self, bounds: Rect, pos: ailloli_ui_core::Point) -> Option<usize> {
-        let popup = self.popup_rect(bounds);
-        if !popup.contains(pos.x, pos.y) {
-            return None;
-        }
-        let y = pos.y - popup.y + self.scroll.read().offset.y;
-        let index = (y / self.style.option_height).floor() as usize;
-        (index < self.items.len()).then_some(index)
     }
 
     fn activate_item(&self, ctx: &mut EventCtx<A>, index: usize) {
@@ -1114,33 +988,13 @@ impl<A: 'static> DropdownWidget<A> {
         if let Some(action) = &item.action {
             action.run(ctx);
         }
-        self.close();
+        self.close(PopupDismissReason::Programmatic);
         ctx.request_repaint();
         ctx.stop_propagation();
     }
 
-    fn scroll_popup(&self, ctx: &mut EventCtx<A>, bounds: Rect, delta: WheelDelta) {
-        let popup = self.popup_rect(bounds);
-        let metrics = ScrollMetrics::new(
-            Size::new(popup.w, popup.h),
-            Size::new(popup.w, self.items.len() as f32 * self.style.option_height),
-        );
-        let behavior =
-            ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(self.style.option_height);
-        let out = self.scroll.read().scroll_by(
-            behavior.wheel_delta(delta),
-            metrics,
-            ScrollAxes::VERTICAL,
-        );
-        if out.changed {
-            self.scroll.set(out.state());
-            ctx.request_repaint();
-            ctx.stop_propagation();
-        }
-    }
-
-    fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key) {
-        if !self.open.read() {
+    fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key, bounds: Rect) {
+        if !self.popup.is_open() {
             if matches!(
                 key,
                 Key::Named(NamedKey::Enter)
@@ -1148,7 +1002,7 @@ impl<A: 'static> DropdownWidget<A> {
                     | Key::Named(NamedKey::ArrowDown)
                     | Key::Named(NamedKey::ArrowUp)
             ) {
-                self.open();
+                self.open(ctx, bounds);
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
@@ -1157,7 +1011,7 @@ impl<A: 'static> DropdownWidget<A> {
 
         match key {
             Key::Named(NamedKey::Escape) => {
-                self.close();
+                self.close(PopupDismissReason::Escape);
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
@@ -1230,6 +1084,452 @@ impl<A: 'static> DropdownWidget<A> {
             .map(|offset| (start + len - offset) % len)
             .find(|idx| !self.items[*idx].disabled.read())
     }
+}
+
+struct RetainedSelectPopup<T, A> {
+    options: Vec<SelectOption<T>>,
+    selected: Option<Binding<T>>,
+    bound: Option<Signal<T>>,
+    disabled: Binding<bool>,
+    on_change: Option<SelectChangeHandler<T, A>>,
+    style: SelectStyle,
+    active_index: Signal<Option<usize>>,
+    scroll: Signal<ScrollState>,
+    popup_id: Option<PopupId>,
+}
+
+impl<T: Clone, A> Clone for RetainedSelectPopup<T, A> {
+    fn clone(&self) -> Self {
+        Self {
+            options: self.options.clone(),
+            selected: self.selected.clone(),
+            bound: self.bound.clone(),
+            disabled: self.disabled.clone(),
+            on_change: self.on_change.clone(),
+            style: self.style.clone(),
+            active_index: self.active_index.clone(),
+            scroll: self.scroll.clone(),
+            popup_id: self.popup_id,
+        }
+    }
+}
+
+impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedSelectPopup<T, A> {
+    fn debug_name(&self) -> &'static str {
+        "SelectPopup"
+    }
+
+    fn layout(
+        &self,
+        _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
+        _ctx: &mut LayoutCtx<'_>,
+        _children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let size = retained_popup_size(
+            constraints,
+            self.style.width,
+            self.options.len(),
+            &self.style,
+        );
+        clamp_retained_popup_scroll(&self.scroll, size, self.options.len(), &self.style);
+        retained_popup_layout(size)
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        paint_select_popup(
+            ctx,
+            bounds,
+            &self.options,
+            self.selected_index(),
+            self.active_index.read(),
+            self.scroll.read().offset.y,
+            &self.style,
+        );
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
+        if self.disabled.read() {
+            self.close(ctx, PopupDismissReason::Programmatic);
+            return;
+        }
+
+        match event {
+            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
+                let next = retained_popup_index_at(
+                    bounds,
+                    *pos,
+                    self.scroll.read().offset.y,
+                    self.style.option_height,
+                    self.options.len(),
+                )
+                .filter(|index| !self.options[*index].disabled.read());
+                if self.active_index.read() != next {
+                    self.active_index.set(next);
+                    ctx.request_repaint();
+                }
+            }
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left,
+                pressed: false,
+                ..
+            }) => {
+                if let Some(index) = retained_popup_index_at(
+                    bounds,
+                    *pos,
+                    self.scroll.read().offset.y,
+                    self.style.option_height,
+                    self.options.len(),
+                ) {
+                    self.select_index(ctx, index);
+                }
+                ctx.stop_propagation();
+            }
+            Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+                scroll_retained_popup(
+                    ctx,
+                    &self.scroll,
+                    *delta,
+                    Size::new(bounds.w, bounds.h),
+                    self.options.len(),
+                    &self.style,
+                );
+            }
+            Event::Pointer(PointerEvent::Cancelled { .. }) => {
+                self.set_active(None, ctx);
+            }
+            _ => {}
+        }
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        FocusPolicy::NotFocusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
+
+    fn hover_cursor_role_at(
+        &self,
+        bounds: Rect,
+        _layout: &LayoutResult,
+        pos: ailloli_ui_core::Point,
+    ) -> HoverCursorRole {
+        retained_popup_index_at(
+            bounds,
+            pos,
+            self.scroll.read().offset.y,
+            self.style.option_height,
+            self.options.len(),
+        )
+        .filter(|index| !self.options[*index].disabled.read())
+        .map_or(HoverCursorRole::Default, |_| HoverCursorRole::Pointer)
+    }
+}
+
+impl<T: Clone + PartialEq + 'static, A: 'static> RetainedSelectPopup<T, A> {
+    fn selected_value(&self) -> Option<T> {
+        self.selected.as_ref().map(Binding::read)
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        let selected = self.selected_value()?;
+        self.options
+            .iter()
+            .position(|option| option.value == selected)
+    }
+
+    fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
+        let Some(option) = self.options.get(index) else {
+            return;
+        };
+        if option.disabled.read() {
+            return;
+        }
+        let changed = self
+            .selected_value()
+            .as_ref()
+            .is_none_or(|value| value != &option.value);
+        if changed {
+            let next = option.value.clone();
+            if let Some(bound) = &self.bound {
+                bound.set(next.clone());
+            }
+            if let Some(on_change) = &self.on_change {
+                on_change(ctx, next);
+            }
+        }
+        self.close(ctx, PopupDismissReason::Programmatic);
+    }
+
+    fn set_active(&self, next: Option<usize>, ctx: &mut EventCtx<A>) {
+        if self.active_index.read() != next {
+            self.active_index.set(next);
+            ctx.request_repaint();
+        }
+    }
+
+    fn close(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
+        self.active_index.set(None);
+        if let Some(popup_id) = self.popup_id {
+            ctx.runtime().close_popup(popup_id, reason);
+        }
+        ctx.request_repaint();
+        ctx.stop_propagation();
+    }
+}
+
+struct RetainedDropdownPopup<A> {
+    items: Vec<DropdownItem<A>>,
+    disabled: Binding<bool>,
+    style: DropdownStyle,
+    active_index: Signal<Option<usize>>,
+    scroll: Signal<ScrollState>,
+    popup_id: Option<PopupId>,
+}
+
+impl<A> Clone for RetainedDropdownPopup<A> {
+    fn clone(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            disabled: self.disabled.clone(),
+            style: self.style.clone(),
+            active_index: self.active_index.clone(),
+            scroll: self.scroll.clone(),
+            popup_id: self.popup_id,
+        }
+    }
+}
+
+impl<A: 'static> Widget<A> for RetainedDropdownPopup<A> {
+    fn debug_name(&self) -> &'static str {
+        "DropdownPopup"
+    }
+
+    fn layout(
+        &self,
+        _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
+        _ctx: &mut LayoutCtx<'_>,
+        _children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let size =
+            retained_popup_size(constraints, self.style.width, self.items.len(), &self.style);
+        clamp_retained_popup_scroll(&self.scroll, size, self.items.len(), &self.style);
+        retained_popup_layout(size)
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        paint_dropdown_popup(
+            ctx,
+            bounds,
+            &self.items,
+            self.active_index.read(),
+            self.scroll.read().offset.y,
+            &self.style,
+        );
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
+        if self.disabled.read() {
+            self.close(ctx, PopupDismissReason::Programmatic);
+            return;
+        }
+
+        match event {
+            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
+                let next = retained_popup_index_at(
+                    bounds,
+                    *pos,
+                    self.scroll.read().offset.y,
+                    self.style.option_height,
+                    self.items.len(),
+                )
+                .filter(|index| !self.items[*index].disabled.read());
+                if self.active_index.read() != next {
+                    self.active_index.set(next);
+                    ctx.request_repaint();
+                }
+            }
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left,
+                pressed: false,
+                ..
+            }) => {
+                if let Some(index) = retained_popup_index_at(
+                    bounds,
+                    *pos,
+                    self.scroll.read().offset.y,
+                    self.style.option_height,
+                    self.items.len(),
+                ) {
+                    self.activate_item(ctx, index);
+                }
+                ctx.stop_propagation();
+            }
+            Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+                scroll_retained_popup(
+                    ctx,
+                    &self.scroll,
+                    *delta,
+                    Size::new(bounds.w, bounds.h),
+                    self.items.len(),
+                    &self.style,
+                );
+            }
+            Event::Pointer(PointerEvent::Cancelled { .. }) => {
+                self.set_active(None, ctx);
+            }
+            _ => {}
+        }
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        FocusPolicy::NotFocusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
+
+    fn hover_cursor_role_at(
+        &self,
+        bounds: Rect,
+        _layout: &LayoutResult,
+        pos: ailloli_ui_core::Point,
+    ) -> HoverCursorRole {
+        retained_popup_index_at(
+            bounds,
+            pos,
+            self.scroll.read().offset.y,
+            self.style.option_height,
+            self.items.len(),
+        )
+        .filter(|index| !self.items[*index].disabled.read())
+        .map_or(HoverCursorRole::Default, |_| HoverCursorRole::Pointer)
+    }
+}
+
+impl<A: 'static> RetainedDropdownPopup<A> {
+    fn activate_item(&self, ctx: &mut EventCtx<A>, index: usize) {
+        let Some(item) = self.items.get(index) else {
+            return;
+        };
+        if item.disabled.read() {
+            return;
+        }
+        if let Some(action) = &item.action {
+            action.run(ctx);
+        }
+        self.close(ctx, PopupDismissReason::Programmatic);
+    }
+
+    fn set_active(&self, next: Option<usize>, ctx: &mut EventCtx<A>) {
+        if self.active_index.read() != next {
+            self.active_index.set(next);
+            ctx.request_repaint();
+        }
+    }
+
+    fn close(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
+        self.active_index.set(None);
+        if let Some(popup_id) = self.popup_id {
+            ctx.runtime().close_popup(popup_id, reason);
+        }
+        ctx.request_repaint();
+        ctx.stop_propagation();
+    }
+}
+
+fn select_popup_content<T: Clone + PartialEq + 'static, A: 'static>(
+    popup: RetainedSelectPopup<T, A>,
+) -> PopupContent<A> {
+    PopupContent::new(move || View::leaf(popup.clone()))
+}
+
+fn dropdown_popup_content<A: 'static>(popup: RetainedDropdownPopup<A>) -> PopupContent<A> {
+    PopupContent::new(move || View::leaf(popup.clone()))
+}
+
+fn retained_popup_size(
+    constraints: Constraints,
+    width: f32,
+    rows: usize,
+    style: &SelectStyle,
+) -> Size {
+    constraints.constrain(Size::new(
+        width,
+        (rows as f32 * style.option_height).min(style.popup_max_height),
+    ))
+}
+
+fn retained_popup_layout(size: Size) -> LayoutResult {
+    let bounds = Rect::new(0.0, 0.0, size.w, size.h);
+    LayoutResult {
+        size,
+        children: Vec::new(),
+        paint_bounds: bounds,
+        visual_bounds: bounds,
+        overlay_hit_bounds: Vec::new(),
+        clip: Some(ailloli_ui_core::ClipShape::Rect(bounds)),
+        is_window_root_clip: false,
+        artifact: None,
+    }
+}
+
+fn retained_popup_index_at(
+    bounds: Rect,
+    pos: ailloli_ui_core::Point,
+    scroll_y: f32,
+    row_height: f32,
+    rows: usize,
+) -> Option<usize> {
+    if !bounds.contains(pos.x, pos.y) || row_height <= 0.0 {
+        return None;
+    }
+    let index = ((pos.y - bounds.y + scroll_y) / row_height).floor() as usize;
+    (index < rows).then_some(index)
+}
+
+fn clamp_retained_popup_scroll(
+    scroll: &Signal<ScrollState>,
+    viewport: Size,
+    rows: usize,
+    style: &SelectStyle,
+) {
+    let content = Size::new(viewport.w, rows as f32 * style.option_height);
+    let state = scroll.read();
+    let outcome = state.clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
+    if outcome.changed {
+        scroll.set(outcome.state());
+    }
+}
+
+fn scroll_retained_popup<A: 'static>(
+    ctx: &mut EventCtx<A>,
+    scroll: &Signal<ScrollState>,
+    delta: WheelDelta,
+    viewport: Size,
+    rows: usize,
+    style: &SelectStyle,
+) {
+    let metrics = ScrollMetrics::new(
+        viewport,
+        Size::new(viewport.w, rows as f32 * style.option_height),
+    );
+    let behavior = ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(style.option_height);
+    let outcome =
+        scroll
+            .read()
+            .scroll_by(behavior.wheel_delta(delta), metrics, ScrollAxes::VERTICAL);
+    if outcome.changed {
+        scroll.set(outcome.state());
+        ctx.request_repaint();
+    }
+    ctx.stop_propagation();
 }
 
 #[derive(Debug, Clone, Copy)]

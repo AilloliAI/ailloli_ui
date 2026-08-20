@@ -2,12 +2,13 @@
 name = "ailloli_ui"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [features]
 default = ["winit"]
-winit = ["dep:ailloli_ui_winit", "dep:winit", "dep:ailloli_ui_render_wgpu"]
+winit = ["dep:ailloli_ui_winit", "dep:ailloli_ui_render_wgpu"]
 native-overlay = ["winit", "ailloli_ui_winit/native-overlay"]
 tree-sitter = ["ailloli_ui_widgets/tree-sitter"]
 files = ["ailloli_ui_widgets/files"]
@@ -40,5 +41,4 @@ ailloli_ui_devtools_core = { path = "../ailloli_ui_devtools_core", optional = tr
 ailloli_ui_devtools_ui = { path = "../ailloli_ui_devtools_ui", optional = true }
 ailloli_ui_winit = { path = "../ailloli_ui_winit", optional = true }
 ailloli_ui_render_wgpu = { path = "../ailloli_ui_render_wgpu", optional = true }
-winit = { workspace = true, optional = true }
 serde_json.workspace = true

@@ -482,7 +482,7 @@ pub(crate) fn handle_single_line_text_event<A>(
             );
             true
         }
-        Event::Ime(ImeEvent::End) => {
+        Event::Ime(ImeEvent::End | ImeEvent::Disabled) => {
             apply_edit_action(
                 ctx,
                 value,
@@ -559,6 +559,11 @@ pub(crate) fn handle_single_line_text_event<A>(
                 false
             }
         }
+        Event::Pointer(PointerEvent::Cancelled { .. }) if edit.read().drag_anchor.is_some() => {
+            edit.update(|edit| edit.drag_anchor = None);
+            ctx.request_repaint();
+            true
+        }
         _ => false,
     };
 
@@ -630,7 +635,7 @@ pub(crate) fn handle_multi_line_text_event<A>(
             );
             true
         }
-        Event::Ime(ImeEvent::End) => {
+        Event::Ime(ImeEvent::End | ImeEvent::Disabled) => {
             apply_multi_line_edit_action(
                 ctx,
                 value,
@@ -710,6 +715,12 @@ pub(crate) fn handle_multi_line_text_event<A>(
             } else {
                 false
             }
+        }
+        Event::Pointer(PointerEvent::Cancelled { .. }) if edit.read().drag_anchor.is_some() => {
+            edit.update(|edit| edit.drag_anchor = None);
+            ctx.request_repaint();
+            ctx.stop_propagation();
+            true
         }
         _ => false,
     };

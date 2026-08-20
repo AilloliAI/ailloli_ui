@@ -13,6 +13,10 @@ pub enum RendererError {
     SurfaceCapabilitiesUnavailable(&'static str),
     #[error("wgpu: surface configuration failed")]
     SurfaceConfigFailed,
+    /// The current renderer pipelines cannot be reused with the surface's new
+    /// preferred format. The presentation adapter must rebuild the renderer.
+    #[error("wgpu: surface presentation must be recreated: {0}")]
+    SurfaceRecreationRequired(&'static str),
     /// No compatible adapter succeeded at `Surface::configure` (wgpu 0.20 may panic instead of returning an error).
     #[error("wgpu: surface configure failed for every compatible adapter (try WGPU_BACKEND=gl or WINIT_UNIX_BACKEND=x11)")]
     SurfaceConfigureExhausted,

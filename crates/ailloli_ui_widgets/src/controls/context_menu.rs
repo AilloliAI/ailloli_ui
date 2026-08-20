@@ -6,18 +6,25 @@ use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
 use ailloli_ui_core::{Color, FontId, IconId, Offset, Point, TextStyle, Theme};
+use ailloli_ui_runtime::app::{PresentationGeneration, RuntimeHandle};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Signal, View, Widget,
 };
-use ailloli_ui_runtime::input::{ClickAction, EventCtx, FocusPolicy, IntoClickAction};
+use ailloli_ui_runtime::input::{
+    ActivationPolicy, ClickAction, EventCtx, FocusPolicy, HoverCursorRole, IntoClickAction,
+};
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
+use ailloli_ui_runtime::popup::{
+    PopupContent, PopupDismissReason, PopupId, PopupMountPolicy, PopupOwner, PopupPlacementSpec,
+    PopupRequest, HEADLESS_POPUP_WINDOW_ID,
+};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawCmd, DrawImage, DrawRect};
 use lucide_icons::Icon;
 
 use super::popup::{
-    apply_opacity, measure_text, paint_overlay_text_in_rect, paint_popup_border, paint_popup_shell,
-    popup_rect_at_pointer,
+    apply_opacity, measure_text, menu_popup_semantics, paint_overlay_text_in_rect,
+    paint_popup_border, paint_popup_shell, PopupAlignment, PopupPlacement, PopupPortalBridge,
 };
 use super::select::{SelectSize, SelectStyle};
 
@@ -166,6 +173,7 @@ pub struct ContextMenu<A = ()> {
     bound_open: Option<Signal<bool>>,
     default_open: bool,
     anchor: Binding<Point>,
+    anchor_explicit: bool,
     entries: Binding<Vec<ContextMenuEntry<A>>>,
     disabled: Binding<bool>,
     style: ContextMenuStyle,
@@ -193,6 +201,7 @@ impl<A: 'static> ContextMenu<A> {
             bound_open: None,
             default_open: false,
             anchor: Binding::Static(Point::default()),
+            anchor_explicit: false,
             entries: Binding::Static(Vec::new()),
             disabled: Binding::Static(false),
             style: ContextMenuStyle::default(),
@@ -220,11 +229,13 @@ impl<A: 'static> ContextMenu<A> {
 
     pub fn anchor(mut self, anchor: impl Into<Binding<Point>>) -> Self {
         self.anchor = anchor.into();
+        self.anchor_explicit = true;
         self
     }
 
     pub fn bind_anchor(mut self, anchor: impl Into<Signal<Point>>) -> Self {
         self.anchor = Binding::Signal(anchor.into());
+        self.anchor_explicit = true;
         self
     }
 
@@ -266,6 +277,7 @@ struct ContextMenuComponent<A> {
     bound_open: Option<Signal<bool>>,
     default_open: bool,
     anchor: Binding<Point>,
+    anchor_explicit: bool,
     entries: Binding<Vec<ContextMenuEntry<A>>>,
     disabled: Binding<bool>,
     style: ContextMenuStyle,
@@ -278,20 +290,47 @@ impl<A: 'static> ComponentNode<A> for ContextMenuComponent<A> {
         if let Some(child) = self.child.clone() {
             children.push(child);
         }
+        let initially_open = self
+            .open
+            .as_ref()
+            .map(Binding::read)
+            .unwrap_or(self.default_open);
+        let runtime = context.runtime();
+        let root_popup_id = runtime.popup_id_for_element(context.element_id()).ok();
+        let internal_open = context.signal(self.default_open);
+        let last_requested_open =
+            context.signal(root_popup_id.is_some_and(|popup_id| runtime.popup_is_open(popup_id)));
+        let controller = ContextMenuController {
+            runtime,
+            open: self.open.clone(),
+            bound_open: self.bound_open.clone(),
+            internal_open,
+            last_requested_open,
+            anchor: self.anchor.clone(),
+            anchor_explicit: self.anchor_explicit,
+            pointer_anchor: context.signal(None),
+            entries: self.entries.clone(),
+            disabled: self.disabled.clone(),
+            style: self.style.clone(),
+            active_index: context.signal(None),
+            submenu_parent_index: context.signal(None),
+            submenu_active_index: context.signal(None),
+            pressed_entry: context.signal(None),
+            geometry: context.signal(None),
+            root_popup_id,
+            submenu_popup_id: context.signal(None),
+        };
+        let popup_content = context_menu_root_content(controller.clone());
         View::node(
             ContextMenuWidget {
                 layout: self.layout,
-                open: self.open.clone(),
-                bound_open: self.bound_open.clone(),
-                internal_open: context.signal(self.default_open),
-                anchor: self.anchor.clone(),
-                entries: self.entries.clone(),
-                disabled: self.disabled.clone(),
-                style: self.style.clone(),
-                active_index: context.signal(None),
-                submenu_parent_index: context.signal(None),
-                submenu_active_index: context.signal(None),
-                pressed_entry: context.signal(None),
+                controller,
+                popup: PopupPortalBridge::new_retained_with_content(
+                    context,
+                    menu_popup_semantics(true),
+                    initially_open,
+                    popup_content,
+                ),
             },
             children,
         )
@@ -307,6 +346,7 @@ impl<A: 'static> IntoView<A> for ContextMenu<A> {
                 bound_open: self.bound_open,
                 default_open: self.default_open,
                 anchor: self.anchor,
+                anchor_explicit: self.anchor_explicit,
                 entries: self.entries,
                 disabled: self.disabled,
                 style: self.style,
@@ -320,10 +360,19 @@ impl<A: 'static> IntoView<A> for ContextMenu<A> {
 
 struct ContextMenuWidget<A> {
     layout: LayoutStyle,
+    controller: ContextMenuController<A>,
+    popup: PopupPortalBridge<A>,
+}
+
+struct ContextMenuController<A> {
+    runtime: RuntimeHandle<A>,
     open: Option<Binding<bool>>,
     bound_open: Option<Signal<bool>>,
     internal_open: Signal<bool>,
+    last_requested_open: Signal<bool>,
     anchor: Binding<Point>,
+    anchor_explicit: bool,
+    pointer_anchor: Signal<Option<Point>>,
     entries: Binding<Vec<ContextMenuEntry<A>>>,
     disabled: Binding<bool>,
     style: ContextMenuStyle,
@@ -331,12 +380,46 @@ struct ContextMenuWidget<A> {
     submenu_parent_index: Signal<Option<usize>>,
     submenu_active_index: Signal<Option<usize>>,
     pressed_entry: Signal<Option<ContextMenuPressedEntry>>,
+    geometry: Signal<Option<ContextMenuGeometry>>,
+    root_popup_id: Option<PopupId>,
+    submenu_popup_id: Signal<Option<PopupId>>,
+}
+
+impl<A> Clone for ContextMenuController<A> {
+    fn clone(&self) -> Self {
+        Self {
+            runtime: self.runtime.clone(),
+            open: self.open.clone(),
+            bound_open: self.bound_open.clone(),
+            internal_open: self.internal_open.clone(),
+            last_requested_open: self.last_requested_open.clone(),
+            anchor: self.anchor.clone(),
+            anchor_explicit: self.anchor_explicit,
+            pointer_anchor: self.pointer_anchor.clone(),
+            entries: self.entries.clone(),
+            disabled: self.disabled.clone(),
+            style: self.style.clone(),
+            active_index: self.active_index.clone(),
+            submenu_parent_index: self.submenu_parent_index.clone(),
+            submenu_active_index: self.submenu_active_index.clone(),
+            pressed_entry: self.pressed_entry.clone(),
+            geometry: self.geometry.clone(),
+            root_popup_id: self.root_popup_id,
+            submenu_popup_id: self.submenu_popup_id.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ContextMenuPressedEntry {
     parent: Option<usize>,
     index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ContextMenuGeometry {
+    viewport: Rect,
+    menu: Rect,
 }
 
 impl<A: 'static> Widget<A> for ContextMenuWidget<A> {
@@ -364,123 +447,237 @@ impl<A: 'static> Widget<A> for ContextMenuWidget<A> {
         }
 
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        let overlay_hit_bounds = if self.is_open() && !self.disabled.read() {
-            vec![paint_bounds]
+        if self.controller.sync_portal_visibility(&self.popup) && !self.controller.disabled.read() {
+            // Semantic placement is published during paint; the host then
+            // resolves it against the complete presentation viewport.
         } else {
-            Vec::new()
-        };
+            self.popup.close(PopupDismissReason::Programmatic);
+        }
 
         LayoutResult {
             size,
             children: child_layouts,
             paint_bounds,
             visual_bounds: paint_bounds,
-            overlay_hit_bounds,
+            overlay_hit_bounds: Vec::new(),
             clip: None,
             is_window_root_clip: false,
             artifact: None,
         }
     }
 
-    fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
-
-    fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        if !self.is_open() || self.disabled.read() {
+    fn paint(&self, _ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        if !self.controller.is_open() || self.controller.disabled.read() {
             return;
         }
-        let entries = self.entries.read();
+        let entries = self.controller.entries.read();
         if entries.is_empty() {
             return;
         }
-        self.paint_menu(ctx, bounds, &entries);
+        self.controller
+            .publish_root_popup_without_event(&self.popup, bounds, &entries);
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
-        if !self.is_open() || self.disabled.read() {
+        self.popup.refresh_owner(ctx);
+        if self.controller.disabled.read() {
             return;
         }
-        match event {
-            Event::Focus(focus) if !focus.focused => {
-                self.close();
+
+        if let Event::Pointer(PointerEvent::Button {
+            pos,
+            button: MouseButton::Right,
+            pressed: true,
+            ..
+        }) = event
+        {
+            if bounds.contains(pos.x, pos.y) && self.controller.open_at(*pos) {
+                self.controller.sync_portal(&self.popup, ctx, bounds);
                 ctx.request_repaint();
-            }
-            Event::Keyboard(key) if key.state == KeyState::Pressed => {
-                self.handle_keyboard(ctx, &key.key);
                 ctx.stop_propagation();
+                return;
             }
-            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
-                self.handle_pointer_move(ctx, bounds, *pos);
-                ctx.stop_propagation();
-            }
-            Event::Pointer(PointerEvent::Button {
-                pos,
-                button: MouseButton::Left | MouseButton::Right,
-                pressed: true,
-                ..
-            }) => {
-                self.handle_pointer_press(ctx, bounds, *pos);
-                ctx.stop_propagation();
-            }
-            Event::Pointer(PointerEvent::Button {
-                pos,
-                button: MouseButton::Left,
-                pressed: false,
-                ..
-            }) => {
-                self.handle_pointer_release(ctx, bounds, *pos, MouseButton::Left);
-                ctx.stop_propagation();
-            }
-            Event::Pointer(PointerEvent::Button {
-                pos,
-                button: MouseButton::Right,
-                pressed: false,
-                ..
-            }) => {
-                self.handle_pointer_release(ctx, bounds, *pos, MouseButton::Right);
-                ctx.stop_propagation();
-            }
-            _ => {}
         }
+
+        if !self.controller.is_open() {
+            return;
+        }
+        self.controller.sync_portal(&self.popup, ctx, bounds);
     }
 
     fn focus_policy(&self) -> FocusPolicy {
-        if self.is_open() && !self.disabled.read() {
+        if self.controller.is_open() && !self.controller.disabled.read() {
             FocusPolicy::Focusable
         } else {
             FocusPolicy::NotFocusable
         }
     }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
 }
 
-impl<A: 'static> ContextMenuWidget<A> {
+impl<A: 'static> ContextMenuController<A> {
     fn is_open(&self) -> bool {
+        let requested = self.requested_open();
+        let portal_open = self
+            .root_popup_id
+            .is_some_and(|popup_id| self.runtime.popup_is_open(popup_id));
+        if requested && !portal_open {
+            if !self.last_requested_open.read() {
+                // A bound signal may request focus before the next layout has
+                // synchronized its rising edge into the popup portal. Keep
+                // that pending request intact; only a request already known
+                // to the portal can have been dismissed by the host.
+                return false;
+            }
+            // Host-level outside/Escape dismissal is consumed before the
+            // owner widget sees the event. Synchronize mutable state during
+            // the next paint/event query as well as layout, otherwise a
+            // focus-restoration repaint can rebuild and reopen the menu.
+            if let Some(bound) = &self.bound_open {
+                bound.set(false);
+                self.last_requested_open.set(false);
+            } else if self.open.is_none() {
+                self.internal_open.set(false);
+                self.last_requested_open.set(false);
+            }
+            return false;
+        }
+        requested && portal_open
+    }
+
+    fn requested_open(&self) -> bool {
         self.open
             .as_ref()
             .map(Binding::read)
             .unwrap_or_else(|| self.internal_open.read())
     }
 
-    fn close(&self) {
+    fn sync_portal_visibility(&self, popup: &PopupPortalBridge<A>) -> bool {
+        let requested = self.requested_open();
+        let previously_requested = self.last_requested_open.read();
+        if previously_requested != requested {
+            self.last_requested_open.set(requested);
+        }
+        if !requested {
+            if let Some(popup_id) = self.root_popup_id {
+                if self.runtime.popup_is_open(popup_id) {
+                    self.runtime
+                        .close_popup(popup_id, PopupDismissReason::Programmatic);
+                }
+            }
+            return false;
+        }
+
+        if !previously_requested
+            && self
+                .root_popup_id
+                .is_some_and(|popup_id| !self.runtime.popup_is_open(popup_id))
+        {
+            popup.open_unpositioned(None);
+        }
+        if self
+            .root_popup_id
+            .is_some_and(|popup_id| self.runtime.popup_is_open(popup_id))
+        {
+            return true;
+        }
+
+        // A portal-level Escape/outside/stale dismissal must also update the
+        // mutable public/internal state, otherwise layout would reopen it.
         if let Some(bound) = &self.bound_open {
             bound.set(false);
+            self.last_requested_open.set(false);
         } else if self.open.is_none() {
             self.internal_open.set(false);
+            self.last_requested_open.set(false);
+        }
+        false
+    }
+
+    fn open_at(&self, anchor: Point) -> bool {
+        let can_open = self.bound_open.is_some() || self.open.is_none() || self.is_open();
+        if !can_open {
+            return false;
+        }
+        self.pointer_anchor.set(Some(anchor));
+        self.geometry.set(None);
+        if let Some(bound) = &self.bound_open {
+            bound.set(true);
+        } else if self.open.is_none() {
+            self.internal_open.set(true);
         }
         self.active_index.set(None);
         self.submenu_parent_index.set(None);
         self.submenu_active_index.set(None);
         self.pressed_entry.set(None);
+        self.last_requested_open.set(true);
+        true
     }
 
-    fn menu_rect(&self, bounds: Rect, entries: &[ContextMenuEntry<A>]) -> Rect {
-        popup_rect_at_pointer(
-            self.anchor.read().x,
-            self.anchor.read().y,
-            self.style.width,
-            self.menu_height(entries)
-                .min(self.style.popup.popup_max_height),
-            bounds,
+    fn sync_portal(&self, popup: &PopupPortalBridge<A>, ctx: &EventCtx<A>, bounds: Rect) {
+        let entries = self.entries.read();
+        if entries.is_empty() {
+            popup.open_unpositioned(Some(ctx));
+            return;
+        }
+        popup.open_placed(ctx, self.root_placement(bounds, &entries));
+    }
+
+    fn publish_root_popup_without_event(
+        &self,
+        popup: &PopupPortalBridge<A>,
+        bounds: Rect,
+        entries: &[ContextMenuEntry<A>],
+    ) {
+        popup.open_placed_without_event(self.root_placement(bounds, entries));
+    }
+
+    fn root_placement(&self, owner: Rect, entries: &[ContextMenuEntry<A>]) -> PopupPlacementSpec {
+        let anchor = self.effective_anchor(owner);
+        PopupPlacementSpec::new(
+            Rect::new(anchor.x, anchor.y, 0.0, 0.0),
+            Size::new(
+                self.style.width,
+                self.menu_height(entries)
+                    .min(self.style.popup.popup_max_height),
+            ),
         )
+        .with_placement(PopupPlacement::Bottom)
+        .with_alignment(PopupAlignment::Start)
+        .with_gap(0.0)
+        .with_flip(true)
+    }
+
+    fn effective_anchor(&self, owner: Rect) -> Point {
+        self.pointer_anchor.read().unwrap_or_else(|| {
+            if self.anchor_explicit {
+                self.anchor.read()
+            } else {
+                Point::new(owner.x, owner.bottom())
+            }
+        })
+    }
+
+    fn update_geometry(&self, geometry: ContextMenuGeometry) {
+        if self.geometry.read() != Some(geometry) {
+            self.geometry.set(Some(geometry));
+        }
+    }
+
+    fn refresh_resolved_geometry(&self) -> Option<ContextMenuGeometry> {
+        let popup_id = self.root_popup_id?;
+        let portal = self.runtime.popup_portal();
+        let portal = portal.borrow();
+        let geometry = ContextMenuGeometry {
+            viewport: portal.resolved_viewport(popup_id)?,
+            menu: portal.bounds(popup_id)?,
+        };
+        drop(portal);
+        self.update_geometry(geometry);
+        Some(geometry)
     }
 
     fn submenu_rect(
@@ -571,21 +768,23 @@ impl<A: 'static> ContextMenuWidget<A> {
         entries: &[ContextMenuEntry<A>],
         current: Option<usize>,
     ) -> Option<usize> {
-        let start = current.unwrap_or(usize::MAX);
-        entries
+        let enabled = entries
             .iter()
             .enumerate()
-            .cycle()
-            .skip_while(|(idx, _)| *idx != start)
-            .skip(1)
-            .take(entries.len())
-            .find_map(|(idx, entry)| {
+            .filter_map(|(idx, entry)| {
                 let ContextMenuEntry::Item(item) = entry else {
                     return None;
                 };
                 (!item.is_disabled()).then_some(idx)
             })
-            .or_else(|| self.first_enabled_index(entries))
+            .collect::<Vec<_>>();
+        if enabled.is_empty() {
+            return None;
+        }
+        let next = current
+            .and_then(|current| enabled.iter().position(|idx| *idx == current))
+            .map_or(0, |position| (position + 1) % enabled.len());
+        Some(enabled[next])
     }
 
     fn previous_enabled_index(
@@ -612,11 +811,11 @@ impl<A: 'static> ContextMenuWidget<A> {
         Some(enabled[(pos + enabled.len() - 1) % enabled.len()])
     }
 
-    fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key) {
+    fn handle_root_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key) {
         let entries = self.entries.read();
         match key {
             Key::Named(NamedKey::Escape) => {
-                self.close();
+                self.close_with_runtime(ctx, PopupDismissReason::Escape);
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
@@ -644,20 +843,9 @@ impl<A: 'static> ContextMenuWidget<A> {
                 }
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.submenu_parent_index.set(None);
-                self.submenu_active_index.set(None);
-                ctx.request_repaint();
-                ctx.stop_propagation();
+                self.close_submenu(ctx, PopupDismissReason::Escape);
             }
             Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
-                if let Some(parent) = self.submenu_parent_index.read() {
-                    if let Some(sub) = self.submenu_active_index.read() {
-                        if let Some(ContextMenuEntry::Item(item)) = entries.get(parent) {
-                            self.activate_entry(ctx, &item.submenu, sub);
-                            return;
-                        }
-                    }
-                }
                 if let Some(index) = self
                     .active_index
                     .read()
@@ -670,50 +858,27 @@ impl<A: 'static> ContextMenuWidget<A> {
         }
     }
 
-    fn handle_pointer_move(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
+    fn handle_root_pointer_move(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let entries = self.entries.read();
-        let menu = self.menu_rect(bounds, &entries);
-        if let Some(index) = self.item_index_at(menu, &entries, pos) {
+        if let Some(index) = self.item_index_at(bounds, &entries, pos) {
             self.active_index.set(Some(index));
-            if self.has_submenu(&entries, index) {
-                self.submenu_parent_index.set(Some(index));
-                self.submenu_active_index.set(None);
-            } else {
-                self.submenu_parent_index.set(None);
-                self.submenu_active_index.set(None);
-            }
-            ctx.request_repaint();
-            return;
-        }
-        if let Some((parent, submenu, rect)) = self.open_submenu_geometry(bounds, menu, &entries) {
-            if let Some(index) = self.item_index_at(rect, submenu, pos) {
-                self.submenu_parent_index.set(Some(parent));
-                self.submenu_active_index.set(Some(index));
-                ctx.request_repaint();
-            }
-        }
-    }
-
-    fn handle_pointer_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
-        let entries = self.entries.read();
-        let menu = self.menu_rect(bounds, &entries);
-        self.pressed_entry.set(None);
-        if let Some((parent, submenu, rect)) = self.open_submenu_geometry(bounds, menu, &entries) {
-            if let Some(index) = self.item_index_at(rect, submenu, pos) {
-                self.submenu_parent_index.set(Some(parent));
-                self.submenu_active_index.set(Some(index));
-                self.pressed_entry.set(Some(ContextMenuPressedEntry {
-                    parent: Some(parent),
-                    index,
-                }));
-                ctx.request_repaint();
-                return;
-            }
-        }
-        if let Some(index) = self.item_index_at(menu, &entries, pos) {
             if self.has_submenu(&entries, index) {
                 self.open_submenu(ctx, &entries, index);
             } else {
+                self.close_submenu(ctx, PopupDismissReason::Programmatic);
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    fn handle_root_pointer_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
+        let entries = self.entries.read();
+        self.pressed_entry.set(None);
+        if let Some(index) = self.item_index_at(bounds, &entries, pos) {
+            if self.has_submenu(&entries, index) {
+                self.open_submenu(ctx, &entries, index);
+            } else if matches!(entries.get(index), Some(ContextMenuEntry::Item(item)) if !item.is_disabled())
+            {
                 self.active_index.set(Some(index));
                 self.pressed_entry.set(Some(ContextMenuPressedEntry {
                     parent: None,
@@ -723,12 +888,10 @@ impl<A: 'static> ContextMenuWidget<A> {
             }
             return;
         }
-        self.close();
-        ctx.request_repaint();
         ctx.stop_propagation();
     }
 
-    fn handle_pointer_release(
+    fn handle_root_pointer_release(
         &self,
         ctx: &mut EventCtx<A>,
         bounds: Rect,
@@ -739,22 +902,13 @@ impl<A: 'static> ContextMenuWidget<A> {
         self.pressed_entry.set(None);
         if button != MouseButton::Left {
             ctx.request_repaint();
+            ctx.stop_propagation();
             return;
         }
         let entries = self.entries.read();
-        let menu = self.menu_rect(bounds, &entries);
-        let release = if let Some((parent, submenu, rect)) =
-            self.open_submenu_geometry(bounds, menu, &entries)
-        {
-            self.item_index_at(rect, submenu, pos)
-                .map(|index| (Some(parent), index))
-        } else {
-            None
-        }
-        .or_else(|| {
-            self.item_index_at(menu, &entries, pos)
-                .map(|index| (None, index))
-        });
+        let release = self
+            .item_index_at(bounds, &entries, pos)
+            .map(|index| (None, index));
         let Some(pressed) = pressed else {
             ctx.request_repaint();
             return;
@@ -763,19 +917,10 @@ impl<A: 'static> ContextMenuWidget<A> {
             ctx.request_repaint();
             return;
         }
-        match pressed.parent {
-            Some(parent) => {
-                if let Some(ContextMenuEntry::Item(item)) = entries.get(parent) {
-                    self.activate_entry(ctx, &item.submenu, pressed.index);
-                }
-            }
-            None => {
-                if self.has_submenu(&entries, pressed.index) {
-                    self.open_submenu(ctx, &entries, pressed.index);
-                } else {
-                    self.activate_entry(ctx, &entries, pressed.index);
-                }
-            }
+        if self.has_submenu(&entries, pressed.index) {
+            self.open_submenu(ctx, &entries, pressed.index);
+        } else {
+            self.activate_entry(ctx, &entries, pressed.index);
         }
     }
 
@@ -794,20 +939,44 @@ impl<A: 'static> ContextMenuWidget<A> {
         if let Some(action) = &item.action {
             action.run(ctx);
         }
-        self.close();
+        self.close_with_runtime(ctx, PopupDismissReason::Programmatic);
         ctx.request_repaint();
         ctx.stop_propagation();
     }
 
     fn open_submenu(&self, ctx: &mut EventCtx<A>, entries: &[ContextMenuEntry<A>], index: usize) {
-        if !self.has_submenu(entries, index) {
+        let Some(ContextMenuEntry::Item(item)) = entries.get(index) else {
+            return;
+        };
+        if item.is_disabled() || item.submenu.is_empty() {
             return;
         }
         self.active_index.set(Some(index));
         self.submenu_parent_index.set(Some(index));
-        if let Some(ContextMenuEntry::Item(item)) = entries.get(index) {
-            self.submenu_active_index
-                .set(self.first_enabled_index(&item.submenu));
+        self.submenu_active_index
+            .set(self.first_enabled_index(&item.submenu));
+
+        let Some(root_geometry) = self
+            .refresh_resolved_geometry()
+            .or_else(|| self.geometry.read())
+        else {
+            ctx.request_repaint();
+            ctx.stop_propagation();
+            return;
+        };
+        let Some(parent_row) = self.entry_row(root_geometry.menu, entries, index) else {
+            return;
+        };
+        let submenu = self.submenu_rect(
+            root_geometry.viewport,
+            root_geometry.menu,
+            parent_row,
+            &item.submenu,
+        );
+        if self.ensure_submenu_registered(ctx) {
+            if let Some(popup_id) = self.submenu_popup_id.read() {
+                let _ = ctx.runtime().open_popup(popup_id, parent_row, submenu);
+            }
         }
         ctx.request_repaint();
         ctx.stop_propagation();
@@ -819,39 +988,217 @@ impl<A: 'static> ContextMenuWidget<A> {
 
     fn set_active(&self, ctx: &mut EventCtx<A>, next: Option<usize>) {
         self.active_index.set(next);
-        self.submenu_parent_index.set(None);
-        self.submenu_active_index.set(None);
+        self.close_submenu(ctx, PopupDismissReason::Programmatic);
         ctx.request_repaint();
         ctx.stop_propagation();
     }
 
-    fn open_submenu_geometry<'a>(
-        &self,
-        bounds: Rect,
-        menu: Rect,
-        entries: &'a [ContextMenuEntry<A>],
-    ) -> Option<(usize, &'a [ContextMenuEntry<A>], Rect)> {
+    fn submenu_entries(&self) -> Option<Vec<ContextMenuEntry<A>>> {
         let parent = self.submenu_parent_index.read()?;
+        let entries = self.entries.read();
         let ContextMenuEntry::Item(item) = entries.get(parent)? else {
             return None;
         };
-        if item.submenu.is_empty() {
-            return None;
-        }
-        let row = self.entry_row(menu, entries, parent)?;
-        Some((
-            parent,
-            item.submenu.as_slice(),
-            self.submenu_rect(bounds, menu, row, &item.submenu),
-        ))
+        Some(item.submenu.clone())
     }
 
-    fn paint_menu(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, entries: &[ContextMenuEntry<A>]) {
-        let menu = self.menu_rect(bounds, entries);
-        self.paint_entries(ctx, menu, entries, self.active_index.read());
-        if let Some((_, submenu, rect)) = self.open_submenu_geometry(bounds, menu, entries) {
-            self.paint_entries(ctx, rect, submenu, self.submenu_active_index.read());
+    fn ensure_submenu_registered(&self, ctx: &EventCtx<A>) -> bool {
+        let (Some(root_popup_id), Some(submenu_popup_id)) =
+            (self.root_popup_id, self.submenu_popup_id.read())
+        else {
+            return false;
+        };
+        let runtime = ctx.runtime();
+        let owner = popup_owner_for_event(&runtime, ctx);
+        let current_matches = {
+            let portal = runtime.popup_portal();
+            let portal = portal.borrow();
+            portal.request(submenu_popup_id).is_some_and(|request| {
+                request.owner() == &owner
+                    && request.parent() == Some(root_popup_id)
+                    && request.mount_policy() == PopupMountPolicy::RetainedOverlay
+            })
+        };
+        if current_matches {
+            return true;
         }
+        if runtime.popup_portal().borrow().contains(submenu_popup_id) {
+            runtime.unregister_popup(submenu_popup_id);
+        }
+        let content = context_menu_submenu_content(self.clone());
+        runtime
+            .register_popup(
+                PopupRequest::new(submenu_popup_id, owner, content)
+                    .with_parent(root_popup_id)
+                    .with_semantics(menu_popup_semantics(true))
+                    .with_mount_policy(PopupMountPolicy::RetainedOverlay),
+            )
+            .is_ok()
+    }
+
+    fn close_submenu(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
+        self.submenu_parent_index.set(None);
+        self.submenu_active_index.set(None);
+        self.pressed_entry.set(None);
+        if let Some(popup_id) = self.submenu_popup_id.read() {
+            ctx.runtime().close_popup(popup_id, reason);
+        }
+        ctx.request_repaint();
+    }
+
+    fn close_with_runtime(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
+        if let Some(bound) = &self.bound_open {
+            bound.set(false);
+        } else if self.open.is_none() {
+            self.internal_open.set(false);
+        }
+        self.last_requested_open.set(false);
+        self.active_index.set(None);
+        self.submenu_parent_index.set(None);
+        self.submenu_active_index.set(None);
+        self.pressed_entry.set(None);
+        self.pointer_anchor.set(None);
+        self.geometry.set(None);
+        if let Some(popup_id) = self.root_popup_id {
+            ctx.runtime().close_popup(popup_id, reason);
+        }
+        ctx.request_repaint();
+        ctx.stop_propagation();
+    }
+
+    fn handle_submenu_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key) {
+        let Some(entries) = self.submenu_entries() else {
+            self.close_submenu(ctx, PopupDismissReason::Programmatic);
+            return;
+        };
+        match key {
+            Key::Named(NamedKey::Escape | NamedKey::ArrowLeft) => {
+                self.close_submenu(ctx, PopupDismissReason::Escape);
+                ctx.stop_propagation();
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                let next = self.next_enabled_index(&entries, self.submenu_active_index.read());
+                self.submenu_active_index.set(next);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let next = self.previous_enabled_index(&entries, self.submenu_active_index.read());
+                self.submenu_active_index.set(next);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
+            Key::Named(NamedKey::Home) => {
+                self.submenu_active_index
+                    .set(self.first_enabled_index(&entries));
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
+            Key::Named(NamedKey::End) => {
+                self.submenu_active_index
+                    .set(self.last_enabled_index(&entries));
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                if let Some(index) = self
+                    .submenu_active_index
+                    .read()
+                    .or_else(|| self.first_enabled_index(&entries))
+                {
+                    self.activate_submenu_entry(ctx, &entries, index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_submenu_pointer_move(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
+        let Some(entries) = self.submenu_entries() else {
+            return;
+        };
+        let next = self
+            .item_index_at(bounds, &entries, pos)
+            .filter(|index| matches!(entries.get(*index), Some(ContextMenuEntry::Item(item)) if !item.is_disabled()));
+        if self.submenu_active_index.read() != next {
+            self.submenu_active_index.set(next);
+            ctx.request_repaint();
+        }
+    }
+
+    fn handle_submenu_pointer_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
+        self.pressed_entry.set(None);
+        let Some(parent) = self.submenu_parent_index.read() else {
+            return;
+        };
+        let Some(entries) = self.submenu_entries() else {
+            return;
+        };
+        if let Some(index) = self
+            .item_index_at(bounds, &entries, pos)
+            .filter(|index| matches!(entries.get(*index), Some(ContextMenuEntry::Item(item)) if !item.is_disabled()))
+        {
+            self.submenu_active_index.set(Some(index));
+            self.pressed_entry.set(Some(ContextMenuPressedEntry {
+                parent: Some(parent),
+                index,
+            }));
+            ctx.request_repaint();
+        }
+        ctx.stop_propagation();
+    }
+
+    fn handle_submenu_pointer_release(
+        &self,
+        ctx: &mut EventCtx<A>,
+        bounds: Rect,
+        pos: Point,
+        button: MouseButton,
+    ) {
+        let pressed = self.pressed_entry.read();
+        self.pressed_entry.set(None);
+        if button != MouseButton::Left {
+            ctx.stop_propagation();
+            return;
+        }
+        let Some(parent) = self.submenu_parent_index.read() else {
+            return;
+        };
+        let Some(entries) = self.submenu_entries() else {
+            return;
+        };
+        let release = self.item_index_at(bounds, &entries, pos);
+        if pressed
+            == release.map(|index| ContextMenuPressedEntry {
+                parent: Some(parent),
+                index,
+            })
+        {
+            if let Some(index) = release {
+                self.activate_submenu_entry(ctx, &entries, index);
+            }
+        }
+        ctx.request_repaint();
+        ctx.stop_propagation();
+    }
+
+    fn activate_submenu_entry(
+        &self,
+        ctx: &mut EventCtx<A>,
+        entries: &[ContextMenuEntry<A>],
+        index: usize,
+    ) {
+        let Some(ContextMenuEntry::Item(item)) = entries.get(index) else {
+            return;
+        };
+        if item.is_disabled() || !item.submenu.is_empty() {
+            ctx.stop_propagation();
+            return;
+        }
+        if let Some(action) = &item.action {
+            action.run(ctx);
+        }
+        self.close_with_runtime(ctx, PopupDismissReason::Programmatic);
     }
 
     fn paint_entries(
@@ -991,6 +1338,298 @@ impl<A: 'static> ContextMenuWidget<A> {
                 rotation_rad: 0.0,
             }));
         }
+    }
+}
+
+struct RetainedContextMenuRootComponent<A> {
+    controller: ContextMenuController<A>,
+}
+
+impl<A: 'static> ComponentNode<A> for RetainedContextMenuRootComponent<A> {
+    fn build(&self, context: &mut Context<A>) -> View<A> {
+        self.controller.submenu_popup_id.set(
+            context
+                .runtime()
+                .popup_id_for_element(context.element_id())
+                .ok(),
+        );
+        View::leaf(RetainedContextMenuRoot {
+            controller: self.controller.clone(),
+        })
+    }
+}
+
+struct RetainedContextMenuRoot<A> {
+    controller: ContextMenuController<A>,
+}
+
+impl<A> Clone for RetainedContextMenuRoot<A> {
+    fn clone(&self) -> Self {
+        Self {
+            controller: self.controller.clone(),
+        }
+    }
+}
+
+impl<A: 'static> Widget<A> for RetainedContextMenuRoot<A> {
+    fn debug_name(&self) -> &'static str {
+        "ContextMenuPopup"
+    }
+
+    fn layout(
+        &self,
+        _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
+        _ctx: &mut LayoutCtx<'_>,
+        _children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        retained_context_menu_layout(
+            constraints,
+            self.controller.style.width,
+            self.controller.menu_height(&self.controller.entries.read()),
+            self.controller.style.popup.popup_max_height,
+        )
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        self.controller.refresh_resolved_geometry();
+        self.controller.paint_entries(
+            ctx,
+            bounds,
+            &self.controller.entries.read(),
+            self.controller.active_index.read(),
+        );
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
+        if self.controller.disabled.read() {
+            self.controller
+                .close_with_runtime(ctx, PopupDismissReason::Programmatic);
+            return;
+        }
+        match event {
+            Event::Keyboard(key) if key.state == KeyState::Pressed && !key.repeat => {
+                self.controller.handle_root_keyboard(ctx, &key.key);
+            }
+            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
+                self.controller.handle_root_pointer_move(ctx, bounds, *pos);
+            }
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left | MouseButton::Right,
+                pressed: true,
+                ..
+            }) => self.controller.handle_root_pointer_press(ctx, bounds, *pos),
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left | MouseButton::Right,
+                pressed: false,
+                ..
+            }) => self.controller.handle_root_pointer_release(
+                ctx,
+                bounds,
+                *pos,
+                event_pointer_button(event),
+            ),
+            Event::Pointer(PointerEvent::Cancelled { .. }) => {
+                self.controller.pressed_entry.set(None);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
+            _ => {}
+        }
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        FocusPolicy::Focusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
+
+    fn hover_cursor_role_at(
+        &self,
+        bounds: Rect,
+        _layout: &LayoutResult,
+        pos: Point,
+    ) -> HoverCursorRole {
+        let entries = self.controller.entries.read();
+        self.controller
+            .item_index_at(bounds, &entries, pos)
+            .filter(|index| matches!(entries.get(*index), Some(ContextMenuEntry::Item(item)) if !item.is_disabled()))
+            .map_or(HoverCursorRole::Default, |_| HoverCursorRole::Pointer)
+    }
+}
+
+struct RetainedContextSubmenu<A> {
+    controller: ContextMenuController<A>,
+}
+
+impl<A> Clone for RetainedContextSubmenu<A> {
+    fn clone(&self) -> Self {
+        Self {
+            controller: self.controller.clone(),
+        }
+    }
+}
+
+impl<A: 'static> Widget<A> for RetainedContextSubmenu<A> {
+    fn debug_name(&self) -> &'static str {
+        "ContextSubmenuPopup"
+    }
+
+    fn layout(
+        &self,
+        _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
+        _ctx: &mut LayoutCtx<'_>,
+        _children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let entries = self.controller.submenu_entries().unwrap_or_default();
+        retained_context_menu_layout(
+            constraints,
+            self.controller.style.submenu_width,
+            self.controller.menu_height(&entries),
+            self.controller.style.popup.popup_max_height,
+        )
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        let Some(entries) = self.controller.submenu_entries() else {
+            return;
+        };
+        self.controller.paint_entries(
+            ctx,
+            bounds,
+            &entries,
+            self.controller.submenu_active_index.read(),
+        );
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
+        match event {
+            Event::Keyboard(key) if key.state == KeyState::Pressed && !key.repeat => {
+                self.controller.handle_submenu_keyboard(ctx, &key.key);
+            }
+            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
+                self.controller
+                    .handle_submenu_pointer_move(ctx, bounds, *pos);
+            }
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left | MouseButton::Right,
+                pressed: true,
+                ..
+            }) => self
+                .controller
+                .handle_submenu_pointer_press(ctx, bounds, *pos),
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left | MouseButton::Right,
+                pressed: false,
+                ..
+            }) => self.controller.handle_submenu_pointer_release(
+                ctx,
+                bounds,
+                *pos,
+                event_pointer_button(event),
+            ),
+            Event::Pointer(PointerEvent::Cancelled { .. }) => {
+                self.controller.pressed_entry.set(None);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
+            _ => {}
+        }
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        FocusPolicy::Focusable
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
+
+    fn hover_cursor_role_at(
+        &self,
+        bounds: Rect,
+        _layout: &LayoutResult,
+        pos: Point,
+    ) -> HoverCursorRole {
+        let Some(entries) = self.controller.submenu_entries() else {
+            return HoverCursorRole::Default;
+        };
+        self.controller
+            .item_index_at(bounds, &entries, pos)
+            .filter(|index| matches!(entries.get(*index), Some(ContextMenuEntry::Item(item)) if !item.is_disabled()))
+            .map_or(HoverCursorRole::Default, |_| HoverCursorRole::Pointer)
+    }
+}
+
+fn context_menu_root_content<A: 'static>(controller: ContextMenuController<A>) -> PopupContent<A> {
+    PopupContent::new(move || {
+        View::component(RetainedContextMenuRootComponent {
+            controller: controller.clone(),
+        })
+    })
+}
+
+fn context_menu_submenu_content<A: 'static>(
+    controller: ContextMenuController<A>,
+) -> PopupContent<A> {
+    PopupContent::new(move || {
+        View::leaf(RetainedContextSubmenu {
+            controller: controller.clone(),
+        })
+    })
+}
+
+fn retained_context_menu_layout(
+    constraints: Constraints,
+    width: f32,
+    content_height: f32,
+    max_height: f32,
+) -> LayoutResult {
+    let size = constraints.constrain(Size::new(width, content_height.min(max_height)));
+    let bounds = Rect::new(0.0, 0.0, size.w, size.h);
+    LayoutResult {
+        size,
+        children: Vec::new(),
+        paint_bounds: bounds,
+        visual_bounds: bounds,
+        overlay_hit_bounds: Vec::new(),
+        clip: Some(ailloli_ui_core::ClipShape::Rect(bounds)),
+        is_window_root_clip: false,
+        artifact: None,
+    }
+}
+
+fn popup_owner_for_event<A>(runtime: &RuntimeHandle<A>, ctx: &EventCtx<A>) -> PopupOwner {
+    if let Some(meta) = ctx.event_meta() {
+        return PopupOwner::new(
+            meta.logical_window_id().clone(),
+            meta.presentation_generation(),
+            runtime.element_tree_id(),
+            ctx.target(),
+        );
+    }
+    if let Some((window, generation)) = runtime.presentation_scope() {
+        return PopupOwner::new(window, generation, runtime.element_tree_id(), ctx.target());
+    }
+    PopupOwner::new(
+        HEADLESS_POPUP_WINDOW_ID,
+        PresentationGeneration::INITIAL,
+        runtime.element_tree_id(),
+        ctx.target(),
+    )
+}
+
+fn event_pointer_button(event: &Event) -> MouseButton {
+    match event {
+        Event::Pointer(PointerEvent::Button { button, .. }) => *button,
+        _ => MouseButton::Left,
     }
 }
 

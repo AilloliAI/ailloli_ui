@@ -1,8 +1,9 @@
 //! wgpu backend for Ailloli UI: executes [`ailloli_ui_runtime::DrawCmd`] on the GPU.
 //!
-//! [`Renderer`] owns the swapchain surface, pipelines, text atlas, icon cache, and
-//! stencil targets. The typical frame path is `render_layered` / `render_layered_scaled`
-//! with one [`LayerPass`] per scene layer (clip mode chosen via [`choose_clip_render_mode`]).
+//! [`Renderer`] owns a reusable GPU context, an optional native surface
+//! attachment, text/icon caches, and stencil targets. The typical frame path is
+//! `render_layered` / `render_layered_scaled` with one [`LayerPass`] per scene
+//! layer (clip mode chosen via [`choose_clip_render_mode`]).
 //!
 //! # Modules
 //!
@@ -85,8 +86,10 @@ pub use isolated_plan::{
 };
 pub use pipeline_cache::gpu_debug_enabled;
 pub use pipeline_cache::{
-    ResizeOutcome, SurfaceBootstrapConfig, SurfaceConfigDeferredReason, WgpuRenderContext,
+    ResizeOutcome, SurfaceAttachment, SurfaceAttachmentState, SurfaceBootstrapConfig,
+    SurfaceConfigDeferredReason, SurfaceContextReuseFailure, SurfaceGpuContext,
+    SurfaceReattachOutcome, WgpuRenderContext,
 };
 pub use plan::{build_render_plan, LayerPlan, RenderPlan};
-pub use render_target::{RenderFrame, RenderTarget};
+pub use render_target::{PhysicalExtent, RenderFrame, RenderTarget};
 pub use renderer::{IsolatedFrameMetrics, LayerPass, Renderer, RendererOptions};

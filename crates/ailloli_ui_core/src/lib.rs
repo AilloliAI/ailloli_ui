@@ -56,7 +56,7 @@ pub use color_picker::{color_to_hsv, format_hex_rgb, hsv_to_color, parse_hex_rgb
 pub use date_picker::{DateValue, MonthValue, WeekStart};
 pub use event::Event;
 pub use geometry::{ClipShape, Constraints, EdgeInsets, Offset, Point, Rect, Size};
-pub use ids::{ElementId, FontId, IconId, ImageId, SvgSource, WidgetId};
+pub use ids::{ElementId, FontId, IconId, ImageId, LogicalWindowId, SvgSource, WidgetId};
 pub use math::{PhysicalRectI32, Scale};
 pub use progress::ProgressSpec;
 pub use scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollOutcome, ScrollState};

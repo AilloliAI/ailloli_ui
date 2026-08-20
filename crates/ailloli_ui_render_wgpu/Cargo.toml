@@ -2,6 +2,7 @@
 name = "ailloli_ui_render_wgpu"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
@@ -9,7 +10,6 @@ publish.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
 thiserror.workspace = true
-winit.workspace = true
 pollster.workspace = true
 image.workspace = true
 lucide-icons.workspace = true

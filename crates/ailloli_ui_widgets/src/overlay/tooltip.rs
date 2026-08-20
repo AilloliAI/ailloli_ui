@@ -2,7 +2,7 @@ use ailloli_ui_core::{Color, FontId, Rect, TextStyle};
 use ailloli_ui_runtime::{DrawCmd, DrawRRect, DrawText};
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TooltipStyle {
     pub bg: Color,
     pub fg: Color,

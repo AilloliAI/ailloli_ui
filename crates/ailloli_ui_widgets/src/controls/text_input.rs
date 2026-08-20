@@ -8,7 +8,7 @@ use ailloli_ui_core::{Color, FontId, TextStyle, Theme};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Signal, View, Widget,
 };
-use ailloli_ui_runtime::input::{EventCtx, FocusPolicy, InputRole, Selection};
+use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, InputRole, Selection};
 use ailloli_ui_runtime::layout::{LayoutArtifact, LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect};
@@ -380,6 +380,10 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
         FocusPolicy::Focusable
     }
 
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::AllowOnFocusOnly
+    }
+
     fn input_role(&self) -> InputRole {
         if self.mode == TextInputMode::MultiLine {
             InputRole::TextMultiLine
@@ -492,10 +496,7 @@ mod tests {
 
     #[test]
     fn display_text_for_edit_inserts_preedit_without_mutating_text() {
-        let preedit = ImePreedit {
-            text: "é".into(),
-            selection: None,
-        };
+        let preedit = ImePreedit::new("é");
         let (display, caret) = display_text_for_edit("caf", 3, Some(&preedit));
 
         assert_eq!(display, "café");

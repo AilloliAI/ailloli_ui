@@ -7,6 +7,7 @@ use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use ailloli_ui_runtime::app::UiWake;
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle, WindowHandle,
@@ -26,7 +27,6 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_output, wl_surface};
 use wayland_client::{Connection, Proxy, QueueHandle};
 use winit::dpi::PhysicalSize;
-use winit::event_loop::EventLoopProxy;
 
 use super::{
     NativeOverlayBackend, NativeOverlayCapabilities, NativeOverlayError, NativeOverlayInputMode,
@@ -111,7 +111,7 @@ pub(crate) struct CreatedWaylandOverlay {
 
 pub(crate) fn create(
     options: &NativeOverlayOptions,
-    event_proxy: EventLoopProxy<()>,
+    event_wake: Arc<dyn UiWake>,
 ) -> Result<CreatedWaylandOverlay, NativeOverlayError> {
     let target = options.target.logical_rect.validate()?;
     let connection =
@@ -130,7 +130,7 @@ pub(crate) fn create(
         layer: None,
         scale_factor: 1,
         event_tx,
-        event_proxy,
+        event_wake,
         closed: false,
     };
 
@@ -294,14 +294,14 @@ struct OverlayDispatch {
     layer: Option<LayerSurface>,
     scale_factor: i32,
     event_tx: mpsc::Sender<WaylandOverlayEvent>,
-    event_proxy: EventLoopProxy<()>,
+    event_wake: Arc<dyn UiWake>,
     closed: bool,
 }
 
 impl OverlayDispatch {
     fn send(&self, event: WaylandOverlayEvent) {
         let _ = self.event_tx.send(event);
-        let _ = self.event_proxy.send_event(());
+        let _ = self.event_wake.wake();
     }
 }
 

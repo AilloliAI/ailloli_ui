@@ -2,11 +2,13 @@
 name = "ailloli_ui_winit"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [features]
 default = []
+test-support = []
 native-overlay = [
     "dep:libc",
     "dep:raw-window-handle",

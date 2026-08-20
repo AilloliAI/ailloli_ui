@@ -147,7 +147,7 @@ fn scenario_p_resize(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     )];
     rep.check("P", "resize frames", || {
         for size in [128u32, 256, 512, 256] {
-            renderer.resize(winit::dpi::PhysicalSize::new(size, size));
+            renderer.resize(ailloli_ui_render_wgpu::PhysicalExtent::new(size, size));
             renderer
                 .render_layered_capture_once(Color::WHITE, &passes, CaptureParams::default())
                 .map_err(|e| format!("{e:?}"))?;
@@ -226,8 +226,11 @@ fn phase32_isolated_hardening_visual_regressions() {
         )
         .expect("window"),
     );
-    let mut renderer =
-        Renderer::new_with_options(window.clone(), RendererOptions::default()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window_with_options(
+        window.clone(),
+        RendererOptions::default(),
+    )
+    .expect("renderer");
     let mut rep = ScenarioReport::default();
     scenario_n_siblings(&mut renderer, &mut rep);
     scenario_o_pool_reuse(&mut renderer, &mut rep);

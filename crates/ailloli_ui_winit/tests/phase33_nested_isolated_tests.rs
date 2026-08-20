@@ -363,8 +363,11 @@ fn phase33_nested_isolated_visual_regressions() {
         .expect("window"),
     );
 
-    let mut renderer =
-        Renderer::new_with_options(window.clone(), RendererOptions::default()).expect("renderer");
+    let mut renderer = ailloli_ui_winit::renderer_from_window_with_options(
+        window.clone(),
+        RendererOptions::default(),
+    )
+    .expect("renderer");
 
     let mut report = ScenarioReport::default();
     scenario_s_parent_blur_child_opacity(&mut renderer, &mut report);

@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -92,7 +93,7 @@ impl ApplicationHandler for EmptyWindowDebug {
         };
 
         log_window(self.log_level, "created", window.as_ref());
-        let renderer = match Renderer::new(window.clone()) {
+        let renderer = match ailloli_ui_winit::renderer_from_window(window.clone()) {
             Ok(renderer) => renderer,
             Err(err) => {
                 eprintln!("empty_window_debug: renderer failed: {err}");
@@ -193,7 +194,10 @@ impl ApplicationHandler for EmptyWindowDebug {
                     let Some(renderer) = self.renderer.as_mut() else {
                         return;
                     };
-                    match renderer.try_resize(size) {
+                    match renderer.try_resize(ailloli_ui_render_wgpu::PhysicalExtent::new(
+                        size.width,
+                        size.height,
+                    )) {
                         Ok(ResizeOutcome::Deferred(reason)) => {
                             log_message(
                                 self.log_level,
@@ -471,10 +475,11 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
-fn main() -> Result<(), winit::error::EventLoopError> {
+fn main() -> Result<(), Box<dyn Error>> {
     let log_level = parse_log_level_arg();
 
-    if let Some(path) = ailloli_ui_bench::init_from_env("artifacts/empty_window_debug.jsonl") {
+    let bench = ailloli_ui_bench::try_init_from_env("artifacts/empty_window_debug.jsonl")?;
+    if let Some(path) = bench.path() {
         log_message(
             log_level,
             LogLevel::Info,
@@ -484,5 +489,9 @@ fn main() -> Result<(), winit::error::EventLoopError> {
 
     let event_loop = new_event_loop()?;
     let mut app = EmptyWindowDebug::new(log_level);
-    run_app_on_event_loop(event_loop, &mut app, ControlFlow::Wait)
+    let run_result = run_app_on_event_loop(event_loop, &mut app, ControlFlow::Wait);
+    let finish_result = bench.finish();
+    run_result?;
+    finish_result?;
+    Ok(())
 }

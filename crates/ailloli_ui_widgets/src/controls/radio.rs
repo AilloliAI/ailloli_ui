@@ -7,7 +7,9 @@ use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
 use ailloli_ui_core::{Color, FontId, TextStyle, Theme};
 use ailloli_ui_runtime::component::{Binding, IntoView, Memo, Signal, View, Widget};
-use ailloli_ui_runtime::input::{ClickAction, EventCtx, FocusPolicy, IntoClickAction};
+use ailloli_ui_runtime::input::{
+    ActivationPolicy, ClickAction, EventCtx, FocusPolicy, IntoClickAction,
+};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawText};
@@ -503,6 +505,10 @@ impl<A: 'static> Widget<A> for RadioButtonWidget<A> {
             FocusPolicy::Focusable
         }
     }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
+    }
 }
 
 impl<A: 'static> RadioButtonWidget<A> {
@@ -626,6 +632,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RadioGroupWidget<
         } else {
             FocusPolicy::Focusable
         }
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::SuppressOnFocusOnly
     }
 }
 

@@ -77,14 +77,8 @@ fn ailloli_ui_titlebar_icons_remain_square_in_36px_bar() {
     for (w, h) in &icon_sizes {
         assert!(
             (w - h).abs() < 0.01,
-            "icon layout must stay square (was {}×{})",
-            w,
-            h
+            "icon layout must stay square (was {w}×{h})"
         );
-        assert!(
-            *h >= 13.0 && *h <= 15.0,
-            "icon side ~14px logical, got {}",
-            h
-        );
+        assert!(*h >= 13.0 && *h <= 15.0, "icon side ~14px logical, got {h}");
     }
 }

@@ -1,6 +1,6 @@
 //! Window creation: all paths go through [`window_attributes`] / [`create_window`].
 
-use ailloli_ui_core::AppIcon;
+use ailloli_ui_core::{AppIcon, Size};
 #[cfg(feature = "native-overlay")]
 use winit::dpi::LogicalPosition;
 use winit::dpi::{LogicalSize, PhysicalSize};
@@ -60,6 +60,18 @@ impl Default for WindowOptions {
             #[cfg(feature = "native-overlay")]
             native_overlay: None,
         }
+    }
+}
+
+impl WindowOptions {
+    /// Sets the initial logical client size without exposing a winit DPI type to
+    /// provider-neutral callers.
+    pub fn with_logical_inner_size(mut self, size: Size) -> Self {
+        self.inner_size = Some(LogicalSize::new(
+            size.w.max(1.0) as f64,
+            size.h.max(1.0) as f64,
+        ));
+        self
     }
 }
 

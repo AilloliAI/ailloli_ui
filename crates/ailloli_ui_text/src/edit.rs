@@ -773,10 +773,7 @@ mod tests {
         state.apply(
             &mut buffer,
             TextEditAction::ImePreedit {
-                preedit: ImePreedit {
-                    text: "e".into(),
-                    selection: Some((0, 1)),
-                },
+                preedit: ImePreedit::try_new("e", Some((0, 1))).unwrap(),
             },
         );
         state.apply(&mut buffer, TextEditAction::ImeCommit { text: "é".into() });
@@ -803,10 +800,7 @@ mod tests {
         let mut buffer = TextBuffer::from_string("abc");
         let mut state = TextEditState::new();
         let action = TextEditAction::ImePreedit {
-            preedit: ImePreedit {
-                text: "`".into(),
-                selection: Some((0, 1)),
-            },
+            preedit: ImePreedit::try_new("`", Some((0, 1))).unwrap(),
         };
 
         let first = state.apply(&mut buffer, action.clone());
@@ -821,10 +815,7 @@ mod tests {
         let mut buffer = TextBuffer::from_string("abc");
         let mut state = TextEditState::new();
         let empty = TextEditAction::ImePreedit {
-            preedit: ImePreedit {
-                text: String::new(),
-                selection: None,
-            },
+            preedit: ImePreedit::new(""),
         };
 
         let preedit = state.apply(&mut buffer, empty);

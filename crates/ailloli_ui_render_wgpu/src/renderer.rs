@@ -7,8 +7,6 @@ use ailloli_ui_core::Color;
 use ailloli_ui_runtime::scene::ClipStackSnapshot;
 use ailloli_ui_runtime::{BlendMode, DrawCmd, IsolatedEffects};
 use ailloli_ui_text::FontMetrics;
-use winit::dpi::PhysicalSize;
-use winit::window::Window;
 
 use crate::backdrop_blur::run_backdrop_blur;
 use crate::backdrop_capture::{
@@ -32,13 +30,16 @@ use crate::isolated_plan::OffscreenPassId;
 use crate::isolated_plan::PlannedIsolatedComposite;
 use crate::offscreen_pool::{OffscreenSurfacePool, PoolKey};
 use crate::passes::{apply_layer_scissor, now_ms};
-use crate::pipeline_cache::{ResizeOutcome, WgpuRenderContext, WgpuSurfaceBundle};
-use crate::render_target::RenderTarget;
+use crate::pipeline_cache::{
+    ResizeOutcome, SurfaceAttachmentState, SurfaceReattachOutcome, WgpuRenderContext,
+    WgpuSurfaceBundle,
+};
+use crate::render_target::{PhysicalExtent, RenderTarget};
 use crate::stencil::StencilTarget;
 use crate::text::{TextAtlas, TextAtlasStats};
 use wgpu::util::DeviceExt;
 
-/// GPU renderer for a single winit window (surface, pipelines, atlas, icons).
+/// GPU renderer for a host-owned surface or externally managed render target.
 ///
 /// Phase 30: a single `wgpu::RenderPass` is opened per frame, driven by a
 /// [`FrameRenderPlan`]. Per-layer stencil_ref counters are assigned by
@@ -64,8 +65,8 @@ pub struct Renderer {
 }
 
 enum RenderBackend {
-    Surface(WgpuSurfaceBundle),
-    Detached(WgpuRenderContext),
+    Surface(Box<WgpuSurfaceBundle>),
+    Detached(Box<WgpuRenderContext>),
 }
 
 impl RenderBackend {
@@ -78,39 +79,60 @@ impl RenderBackend {
 
     fn device(&self) -> &wgpu::Device {
         match self {
-            Self::Surface(bundle) => &bundle.device,
+            Self::Surface(bundle) => bundle.device(),
             Self::Detached(context) => &context.device,
         }
     }
 
     fn queue(&self) -> &wgpu::Queue {
         match self {
-            Self::Surface(bundle) => &bundle.queue,
+            Self::Surface(bundle) => bundle.queue(),
             Self::Detached(context) => &context.queue,
         }
     }
 
     fn pipelines(&self) -> &crate::pipeline_cache::PipelineCache {
         match self {
-            Self::Surface(bundle) => &bundle.pipelines,
+            Self::Surface(bundle) => bundle.pipelines(),
             Self::Detached(context) => &context.pipelines,
         }
     }
 
-    fn config(&self) -> &wgpu::SurfaceConfiguration {
+    fn extent(&self) -> PhysicalExtent {
         match self {
-            Self::Surface(bundle) => &bundle.config,
-            Self::Detached(context) => &context.config,
+            Self::Surface(bundle) => bundle.extent(),
+            Self::Detached(context) => {
+                PhysicalExtent::new(context.config.width, context.config.height)
+            }
+        }
+    }
+
+    fn format(&self) -> wgpu::TextureFormat {
+        match self {
+            Self::Surface(bundle) => bundle.format(),
+            Self::Detached(context) => context.config.format,
         }
     }
 
     fn try_resize(
         &mut self,
-        new_size: winit::dpi::PhysicalSize<u32>,
+        new_size: PhysicalExtent,
     ) -> Result<ResizeOutcome, crate::error::RendererError> {
         match self {
             Self::Surface(surface) => Ok(surface.try_resize(new_size)?),
             Self::Detached(context) => Ok(context.try_resize(new_size)),
+        }
+    }
+
+    fn try_reconfigure_surface(
+        &mut self,
+        new_size: PhysicalExtent,
+    ) -> Result<ResizeOutcome, crate::error::RendererError> {
+        match self {
+            Self::Surface(surface) => surface.try_reconfigure(new_size),
+            Self::Detached(_) => Err(crate::error::RendererError::RenderTargetUnavailable(
+                "surface reconfiguration requires a surface-backed renderer",
+            )),
         }
     }
 
@@ -161,8 +183,22 @@ impl RenderBackend {
         }
     }
 
-    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    fn resize(&mut self, new_size: PhysicalExtent) {
         let _ = self.try_resize(new_size);
+    }
+
+    fn attachment_state(&self) -> SurfaceAttachmentState {
+        match self {
+            Self::Surface(bundle) => bundle.attachment_state(),
+            Self::Detached(_) => SurfaceAttachmentState::Detached,
+        }
+    }
+
+    fn surface_config(&self) -> Option<&wgpu::SurfaceConfiguration> {
+        match self {
+            Self::Surface(bundle) => bundle.config(),
+            Self::Detached(context) => Some(&context.config),
+        }
     }
 
     fn require_surface_mut(
@@ -384,30 +420,13 @@ fn record_text_atlas_frame(stats: TextAtlasStats) {
 }
 
 impl Renderer {
-    /// Creates a renderer that co-owns the window via `Arc<Window>`.
+    /// Creates a renderer from an owned raw-window-handle provider.
     ///
-    /// The wgpu `Surface` holds a strong reference so it never outlives the window,
-    /// avoiding intermittent Wayland use-after-free segfaults.
-    pub fn new(window: Arc<Window>) -> Result<Self, RendererError> {
-        Self::new_with_options(window, RendererOptions::default())
-    }
-
-    pub fn new_with_options(
-        window: Arc<Window>,
-        options: RendererOptions,
-    ) -> Result<Self, RendererError> {
-        let gpu = WgpuSurfaceBundle::new_with_transparency_and_config(
-            window,
-            options.transparent,
-            options.bootstrap_config(),
-        )?;
-
-        Self::new_from_backend(RenderBackend::Surface(gpu), options)
-    }
-
+    /// Presentation adapters are responsible for converting their native size
+    /// to [`PhysicalExtent`] and for supplying an optional pre-present hook.
     pub fn new_with_surface_target<T>(
         target: Arc<T>,
-        size: PhysicalSize<u32>,
+        size: PhysicalExtent,
         options: RendererOptions,
         pre_present: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, RendererError>
@@ -421,7 +440,7 @@ impl Renderer {
             options.bootstrap_config(),
             pre_present,
         )?;
-        Self::new_from_backend(RenderBackend::Surface(gpu), options)
+        Self::new_from_backend(RenderBackend::Surface(Box::new(gpu)), options)
     }
 
     fn new_from_backend(
@@ -435,8 +454,8 @@ impl Renderer {
         );
         let text_metrics = FontMetrics::new();
 
-        let stencil_target =
-            StencilTarget::new(gpu.device(), gpu.config().width, gpu.config().height);
+        let extent = gpu.extent();
+        let stencil_target = StencilTarget::new(gpu.device(), extent.width, extent.height);
 
         Ok(Self {
             gpu,
@@ -456,7 +475,7 @@ impl Renderer {
     }
 
     pub fn new_with_render_context(context: WgpuRenderContext, options: RendererOptions) -> Self {
-        Self::new_from_backend(RenderBackend::Detached(context), options)
+        Self::new_from_backend(RenderBackend::Detached(Box::new(context)), options)
             .unwrap_or_else(|_| unreachable!("WgpuRenderContext constructor is non-fallible"))
     }
 
@@ -465,26 +484,6 @@ impl Renderer {
         options: RendererOptions,
     ) -> Self {
         Self::new_with_render_context(context, options)
-    }
-
-    pub fn new_with_transparency(
-        window: Arc<Window>,
-        transparent: bool,
-    ) -> Result<Self, RendererError> {
-        Self::new_with_options(
-            window,
-            RendererOptions {
-                transparent,
-                ..RendererOptions::default()
-            },
-        )
-    }
-
-    pub fn new_with_bootstrap(
-        window: Arc<Window>,
-        options: RendererOptions,
-    ) -> Result<Self, RendererError> {
-        Self::new_with_options(window, options)
     }
 
     pub fn isolated_budget_config(&self) -> IsolatedBudgetConfig {
@@ -503,19 +502,17 @@ impl Renderer {
         self.text_face_blobs = blobs;
     }
 
-    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    pub fn resize(&mut self, new_size: PhysicalExtent) {
         self.gpu.resize(new_size);
         if let Some(st) = self.stencil_target.as_mut() {
             st.recreate(self.gpu.device(), new_size.width, new_size.height);
         }
     }
 
-    pub fn try_resize(
-        &mut self,
-        new_size: PhysicalSize<u32>,
-    ) -> Result<ResizeOutcome, RendererError> {
+    pub fn try_resize(&mut self, new_size: PhysicalExtent) -> Result<ResizeOutcome, RendererError> {
+        let previous_size = self.gpu.extent();
         let out = self.gpu.try_resize(new_size);
-        if matches!(out, Ok(ResizeOutcome::Applied)) {
+        if matches!(out, Ok(ResizeOutcome::Applied)) && previous_size != new_size {
             if let Some(st) = self.stencil_target.as_mut() {
                 st.recreate(self.gpu.device(), new_size.width, new_size.height);
             }
@@ -523,8 +520,105 @@ impl Renderer {
         out
     }
 
+    /// Forces `Surface::configure`, including when the requested extent equals
+    /// the current extent.
+    ///
+    /// This is the recovery entry point for `SurfaceError::Lost` and
+    /// `SurfaceError::Outdated`. A detached render context has no presentation
+    /// surface and therefore returns [`RendererError::RenderTargetUnavailable`].
+    pub fn try_reconfigure_surface(
+        &mut self,
+        new_size: PhysicalExtent,
+    ) -> Result<ResizeOutcome, RendererError> {
+        let previous_size = self.gpu.extent();
+        let out = self.gpu.try_reconfigure_surface(new_size);
+        if matches!(out, Ok(ResizeOutcome::Applied)) && previous_size != new_size {
+            if let Some(st) = self.stencil_target.as_mut() {
+                st.recreate(self.gpu.device(), new_size.width, new_size.height);
+            }
+        }
+        out
+    }
+
+    /// Drops the native surface while retaining the GPU context and all
+    /// device-bound caches for a future presentation reattachment.
+    ///
+    /// Returns `true` when an attachment was present. Detached render-context
+    /// mode has no owned native surface and returns `false`.
+    pub fn detach_surface(&mut self) -> bool {
+        self.frame_leases.clear();
+        match &mut self.gpu {
+            RenderBackend::Surface(bundle) => bundle.detach_surface(),
+            RenderBackend::Detached(_) => false,
+        }
+    }
+
+    /// Reattaches a host target through its raw window/display handle traits.
+    ///
+    /// The current instance, adapter, device, queue, pipelines, atlases, and
+    /// caches are reused when compatible. Otherwise the surface bootstrap is
+    /// repeated and every device-bound renderer resource is rebuilt safely.
+    pub fn reattach_surface_target<T>(
+        &mut self,
+        target: Arc<T>,
+        size: PhysicalExtent,
+        pre_present: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<SurfaceReattachOutcome, RendererError>
+    where
+        T: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle + Send + Sync + 'static,
+    {
+        self.frame_leases.clear();
+        let RenderBackend::Surface(bundle) = &mut self.gpu else {
+            return Err(RendererError::RenderTargetUnavailable(
+                "a detached render context cannot own a presentation surface",
+            ));
+        };
+        let outcome = bundle.reattach_surface_target(target, size, pre_present)?;
+        if matches!(outcome, SurfaceReattachOutcome::RebuiltGpuContext { .. }) {
+            self.rebuild_device_bound_resources();
+        } else if let Some(stencil) = self.stencil_target.as_mut() {
+            stencil.recreate(self.gpu.device(), size.width.max(1), size.height.max(1));
+        }
+        Ok(outcome)
+    }
+
+    fn rebuild_device_bound_resources(&mut self) {
+        self.frame_leases.clear();
+        self.icon_cache = IconCache::new();
+        self.text_atlas = TextAtlas::new(
+            self.gpu.device(),
+            self.gpu.queue(),
+            &self.gpu.pipelines().texture_bind_group_layout,
+        );
+        self.offscreen_pool = OffscreenSurfacePool::default();
+        self.effect_pipelines = None;
+        self.composite_blend_pipelines = None;
+        self.isolated_metrics = IsolatedFrameMetrics::default();
+        let extent = self.gpu.extent();
+        self.stencil_target = Some(StencilTarget::new(
+            self.gpu.device(),
+            extent.width.max(1),
+            extent.height.max(1),
+        ));
+    }
+
+    pub fn surface_attachment_state(&self) -> SurfaceAttachmentState {
+        self.gpu.attachment_state()
+    }
+
+    /// Returns the active presentation configuration, or `None` while the
+    /// native surface is detached.
+    pub fn try_surface_config(&self) -> Option<&wgpu::SurfaceConfiguration> {
+        self.gpu.surface_config()
+    }
+
+    /// Returns the active presentation configuration.
+    ///
+    /// Hosts retaining a renderer across suspension should use
+    /// [`Self::try_surface_config`] while the surface may be detached.
     pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
-        self.gpu.config()
+        self.try_surface_config()
+            .expect("surface_config called while the presentation surface is detached")
     }
 
     pub fn surface_capabilities(&self) -> wgpu::SurfaceCapabilities {
@@ -592,10 +686,15 @@ impl Renderer {
             return Ok(());
         }
 
+        let frame_start = std::time::Instant::now();
         let frame = self.gpu.require_surface_mut()?.acquire_frame()?;
         self.render_layered_from_frame(clear, layers, scale, &frame)?;
         self.gpu.pre_present_notify();
         frame.present();
+        ailloli_ui_bench::record(ailloli_ui_bench::Event::RenderFrame {
+            ts_ms: now_ms(),
+            dur_us: frame_start.elapsed().as_micros(),
+        });
         Ok(())
     }
 
@@ -631,7 +730,6 @@ impl Renderer {
         scale: Scale,
         frame: &crate::render_target::RenderFrame,
     ) -> Result<(), RendererError> {
-        let frame_start = std::time::Instant::now();
         let size = frame.size;
         let source_texture = frame
             .texture()
@@ -659,10 +757,6 @@ impl Renderer {
         );
 
         self.gpu.queue().submit(Some(encoder.finish()));
-        ailloli_ui_bench::record(ailloli_ui_bench::Event::RenderFrame {
-            ts_ms: now_ms(),
-            dur_us: frame_start.elapsed().as_micros(),
-        });
         Ok(())
     }
 
@@ -699,30 +793,10 @@ impl Renderer {
             ));
         }
 
-        let surface = self.gpu.require_surface_mut()?;
-        let acquire_start = std::time::Instant::now();
-        let frame = match surface.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(err) => {
-                ailloli_ui_bench::metric(
-                    "get_current_texture_us",
-                    acquire_start.elapsed().as_micros() as f64,
-                );
-                ailloli_ui_bench::record(ailloli_ui_bench::Event::GetCurrentTextureErr {
-                    ts_ms: now_ms(),
-                    err: format!("{err:?}"),
-                });
-                return Err(RendererError::from_surface_error(err));
-            }
-        };
-        ailloli_ui_bench::metric(
-            "get_current_texture_us",
-            acquire_start.elapsed().as_micros() as f64,
-        );
-
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let frame = self.gpu.require_surface_mut()?.acquire_frame()?;
+        let frame_texture = frame
+            .texture()
+            .ok_or(RendererError::FrameTextureUnavailable)?;
 
         let mut encoder =
             self.gpu
@@ -731,11 +805,12 @@ impl Renderer {
                     label: Some("encoder (capture)"),
                 });
 
-        let w = self.gpu.config().width as f32;
-        let h = self.gpu.config().height as f32;
+        let extent = self.gpu.extent();
+        let w = extent.width as f32;
+        let h = extent.height as f32;
         self.record_single_pass(
-            &view,
-            &frame.texture,
+            &frame.view,
+            frame_texture,
             &mut encoder,
             w,
             h,
@@ -746,7 +821,7 @@ impl Renderer {
 
         // Readback from swapchain texture.
         let (staging, width, height, padded_bpr, unpadded_bpr, surface_format) =
-            self.enqueue_surface_texture_readback(&mut encoder, &frame.texture)?;
+            self.enqueue_surface_texture_readback(&mut encoder, frame_texture)?;
 
         self.gpu.queue().submit(Some(encoder.finish()));
         self.gpu.pre_present_notify();
@@ -783,13 +858,14 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         texture: &wgpu::Texture,
     ) -> Result<(wgpu::Buffer, u32, u32, u32, u32, wgpu::TextureFormat), RendererError> {
-        let width = self.gpu.config().width.max(1);
-        let height = self.gpu.config().height.max(1);
+        let extent = self.gpu.extent();
+        let width = extent.width.max(1);
+        let height = extent.height.max(1);
 
         let unpadded_bpr = width * 4;
         let padded_bpr = bytes_per_row_padded_256(unpadded_bpr);
 
-        let format = self.gpu.config().format;
+        let format = self.gpu.format();
         match format {
             wgpu::TextureFormat::Bgra8UnormSrgb
             | wgpu::TextureFormat::Bgra8Unorm
@@ -872,7 +948,7 @@ impl Renderer {
             bgra_to_rgba_in_place(&mut tight);
         }
 
-        // (winit surfaces are top-left origin in pixel coords; the copy preserves that order.
+        // Host surfaces use top-left origin in pixel coordinates here; the copy preserves that order.
         // If we ever need vertical flip for specific platforms, do it in tooling/tests.)
 
         Ok(tight)
@@ -1120,7 +1196,7 @@ impl Renderer {
         };
 
         let composite_table = if has_backdrop {
-            let format = self.gpu.config().format;
+            let format = self.gpu.format();
             if self.effect_pipelines.is_none() {
                 self.effect_pipelines = Some(EffectPipelines::new(self.gpu.device(), format));
             }
@@ -1322,7 +1398,7 @@ impl Renderer {
             return;
         }
         let frame_has_stencil = plan.needs_stencil_attachment;
-        let format = self.gpu.config().format;
+        let format = self.gpu.format();
         let mut use_clear = clear_load;
         let mut i = layer_range.start;
 
@@ -1533,7 +1609,7 @@ impl Renderer {
 
         self.isolated_metrics = IsolatedFrameMetrics::default();
 
-        let format = self.gpu.config().format;
+        let format = self.gpu.format();
         if self.effect_pipelines.is_none() {
             self.effect_pipelines = Some(EffectPipelines::new(self.gpu.device(), format));
         }

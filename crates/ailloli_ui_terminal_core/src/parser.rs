@@ -200,7 +200,7 @@ impl vte::Perform for TerminalPerformer<'_> {
             (b"", b'8') => self.state.restore_cursor(),
             (b"", b'=') => self.state.set_application_keypad_mode(true),
             (b"", b'>') => self.state.set_application_keypad_mode(false),
-            _ => self.unsupported(format!("ESC {:?} 0x{byte:02x}", intermediates)),
+            _ => self.unsupported(format!("ESC {intermediates:?} 0x{byte:02x}")),
         }
     }
 }
@@ -369,7 +369,7 @@ impl TerminalPerformer<'_> {
     fn dispatch_sgr(&mut self, params: &vte::Params) {
         let grouped = grouped_params(params);
         if grouped.iter().any(|param| param.len() > 1) {
-            self.unsupported(format!("CSI {:?} m", grouped));
+            self.unsupported(format!("CSI {grouped:?} m"));
             return;
         }
 
@@ -406,7 +406,7 @@ impl TerminalPerformer<'_> {
                 49 => style.bg = TerminalColor::DefaultBg,
                 38 | 48 => {
                     let Some((color, consumed)) = parse_extended_color(&codes[idx + 1..]) else {
-                        self.unsupported(format!("CSI {:?} m", codes));
+                        self.unsupported(format!("CSI {codes:?} m"));
                         return;
                     };
                     if codes[idx] == 38 {

@@ -66,7 +66,7 @@ fn make_renderer(
     window: &Arc<winit::window::Window>,
     budget: Option<IsolatedBudgetConfig>,
 ) -> Renderer {
-    Renderer::new_with_options(
+    ailloli_ui_winit::renderer_from_window_with_options(
         window.clone(),
         RendererOptions {
             transparent: false,

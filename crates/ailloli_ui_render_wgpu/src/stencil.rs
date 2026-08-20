@@ -1,12 +1,12 @@
 //! Shared depth/stencil texture for [`crate::clip::ClipRenderMode::Stencil`] clips.
 
-use winit::dpi::PhysicalSize;
+use crate::render_target::PhysicalExtent;
 
 /// GPU depth/stencil attachment sized to the window.
 pub struct StencilTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
-    pub size: PhysicalSize<u32>,
+    pub size: PhysicalExtent,
     pub format: wgpu::TextureFormat,
 }
 
@@ -34,7 +34,7 @@ impl StencilTarget {
         Self {
             texture,
             view,
-            size: PhysicalSize::new(width, height),
+            size: PhysicalExtent::new(width, height),
             format: Self::FORMAT,
         }
     }

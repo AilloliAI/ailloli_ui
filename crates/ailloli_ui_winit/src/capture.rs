@@ -6,6 +6,7 @@ use ailloli_ui_render_wgpu::capture::encode_png_rgba;
 use ailloli_ui_render_wgpu::{
     CaptureParams, CapturedFrame, CapturedFrameFormat, LayerPass, Renderer, RendererError,
 };
+use ailloli_ui_runtime::app::{UiWake, UiWakeError};
 use ailloli_ui_runtime::DrawCmd;
 
 /// Result of a single-shot frame capture.
@@ -207,6 +208,9 @@ struct CaptureState {
     issued_count: usize,
     exit_after_all_captures: bool,
     completion_listeners: Vec<CompletionListener>,
+    wake: Option<Arc<dyn UiWake>>,
+    wake_pending: bool,
+    wake_error: Option<UiWakeError>,
 }
 
 impl std::fmt::Debug for CaptureState {
@@ -218,19 +222,29 @@ impl std::fmt::Debug for CaptureState {
             .field("issued_count", &self.issued_count)
             .field("exit_after_all_captures", &self.exit_after_all_captures)
             .field("completion_listeners", &self.completion_listeners.len())
+            .field("has_wake", &self.wake.is_some())
+            .field("wake_pending", &self.wake_pending)
+            .field("wake_error", &self.wake_error)
             .finish()
     }
 }
 
-impl CaptureState {
-    fn notify_listeners(&self, id: CaptureRequestId, result: &Result<CaptureResult, CaptureError>) {
-        for listener in &self.completion_listeners {
-            listener(id, result);
-        }
+fn notify_listeners(
+    listeners: &[CompletionListener],
+    id: CaptureRequestId,
+    result: &Result<CaptureResult, CaptureError>,
+) {
+    for listener in listeners {
+        listener(id, result);
     }
 }
 
 /// Thread-safe queue of window/element capture requests for [`UiApp`](crate::ui_app::UiApp).
+///
+/// When attached through [`WinitHost`](crate::host::WinitHost), a request made
+/// while the native event loop is waiting wakes the host and schedules a
+/// redraw. Requests made before the event-loop proxy exists are retained and
+/// wake it once the proxy is installed.
 #[derive(Clone, Debug, Default)]
 pub struct CaptureHandle {
     inner: Arc<Mutex<CaptureState>>,
@@ -270,12 +284,80 @@ impl CaptureHandle {
     }
 
     pub fn request(&self, target: CaptureTarget, params: CaptureParams) -> CaptureRequestId {
-        let mut state = self.inner.lock().expect("capture state lock poisoned");
-        state.next_id = state.next_id.saturating_add(1);
-        let id = state.next_id;
-        state.pending.push(CaptureRequest { id, target, params });
-        state.issued_count = state.issued_count.saturating_add(1);
+        let (id, wake) = {
+            let mut state = self.inner.lock().expect("capture state lock poisoned");
+            state.next_id = state.next_id.saturating_add(1);
+            let id = state.next_id;
+            state.pending.push(CaptureRequest { id, target, params });
+            state.issued_count = state.issued_count.saturating_add(1);
+            let wake = if state.wake_pending {
+                None
+            } else {
+                state.wake_pending = true;
+                state.wake.clone()
+            };
+            (id, wake)
+        };
+        self.invoke_wake(wake);
         id
+    }
+
+    /// Takes the first non-fatal error raised while waking the native host.
+    ///
+    /// Capture requests remain queued when waking fails. A later host
+    /// attachment can therefore service the request without the caller
+    /// retrying it and accidentally issuing a second capture.
+    pub fn take_wake_error(&self) -> Option<UiWakeError> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|mut state| state.wake_error.take())
+    }
+
+    pub(crate) fn wake_error(&self) -> Option<UiWakeError> {
+        self.inner.lock().ok().and_then(|state| state.wake_error)
+    }
+
+    /// Installs or replaces the UI-host wake callback.
+    ///
+    /// Requests queued before the host exists are late-bound: installing the
+    /// callback immediately wakes the host once. The callback is always
+    /// invoked after releasing the capture-state mutex.
+    pub(crate) fn install_wake(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
+        let should_wake = {
+            let mut state = self.inner.lock().expect("capture state lock poisoned");
+            state.wake = Some(wake.clone());
+            state.wake_pending
+        };
+        if should_wake {
+            self.invoke_wake_result(Some(wake))?;
+        }
+        Ok(())
+    }
+
+    /// Rearms capture waking at the beginning of a host callback.
+    pub(crate) fn begin_host_service(&self) {
+        if let Ok(mut state) = self.inner.lock() {
+            state.wake_pending = false;
+        }
+    }
+
+    fn invoke_wake(&self, wake: Option<Arc<dyn UiWake>>) {
+        let _ = self.invoke_wake_result(wake);
+    }
+
+    fn invoke_wake_result(&self, wake: Option<Arc<dyn UiWake>>) -> Result<(), UiWakeError> {
+        let Some(wake) = wake else {
+            return Ok(());
+        };
+        let result = wake.wake();
+        if let Err(error) = result {
+            if let Ok(mut state) = self.inner.lock() {
+                state.wake_error.get_or_insert(error);
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn has_pending(&self) -> bool {
@@ -348,20 +430,30 @@ impl CaptureHandle {
     }
 
     pub(crate) fn complete(&self, result: CaptureResult) {
-        if let Ok(mut state) = self.inner.lock() {
+        let notification = if let Ok(mut state) = self.inner.lock() {
             let id = result.request.id;
             let outcome = Ok(result);
             state.completed.push((id, outcome.clone()));
-            state.notify_listeners(id, &outcome);
+            Some((state.completion_listeners.clone(), id, outcome))
+        } else {
+            None
+        };
+        if let Some((listeners, id, outcome)) = notification {
+            notify_listeners(&listeners, id, &outcome);
         }
     }
 
     pub(crate) fn fail(&self, request: CaptureRequest, error: CaptureError) {
-        if let Ok(mut state) = self.inner.lock() {
+        let notification = if let Ok(mut state) = self.inner.lock() {
             let id = request.id;
             let outcome = Err(error);
             state.completed.push((id, outcome.clone()));
-            state.notify_listeners(id, &outcome);
+            Some((state.completion_listeners.clone(), id, outcome))
+        } else {
+            None
+        };
+        if let Some((listeners, id, outcome)) = notification {
+            notify_listeners(&listeners, id, &outcome);
         }
     }
 
@@ -372,25 +464,30 @@ impl CaptureHandle {
         let known = known_window_ids
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
-        let Ok(mut state) = self.inner.lock() else {
-            return;
-        };
-        let mut i = 0;
-        let mut failed = Vec::new();
-        while i < state.pending.len() {
-            let window_id = state.pending[i].target.window_id();
-            if known.contains(window_id) {
-                i += 1;
-                continue;
+        let notification = {
+            let Ok(mut state) = self.inner.lock() else {
+                return;
+            };
+            let mut i = 0;
+            let mut failed = Vec::new();
+            while i < state.pending.len() {
+                let window_id = state.pending[i].target.window_id();
+                if known.contains(window_id) {
+                    i += 1;
+                    continue;
+                }
+                let request = state.pending.remove(i);
+                let window_id = request.target.window_id().to_string();
+                let id = request.id;
+                failed.push((id, Err(CaptureError::WindowNotFound { window_id })));
             }
-            let request = state.pending.remove(i);
-            let window_id = request.target.window_id().to_string();
-            let id = request.id;
-            let outcome = Err(CaptureError::WindowNotFound { window_id });
-            failed.push((id, outcome.clone()));
-            state.notify_listeners(id, &outcome);
+            let listeners = state.completion_listeners.clone();
+            state.completed.extend(failed.iter().cloned());
+            (listeners, failed)
+        };
+        for (id, outcome) in notification.1 {
+            notify_listeners(&notification.0, id, &outcome);
         }
-        state.completed.extend(failed);
     }
 }
 
@@ -456,6 +553,41 @@ pub fn strip_png_if_disabled(mut frame: CapturedFrame, encode_png: bool) -> Capt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Weak;
+
+    #[derive(Default)]
+    struct CountingWake(AtomicUsize);
+
+    impl UiWake for CountingWake {
+        fn wake(&self) -> Result<(), UiWakeError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    struct FailingWake;
+
+    impl UiWake for FailingWake {
+        fn wake(&self) -> Result<(), UiWakeError> {
+            Err(UiWakeError::TargetClosed)
+        }
+    }
+
+    struct ReentrantWake {
+        state: Weak<Mutex<CaptureState>>,
+        calls: AtomicUsize,
+    }
+
+    impl UiWake for ReentrantWake {
+        fn wake(&self) -> Result<(), UiWakeError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let inner = self.state.upgrade().expect("capture handle still alive");
+            let handle = CaptureHandle { inner };
+            assert!(handle.has_pending());
+            Ok(())
+        }
+    }
 
     fn test_frame(width: u32, height: u32) -> CapturedFrame {
         let mut rgba = Vec::new();
@@ -497,6 +629,70 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0], (id_ok, true));
         assert_eq!(events[1], (id_fail, false));
+    }
+
+    #[test]
+    fn capture_listener_can_enqueue_the_next_capture_without_deadlock() {
+        let handle = CaptureHandle::new();
+        let callback_handle = handle.clone();
+        handle.on_complete(Arc::new(move |_id, result| {
+            if result.is_ok() {
+                callback_handle.request_window("second");
+            }
+        }));
+
+        handle.request_window("first");
+        let request = handle.take_pending_for_window("first").pop().unwrap();
+        handle.complete(CaptureResult {
+            request,
+            frame: test_frame(2, 2),
+            bounds_px: None,
+        });
+
+        assert!(handle.has_pending_for_window("second"));
+    }
+
+    #[test]
+    fn capture_wake_is_late_bound_and_rearmed_after_idle_service() {
+        let handle = CaptureHandle::new();
+        handle.request_window("before-host");
+
+        let wake = Arc::new(CountingWake::default());
+        handle.install_wake(wake.clone()).unwrap();
+        assert_eq!(wake.0.load(Ordering::Relaxed), 1);
+
+        handle.begin_host_service();
+        handle.request_window("after-idle");
+        assert_eq!(wake.0.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn capture_wake_runs_without_holding_the_capture_mutex() {
+        let handle = CaptureHandle::new();
+        handle.request_window("before-host");
+        let wake = Arc::new(ReentrantWake {
+            state: Arc::downgrade(&handle.inner),
+            calls: AtomicUsize::new(0),
+        });
+        handle.install_wake(wake.clone()).unwrap();
+
+        handle.begin_host_service();
+        handle.request_window("after-idle");
+
+        assert_eq!(wake.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn capture_wake_failure_is_non_fatal_and_observable() {
+        let handle = CaptureHandle::new();
+        handle.install_wake(Arc::new(FailingWake)).unwrap();
+
+        let id = handle.request_window("main");
+
+        assert!(handle.has_pending_for_window("main"));
+        assert_eq!(handle.take_wake_error(), Some(UiWakeError::TargetClosed));
+        assert_eq!(handle.take_wake_error(), None);
+        assert_eq!(id, 1);
     }
 
     #[test]

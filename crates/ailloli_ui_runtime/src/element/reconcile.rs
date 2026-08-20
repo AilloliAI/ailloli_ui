@@ -70,7 +70,10 @@ fn remove_subtree<A>(tree: &mut ElementTree<A>, id: ElementId, runtime: &Runtime
         remove_subtree(tree, c, runtime);
     }
 
-    runtime.states().borrow_mut().remove_element(id);
+    runtime
+        .states()
+        .borrow_mut()
+        .remove_element_scoped(runtime.element_tree_id(), id);
     let _ = tree.remove_element(id);
 }
 
