@@ -131,6 +131,37 @@ The façade exposes only generic framework capabilities:
 | `devtools` | Runtime inspection core and UI; disabled by default. |
 | `devtools_terminal` | Terminal snapshots in DevTools. |
 
+### Cargo feature migration
+
+Phase 126 removes the former kebab-case first-party feature aliases. Update
+consumer manifests and `--features` arguments by replacing the complete legacy
+name with its snake_case counterpart:
+
+| Legacy | Current | Legacy | Current |
+|---|---|---|---|
+| `desktop-calibration` | `desktop_calibration` | `devtools-terminal` | `devtools_terminal` |
+| `files-local` | `files_local` | `full-local` | `full_local` |
+| `linux-portal-input` | `linux_portal_input` | `mock-transport` | `mock_transport` |
+| `native-overlay` | `native_overlay` | `openssh-sftp` | `openssh_sftp` |
+| `remote-openssh-sftp` | `remote_openssh_sftp` | `remote-sftp` | `remote_sftp` |
+| `remote-sftp-vendored-openssl` | `remote_sftp_vendored_openssl` | `smoke-ui` | `smoke_ui` |
+| `ssh-exec` | `ssh_exec` | `terminal-portable` | `terminal_portable` |
+| `terminal-pty` | `terminal_pty` | `terminal-pty-portable` | `terminal_pty_portable` |
+| `test-support` | `test_support` | `tree-sitter` | `tree_sitter` |
+| `tree-sitter-bash` | `tree_sitter_bash` | `tree-sitter-c` | `tree_sitter_c` |
+| `tree-sitter-css` | `tree_sitter_css` | `tree-sitter-go` | `tree_sitter_go` |
+| `tree-sitter-html` | `tree_sitter_html` | `tree-sitter-java` | `tree_sitter_java` |
+| `tree-sitter-javascript` | `tree_sitter_javascript` | `tree-sitter-json` | `tree_sitter_json` |
+| `tree-sitter-markdown` | `tree_sitter_markdown` | `tree-sitter-php` | `tree_sitter_php` |
+| `tree-sitter-python` | `tree_sitter_python` | `tree-sitter-ruby` | `tree_sitter_ruby` |
+| `tree-sitter-swift` | `tree_sitter_swift` | `tree-sitter-toml` | `tree_sitter_toml` |
+| `tree-sitter-typescript` | `tree_sitter_typescript` | `tree-sitter-yaml` | `tree_sitter_yaml` |
+| `vendored-openssl` | `vendored_openssl` | `wgpu-target` | `wgpu_target` |
+
+Upstream Cargo package names such as `tree-sitter-*`, `raw-window-handle`, and
+`openssh-sftp-client` are unchanged. The human-facing CLI binaries also remain
+`ailloli-ui-bench` and `cargo-ailloli-ui`.
+
 ## Development
 
 Run commands from this directory:
