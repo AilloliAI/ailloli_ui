@@ -15,7 +15,7 @@ use ailloli_ui_runtime::input::{
     absolute_paint_bounds, dispatch_event_to_target, EventEnvelope, EventId, EventMeta,
     EventTimestamp, InputRouter,
 };
-use ailloli_ui_runtime::popup::{PopupId, HEADLESS_POPUP_WINDOW_ID};
+use ailloli_ui_runtime::popup::{PopupBackendCapabilities, PopupId, HEADLESS_POPUP_WINDOW_ID};
 use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
 use ailloli_ui_runtime::{DrawCmd, Scene};
 use ailloli_ui_text::TextSystem;
@@ -1291,9 +1291,11 @@ fn mount_open_popup<A: 'static>(app: &Runtime<A>) -> (PopupOverlayMounts<A>, Tex
     let mut mounts = PopupOverlayMounts::new(app.runtime.clone());
     assert_eq!(
         mounts
-            .sync(
+            .resolve_and_sync(
                 &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
                 PresentationGeneration::INITIAL,
+                ailloli_ui_core::Rect::new(0.0, 0.0, 1_024.0, 768.0),
+                PopupBackendCapabilities::overlay_only(),
             )
             .mounted(),
         1
