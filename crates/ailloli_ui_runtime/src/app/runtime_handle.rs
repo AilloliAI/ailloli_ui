@@ -2,8 +2,8 @@ use super::external_url::{ExternalUrl, ExternalUrlOpener, MemoryExternalUrlOpene
 use super::state_store::StateStore;
 use crate::app::PresentationGeneration;
 use crate::popup::{
-    ElementTreeId, PopupDismissReason, PopupId, PopupIntent, PopupPlacementSpec, PopupPortal,
-    PopupPortalError, PopupPortalOutcome, PopupRequest,
+    ElementTreeId, PopupContent, PopupDismissReason, PopupId, PopupIntent, PopupPlacementSpec,
+    PopupPortal, PopupPortalError, PopupPortalOutcome, PopupRequest,
 };
 use ailloli_ui_core::geometry::{Point, Rect};
 use ailloli_ui_core::ids::{ElementId, LogicalWindowId};
@@ -404,6 +404,22 @@ impl<A> RuntimeHandle<A> {
 
     pub fn register_popup(&self, request: PopupRequest<A>) -> Result<(), PopupPortalError> {
         let result = self.popup_portal().borrow_mut().register(request);
+        if let Err(error) = &result {
+            self.record_popup_error(error.clone());
+        }
+        result
+    }
+
+    /// Refreshes retained popup content for an already registered owner.
+    pub fn set_popup_content(
+        &self,
+        popup_id: PopupId,
+        content: PopupContent<A>,
+    ) -> Result<(), PopupPortalError> {
+        let result = self
+            .popup_portal()
+            .borrow_mut()
+            .set_content(popup_id, content);
         if let Err(error) = &result {
             self.record_popup_error(error.clone());
         }

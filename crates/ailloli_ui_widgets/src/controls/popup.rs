@@ -149,6 +149,9 @@ impl<A: 'static> PopupPortalBridge<A> {
             .map(|request| request.owner().clone());
 
         if current_owner.as_ref() == Some(&owner) {
+            let _ = self
+                .runtime
+                .set_popup_content(popup_id, self.content.clone());
             return false;
         }
 

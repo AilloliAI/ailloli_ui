@@ -1078,6 +1078,24 @@ impl<A> PopupPortal<A> {
             .map(|request| request.content.build())
     }
 
+    /// Replaces the declarative content factory without changing visibility,
+    /// z-order, ownership, or backend-resolved geometry.
+    ///
+    /// Component reconciliation uses this when a stable popup owner rebuilds
+    /// with new options, bindings, callbacks, or disabled state.
+    pub fn set_content(
+        &mut self,
+        popup_id: PopupId,
+        content: PopupContent<A>,
+    ) -> Result<(), PopupPortalError> {
+        let entry = self
+            .entries
+            .get_mut(&popup_id)
+            .ok_or(PopupPortalError::UnknownPopup)?;
+        entry.request.content = content;
+        Ok(())
+    }
+
     pub fn bounds(&self, popup_id: PopupId) -> Option<Rect> {
         self.entries.get(&popup_id).and_then(|entry| entry.bounds)
     }

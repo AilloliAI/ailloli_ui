@@ -29,7 +29,7 @@ fn content_factory_and_request_metadata_are_retained() {
     let request = request(5, popup_owner.clone())
         .with_anchor(Rect::new(10.0, 20.0, 30.0, 40.0))
         .with_semantics(semantics);
-    let mut portal = PopupPortal::new();
+    let mut portal: PopupPortal<()> = PopupPortal::new();
     portal.register(request).unwrap();
 
     let stored = portal.request(PopupId::new(5)).unwrap();
@@ -44,6 +44,48 @@ fn content_factory_and_request_metadata_are_retained() {
         portal.build_content(PopupId::new(5)).unwrap().kind,
         ViewKind::Empty
     ));
+}
+
+#[test]
+fn replacing_content_preserves_open_geometry_and_uses_the_new_factory() {
+    let popup_id = PopupId::new(6);
+    let mut portal: PopupPortal<()> = PopupPortal::new();
+    portal
+        .register(PopupRequest::new(
+            popup_id,
+            owner("main", 3, 7, 12),
+            PopupContent::new(|| {
+                let mut view = View::empty();
+                view.key = Some("before".into());
+                view
+            }),
+        ))
+        .unwrap();
+    portal
+        .set_bounds(popup_id, Rect::new(12.0, 24.0, 80.0, 40.0))
+        .unwrap();
+    portal.open(popup_id).unwrap();
+
+    portal
+        .set_content(
+            popup_id,
+            PopupContent::new(|| {
+                let mut view = View::empty();
+                view.key = Some("after".into());
+                view
+            }),
+        )
+        .unwrap();
+
+    assert!(portal.is_open(popup_id));
+    assert_eq!(
+        portal.bounds(popup_id),
+        Some(Rect::new(12.0, 24.0, 80.0, 40.0))
+    );
+    assert_eq!(
+        portal.build_content(popup_id).unwrap().key.as_deref(),
+        Some("after")
+    );
 }
 
 #[test]
