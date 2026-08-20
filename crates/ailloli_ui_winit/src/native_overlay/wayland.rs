@@ -151,7 +151,7 @@ pub(crate) fn create(
         &queue_handle,
         surface.clone(),
         Layer::Overlay,
-        Some("ailloli_ui-native-overlay"),
+        Some("ailloli_ui-native_overlay"),
         Some(&output),
     );
     layer.set_anchor(Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM | Anchor::LEFT);

@@ -20,5 +20,5 @@ clap = { workspace = true, optional = true }
 
 [[bin]]
 name = "ailloli-ui-bench"
-path = "src/bin/ailloli-ui-bench.rs"
+path = "src/bin/ailloli_ui_bench.rs"
 required-features = ["cli"]

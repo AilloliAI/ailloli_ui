@@ -13,9 +13,9 @@
 //! drawing for `Scene`/`DrawCmd`.
 //!
 //! Feature boundaries:
-//! - `wgpu-target` is the legacy/generic desktop adapter path.
+//! - `wgpu_target` is the legacy/generic desktop adapter path.
 //! - `openxr` enables the reusable OpenXR/Vulkan host path.
-//! - `smoke-ui` adds the built-in smoke scene used by example APKs.
+//! - `smoke_ui` adds the built-in smoke scene used by example APKs.
 //!
 //! This crate is optional and additive. If you need to keep desktop behavior
 //! untouched, continue to use `ailloli_ui_winit`; this crate is for non-desktop
@@ -33,7 +33,7 @@ pub use input::{
     map_ray_to_openxr_input_events, map_samples_to_openxr_input_events, OpenXrInputMapper,
     OpenXrPointerFrame, OpenXrPointerHit, OpenXrPointerSample, OpenXrPointerSource, PointHit,
 };
-#[cfg(feature = "wgpu-target")]
+#[cfg(feature = "wgpu_target")]
 pub use target::{
     build_callback_source, CallbackImageSource, OpenXrImageFrame, OpenXrImageSource,
     OpenXrRenderTarget,
@@ -43,12 +43,12 @@ pub mod clipboard;
 pub mod error;
 pub mod input;
 pub mod math;
-#[cfg(feature = "wgpu-target")]
+#[cfg(feature = "wgpu_target")]
 pub mod target;
 
 #[cfg(feature = "openxr")]
 pub mod openxr_runtime;
-#[cfg(all(feature = "openxr", feature = "smoke-ui"))]
+#[cfg(all(feature = "openxr", feature = "smoke_ui"))]
 pub use openxr_runtime::{
     run_openxr_smoke, OpenXrSmokeExitReason, OpenXrSmokeOptions, OpenXrSmokeResult,
 };

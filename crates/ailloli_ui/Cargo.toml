@@ -9,19 +9,19 @@ publish.workspace = true
 [features]
 default = ["winit"]
 winit = ["dep:ailloli_ui_winit", "dep:ailloli_ui_render_wgpu"]
-native-overlay = ["winit", "ailloli_ui_winit/native-overlay"]
-tree-sitter = ["ailloli_ui_widgets/tree-sitter"]
+native_overlay = ["winit", "ailloli_ui_winit/native_overlay"]
+tree_sitter = ["ailloli_ui_widgets/tree_sitter"]
 files = ["ailloli_ui_widgets/files"]
-files-local = ["files", "ailloli_ui_widgets/files-local"]
-terminal-pty = ["dep:ailloli_ui_terminal_pty"]
-terminal-pty-portable = ["terminal-pty", "ailloli_ui_terminal_pty/portable"]
+files_local = ["files", "ailloli_ui_widgets/files_local"]
+terminal_pty = ["dep:ailloli_ui_terminal_pty"]
+terminal_pty_portable = ["terminal_pty", "ailloli_ui_terminal_pty/portable"]
 devtools = [
     "dep:ailloli_ui_devtools_core",
     "dep:ailloli_ui_devtools_ui",
     "ailloli_ui_runtime/devtools",
     "ailloli_ui_winit?/devtools",
 ]
-devtools-terminal = [
+devtools_terminal = [
     "devtools",
     "ailloli_ui_devtools_core/terminal",
     "ailloli_ui_devtools_ui/terminal",

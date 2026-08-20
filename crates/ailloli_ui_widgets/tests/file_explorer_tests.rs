@@ -24,7 +24,7 @@ use ailloli_ui_widgets::files::{
     sort_file_nodes, FileExplorer, FileExplorerAction, FileExplorerCreateDir, FileExplorerNode,
     FileExplorerRename,
 };
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 use ailloli_ui_widgets::files::{
     local_file_tree_nodes, FileTreeLoadMode, FileTreeOptions, LocalFileExplorer,
 };
@@ -160,7 +160,7 @@ fn file_explorer_paints_symlink_directory_folder_green() {
         }));
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 #[test]
 fn local_file_tree_nodes_build_from_path_and_reveal_selected() {
     let temp = TempDir::new("path_api");
@@ -200,7 +200,7 @@ fn local_file_tree_nodes_build_from_path_and_reveal_selected() {
         .any(|node| node.name() == "panes" && node.is_branch()));
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 #[test]
 fn local_file_tree_nodes_exposes_lazy_controlled_and_full_loading() {
     let temp = TempDir::new("load_modes");
@@ -256,7 +256,7 @@ fn local_file_tree_nodes_exposes_lazy_controlled_and_full_loading() {
         .any(|node| node.name() == "mod.rs"));
 }
 
-#[cfg(all(feature = "files-local", unix))]
+#[cfg(all(feature = "files_local", unix))]
 #[test]
 fn local_file_tree_nodes_expands_symlink_directory_explicitly() {
     let temp = TempDir::new("symlink_dir");
@@ -281,7 +281,7 @@ fn local_file_tree_nodes_expands_symlink_directory_explicitly() {
     assert!(linked.children.iter().any(|node| node.name() == "child.rs"));
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 #[test]
 fn local_file_explorer_lazy_cached_layouts_from_path_without_manual_nodes() {
     let temp = TempDir::new("lazy_cached_widget");
@@ -307,7 +307,7 @@ fn local_file_explorer_lazy_cached_layouts_from_path_without_manual_nodes() {
     assert_eq!(widget_count(&app, "TreeView"), 1);
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 #[test]
 fn local_file_explorer_lazy_cached_loads_children_when_root_folder_opens() {
     let temp = TempDir::new("lazy_cached_toggle");
@@ -1196,7 +1196,7 @@ fn many_file_nodes(count: usize) -> Vec<FileExplorerNode> {
         .collect()
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 fn child<'a>(node: &'a FileExplorerNode, name: &str) -> &'a FileExplorerNode {
     node.children
         .iter()
@@ -1218,12 +1218,12 @@ fn symlink_node(path: &str, name: impl Into<String>, target: Option<FileKind>) -
     })
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 struct TempDir {
     path: std::path::PathBuf,
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 impl TempDir {
     fn new(name: &str) -> Self {
         let nanos = std::time::SystemTime::now()
@@ -1240,7 +1240,7 @@ impl TempDir {
     }
 }
 
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);

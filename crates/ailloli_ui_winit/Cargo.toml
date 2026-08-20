@@ -8,8 +8,8 @@ publish.workspace = true
 
 [features]
 default = []
-test-support = []
-native-overlay = [
+test_support = []
+native_overlay = [
     "dep:libc",
     "dep:raw-window-handle",
     "dep:smithay-client-toolkit",
@@ -48,9 +48,9 @@ wayland-client = { workspace = true, optional = true, features = ["system"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
-ailloli_ui = { path = "../ailloli_ui", features = ["files-local"] }
-ailloli_ui_editor = { path = "../ailloli_ui_editor", features = ["tree-sitter"] }
-ailloli_ui_widgets = { path = "../ailloli_ui_widgets", features = ["files-local"] }
+ailloli_ui = { path = "../ailloli_ui", features = ["files_local"] }
+ailloli_ui_editor = { path = "../ailloli_ui_editor", features = ["tree_sitter"] }
+ailloli_ui_widgets = { path = "../ailloli_ui_widgets", features = ["files_local"] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

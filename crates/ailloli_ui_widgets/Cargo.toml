@@ -7,9 +7,9 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-tree-sitter = ["ailloli_ui_editor/tree-sitter"]
+tree_sitter = ["ailloli_ui_editor/tree_sitter"]
 files = ["dep:devicons", "dep:ailloli_ui_devicons_font", "dep:ailloli_ui_fs"]
-files-local = ["files", "dep:ailloli_ui_fs_local"]
+files_local = ["files", "dep:ailloli_ui_fs_local"]
 
 [dependencies]
 ailloli_ui_core = { path = "../ailloli_ui_core" }

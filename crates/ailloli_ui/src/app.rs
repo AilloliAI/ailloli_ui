@@ -280,7 +280,7 @@ pub struct Window<A> {
     custom_titlebar: Option<Content<A>>,
     content: Option<Content<A>>,
     icon: Option<AppIcon>,
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     native_overlay: Option<ailloli_ui_winit::NativeOverlayOptions>,
     #[cfg(feature = "winit")]
     captures: Vec<CaptureOpts>,
@@ -298,7 +298,7 @@ struct WindowParts<A> {
     custom_titlebar: Option<Content<A>>,
     content: Option<Content<A>>,
     icon: Option<AppIcon>,
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     native_overlay: Option<ailloli_ui_winit::NativeOverlayOptions>,
 }
 
@@ -319,7 +319,7 @@ impl<A> Window<A> {
             custom_titlebar: None,
             content: None,
             icon: None,
-            #[cfg(feature = "native-overlay")]
+            #[cfg(feature = "native_overlay")]
             native_overlay: None,
             #[cfg(feature = "winit")]
             captures: Vec::new(),
@@ -450,7 +450,7 @@ impl<A> Window<A> {
     }
 
     /// Turns this window into a non-activating native desktop overlay.
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     pub fn native_overlay(mut self, options: ailloli_ui_winit::NativeOverlayOptions) -> Self {
         self.native_overlay = Some(options);
         self.chrome = WindowChrome::None;
@@ -510,7 +510,7 @@ impl<A> Window<A> {
             custom_titlebar: self.custom_titlebar,
             content: self.content,
             icon: self.icon,
-            #[cfg(feature = "native-overlay")]
+            #[cfg(feature = "native_overlay")]
             native_overlay: self.native_overlay,
         }
     }
@@ -975,7 +975,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
                 custom_titlebar,
                 content,
                 icon,
-                #[cfg(feature = "native-overlay")]
+                #[cfg(feature = "native_overlay")]
                 native_overlay,
                 ..
             } = window.into_parts();
@@ -1019,9 +1019,9 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
             )
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-            #[cfg(feature = "native-overlay")]
+            #[cfg(feature = "native_overlay")]
             let transparent = native_overlay.is_some() || (corner_radius > 0.0 && !decorations);
-            #[cfg(not(feature = "native-overlay"))]
+            #[cfg(not(feature = "native_overlay"))]
             let transparent = corner_radius > 0.0 && !decorations;
 
             let restored_size = restored_window_state
@@ -1045,7 +1045,7 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
                     .as_ref()
                     .map(|identity| identity.id().as_str().to_owned()),
                 app_icon: effective_icon,
-                #[cfg(feature = "native-overlay")]
+                #[cfg(feature = "native_overlay")]
                 native_overlay,
                 ..Default::default()
             };

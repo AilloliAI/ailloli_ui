@@ -1,4 +1,4 @@
-//! Portable native-overlay contracts and Linux backend selection.
+//! Portable native_overlay contracts and Linux backend selection.
 
 use std::fmt;
 
@@ -165,12 +165,12 @@ impl fmt::Display for NativeOverlayError {
 
 impl std::error::Error for NativeOverlayError {}
 
-#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+#[cfg(all(target_os = "linux", feature = "native_overlay"))]
 pub(crate) mod wayland;
 
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 mod calibration;
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 pub use calibration::{
     NativeCalibrationMarkerGuard, NativeCalibrationMarkerPixel, NativeCalibrationMarkerSpec,
     NativeOutputDescriptor, NativeOutputProbeService, NativeOutputScale, NativeOutputTransform,

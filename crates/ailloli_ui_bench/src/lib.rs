@@ -24,7 +24,7 @@
 //!
 //! ```text
 //! cargo build --release --locked -p ailloli_ui_winit \
-//!   --features test-support --example winit_regression_bench
+//!   --features test_support --example winit_regression_bench
 //! cargo run --release --locked -p ailloli_ui_bench --features cli \
 //!   --bin ailloli-ui-bench -- run-matrix \
 //!   --output-root artifacts/bench/phase125 --phase candidate \

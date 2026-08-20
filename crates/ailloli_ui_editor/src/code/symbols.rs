@@ -156,7 +156,7 @@ pub fn index_symbols_with_fallback(
     document: &Document,
     ctags: &mut CtagsSymbolIndexer,
 ) -> CodeFileSummary {
-    #[cfg(feature = "tree-sitter")]
+    #[cfg(feature = "tree_sitter")]
     if document.language == EditorLanguage::Rust {
         let mut tree_sitter = TreeSitterRustSymbolIndexer;
         let summary = tree_sitter.index_document(document);
@@ -270,11 +270,11 @@ pub enum CtagsError {
     Utf8(String),
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[derive(Debug, Default)]
 pub struct TreeSitterRustSymbolIndexer;
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 impl SymbolIndexer for TreeSitterRustSymbolIndexer {
     fn index_document(&mut self, document: &Document) -> CodeFileSummary {
         let text = document.buffer.as_str();
@@ -382,7 +382,7 @@ pub fn summarize_rust_lexical(document: &Document) -> CodeFileSummary {
     }
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn collect_tree_sitter_rust_symbols(
     root: tree_sitter::Node<'_>,
     text: &str,
@@ -397,14 +397,14 @@ fn collect_tree_sitter_rust_symbols(
     collector.symbols
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 struct TreeSitterSymbolCollector<'a> {
     text: &'a str,
     language: EditorLanguage,
     symbols: Vec<CodeSymbol>,
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 impl<'a> TreeSitterSymbolCollector<'a> {
     fn collect(&mut self, node: tree_sitter::Node<'_>, parent: Option<SymbolId>) {
         let mut next_parent = parent;
@@ -459,14 +459,14 @@ impl<'a> TreeSitterSymbolCollector<'a> {
     }
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 struct RustSymbolSpec<'tree> {
     kind: SymbolKind,
     name_node: Option<tree_sitter::Node<'tree>>,
     name_override: Option<String>,
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn tree_sitter_rust_symbol_spec<'tree>(
     text: &str,
     node: tree_sitter::Node<'tree>,
@@ -548,7 +548,7 @@ fn tree_sitter_rust_symbol_spec<'tree>(
     }
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn symbol_container_parent(kind: SymbolKind) -> bool {
     matches!(
         kind,
@@ -560,7 +560,7 @@ fn symbol_container_parent(kind: SymbolKind) -> bool {
     )
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn impl_type_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
     node.child_by_field_name("type").or_else(|| {
         let mut cursor = node.walk();
@@ -578,18 +578,18 @@ fn impl_type_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> 
     })
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn node_text<'a>(text: &'a str, node: tree_sitter::Node<'_>) -> &'a str {
     text.get(node.start_byte()..node.end_byte())
         .unwrap_or_default()
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn compact_node_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn import_name(text: &str) -> String {
     text.trim()
         .trim_start_matches("pub")
@@ -604,7 +604,7 @@ fn import_name(text: &str) -> String {
         .to_string()
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn valid_range(text: &str, range: Range<usize>) -> Range<usize> {
     let mut start = range.start.min(text.len());
     while start > 0 && !text.is_char_boundary(start) {
@@ -617,7 +617,7 @@ fn valid_range(text: &str, range: Range<usize>) -> Range<usize> {
     start..end
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn signature_for_symbol(
     text: &str,
     node: tree_sitter::Node<'_>,
@@ -646,7 +646,7 @@ fn signature_for_symbol(
     (!signature.is_empty()).then_some(signature)
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn docs_for_symbol(text: &str, node: tree_sitter::Node<'_>) -> Option<String> {
     let prefix = &text[..node.start_byte().min(text.len())];
     let mut docs = Vec::new();
@@ -934,7 +934,7 @@ fn call_edges(text: &str, symbols: &[CodeSymbol]) -> Vec<SymbolEdge> {
     edges
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn collect_tree_sitter_rust_call_edges(
     root: tree_sitter::Node<'_>,
     text: &str,
@@ -946,7 +946,7 @@ fn collect_tree_sitter_rust_call_edges(
     edges
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn collect_tree_sitter_rust_call_edges_from_node(
     node: tree_sitter::Node<'_>,
     text: &str,
@@ -965,7 +965,7 @@ fn collect_tree_sitter_rust_call_edges_from_node(
     }
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn call_edge_for_node(
     node: tree_sitter::Node<'_>,
     text: &str,
@@ -983,7 +983,7 @@ fn call_edge_for_node(
     })
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn caller_for_byte(symbols: &[CodeSymbol], byte: usize) -> Option<&CodeSymbol> {
     symbols
         .iter()
@@ -995,7 +995,7 @@ fn caller_for_byte(symbols: &[CodeSymbol], byte: usize) -> Option<&CodeSymbol> {
         .min_by_key(|symbol| (symbol.range.end - symbol.range.start, symbol.id.0))
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn resolve_callee_symbol<'a>(
     symbols: &'a [CodeSymbol],
     caller: &CodeSymbol,
@@ -1023,7 +1023,7 @@ fn resolve_callee_symbol<'a>(
         })
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn callee_scope_distance(
     symbols: &[CodeSymbol],
     caller: &CodeSymbol,
@@ -1048,7 +1048,7 @@ fn callee_scope_distance(
     4
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn symbol_ancestors(symbols: &[CodeSymbol], symbol: &CodeSymbol) -> Vec<SymbolId> {
     let mut ancestors = Vec::new();
     let mut current = symbol.parent;
@@ -1062,19 +1062,19 @@ fn symbol_ancestors(symbols: &[CodeSymbol], symbol: &CodeSymbol) -> Vec<SymbolId
     ancestors
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 struct CallTarget {
     name: String,
     scope: Option<String>,
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn call_expression_target(node: tree_sitter::Node<'_>, text: &str) -> Option<CallTarget> {
     let function = node.child_by_field_name("function")?;
     final_call_target(function, text)
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn final_call_target(node: tree_sitter::Node<'_>, text: &str) -> Option<CallTarget> {
     let name = match node.kind() {
         "identifier" | "field_identifier" => node_text(text, node).to_string(),
@@ -1095,7 +1095,7 @@ fn final_call_target(node: tree_sitter::Node<'_>, text: &str) -> Option<CallTarg
     })
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn last_identifier_child(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
     let mut cursor = node.walk();
     node.children(&mut cursor)
@@ -1103,7 +1103,7 @@ fn last_identifier_child(node: tree_sitter::Node<'_>, text: &str) -> Option<Stri
         .last()
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn call_scope_name(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
     if node.kind() != "scoped_identifier" {
         return None;
@@ -1114,7 +1114,7 @@ fn call_scope_name(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
         .filter(|scope| !scope.is_empty())
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn symbol_parent_name<'a>(symbols: &'a [CodeSymbol], symbol: &CodeSymbol) -> Option<&'a str> {
     let parent = symbol.parent?;
     symbols

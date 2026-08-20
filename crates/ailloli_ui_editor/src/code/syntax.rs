@@ -129,7 +129,7 @@ pub fn highlight_rust_lexical(text: &str) -> Vec<SyntaxToken> {
     tokens
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 pub fn highlight_rust_tree_sitter_hybrid(text: &str) -> Option<Vec<SyntaxToken>> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_rust::LANGUAGE.into();
@@ -147,7 +147,7 @@ pub fn highlight_rust_tree_sitter_hybrid(text: &str) -> Option<Vec<SyntaxToken>>
     Some(normalize_syntax_tokens(text, normalized))
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn collect_tree_sitter_tokens(node: tree_sitter::Node<'_>, tokens: &mut Vec<SyntaxToken>) {
     if let Some(kind) = tree_sitter_node_kind(node) {
         tokens.push(token(node.start_byte()..node.end_byte(), kind));
@@ -163,7 +163,7 @@ fn collect_tree_sitter_tokens(node: tree_sitter::Node<'_>, tokens: &mut Vec<Synt
     }
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn tree_sitter_node_kind(node: tree_sitter::Node<'_>) -> Option<SyntaxKind> {
     match node.kind() {
         "line_comment" | "block_comment" => Some(SyntaxKind::Comment),
@@ -178,7 +178,7 @@ fn tree_sitter_node_kind(node: tree_sitter::Node<'_>) -> Option<SyntaxKind> {
     }
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn tree_sitter_named_item(
     node: tree_sitter::Node<'_>,
 ) -> Option<(SyntaxKind, tree_sitter::Node<'_>)> {
@@ -190,7 +190,7 @@ fn tree_sitter_named_item(
     node.child_by_field_name("name").map(|name| (kind, name))
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn gap_fill_lexical_tokens(text: &str, tokens: &mut Vec<SyntaxToken>) {
     let existing = tokens.clone();
     tokens.extend(
@@ -200,7 +200,7 @@ fn gap_fill_lexical_tokens(text: &str, tokens: &mut Vec<SyntaxToken>) {
     );
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn lexical_gap_fill_allowed(candidate: &SyntaxToken, existing: &[SyntaxToken]) -> bool {
     let has_overlap = existing
         .iter()
@@ -217,7 +217,7 @@ fn lexical_gap_fill_allowed(candidate: &SyntaxToken, existing: &[SyntaxToken]) -
     })
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn normalize_syntax_tokens(text: &str, tokens: Vec<SyntaxToken>) -> Vec<SyntaxToken> {
     let mut indexed = tokens
         .into_iter()
@@ -264,7 +264,7 @@ fn normalize_syntax_tokens(text: &str, tokens: Vec<SyntaxToken>) -> Vec<SyntaxTo
     out
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn normalize_token(text: &str, token: SyntaxToken) -> Option<SyntaxToken> {
     let start = clamp_to_char_boundary(text, token.range.start.min(text.len()));
     let end = clamp_to_char_boundary(text, token.range.end.min(text.len()));
@@ -274,7 +274,7 @@ fn normalize_token(text: &str, token: SyntaxToken) -> Option<SyntaxToken> {
     })
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn clamp_to_char_boundary(text: &str, mut at: usize) -> usize {
     while at > 0 && !text.is_char_boundary(at) {
         at -= 1;
@@ -282,12 +282,12 @@ fn clamp_to_char_boundary(text: &str, mut at: usize) -> usize {
     at
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn syntax_kind_priority(kind: SyntaxKind) -> u8 {
     match kind {
         SyntaxKind::Comment => 0,

@@ -122,14 +122,14 @@ The façade exposes only generic framework capabilities:
 | Feature | Purpose |
 | --- | --- |
 | `winit` | Native windows and the primary WGPU renderer; enabled by default. |
-| `native-overlay` | Platform-capability-gated native overlay support. |
+| `native_overlay` | Platform-capability-gated native overlay support. |
 | `files` | Provider-neutral file widgets. |
-| `files-local` | File widgets with the local provider. |
-| `tree-sitter` | Syntax parsing support in editor widgets. |
-| `terminal-pty` | PTY contracts through the façade. |
-| `terminal-pty-portable` | Portable PTY implementation. |
+| `files_local` | File widgets with the local provider. |
+| `tree_sitter` | Syntax parsing support in editor widgets. |
+| `terminal_pty` | PTY contracts through the façade. |
+| `terminal_pty_portable` | Portable PTY implementation. |
 | `devtools` | Runtime inspection core and UI; disabled by default. |
-| `devtools-terminal` | Terminal snapshots in DevTools. |
+| `devtools_terminal` | Terminal snapshots in DevTools. |
 
 ## Development
 
@@ -166,7 +166,7 @@ scale factor:
 
 ```sh
 CARGO_INCREMENTAL=0 cargo build --release --locked \
-  -p ailloli_ui_winit --features test-support \
+  -p ailloli_ui_winit --features test_support \
   --example winit_regression_bench
 
 CARGO_INCREMENTAL=0 cargo run --release --locked \

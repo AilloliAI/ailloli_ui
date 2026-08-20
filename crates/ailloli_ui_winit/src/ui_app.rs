@@ -45,7 +45,7 @@ use ailloli_ui_runtime::input::{
 use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::chrome::{hit_resize_frame, hit_window_drag_region};
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 use winit::dpi::PhysicalSize;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -58,7 +58,7 @@ use crate::clipboard::NativeClipboard;
 use crate::devtools::DevToolsWindowState;
 use crate::event_loop::shutdown_signal;
 use crate::external_url::SystemExternalUrlOpener;
-#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+#[cfg(all(target_os = "linux", feature = "native_overlay"))]
 use crate::native_overlay::wayland::{
     CreatedWaylandOverlay, WaylandOverlayConfigured, WaylandOverlayEvent, WaylandOverlaySurface,
 };
@@ -68,7 +68,7 @@ use crate::wgpu_bootstrap::{
 };
 use crate::window::{create_window, WindowOptions};
 use crate::window_chrome_resize::{resize_edge_to_winit, CLIENT_RESIZE_BORDER_LOGICAL_PX};
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 use crate::{
     NativeOverlayBackend, NativeOverlayCapabilities, NativeOverlayInputMode, NativeOverlayOptions,
 };
@@ -101,7 +101,7 @@ impl fmt::Display for UiAppError {
 impl Error for UiAppError {}
 
 /// Presentation failure injected on the event-loop thread by native tests.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresentationTestFault {
@@ -121,7 +121,7 @@ pub enum PresentationTestFault {
 }
 
 /// Observable lifecycle state for deterministic native tests.
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationTestState {
@@ -148,7 +148,7 @@ pub struct PresentationTestState {
     pub rendered_frame_count: u64,
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 #[derive(Debug, Default, Clone, Copy)]
 struct PresentationTestCounters {
     detach_count: u64,
@@ -183,7 +183,7 @@ fn observed_winit_backend(event_loop: &ActiveEventLoop) -> &'static str {
     }
 }
 
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 fn configure_x11_overlay(
     event_loop: &ActiveEventLoop,
     window: &Window,
@@ -343,7 +343,7 @@ struct RetainedWindowState<A> {
     render_timeout_streak: u32,
     input_bench: InputBenchCounters,
     rendered_once: bool,
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     rendered_frame_count: u64,
     reveal_after_first_frame: bool,
     #[cfg(feature = "devtools")]
@@ -356,7 +356,7 @@ struct WindowState<A> {
     renderer: Renderer,
     window: Arc<Window>,
     resize: ResizeController,
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     native_overlay_capabilities: Option<NativeOverlayCapabilities>,
     retained: RetainedWindowState<A>,
 }
@@ -377,13 +377,13 @@ impl<A> DerefMut for WindowState<A> {
 
 enum AttachedWindow<A> {
     Native(WindowId, WindowState<A>),
-    #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+    #[cfg(all(target_os = "linux", feature = "native_overlay"))]
     WaylandOverlay(WaylandOverlayState<A>),
 }
 
 type AttachmentError<A> = Box<(RetainedWindowState<A>, UiAppError)>;
 
-#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+#[cfg(all(target_os = "linux", feature = "native_overlay"))]
 struct WaylandOverlayState<A> {
     // Drop the WGPU surface before the layer-shell surface.
     renderer: Renderer,
@@ -395,7 +395,7 @@ struct WaylandOverlayState<A> {
     retained: RetainedWindowState<A>,
 }
 
-#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+#[cfg(all(target_os = "linux", feature = "native_overlay"))]
 impl<A> Deref for WaylandOverlayState<A> {
     type Target = RetainedWindowState<A>;
 
@@ -404,7 +404,7 @@ impl<A> Deref for WaylandOverlayState<A> {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+#[cfg(all(target_os = "linux", feature = "native_overlay"))]
 impl<A> DerefMut for WaylandOverlayState<A> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.retained
@@ -625,7 +625,7 @@ pub struct UiApp<A> {
     windows: HashMap<WindowId, WindowState<A>>,
     retained_windows: Vec<RetainedWindowState<A>>,
     pending_file_batches: Vec<PendingFileBatch>,
-    #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+    #[cfg(all(target_os = "linux", feature = "native_overlay"))]
     wayland_overlays: Vec<WaylandOverlayState<A>>,
     window_snapshots: HashMap<String, WindowSnapshot>,
     event_origin: Instant,
@@ -634,9 +634,9 @@ pub struct UiApp<A> {
     error: Option<UiAppError>,
     capture: Option<crate::capture::CaptureHandle>,
     host_wake: Option<Arc<dyn UiWake>>,
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     presentation_test_faults: Vec<(ailloli_ui_core::LogicalWindowId, PresentationTestFault)>,
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     presentation_test_counters: HashMap<ailloli_ui_core::LogicalWindowId, PresentationTestCounters>,
     #[cfg(feature = "devtools")]
     devtools_remote_addr: Option<std::net::SocketAddr>,
@@ -665,7 +665,7 @@ impl<A: 'static> UiApp<A> {
             windows: HashMap::new(),
             retained_windows: Vec::new(),
             pending_file_batches: Vec::new(),
-            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+            #[cfg(all(target_os = "linux", feature = "native_overlay"))]
             wayland_overlays: Vec::new(),
             window_snapshots: HashMap::new(),
             event_origin: Instant::now(),
@@ -674,9 +674,9 @@ impl<A: 'static> UiApp<A> {
             error: None,
             capture: None,
             host_wake: None,
-            #[cfg(feature = "test-support")]
+            #[cfg(feature = "test_support")]
             presentation_test_faults: Vec::new(),
-            #[cfg(feature = "test-support")]
+            #[cfg(feature = "test_support")]
             presentation_test_counters: HashMap::new(),
             #[cfg(feature = "devtools")]
             devtools_remote_addr: None,
@@ -711,7 +711,7 @@ impl<A: 'static> UiApp<A> {
                     first_error.get_or_insert(error);
                 }
             }
-            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+            #[cfg(all(target_os = "linux", feature = "native_overlay"))]
             for state in &mut self.wayland_overlays {
                 if let Err(error) = state.devtools.install_host_wake(wake.clone()) {
                     first_error.get_or_insert(error);
@@ -739,7 +739,7 @@ impl<A: 'static> UiApp<A> {
                 first_error.get_or_insert(error);
             }
         }
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         for state in &self.wayland_overlays {
             pending |= state.devtools.begin_host_service();
             if let Some(error) = state.devtools.take_wake_error() {
@@ -759,7 +759,7 @@ impl<A: 'static> UiApp<A> {
 
     /// Queues a deterministic presentation failure for the next safe
     /// event-loop boundary.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     pub fn inject_presentation_fault(
         &mut self,
         logical_window_id: &ailloli_ui_core::LogicalWindowId,
@@ -774,13 +774,13 @@ impl<A: 'static> UiApp<A> {
                 .iter()
                 .any(|state| state.logical_window_id == logical_window_id.as_str())
             || {
-                #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                #[cfg(all(target_os = "linux", feature = "native_overlay"))]
                 {
                     self.wayland_overlays
                         .iter()
                         .any(|state| state.logical_window_id == logical_window_id.as_str())
                 }
-                #[cfg(not(all(target_os = "linux", feature = "native-overlay")))]
+                #[cfg(not(all(target_os = "linux", feature = "native_overlay")))]
                 {
                     false
                 }
@@ -798,7 +798,7 @@ impl<A: 'static> UiApp<A> {
 
     /// Routes one provider-neutral event through a currently attached and
     /// generation-matching presentation.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     pub fn inject_event_envelope(&mut self, envelope: EventEnvelope) -> bool {
         let logical_window_id = envelope.meta().logical_window_id().clone();
         let Some(window_id) = self.windows.iter().find_map(|(window_id, state)| {
@@ -834,7 +834,7 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Returns deterministic presentation state/counters for native tests.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     pub fn presentation_test_state(
         &self,
         logical_window_id: &ailloli_ui_core::LogicalWindowId,
@@ -851,7 +851,7 @@ impl<A: 'static> UiApp<A> {
                     state.rendered_frame_count,
                 )
             });
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         let live = live.or_else(|| {
             self.wayland_overlays
                 .iter()
@@ -910,7 +910,7 @@ impl<A: 'static> UiApp<A> {
     /// Native input benchmarks use this readiness signal before injecting a
     /// focus-sensitive sequence. In particular, X11 can deliver its initial
     /// `Focused(false)`/`Focused(true)` pair after the first rendered frame.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     pub fn presentation_test_window_has_native_focus(
         &self,
         logical_window_id: &ailloli_ui_core::LogicalWindowId,
@@ -923,7 +923,7 @@ impl<A: 'static> UiApp<A> {
 
     /// Reports whether a retained popup registration is mounted in the
     /// requested live presentation and whether that popup tree owns focus.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     pub fn presentation_test_popup_mount_state(
         &self,
         logical_window_id: &ailloli_ui_core::LogicalWindowId,
@@ -946,7 +946,7 @@ impl<A: 'static> UiApp<A> {
 
     /// Returns the absolute layout bounds of one keyed view in a live native
     /// presentation. This is available only to the event-loop test driver.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     pub fn presentation_test_element_bounds(
         &self,
         logical_window_id: &ailloli_ui_core::LogicalWindowId,
@@ -962,7 +962,7 @@ impl<A: 'static> UiApp<A> {
 
     /// Reports whether a keyed view contains the current focus target in one
     /// live native presentation.
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     pub fn presentation_test_focus_within_key(
         &self,
         logical_window_id: &ailloli_ui_core::LogicalWindowId,
@@ -1032,7 +1032,7 @@ impl<A: 'static> UiApp<A> {
                 .presentation_intents
                 .push(PresentationIntent::Redraw);
         }
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         if !self.wayland_overlays.is_empty() {
             for state in &self.wayland_overlays {
                 state.needs_redraw.set(true);
@@ -1056,7 +1056,7 @@ impl<A: 'static> UiApp<A> {
             state.window.request_redraw();
             return true;
         }
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         if let Some(state) = self
             .wayland_overlays
             .iter()
@@ -1193,7 +1193,7 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Effective overlay capabilities for a live logical window.
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     pub fn native_overlay_capabilities(
         &self,
         logical_window_id: &str,
@@ -1203,7 +1203,7 @@ impl<A: 'static> UiApp<A> {
             .find(|state| state.logical_window_id == logical_window_id)
             .and_then(|state| state.native_overlay_capabilities)
             .or_else(|| {
-                #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                #[cfg(all(target_os = "linux", feature = "native_overlay"))]
                 {
                     return self
                         .wayland_overlays
@@ -1223,9 +1223,9 @@ impl<A: 'static> UiApp<A> {
         external_wakeup: Option<Instant>,
     ) {
         self.flush_pending_file_batches();
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test_support")]
         self.service_presentation_test_faults(event_loop);
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         self.service_wayland_overlays(event_loop);
         if shutdown_signal::take_requested() {
             Self::trace_startup("shutdown signal requested");
@@ -1296,13 +1296,13 @@ impl<A: 'static> UiApp<A> {
                 .values()
                 .any(|state| !state.rendered_once && !state.resize.zero_extent_unavailable()))
             || {
-                #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                #[cfg(all(target_os = "linux", feature = "native_overlay"))]
                 {
                     self.wayland_overlays
                         .iter()
                         .any(|state| !state.rendered_once)
                 }
-                #[cfg(not(all(target_os = "linux", feature = "native-overlay")))]
+                #[cfg(not(all(target_os = "linux", feature = "native_overlay")))]
                 {
                     false
                 }
@@ -1349,7 +1349,7 @@ impl<A: 'static> UiApp<A> {
         }
     }
 
-    #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+    #[cfg(all(target_os = "linux", feature = "native_overlay"))]
     fn service_wayland_overlays(&mut self, event_loop: &ActiveEventLoop) {
         let capture = self.capture.clone();
         let mut failure = None;
@@ -1419,7 +1419,7 @@ impl<A: 'static> UiApp<A> {
             match result {
                 Ok(()) => {
                     state.rendered_once = true;
-                    #[cfg(feature = "test-support")]
+                    #[cfg(feature = "test_support")]
                     {
                         state.rendered_frame_count = state.rendered_frame_count.saturating_add(1);
                     }
@@ -1452,9 +1452,9 @@ impl<A: 'static> UiApp<A> {
     }
 
     fn retain_pending_window(&mut self, pending: PendingWindow<A>) -> RetainedWindowState<A> {
-        #[cfg(feature = "native-overlay")]
+        #[cfg(feature = "native_overlay")]
         let is_native_overlay = pending.options.native_overlay.is_some();
-        #[cfg(not(feature = "native-overlay"))]
+        #[cfg(not(feature = "native_overlay"))]
         let is_native_overlay = false;
 
         let logical_window_id = pending.options.logical_window_id.clone();
@@ -1506,7 +1506,7 @@ impl<A: 'static> UiApp<A> {
             render_timeout_streak: 0,
             input_bench: InputBenchCounters::new(Instant::now()),
             rendered_once: false,
-            #[cfg(feature = "test-support")]
+            #[cfg(feature = "test_support")]
             rendered_frame_count: 0,
             #[cfg(feature = "devtools")]
             devtools,
@@ -1616,7 +1616,7 @@ impl<A: 'static> UiApp<A> {
         Self::trace_startup(format_args!(
             "reattached GPU presentation for {logical_window_id}: {outcome:?}"
         ));
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test_support")]
         {
             let counters = self
                 .presentation_test_counters
@@ -1645,14 +1645,14 @@ impl<A: 'static> UiApp<A> {
             return Err(Box::new((retained, error)));
         }
 
-        #[cfg(feature = "native-overlay")]
+        #[cfg(feature = "native_overlay")]
         let native_overlay = retained.options.native_overlay.clone();
-        #[cfg(feature = "native-overlay")]
+        #[cfg(feature = "native_overlay")]
         let is_native_overlay = native_overlay.is_some();
-        #[cfg(not(feature = "native-overlay"))]
+        #[cfg(not(feature = "native_overlay"))]
         let is_native_overlay = false;
 
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         if let Some(options) = native_overlay.as_ref() {
             use winit::platform::wayland::ActiveEventLoopExtWayland;
 
@@ -1775,7 +1775,7 @@ impl<A: 'static> UiApp<A> {
                 )));
             }
         };
-        #[cfg(feature = "native-overlay")]
+        #[cfg(feature = "native_overlay")]
         let native_overlay_capabilities =
             match configure_x11_overlay(event_loop, window.as_ref(), native_overlay.as_ref()) {
                 Ok(capabilities) => capabilities,
@@ -1857,7 +1857,7 @@ impl<A: 'static> UiApp<A> {
                 renderer,
                 window,
                 resize,
-                #[cfg(feature = "native-overlay")]
+                #[cfg(feature = "native_overlay")]
                 native_overlay_capabilities,
                 retained,
             },
@@ -1869,12 +1869,12 @@ impl<A: 'static> UiApp<A> {
             AttachedWindow::Native(id, state) => {
                 self.windows.insert(id, state);
             }
-            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+            #[cfg(all(target_os = "linux", feature = "native_overlay"))]
             AttachedWindow::WaylandOverlay(state) => self.wayland_overlays.push(state),
         }
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     fn service_presentation_test_faults(&mut self, event_loop: &ActiveEventLoop) {
         let faults = std::mem::take(&mut self.presentation_test_faults);
         for (logical_window_id, fault) in faults {
@@ -1936,7 +1936,7 @@ impl<A: 'static> UiApp<A> {
                 })
             });
 
-            #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+            #[cfg(all(target_os = "linux", feature = "native_overlay"))]
             if detached.is_none() {
                 if let Some(index) = self
                     .wayland_overlays
@@ -1993,7 +1993,7 @@ impl<A: 'static> UiApp<A> {
                 Ok(attached) => {
                     let next_generation = match &attached {
                         AttachedWindow::Native(_, state) => state.lifecycle.generation(),
-                        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
                         AttachedWindow::WaylandOverlay(state) => state.lifecycle.generation(),
                     };
                     if next_generation > previous_generation {
@@ -2140,7 +2140,7 @@ fn detach_native_window<A>(state: WindowState<A>) -> RetainedWindowState<A> {
         mut renderer,
         window,
         resize: _,
-        #[cfg(feature = "native-overlay")]
+        #[cfg(feature = "native_overlay")]
             native_overlay_capabilities: _,
         mut retained,
     } = state;
@@ -2153,7 +2153,7 @@ fn detach_native_window<A>(state: WindowState<A>) -> RetainedWindowState<A> {
     retained
 }
 
-#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+#[cfg(all(target_os = "linux", feature = "native_overlay"))]
 fn detach_wayland_overlay<A>(state: WaylandOverlayState<A>) -> RetainedWindowState<A> {
     let logical_size = Size::new(
         state.configured.logical_width as f32,
@@ -2211,7 +2211,7 @@ impl<A: 'static> UiApp<A> {
             }
         }
 
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test_support")]
         self.service_presentation_test_faults(event_loop);
         Self::trace_startup("requesting initial redraw");
         self.request_redraw_all();
@@ -2232,7 +2232,7 @@ impl<A: 'static> UiApp<A> {
             self.retained_windows.push(detach_native_window(state));
         }
 
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         {
             let overlays = std::mem::take(&mut self.wayland_overlays);
             for state in overlays {
@@ -2258,14 +2258,14 @@ impl<A: 'static> UiApp<A> {
             .values()
             .map(|s| s.logical_window_id.clone())
             .chain({
-                #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                #[cfg(all(target_os = "linux", feature = "native_overlay"))]
                 {
                     self.wayland_overlays
                         .iter()
                         .map(|state| state.logical_window_id.clone())
                         .collect::<Vec<_>>()
                 }
-                #[cfg(not(all(target_os = "linux", feature = "native-overlay")))]
+                #[cfg(not(all(target_os = "linux", feature = "native_overlay")))]
                 {
                     Vec::new()
                 }
@@ -2330,11 +2330,11 @@ impl<A: 'static> UiApp<A> {
                     && self.retained_windows.is_empty()
                     && self.pending.is_empty()
                     && {
-                        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
                         {
                             self.wayland_overlays.is_empty()
                         }
-                        #[cfg(not(all(target_os = "linux", feature = "native-overlay")))]
+                        #[cfg(not(all(target_os = "linux", feature = "native_overlay")))]
                         {
                             true
                         }
@@ -2535,7 +2535,7 @@ impl<A: 'static> UiApp<A> {
                             state.resize.mark_render_succeeded();
                             state.render_retry_at = None;
                             state.render_timeout_streak = 0;
-                            #[cfg(feature = "test-support")]
+                            #[cfg(feature = "test_support")]
                             {
                                 state.rendered_frame_count =
                                     state.rendered_frame_count.saturating_add(1);
@@ -2615,19 +2615,19 @@ impl<A: 'static> UiApp<A> {
                 // The retained-state boundary drops the invalid surface before
                 // the native window. Reattachment first reuses the GPU context
                 // and rebuilds device-bound caches only when compatibility fails.
-                #[cfg(feature = "test-support")]
+                #[cfg(feature = "test_support")]
                 let logical_window_id =
                     ailloli_ui_core::LogicalWindowId::new(state.logical_window_id.clone());
                 self.window_snapshots
                     .insert(state.logical_window_id.clone(), window_snapshot(&state));
-                #[cfg(feature = "test-support")]
+                #[cfg(feature = "test_support")]
                 let previous_generation = state.lifecycle.generation();
                 let mut retained = detach_native_window(state);
                 Self::mark_attachment_unavailable(
                     &mut retained,
                     PresentationUnavailableReason::SurfaceLost,
                 );
-                #[cfg(feature = "test-support")]
+                #[cfg(feature = "test_support")]
                 {
                     let counters = self
                         .presentation_test_counters
@@ -2646,11 +2646,11 @@ impl<A: 'static> UiApp<A> {
                 }
                 match self.attach_retained_window(event_loop, retained) {
                     Ok(attached) => {
-                        #[cfg(feature = "test-support")]
+                        #[cfg(feature = "test_support")]
                         {
                             let next_generation = match &attached {
                                 AttachedWindow::Native(_, state) => state.lifecycle.generation(),
-                                #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+                                #[cfg(all(target_os = "linux", feature = "native_overlay"))]
                                 AttachedWindow::WaylandOverlay(state) => {
                                     state.lifecycle.generation()
                                 }
@@ -2684,7 +2684,7 @@ impl<A: 'static> UiApp<A> {
 
     /// Handles the payload-free native wake callback delegated by [`crate::WinitHost`].
     pub(crate) fn host_user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
-        #[cfg(all(target_os = "linux", feature = "native-overlay"))]
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         self.service_wayland_overlays(_event_loop);
     }
 }
@@ -2792,7 +2792,7 @@ fn process_capture_requests<A: 'static>(
     true
 }
 
-#[cfg(all(target_os = "linux", feature = "native-overlay"))]
+#[cfg(all(target_os = "linux", feature = "native_overlay"))]
 fn process_wayland_overlay_capture_requests<A: 'static>(
     state: &mut WaylandOverlayState<A>,
     cap: &CaptureHandle,
@@ -4526,7 +4526,7 @@ mod tests {
             assert!(!retained.lifecycle.accepts(PresentationGeneration::new(1)));
         }
 
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test_support")]
         #[test]
         fn surface_reattach_outcomes_distinguish_context_reuse_from_rebuild() {
             let mut app = UiApp::<u32>::new();
@@ -4580,7 +4580,7 @@ mod tests {
             assert_eq!(app.pending_file_batches[1].files.len(), 1);
         }
 
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test_support")]
         #[test]
         fn presentation_fault_can_be_queued_before_first_resume() {
             let logical_window_id = ailloli_ui_core::LogicalWindowId::new("main");

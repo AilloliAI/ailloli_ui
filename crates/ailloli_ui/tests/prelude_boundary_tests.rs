@@ -31,13 +31,13 @@ fn public_facade_exposes_only_generic_framework_features() {
     let expected = [
         "default",
         "devtools",
-        "devtools-terminal",
+        "devtools_terminal",
         "files",
-        "files-local",
-        "native-overlay",
-        "terminal-pty",
-        "terminal-pty-portable",
-        "tree-sitter",
+        "files_local",
+        "native_overlay",
+        "terminal_pty",
+        "terminal_pty_portable",
+        "tree_sitter",
         "winit",
     ];
     let mut actual = CARGO_TOML
@@ -64,9 +64,9 @@ fn framework_prelude_compiles_standalone() {
 
 #[test]
 fn public_facade_keeps_framework_owned_opt_in_features() {
-    assert!(CARGO_TOML.contains("tree-sitter = [\"ailloli_ui_widgets/tree-sitter\"]"));
+    assert!(CARGO_TOML.contains("tree_sitter = [\"ailloli_ui_widgets/tree_sitter\"]"));
     assert!(CARGO_TOML.lines().any(|line| line.trim() == "devtools = ["));
     assert!(CARGO_TOML
         .lines()
-        .any(|line| line.trim() == "devtools-terminal = ["));
+        .any(|line| line.trim() == "devtools_terminal = ["));
 }

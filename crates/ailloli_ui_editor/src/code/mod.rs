@@ -31,14 +31,14 @@ pub use semantic::{
     ScipSymbol, SemanticDocumentSymbol, SemanticReference,
 };
 pub use session::CodeEditorSession;
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 pub use symbols::TreeSitterRustSymbolIndexer;
 pub use symbols::{
     index_symbols_with_fallback, parse_ctags_json_lines, CodeFileSummary, CodeSymbol, CtagsError,
     CtagsRunnerConfig, CtagsSymbolIndexer, LexicalRustSymbolIndexer, SymbolEdge, SymbolEdgeKind,
     SymbolId, SymbolIndexer, SymbolKind, SymbolSource,
 };
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 pub use syntax::highlight_rust_tree_sitter_hybrid;
 pub use syntax::{highlight_rust_lexical, SyntaxKind, SyntaxToken};
 

@@ -7,10 +7,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-default = ["wgpu-target"]
-wgpu-target = ["dep:wgpu", "dep:ailloli_ui_render"]
+default = ["wgpu_target"]
+wgpu_target = ["dep:wgpu", "dep:ailloli_ui_render"]
 openxr = ["dep:openxr", "dep:ash", "dep:ailloli_ui_text", "dep:ailloli_ui_render_vulkan"]
-smoke-ui = ["openxr", "dep:ailloli_ui_widgets"]
+smoke_ui = ["openxr", "dep:ailloli_ui_widgets"]
 
 [dependencies]
 ash = { version = "0.38", default-features = false, features = ["loaded"], optional = true }

@@ -5532,7 +5532,7 @@ fn terminal_phase80_fixture() -> ailloli_ui::terminal_core::TerminalState {
     );
     let mut parser = ailloli_ui::terminal_core::VteTerminalParser::new();
     let fixture = concat!(
-        "\x1b]9001;ailloli_ui:cwd;uri=file:///workspace/ailloli-ui\x07",
+        "\x1b]9001;ailloli_ui:cwd;uri=file:///workspace/ailloli_ui\x07",
         "\x1b]9001;ailloli_ui:command_start;cmd=cargo%20test%20-p%20ailloli_ui_terminal_core\x07",
         "\x1b[1;36m$ cargo test -p ailloli_ui_terminal_core diagnostics\x1b[0m\r\n",
         "running diagnostics fixtures\r\n",
@@ -5568,23 +5568,23 @@ fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
     vec![
         TerminalLine::system("ailloli_ui terminal fixture - phase 54.1"),
         TerminalLine::prompt(
-            "dev@example:~/projects/ailloli-ui$ cargo check -p ailloli_ui_widgets terminal",
+            "dev@example:~/projects/ailloli_ui$ cargo check -p ailloli_ui_widgets terminal",
         ),
         TerminalLine::new("   Compiling ailloli_ui_core v0.1.0"),
         TerminalLine::new("   Compiling ailloli_ui_text v0.1.0"),
         TerminalLine::new("   Compiling ailloli_ui_widgets v0.1.0"),
         TerminalLine::new("    Finished dev target(s) in 1.42s"),
-        TerminalLine::prompt("dev@example:~/projects/ailloli-ui$ git status --short"),
+        TerminalLine::prompt("dev@example:~/projects/ailloli_ui$ git status --short"),
         TerminalLine::new(" M ailloli_ui_widgets/src/controls/terminal.rs"),
         TerminalLine::new(" M ailloli_ui_winit/examples/support/ui_bundle_showcase.rs"),
-        TerminalLine::prompt("dev@example:~/projects/ailloli-ui$ rg TerminalView README.md"),
+        TerminalLine::prompt("dev@example:~/projects/ailloli_ui$ rg TerminalView README.md"),
         TerminalLine::new("1021:### Phase 54.1 - TerminalView"),
         TerminalLine::new("1022:- [x] finished Implementer TerminalView read-only monospace"),
         TerminalLine::new(
             "1025:- [x] finished Ajouter capture opt-in ui_bundle_phase54_1_terminal_view.png",
         ),
         TerminalLine::prompt(
-            "dev@example:~/projects/ailloli-ui$ cargo test -p ailloli_ui_widgets terminal",
+            "dev@example:~/projects/ailloli_ui$ cargo test -p ailloli_ui_widgets terminal",
         ),
         TerminalLine::new("running 4 tests"),
         TerminalLine::success("test controls::terminal::tests::buffer_trims_history ... ok"),
@@ -5599,7 +5599,7 @@ fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
         ),
         TerminalLine::new("test result: ok. 4 passed; 0 failed; 0 ignored"),
         TerminalLine::prompt(
-            "dev@example:~/projects/ailloli-ui$ ./scripts/build-ui --target terminal",
+            "dev@example:~/projects/ailloli_ui$ ./scripts/build-ui --target terminal",
         ),
         TerminalLine::new("[stream] received stdout chunk: build started"),
         TerminalLine::warning(
@@ -5610,7 +5610,7 @@ fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
         TerminalLine::new("[search] cache hit: target/debug/deps/ailloli_ui_widgets_terminal"),
         TerminalLine::stderr("stderr: no PTY backend attached in phase 54.1"),
         TerminalLine::system("status: waiting for external consumer events"),
-        TerminalLine::prompt("dev@example:~/projects/ailloli-ui$ _"),
+        TerminalLine::prompt("dev@example:~/projects/ailloli_ui$ _"),
     ]
 }
 

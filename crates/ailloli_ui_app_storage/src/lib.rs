@@ -804,7 +804,7 @@ mod tests {
             .resolve_with_env(|key| match key {
                 "MY_APP_STATE_DIR" => Some("/override/state".into()),
                 "XDG_STATE_HOME" => Some("/xdg/state".into()),
-                "HOME" => Some("/tmp/ailloli-ui-home".into()),
+                "HOME" => Some("/tmp/ailloli_ui_home".into()),
                 _ => None,
             })
             .unwrap();

@@ -96,7 +96,7 @@ pub fn line_for_byte(text: &str, byte: usize) -> usize {
         .count()
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 pub fn fold_regions_for_document(language: EditorLanguage, text: &str) -> Vec<FoldRegion> {
     match language {
         EditorLanguage::Rust => rust_tree_sitter_fold_regions(text),
@@ -104,12 +104,12 @@ pub fn fold_regions_for_document(language: EditorLanguage, text: &str) -> Vec<Fo
     }
 }
 
-#[cfg(not(feature = "tree-sitter"))]
+#[cfg(not(feature = "tree_sitter"))]
 pub fn fold_regions_for_document(_language: EditorLanguage, _text: &str) -> Vec<FoldRegion> {
     Vec::new()
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn rust_tree_sitter_fold_regions(text: &str) -> Vec<FoldRegion> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_rust::LANGUAGE.into();
@@ -126,7 +126,7 @@ fn rust_tree_sitter_fold_regions(text: &str) -> Vec<FoldRegion> {
     regions
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn collect_rust_fold_regions(node: tree_sitter::Node<'_>, regions: &mut Vec<FoldRegion>) {
     if is_foldable_rust_node(node) {
         let start = node.start_position().row;
@@ -141,7 +141,7 @@ fn collect_rust_fold_regions(node: tree_sitter::Node<'_>, regions: &mut Vec<Fold
     }
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn is_foldable_rust_node(node: tree_sitter::Node<'_>) -> bool {
     matches!(
         node.kind(),

@@ -107,7 +107,7 @@ fn editor_pane_showcase() -> impl IntoView<()> {
         Document::new(
             DocumentId(5801),
             TextBuffer::from_string(
-                "[package]\nname = \"ailloli_ui_editor\"\nversion = \"0.1.0\"\n\n[features]\ntree-sitter = [\"dep:tree-sitter\"]\n",
+                "[package]\nname = \"ailloli_ui_editor\"\nversion = \"0.1.0\"\n\n[features]\ntree_sitter = [\"dep:tree-sitter\"]\n",
             ),
         )
         .with_path("ailloli_ui_editor/Cargo.toml"),

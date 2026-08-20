@@ -77,7 +77,7 @@ pub use crate::{
     HomeSymlinkViewStatus, LogicalWindowPosition, LogicalWindowSize, WindowSnapshot,
     WindowStateDocument,
 };
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 pub use crate::{
     NativeOverlayInputMode, NativeOverlayOptions, NativeOverlayRect, NativeOverlayTarget,
 };
@@ -134,7 +134,7 @@ pub use crate::widgets::editor::{
     EditorScrollbarStyle, EditorWrapMode, FoldRegion, FoldRegionId, GutterConfig, SearchMatch,
     SearchQuery, SearchState, SymbolEdge, SymbolEdgeKind, SymbolId, SymbolKind, SymbolSource,
 };
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 pub use crate::widgets::files::{
     local_file_tree_nodes, FileExplorerIoRequest, FileExplorerIoResponse, LocalFileExplorer,
     LocalFileExplorerCacheMode, LocalFileExplorerIoWorker, LocalFileExplorerLoadingMode,
@@ -158,5 +158,5 @@ pub use crate::{
     build_devtools_overlay, collect_debug_snapshot, debug_draw_cmds, pick_element_at, DebugDrawCmd,
     DebugSnapshot, DebugWarningKind, DevToolsAction, DevToolsMode, DevToolsState,
 };
-#[cfg(feature = "devtools-terminal")]
+#[cfg(feature = "devtools_terminal")]
 pub use crate::{terminal_debug_snapshot, TerminalDebugSnapshot};

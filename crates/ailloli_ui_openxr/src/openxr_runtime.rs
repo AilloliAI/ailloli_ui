@@ -28,7 +28,7 @@ pub mod panel;
 pub mod ray_overlay;
 #[cfg(feature = "openxr")]
 pub mod session_loop;
-#[cfg(all(feature = "openxr", feature = "smoke-ui"))]
+#[cfg(all(feature = "openxr", feature = "smoke_ui"))]
 pub mod smoke;
 #[cfg(feature = "openxr")]
 pub mod swapchain;
@@ -76,7 +76,7 @@ pub use ray_overlay::{
 };
 #[cfg(feature = "openxr")]
 pub use session_loop::{OpenXrRuntime, OpenXrRuntimeOptions, ReferenceSpacePreference};
-#[cfg(all(feature = "openxr", feature = "smoke-ui"))]
+#[cfg(all(feature = "openxr", feature = "smoke_ui"))]
 pub use smoke::{run_openxr_smoke, OpenXrSmokeExitReason, OpenXrSmokeOptions, OpenXrSmokeResult};
 #[cfg(feature = "openxr")]
 pub use swapchain::{OpenXrAcquiredImage, OpenXrQuadSwapchain, OpenXrSwapchainFormat};

@@ -282,7 +282,7 @@ fn generate_icons_command(
     let digest = icon.sha256();
     let cache = metadata
         .target_directory
-        .join("ailloli-ui/icons")
+        .join("ailloli_ui/icons")
         .join(GENERATOR_VERSION)
         .join(digest);
     let generated = icons::generate_icon_set(&icon, &cache)?;
@@ -365,11 +365,11 @@ fn package_command(
 
     let icon_cache = metadata
         .target_directory
-        .join("ailloli-ui/icons")
+        .join("ailloli_ui/icons")
         .join(GENERATOR_VERSION)
         .join(app_icon.sha256());
     let generated_icons = icons::generate_icon_set(&app_icon, &icon_cache)?;
-    let package_root = metadata.target_directory.join("ailloli-ui/package");
+    let package_root = metadata.target_directory.join("ailloli_ui/package");
     fs::create_dir_all(&package_root)?;
     let final_staging = package_root.join(platform.name());
     let temp_staging =
@@ -378,7 +378,7 @@ fn package_command(
         fs::remove_dir_all(&temp_staging)?;
     }
     fs::create_dir_all(&temp_staging)?;
-    let dist = metadata.target_directory.join("ailloli-ui/dist");
+    let dist = metadata.target_directory.join("ailloli_ui/dist");
     fs::create_dir_all(&dist)?;
 
     let artifact = match platform {
@@ -489,7 +489,7 @@ fn probe_identity(
     metadata: &CargoMetadata,
     executable: &Path,
 ) -> Result<AppIdentityMetadata, PackagingError> {
-    let package_root = metadata.target_directory.join("ailloli-ui/package");
+    let package_root = metadata.target_directory.join("ailloli_ui/package");
     fs::create_dir_all(&package_root)?;
     let output = package_root.join(format!(".metadata-{}.json", std::process::id()));
     if output.exists() {
@@ -561,7 +561,7 @@ struct BuildReceipt {
 fn receipt_path(metadata: &CargoMetadata, context: &PackageContext) -> PathBuf {
     metadata
         .target_directory
-        .join("ailloli-ui/build-receipts")
+        .join("ailloli_ui/build-receipts")
         .join(format!(
             "{}-{}-{}-{}.json",
             context.package_name,

@@ -4,7 +4,7 @@
 //! deterministic `SurfaceError::Lost` equivalent before its first captured
 //! frame, so the resulting PNG is produced by a reattached presentation.
 
-#![cfg(feature = "test-support")]
+#![cfg(feature = "test_support")]
 
 use std::collections::HashSet;
 use std::path::PathBuf;

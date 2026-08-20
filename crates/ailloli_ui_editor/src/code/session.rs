@@ -1,6 +1,6 @@
 use ailloli_ui_text::TextBuffer;
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 use crate::code::highlight_rust_tree_sitter_hybrid;
 use crate::code::{
     collapsed_region_hiding_line, diagnostic_at_byte, fold_regions_for_document,
@@ -264,12 +264,12 @@ impl CodeEditorSession {
         }
         self.syntax_tokens = match self.document.language {
             EditorLanguage::Rust => {
-                #[cfg(feature = "tree-sitter")]
+                #[cfg(feature = "tree_sitter")]
                 {
                     highlight_rust_tree_sitter_hybrid(&self.document.buffer.as_str())
                         .unwrap_or_else(|| highlight_rust_lexical(&self.document.buffer.as_str()))
                 }
-                #[cfg(not(feature = "tree-sitter"))]
+                #[cfg(not(feature = "tree_sitter"))]
                 {
                     highlight_rust_lexical(&self.document.buffer.as_str())
                 }

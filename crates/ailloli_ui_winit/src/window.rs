@@ -1,16 +1,16 @@
 //! Window creation: all paths go through [`window_attributes`] / [`create_window`].
 
 use ailloli_ui_core::{AppIcon, Size};
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 use winit::dpi::LogicalPosition;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::EventLoop;
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 use winit::window::WindowLevel;
 use winit::window::{Window, WindowAttributes};
 
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 use crate::native_overlay::NativeOverlayOptions;
 
 /// Common options when opening a window (title, size, decorations).
@@ -37,7 +37,7 @@ pub struct WindowOptions {
     /// Transparent winit window background (rounded corners + client chrome).
     pub transparent: bool,
     pub start_hidden_until_first_frame: bool,
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     pub native_overlay: Option<NativeOverlayOptions>,
 }
 
@@ -57,7 +57,7 @@ impl Default for WindowOptions {
             corner_radius: 0.0,
             transparent: false,
             start_hidden_until_first_frame: false,
-            #[cfg(feature = "native-overlay")]
+            #[cfg(feature = "native_overlay")]
             native_overlay: None,
         }
     }
@@ -117,7 +117,7 @@ pub fn window_attributes(options: &WindowOptions) -> WindowAttributes {
             a = a.with_window_icon(Some(icon));
         }
     }
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     if let Some(overlay) = &options.native_overlay {
         let rect = overlay.target.logical_rect;
         a = a
@@ -215,9 +215,9 @@ pub fn create_window(
     event_loop: &ActiveEventLoop,
     mut options: WindowOptions,
 ) -> Result<Window, winit::error::OsError> {
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     let constrain_size = options.native_overlay.is_none();
-    #[cfg(not(feature = "native-overlay"))]
+    #[cfg(not(feature = "native_overlay"))]
     let constrain_size = true;
     if constrain_size {
         if let Some(size) = options.inner_size {
@@ -289,7 +289,7 @@ mod tests {
         assert!(attributes.window_icon.is_none());
     }
 
-    #[cfg(feature = "native-overlay")]
+    #[cfg(feature = "native_overlay")]
     #[test]
     fn window_overlay_attributes_enforce_native_invariants() {
         use crate::{NativeOverlayOptions, NativeOverlayRect, NativeOverlayTarget};

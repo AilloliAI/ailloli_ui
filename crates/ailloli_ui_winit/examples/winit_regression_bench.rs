@@ -12,7 +12,7 @@
 //! ```
 //!
 //! `startup`, `resize_zero`, `surface_recovery`, `input_ime`, and
-//! `popup_portal` require the non-default `test-support` feature for faithful
+//! `popup_portal` require the non-default `test_support` feature for faithful
 //! event-loop-thread observation/injection. `resize_zero` drives the
 //! provider-neutral native presentation path through a synthetic
 //! `0×0 → non-zero` round trip; it does not require a compositor to accept a
@@ -27,7 +27,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 use ailloli_ui_core::{
     event::{Event, ImeEvent, Modifiers, PointerButton, PointerEvent},
     LogicalWindowId, Point,
@@ -35,7 +35,7 @@ use ailloli_ui_core::{
 use ailloli_ui_core::{Color, Size};
 use ailloli_ui_runtime::app::{RuntimeHandle, RuntimeInbox, RuntimeSender, UiWake, UiWakeError};
 use ailloli_ui_runtime::component::{IntoView, State};
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 use ailloli_ui_runtime::{
     app::PresentationGeneration,
     input::{EventEnvelope, EventId, EventMeta, EventTimestamp},
@@ -146,7 +146,7 @@ impl Scenario {
             | Self::SurfaceRecovery
             | Self::InputIme
             | Self::PopupPortal => {
-                cfg!(feature = "test-support")
+                cfg!(feature = "test_support")
             }
             Self::Idle | Self::WakeSingle | Self::WakeBurst | Self::MultiWindow => true,
         }
@@ -154,32 +154,32 @@ impl Scenario {
 
     const fn fidelity(self) -> &'static str {
         match self {
-            Self::Startup if cfg!(feature = "test-support") => {
+            Self::Startup if cfg!(feature = "test_support") => {
                 "full:first-successful-swapchain-present-observed-on-event-loop-thread"
             }
-            Self::Startup => "blocked:first-present-observation-requires-test-support",
+            Self::Startup => "blocked:first-present-observation-requires-test_support",
             Self::Idle => "full:waituntil-probes-without-redraw",
             Self::WakeSingle => "full:bounded-mailbox-and-event-loop-proxy",
             Self::WakeBurst => "full:bounded-mailbox-burst-and-event-loop-proxy",
             Self::MultiWindow => "full:two-independent-native-presentations",
-            Self::ResizeZero if cfg!(feature = "test-support") => {
+            Self::ResizeZero if cfg!(feature = "test_support") => {
                 "full:event-loop-thread-zero-extent-lifecycle-and-surface-restore"
             }
-            Self::ResizeZero => "blocked:zero-extent-injection-requires-test-support",
-            Self::SurfaceRecovery if cfg!(feature = "test-support") => {
+            Self::ResizeZero => "blocked:zero-extent-injection-requires-test_support",
+            Self::SurfaceRecovery if cfg!(feature = "test_support") => {
                 "full:lost-and-outdated-detach-reattach-faults"
             }
             Self::SurfaceRecovery => {
-                "partial:repeated-surface-redraw;enable-test-support-for-fault-injection"
+                "partial:repeated-surface-redraw;enable-test_support-for-fault-injection"
             }
-            Self::InputIme if cfg!(feature = "test-support") => {
+            Self::InputIme if cfg!(feature = "test_support") => {
                 "full:provider-neutral-event-envelope-ime-lifecycle"
             }
-            Self::InputIme => "blocked:event-envelope-injection-requires-test-support",
-            Self::PopupPortal if cfg!(feature = "test-support") => {
+            Self::InputIme => "blocked:event-envelope-injection-requires-test_support",
+            Self::PopupPortal if cfg!(feature = "test_support") => {
                 "full:retained-select-request-and-dismiss-to-successful-present"
             }
-            Self::PopupPortal => "blocked:retained-popup-event-injection-requires-test-support",
+            Self::PopupPortal => "blocked:retained-popup-event-injection-requires-test_support",
         }
     }
 }
@@ -510,7 +510,7 @@ impl RegressionDriver {
                         .load(Ordering::Relaxed) as f64,
                 );
             }
-            Scenario::SurfaceRecovery if !cfg!(feature = "test-support") => {
+            Scenario::SurfaceRecovery if !cfg!(feature = "test_support") => {
                 record_correctness("correctness.surface_recovery_not_exercised", 1.0);
             }
             Scenario::PopupPortal => {
@@ -670,16 +670,16 @@ fn validate_sampling_contract(
 }
 
 fn validate_scenario_capability(scenario: Scenario) -> Result<(), HarnessError> {
-    if scenario == Scenario::PopupPortal && !cfg!(feature = "test-support") {
+    if scenario == Scenario::PopupPortal && !cfg!(feature = "test_support") {
         return Err(HarnessError(
-            "popup_portal requires the ailloli_ui_winit test-support feature for real EventEnvelope injection and successful-present observation"
+            "popup_portal requires the ailloli_ui_winit test_support feature for real EventEnvelope injection and successful-present observation"
                 .to_string(),
         ));
     }
     Ok(())
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 fn popup_native_focus_ready(native_focus: Option<bool>) -> bool {
     native_focus == Some(true)
 }
@@ -938,10 +938,10 @@ fn update_harness_metadata(
         metadata.extensions.insert(
             "resize_zero_injection".to_string(),
             serde_json::Value::String(
-                if cfg!(feature = "test-support") {
+                if cfg!(feature = "test_support") {
                     "event-loop-thread:synthetic-zero-extent-then-native-surface-restore"
                 } else {
-                    "unavailable:zero-extent-injection-requires-test-support"
+                    "unavailable:zero-extent-injection-requires-test_support"
                 }
                 .to_string(),
             ),
@@ -951,10 +951,10 @@ fn update_harness_metadata(
         metadata.extensions.insert(
             "input_source".to_string(),
             serde_json::Value::String(
-                if cfg!(feature = "test-support") {
+                if cfg!(feature = "test_support") {
                     "provider-neutral-event-envelope"
                 } else {
-                    "unavailable:test-support-disabled"
+                    "unavailable:test_support-disabled"
                 }
                 .to_string(),
             ),
@@ -991,7 +991,7 @@ fn update_harness_metadata(
     ailloli_ui_bench::try_update_metadata(metadata).map(|_| ())
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 struct NativeHarnessProbe {
     scenario: Scenario,
     sampling: SamplingPlan,
@@ -1007,7 +1007,7 @@ struct NativeHarnessProbe {
     pending_popup_sample: Option<PendingPopupSample>,
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 struct PendingInputSample {
     phase: ailloli_ui_bench::SamplePhase,
     injected_at: Instant,
@@ -1015,7 +1015,7 @@ struct PendingInputSample {
     cause_event_id: Option<ailloli_ui_bench::EventId>,
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 struct PendingResizeZeroSample {
     phase: ailloli_ui_bench::SamplePhase,
     injected_at: Instant,
@@ -1024,7 +1024,7 @@ struct PendingResizeZeroSample {
     cause_event_id: Option<ailloli_ui_bench::EventId>,
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 struct PendingPopupSample {
     phase: ailloli_ui_bench::SamplePhase,
     stage: PendingPopupStage,
@@ -1033,13 +1033,13 @@ struct PendingPopupSample {
     cause_event_id: Option<ailloli_ui_bench::EventId>,
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 enum PendingPopupStage {
     Opening(PopupId),
     Dismissing(PopupId),
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 impl NativeHarnessProbe {
     fn new(
         scenario: Scenario,
@@ -1571,7 +1571,7 @@ impl NativeHarnessProbe {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 fn queue_surface_recovery_faults(ui: &mut UiApp<WakeSample>) -> Result<(), HarnessError> {
     let logical_window_id = LogicalWindowId::new(MAIN_WINDOW_ID);
     for fault in [
@@ -1587,7 +1587,7 @@ fn queue_surface_recovery_faults(ui: &mut UiApp<WakeSample>) -> Result<(), Harne
     Ok(())
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 fn record_surface_recovery_correctness(ui: &UiApp<WakeSample>) -> Result<(), HarnessError> {
     let logical_window_id = LogicalWindowId::new(MAIN_WINDOW_ID);
     let state = ui
@@ -1620,7 +1620,7 @@ fn record_surface_recovery_correctness(ui: &UiApp<WakeSample>) -> Result<(), Har
     Ok(())
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 fn record_resize_zero_correctness(
     ui: &UiApp<WakeSample>,
     expected_round_trips: u32,
@@ -1651,7 +1651,7 @@ fn run_harness(
 ) -> Result<(), Box<dyn Error>> {
     validate_scenario_capability(scenario)?;
     let duration = Duration::from_millis(u64::from(config.duration_ms));
-    let settle = if scenario == Scenario::SurfaceRecovery && cfg!(feature = "test-support") {
+    let settle = if scenario == Scenario::SurfaceRecovery && cfg!(feature = "test_support") {
         (duration / 3)
             .min(Duration::from_secs(4))
             .max(Duration::from_millis(20))
@@ -1713,7 +1713,7 @@ fn run_harness(
             root_view(scenario, "secondary"),
         );
     }
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     if scenario == Scenario::SurfaceRecovery {
         queue_surface_recovery_faults(&mut ui)?;
     }
@@ -1727,7 +1727,7 @@ fn run_harness(
         Arc::clone(&first_present),
     );
     let mut host = WinitHost::new(ui, driver).runtime_inbox(inbox);
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     {
         let mut probe =
             NativeHarnessProbe::new(scenario, sampling, first_present, Arc::clone(&accounting));
@@ -1750,11 +1750,11 @@ fn run_harness(
     }
 
     host.driver().finish_metrics();
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     if scenario == Scenario::SurfaceRecovery {
         record_surface_recovery_correctness(host.ui())?;
     }
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     if scenario == Scenario::ResizeZero {
         record_resize_zero_correctness(host.ui(), sampling.total_samples())?;
     }
@@ -1835,7 +1835,7 @@ mod tests {
 
     #[test]
     fn fidelity_tracks_test_support_injection_capabilities() {
-        if cfg!(feature = "test-support") {
+        if cfg!(feature = "test_support") {
             assert!(Scenario::Startup.fidelity().starts_with("full:"));
             assert!(Scenario::ResizeZero.fidelity().starts_with("full:"));
             assert!(Scenario::SurfaceRecovery.fidelity().starts_with("full:"));
@@ -1913,12 +1913,12 @@ mod tests {
     fn popup_scenario_requires_real_test_support_injection() {
         assert_eq!(
             validate_scenario_capability(Scenario::PopupPortal).is_ok(),
-            cfg!(feature = "test-support")
+            cfg!(feature = "test_support")
         );
         assert!(validate_scenario_capability(Scenario::Idle).is_ok());
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     #[test]
     fn popup_sampling_waits_for_observable_native_focus() {
         assert!(!popup_native_focus_ready(None));

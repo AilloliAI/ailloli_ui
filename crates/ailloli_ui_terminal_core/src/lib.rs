@@ -338,7 +338,7 @@ mod tests {
             scrollback_limit: 10,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
 
         state.write_str(prompt);
         assert!(state.screen.line(1).expect("wrapped").wrapped_from_previous);
@@ -451,7 +451,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
 
         state.write_str(prompt);
         for cols in [12, 36, 14, 50, 18, 64, 16, 80] {
@@ -472,7 +472,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
         let mut parser = VteTerminalParser::new();
 
         state.mark_shell_prompt_start();
@@ -495,7 +495,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
         let mut parser = VteTerminalParser::new();
 
         state.mark_shell_prompt_start();
@@ -521,7 +521,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
         let mut parser = VteTerminalParser::new();
 
         state.mark_shell_prompt_start();
@@ -547,7 +547,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
 
         state.mark_shell_prompt_start();
         state.write_str(prompt);
@@ -568,7 +568,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
 
         state.mark_shell_prompt_start();
         state.write_str(prompt);
@@ -587,7 +587,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
 
         state.mark_shell_prompt_start();
         state.write_str(prompt);
@@ -608,7 +608,7 @@ mod tests {
             scrollback_limit: 100,
             security: TerminalSecurityPolicy::default(),
         });
-        let prompt = "dev@example:~/project/ailloli-ui$ ";
+        let prompt = "dev@example:~/project/ailloli_ui$ ";
         let resized_cols = 16;
 
         state.mark_shell_prompt_start();

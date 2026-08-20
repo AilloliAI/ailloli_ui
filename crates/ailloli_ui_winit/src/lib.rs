@@ -43,7 +43,7 @@ pub mod event_loop;
 pub mod external_url;
 /// Provider-neutral application logic hosted by winit.
 pub mod host;
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 pub mod native_overlay;
 /// OS-specific winit extensions.
 pub mod platform;
@@ -91,14 +91,14 @@ pub use capture::{
 pub use event_loop::{new_event_loop, new_event_loop_allow_any_thread, run_app_on_event_loop};
 pub use external_url::SystemExternalUrlOpener;
 pub use host::{run_winit_host, HostDriver, HostOutcome, NoopHostDriver, WinitHost};
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 pub use native_overlay::{
     NativeCalibrationMarkerGuard, NativeCalibrationMarkerPixel, NativeCalibrationMarkerSpec,
     NativeOutputDescriptor, NativeOutputProbeService, NativeOutputScale, NativeOutputTransform,
     NativeOverlayBackend, NativeOverlayCapabilities, NativeOverlayError, NativeOverlayInputMode,
     NativeOverlayOptions, NativeOverlayRect, NativeOverlayTarget,
 };
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 pub use ui_app::{PresentationTestFault, PresentationTestState};
 pub use ui_app::{UiApp, UiAppError};
 pub use wgpu_bootstrap::{

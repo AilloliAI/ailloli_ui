@@ -1,11 +1,11 @@
 use ailloli_ui_core::event::ImePreedit;
 use ailloli_ui_core::Theme;
 use ailloli_ui_core::{Point, Rect};
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 use ailloli_ui_editor::code::highlight_rust_tree_sitter_hybrid;
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 use ailloli_ui_editor::code::FoldRegionId;
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 use ailloli_ui_editor::code::TreeSitterRustSymbolIndexer;
 use ailloli_ui_editor::code::{
     detect_language, find_matches, highlight_rust_lexical, index_symbols_with_fallback,
@@ -50,7 +50,7 @@ fn scrollbar_rects(frame: &ailloli_ui_editor::EditorFrame) -> Vec<(Rect, Rect)> 
         .collect()
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn assert_token(text: &str, tokens: &[SyntaxToken], kind: SyntaxKind, needle: &str) {
     assert!(
         tokens
@@ -1882,7 +1882,7 @@ fn code_editor_session_toggle_fold_moves_caret_out_of_hidden_region() {
     assert_eq!(session.editor.edit.caret_byte, 0);
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[test]
 fn tree_sitter_fold_regions_include_rust_blocks_and_preserve_collapsed_state() {
     let source = "mod app {\nimpl App {\nfn run() {\nlet value = 1;\n}\n}\n}\n";
@@ -1918,7 +1918,7 @@ fn tree_sitter_fold_regions_include_rust_blocks_and_preserve_collapsed_state() {
     );
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[test]
 fn tree_sitter_fold_regions_do_not_survive_document_change() {
     let foldable = "fn outer() {\nif true {\nlet value = 1;\n}\n}\n";
@@ -2075,7 +2075,7 @@ fn code_editor_session_refresh_syntax_tokens_invalidates_on_language_change() {
     assert_eq!(session.syntax_tokens_language, Some(EditorLanguage::Rust));
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[test]
 fn tree_sitter_rust_hybrid_highlights_structural_and_gap_tokens() {
     let source = [
@@ -2120,7 +2120,7 @@ fn tree_sitter_rust_hybrid_highlights_structural_and_gap_tokens() {
     }));
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[test]
 fn code_editor_session_uses_hybrid_tree_sitter_tokens_when_feature_enabled() {
     let source = "#[derive(Debug)]\npub struct Parser<'a>;\nfn parse() {}\n";
@@ -2430,7 +2430,7 @@ fn symbol_kind_new_ir_variants_serialize_stably() {
     assert!(json.contains("Macro"));
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[test]
 fn tree_sitter_rust_symbol_indexer_extracts_rust_symbols() {
     let document = Document::new(
@@ -2460,7 +2460,7 @@ fn tree_sitter_rust_symbol_indexer_extracts_rust_symbols() {
         .any(|edge| edge.kind == SymbolEdgeKind::Contains));
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[test]
 fn tree_sitter_rust_symbol_indexer_builds_complete_octav_ir() {
     let source = r#"//! module docs
@@ -2646,7 +2646,7 @@ fn helper() {}
     assert!(json.contains("\"Macro\""));
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn assert_symbol<'a>(
     summary: &'a ailloli_ui_editor::code::CodeFileSummary,
     kind: SymbolKind,
@@ -2664,7 +2664,7 @@ fn assert_symbol<'a>(
         })
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 #[test]
 fn tree_sitter_rust_symbol_graph_uses_callers_and_ignores_false_positives() {
     let source = r##"use crate::runtime::build;
@@ -2800,7 +2800,7 @@ pub fn build() {}
     );
 }
 
-#[cfg(feature = "tree-sitter")]
+#[cfg(feature = "tree_sitter")]
 fn assert_graph_edge(
     summary: &ailloli_ui_editor::code::CodeFileSummary,
     from: SymbolId,

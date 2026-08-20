@@ -16,7 +16,7 @@ use winit::window::WindowId;
 use crate::event_loop::{new_event_loop_allow_any_thread, run_app_on_event_loop};
 use crate::{UiApp, UiAppError};
 
-#[cfg(feature = "test-support")]
+#[cfg(feature = "test_support")]
 type TestService<A> = Box<dyn FnMut(&mut UiApp<A>)>;
 
 /// Work requested by a provider-neutral application driver after a host callback.
@@ -75,7 +75,7 @@ pub struct WinitHost<A, D> {
     capture_wake_error: Option<UiWakeError>,
     #[cfg(feature = "devtools")]
     devtools_wake_error: Option<UiWakeError>,
-    #[cfg(feature = "test-support")]
+    #[cfg(feature = "test_support")]
     test_service: Option<TestService<A>>,
 }
 
@@ -90,7 +90,7 @@ impl<A: 'static, D> WinitHost<A, D> {
             capture_wake_error: None,
             #[cfg(feature = "devtools")]
             devtools_wake_error: None,
-            #[cfg(feature = "test-support")]
+            #[cfg(feature = "test_support")]
             test_service: None,
         }
     }
@@ -100,8 +100,8 @@ impl<A: 'static, D> WinitHost<A, D> {
     /// The callback runs after the UI host has processed each native callback,
     /// so deterministic event envelopes can be injected into live windows
     /// before their capture frame. This hook is intentionally unavailable
-    /// without `test-support` and is not re-exported by the facade.
-    #[cfg(feature = "test-support")]
+    /// without `test_support` and is not re-exported by the facade.
+    #[cfg(feature = "test_support")]
     pub fn test_service(mut self, service: impl FnMut(&mut UiApp<A>) + 'static) -> Self {
         self.test_service = Some(Box::new(service));
         self
@@ -210,7 +210,7 @@ impl<A: 'static, D: HostDriver<A>> WinitHost<A, D> {
     }
 
     fn service_driver(&mut self, event_loop: &ActiveEventLoop) -> HostOutcome {
-        #[cfg(feature = "test-support")]
+        #[cfg(feature = "test_support")]
         if let Some(mut service) = self.test_service.take() {
             service(&mut self.ui);
             self.test_service = Some(service);
@@ -280,7 +280,7 @@ pub fn run_winit_host<A: 'static, D: HostDriver<A>>(
     let event_loop = new_event_loop_allow_any_thread()?;
     let wake: Arc<dyn UiWake> = Arc::new(WinitUiWake(event_loop.create_proxy()));
     host.install_host_wake(wake);
-    // Runtime inbox, capture, remote devtools, and native-overlay events all
+    // Runtime inbox, capture, remote devtools, and native_overlay events all
     // share this wake-only host proxy. Linux shutdown keeps only the signal
     // handler which targets the same native event loop.
     run_app_on_event_loop(event_loop, host, ControlFlow::Wait)

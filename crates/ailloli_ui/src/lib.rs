@@ -30,7 +30,7 @@ pub use ailloli_ui_devtools_ui as devtools_ui;
 pub use ailloli_ui_fs as fs;
 pub use ailloli_ui_runtime as runtime;
 pub use ailloli_ui_terminal_core as terminal_core;
-#[cfg(feature = "terminal-pty")]
+#[cfg(feature = "terminal_pty")]
 pub use ailloli_ui_terminal_pty as terminal_pty;
 pub use ailloli_ui_text as text;
 pub use ailloli_ui_widgets as widgets;
@@ -86,7 +86,7 @@ pub use ailloli_ui_devtools_core::{
     collect_debug_snapshot, collect_debug_snapshot_with_state, compute_warnings, debug_draw_cmds,
     pick_element_at, DebugDrawCmd, DebugSnapshot, DebugWarningKind, DevToolsMode,
 };
-#[cfg(feature = "devtools-terminal")]
+#[cfg(feature = "devtools_terminal")]
 pub use ailloli_ui_devtools_core::{terminal_debug_snapshot, TerminalDebugSnapshot};
 #[cfg(feature = "devtools")]
 pub use ailloli_ui_devtools_ui::{build_devtools_overlay, DevToolsAction, DevToolsState};
@@ -100,9 +100,9 @@ pub use ailloli_ui_runtime::{
     DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText, Layer, LayoutCtx, PaintCtx,
     Painter, Scene,
 };
-#[cfg(feature = "terminal-pty-portable")]
+#[cfg(feature = "terminal_pty_portable")]
 pub use ailloli_ui_terminal_pty::PortablePtyBackend;
-#[cfg(feature = "terminal-pty")]
+#[cfg(feature = "terminal_pty")]
 pub use ailloli_ui_terminal_pty::{
     MockPtyBackend, PtyBackend, PtyBatchConfig, PtyError, PtyEvent, PtyExitStatus, PtyHandle,
     PtyOutputBatcher, PtySize, PtySpawnConfig,
@@ -135,7 +135,7 @@ pub use ailloli_ui_widgets::files::{
     FileExplorerStyle, FileIconVisual, FileTreeLoadMode, FileTreeNode, FileTreeNodeId,
     FileTreeOptions, FileTreeStore, LargeDirectoryPolicy,
 };
-#[cfg(feature = "files-local")]
+#[cfg(feature = "files_local")]
 pub use ailloli_ui_widgets::files::{
     local_file_tree_nodes, FileExplorerIoRequest, FileExplorerIoResponse, LocalFileExplorer,
     LocalFileExplorerCacheMode, LocalFileExplorerIoWorker, LocalFileExplorerLoadingMode,
@@ -150,7 +150,7 @@ pub use ailloli_ui_winit::{
     crop_captured_frame, strip_png_if_disabled, CaptureError, CaptureHandle, CaptureRequest,
     CaptureRequestId, CaptureResult, CaptureTarget, FrameCaptureHook, FrameCaptureResult,
 };
-#[cfg(feature = "native-overlay")]
+#[cfg(feature = "native_overlay")]
 pub use ailloli_ui_winit::{
     NativeCalibrationMarkerGuard, NativeCalibrationMarkerPixel, NativeCalibrationMarkerSpec,
     NativeOutputDescriptor, NativeOutputProbeService, NativeOutputScale, NativeOutputTransform,
