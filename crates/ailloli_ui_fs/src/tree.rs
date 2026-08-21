@@ -255,7 +255,7 @@ pub enum FileTreeStoreError {
 pub struct FileTreeStore {
     nodes: HashMap<FileTreeNodeId, FileTreeNode>,
     uri_index: HashMap<FileUri, FileTreeNodeId>,
-    identity_index: HashMap<FileIdentity, FileTreeNodeId>,
+    identity_index: HashMap<FileIdentity, HashSet<FileTreeNodeId>>,
     root: FileTreeNodeId,
     revision: u64,
     generation: u64,
@@ -589,7 +589,7 @@ impl FileTreeStore {
             .push(id);
         self.uri_index.insert(entry.uri.clone(), id);
         if let Some(identity) = identity {
-            self.identity_index.insert(identity, id);
+            self.index_identity(identity, id);
         }
         self.nodes.insert(id, node.clone());
         let now = Instant::now();
@@ -645,11 +645,16 @@ impl FileTreeStore {
             .ok_or_else(|| FileTreeStoreError::MissingDestinationParent(to.clone()))?;
         self.rebase_subtree_uri(id, to.clone());
         if let Some(identity) = identity {
-            let node = self.nodes.get_mut(&id).expect("validated node");
-            if let Some(previous) = node.identity.replace(identity.clone()) {
-                self.identity_index.remove(&previous);
+            let previous = self
+                .nodes
+                .get_mut(&id)
+                .expect("validated node")
+                .identity
+                .replace(identity.clone());
+            if let Some(previous) = previous {
+                self.unindex_identity(&previous, id);
             }
-            self.identity_index.insert(identity, id);
+            self.index_identity(identity, id);
         }
         let mut changes = Vec::new();
         if previous_parent != Some(next_parent) {
@@ -738,10 +743,11 @@ impl FileTreeStore {
                     self.mark_event_parent_stale(event.uri(), &mut changes)?;
                     return self.commit(changes);
                 };
-                let id = event
-                    .identity()
-                    .and_then(|identity| self.identity_index.get(identity).copied())
-                    .or_else(|| self.node_id(previous_uri));
+                let id = self.node_id(previous_uri).or_else(|| {
+                    event
+                        .identity()
+                        .and_then(|identity| self.unique_identity_node(identity))
+                });
                 let Some(id) = id else {
                     self.mark_event_parent_stale(previous_uri, &mut changes)?;
                     self.mark_event_parent_stale(event.uri(), &mut changes)?;
@@ -751,11 +757,16 @@ impl FileTreeStore {
                 let new_parent = event.uri().parent().and_then(|uri| self.node_id(&uri));
                 self.rebase_subtree_uri(id, event.uri().clone());
                 if let Some(identity) = event.identity().cloned() {
-                    let node = self.nodes.get_mut(&id).expect("watch node exists");
-                    if let Some(old_identity) = node.identity.replace(identity.clone()) {
-                        self.identity_index.remove(&old_identity);
+                    let old_identity = self
+                        .nodes
+                        .get_mut(&id)
+                        .expect("watch node exists")
+                        .identity
+                        .replace(identity.clone());
+                    if let Some(old_identity) = old_identity {
+                        self.unindex_identity(&old_identity, id);
                     }
-                    self.identity_index.insert(identity, id);
+                    self.index_identity(identity, id);
                 }
                 if new_parent != old_parent {
                     self.detach_from_parent(id);
@@ -929,18 +940,48 @@ impl FileTreeStore {
             .ok_or(FileTreeStoreError::MissingNode(parent))?
             .children
             .clone();
+        let incoming_uris = entries
+            .iter()
+            .map(|(entry, _)| entry.uri.clone())
+            .collect::<HashSet<_>>();
+        let mut incoming_identity_counts = HashMap::<FileIdentity, usize>::new();
+        for (_, identity) in &entries {
+            if let Some(identity) = identity {
+                *incoming_identity_counts
+                    .entry(identity.clone())
+                    .or_default() += 1;
+            }
+        }
         let mut retained = HashSet::new();
+        let mut claimed = HashSet::new();
         let mut next_children = Vec::with_capacity(entries.len());
         let mut changes = Vec::new();
 
         for (index, (entry, identity)) in entries.into_iter().enumerate() {
-            let existing = identity
-                .as_ref()
-                .and_then(|identity| self.identity_index.get(identity).copied())
-                .or_else(|| self.uri_index.get(&entry.uri).copied())
+            // A filesystem identity is not necessarily unique: hard links
+            // intentionally share one inode while remaining distinct tree
+            // entries. Prefer the exact URI and use identity-based retention
+            // only when both the old store and this directory snapshot make
+            // the identity unambiguous. This preserves IDs for attested
+            // renames without collapsing `/bin` hard links into one row.
+            let existing = self
+                .uri_index
+                .get(&entry.uri)
+                .copied()
+                .filter(|id| !claimed.contains(id))
+                .or_else(|| {
+                    let identity = identity.as_ref()?;
+                    if incoming_identity_counts.get(identity).copied() != Some(1) {
+                        return None;
+                    }
+                    let id = self.unique_identity_node(identity)?;
+                    let old_uri = self.nodes.get(&id)?.uri.clone();
+                    (!claimed.contains(&id) && !incoming_uris.contains(&old_uri)).then_some(id)
+                })
                 .filter(|id| self.nodes.contains_key(id));
             let id = match existing {
                 Some(id) => {
+                    claimed.insert(id);
                     let previous_parent = self.nodes.get(&id).and_then(|node| node.parent);
                     if previous_parent != Some(parent) {
                         self.detach_from_parent(id);
@@ -967,15 +1008,23 @@ impl FileTreeStore {
                     {
                         self.rebase_subtree_uri(id, entry.uri.clone());
                     }
-                    let node = self.nodes.get_mut(&id).expect("indexed node");
-                    node.metadata = entry.metadata;
-                    if node.identity != identity {
-                        if let Some(previous) = node.identity.take() {
-                            self.identity_index.remove(&previous);
+                    let (previous_identity, identity_changed) = {
+                        let node = self.nodes.get_mut(&id).expect("indexed node");
+                        node.metadata = entry.metadata;
+                        if node.identity != identity {
+                            let previous = node.identity.take();
+                            node.identity = identity.clone();
+                            (previous, true)
+                        } else {
+                            (None, false)
                         }
-                        node.identity = identity.clone();
+                    };
+                    if let Some(previous) = previous_identity {
+                        self.unindex_identity(&previous, id);
+                    }
+                    if identity_changed {
                         if let Some(identity) = identity {
-                            self.identity_index.insert(identity, id);
+                            self.index_identity(identity, id);
                         }
                     }
                     changes.push(FileTreeDelta::Updated { id });
@@ -998,7 +1047,7 @@ impl FileTreeStore {
                     };
                     self.uri_index.insert(entry.uri, id);
                     if let Some(identity) = identity {
-                        self.identity_index.insert(identity, id);
+                        self.index_identity(identity, id);
                     }
                     self.nodes.insert(id, node.clone());
                     self.cache.insert(
@@ -1055,7 +1104,7 @@ impl FileTreeStore {
             };
             self.uri_index.remove(&node.uri);
             if let Some(identity) = node.identity {
-                self.identity_index.remove(&identity);
+                self.unindex_identity(&identity, current);
             }
             self.active_requests.remove(&current);
             self.cache.remove(&current);
@@ -1069,6 +1118,25 @@ impl FileTreeStore {
         if let Some(parent) = parent.and_then(|parent| self.nodes.get_mut(&parent)) {
             parent.children.retain(|child| *child != id);
         }
+    }
+
+    fn index_identity(&mut self, identity: FileIdentity, id: FileTreeNodeId) {
+        self.identity_index.entry(identity).or_default().insert(id);
+    }
+
+    fn unindex_identity(&mut self, identity: &FileIdentity, id: FileTreeNodeId) {
+        let remove_entry = self.identity_index.get_mut(identity).is_some_and(|ids| {
+            ids.remove(&id);
+            ids.is_empty()
+        });
+        if remove_entry {
+            self.identity_index.remove(identity);
+        }
+    }
+
+    fn unique_identity_node(&self, identity: &FileIdentity) -> Option<FileTreeNodeId> {
+        let ids = self.identity_index.get(identity)?;
+        (ids.len() == 1).then(|| *ids.iter().next().expect("one identity candidate"))
     }
 
     fn mark_event_parent_stale(

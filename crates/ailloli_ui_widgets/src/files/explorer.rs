@@ -15,7 +15,7 @@ use ailloli_ui_runtime::Invalidation;
 use crate::controls::{
     ContextMenu, ContextMenuEntry, ContextMenuItem, TreeContextMenu, TreeCreateKind,
     TreeCreateRequest, TreeDropPosition, TreeModelHandle, TreeMove, TreeMutationMode, TreeNode,
-    TreeShortcut, TreeView, TreeViewCommand, TreeViewSize, TreeViewStyle,
+    TreeShortcut, TreeView, TreeViewCommand, TreeViewDiagnostics, TreeViewSize, TreeViewStyle,
 };
 use crate::layout::layout_ext::finish_view_sized;
 use crate::layout::{Container, LayoutExt, ScrollView};
@@ -806,6 +806,7 @@ pub struct RetainedFileExplorer<T, A = ()> {
     clipboard_can_paste: Binding<bool>,
     style: FileExplorerStyle,
     scrollable: bool,
+    diagnostics: Option<TreeViewDiagnostics>,
     on_action: Option<ActionHandler<A>>,
     on_model_event: Option<RetainedEventHandler<T, A>>,
 }
@@ -842,6 +843,7 @@ where
             clipboard_can_paste: Binding::Static(false),
             style: FileExplorerStyle::default(),
             scrollable: true,
+            diagnostics: None,
             on_action: None,
             on_model_event: None,
         }
@@ -882,6 +884,15 @@ where
 
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    /// Attaches permanent structural counters to the retained tree.
+    ///
+    /// The handle is UI-local and does not affect model ownership or worker
+    /// scheduling. It is intended for performance gates and diagnostics.
+    pub fn tree_diagnostics(mut self, diagnostics: TreeViewDiagnostics) -> Self {
+        self.diagnostics = Some(diagnostics);
         self
     }
 
@@ -932,6 +943,7 @@ where
                 clipboard_can_paste: self.clipboard_can_paste,
                 style: self.style,
                 scrollable: self.scrollable,
+                diagnostics: self.diagnostics,
                 on_action: self.on_action,
                 on_model_event: self.on_model_event,
             }),
@@ -954,6 +966,7 @@ struct RetainedFileExplorerComponent<T, A> {
     clipboard_can_paste: Binding<bool>,
     style: FileExplorerStyle,
     scrollable: bool,
+    diagnostics: Option<TreeViewDiagnostics>,
     on_action: Option<ActionHandler<A>>,
     on_model_event: Option<RetainedEventHandler<T, A>>,
 }
@@ -1024,6 +1037,9 @@ where
             .mutation_mode(TreeMutationMode::IntentOnly)
             .tree_style(self.style.tree.clone())
             .virtualized(true);
+        if let Some(diagnostics) = &self.diagnostics {
+            tree = tree.diagnostics(diagnostics.clone());
+        }
         if !self.scrollable {
             tree.layout = self.layout;
         }

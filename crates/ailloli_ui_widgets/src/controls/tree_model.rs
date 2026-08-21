@@ -361,12 +361,13 @@ where
             });
         }
         let mut candidate = self.clone();
-        // Large initial imports are one logical model transaction. Updating
-        // the row-to-id map after every inserted row would turn construction
-        // of a flat 100k-node model into O(N²). Materialize its persistent
-        // index once at the transaction boundary; subsequent interactive
-        // mutations continue to use the splice path below.
-        let bulk_materialization = candidate.is_empty() && mutations.len() >= 1_024;
+        // A large provider result is one logical model transaction even when
+        // its parent already exists. Updating the row-to-id map after every
+        // inserted row would turn opening directories such as `/bin` into
+        // O(N²) UI-thread work. Materialize the persistent index once at the
+        // transaction boundary; ordinary interactive batches continue to use
+        // the precise splice path below.
+        let bulk_materialization = mutations.len() >= 1_024;
         if bulk_materialization {
             for mutation in &mutations {
                 candidate.apply_one_hierarchy(mutation)?;

@@ -65,6 +65,50 @@ fn identity_preserves_node_id_across_an_external_rename() {
 }
 
 #[test]
+fn hard_links_with_one_identity_remain_distinct_stable_entries() {
+    let mut store = root_store();
+    let root = store.root();
+    let shared = FileIdentity::new("unix", b"same-device-and-inode");
+    let entries = ["tool", "tool-a", "tool-b"]
+        .into_iter()
+        .map(|name| {
+            (
+                FileEntry::new(
+                    FileUri::parse(format!("file:///{name}")).unwrap(),
+                    FileMetadata::new(FileKind::File),
+                ),
+                Some(shared.clone()),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let (request, _) = store.begin_directory_load(root).unwrap();
+    let first = store
+        .apply_directory_result(&request, Ok(entries.clone()))
+        .unwrap();
+    assert_eq!(store.node(root).unwrap().children().len(), 3);
+    assert_eq!(
+        first
+            .changes()
+            .iter()
+            .filter(|change| matches!(change, FileTreeDelta::Inserted { .. }))
+            .count(),
+        3
+    );
+    let ids = ["tool", "tool-a", "tool-b"].map(|name| {
+        store
+            .node_id(&FileUri::parse(format!("file:///{name}")).unwrap())
+            .unwrap()
+    });
+    assert_ne!(ids[0], ids[1]);
+    assert_ne!(ids[1], ids[2]);
+
+    let (request, _) = store.begin_directory_load(root).unwrap();
+    store.apply_directory_result(&request, Ok(entries)).unwrap();
+    assert_eq!(store.node(root).unwrap().children(), &ids);
+}
+
+#[test]
 fn stale_worker_responses_never_overwrite_a_new_generation() {
     let mut store = root_store();
     let root = store.root();

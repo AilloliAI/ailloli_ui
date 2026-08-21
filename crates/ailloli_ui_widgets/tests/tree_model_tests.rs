@@ -73,6 +73,32 @@ fn flat_index_changes_on_mutation_but_not_on_reads() {
 }
 
 #[test]
+fn a_large_directory_batch_materializes_once_under_an_existing_parent() {
+    let mut model = TreeModel::new();
+    model.apply(insert(1, None, 0, true)).unwrap();
+    model
+        .apply(TreeMutation::SetExpanded {
+            id: 1,
+            expanded: true,
+        })
+        .unwrap();
+    let rebuilds = model.flat_index().rebuilds();
+
+    model
+        .apply_batch((0..2_319).map(|index| insert(index + 2, Some(1), index as usize, false)))
+        .unwrap();
+
+    assert_eq!(model.len(), 2_320);
+    assert_eq!(model.visible_len(), 2_320);
+    assert_eq!(model.children(&1).unwrap().len(), 2_319);
+    assert_eq!(model.flat_index().rebuilds(), rebuilds + 1);
+    for _ in 0..100 {
+        assert_eq!(model.visible_len(), 2_320);
+    }
+    assert_eq!(model.flat_index().rebuilds(), rebuilds + 1);
+}
+
+#[test]
 fn update_preserves_structure_and_rejects_nonempty_branch_to_leaf() {
     let mut model = TreeModel::new();
     model
