@@ -11,6 +11,18 @@ fn main() -> ailloli_ui::Result<()> {
     let selected_environment = State::new("Development".to_string());
     let selected_project = State::new("Ailloli UI".to_string());
     let search_value = State::new(String::new());
+    let tree_model = {
+        let mut model = TreeModel::new();
+        model
+            .apply_batch((0..100_000_u64).map(|id| TreeMutation::Insert {
+                parent: None,
+                index: id as usize,
+                item: TreeItem::leaf(id, format!("virtual row {id:06}")),
+            }))
+            .expect("synthetic tree model");
+        TreeModelHandle::new(model)
+    };
+    let next_tree_node = State::new(100_000_u64);
 
     App::new()
         .identity(
@@ -25,6 +37,8 @@ fn main() -> ailloli_ui::Result<()> {
                 .size(1100.0, 820.0)
                 .ailloli_ui_chrome()
                 .content(move || {
+                    let insert_model = tree_model.clone();
+                    let insert_id = next_tree_node.clone();
                     ScrollView::vertical()
                         .child(
                             Column::new()
@@ -71,6 +85,52 @@ fn main() -> ailloli_ui::Result<()> {
                                                     Link::with_label("Unavailable Link")
                                                         .href("https://example.com/unavailable")
                                                         .disabled(true),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    Column::new()
+                                        .gap(10.0)
+                                        .fill_width()
+                                        .child(
+                                            Text::new("Retained virtual tree — 100,000 rows")
+                                                .size(18.0),
+                                        )
+                                        .child(Text::new(
+                                            "Only viewport rows are measured and painted; insertion applies one retained delta.",
+                                        ))
+                                        .child(
+                                            Button::with_label("Insert one retained row").on_click(
+                                                ClickAction::handler(move |ctx| {
+                                                    let id = insert_id.read();
+                                                    insert_model
+                                                        .apply(TreeMutation::Insert {
+                                                            parent: None,
+                                                            index: id as usize,
+                                                            item: TreeItem::leaf(
+                                                                id,
+                                                                format!("inserted row {id:06}"),
+                                                            ),
+                                                        })
+                                                        .expect("unique synthetic tree row");
+                                                    insert_id.set(id.saturating_add(1));
+                                                    ctx.request_layout();
+                                                }),
+                                            ),
+                                        )
+                                        .child(
+                                            Container::new()
+                                                .height(320.0)
+                                                .fill_width()
+                                                .child(
+                                                    ScrollView::vertical()
+                                                        .initial_scroll_y(50_000.0 * 28.0)
+                                                        .child(
+                                                            TreeView::new()
+                                                                .model(tree_model.clone())
+                                                                .selected(50_000_u64)
+                                                                .virtualized(true),
+                                                        ),
                                                 ),
                                         ),
                                 )

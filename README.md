@@ -87,7 +87,7 @@ consumer experience across framework packages.
 
 ## Workspace packages
 
-The workspace contains 21 public-framework packages plus the non-publishable
+The workspace contains 22 public-framework packages plus the non-publishable
 `sandbox_app` consumer application:
 
 | Package | Responsibility |
@@ -101,6 +101,7 @@ The workspace contains 21 public-framework packages plus the non-publishable
 | `ailloli_ui_editor` | Backend-neutral editor engine and code-oriented data models. |
 | `ailloli_ui_fs` | UI-free file-provider contracts. |
 | `ailloli_ui_fs_local` | Local implementation of the file-provider contracts. |
+| `ailloli_ui_fs_runtime` | Bounded worker queues and wake delivery for filesystem sources. |
 | `ailloli_ui_terminal_core` | Process-independent terminal parser, grid, and snapshots. |
 | `ailloli_ui_terminal_pty` | Optional PTY process contracts and portable backend. |
 | `ailloli_ui_widgets` | Generic layouts, controls, editors, files, and terminal views. |
@@ -161,6 +162,68 @@ name with its snake_case counterpart:
 Upstream Cargo package names such as `tree-sitter-*`, `raw-window-handle`, and
 `openssh-sftp-client` are unchanged. The human-facing CLI binaries also remain
 `ailloli-ui-bench` and `cargo-ailloli-ui`.
+
+## Targeted work and retained trees
+
+Ailloli UI treats build, layout, and paint as distinct units of retained work.
+The following invariants are part of the framework contract:
+
+- invalidating one component never rebuilds or lays out a stable sibling whose
+  inputs, constraints, and dependencies did not change;
+- a virtualized component's per-frame cost depends on its viewport and
+  overscan, not on the total number of items in its retained model;
+- build, layout, paint, and hit testing never perform filesystem I/O. Sources
+  are owned by workers and deliver owned deltas through bounded queues.
+
+`Invalidation::Paint` reuses both the reconciled tree and layout,
+`Invalidation::Layout` recomputes the affected ancestor path, and
+`Invalidation::Build` reconciles the owning component before layout. Existing
+`Context::signal` calls remain build-invalidating for compatibility. Use
+`Context::signal_with_invalidation` when a signal has a narrower contract, and
+use `Signal::set_if_changed` only for small values where `PartialEq` is cheap;
+large trees should be represented by a retained handle and monotonic revision.
+
+For large trees, migrate from repeatedly constructing `Vec<TreeNode<_>>` to a
+UI-local `TreeModelHandle` and apply atomic deltas:
+
+```rust
+use ailloli_ui::prelude::*;
+
+let model = TreeModelHandle::new(TreeModel::new());
+model
+    .apply_batch([
+        TreeMutation::Insert {
+            parent: None,
+            index: 0,
+            item: TreeItem::branch(1_u64, "src"),
+        },
+        TreeMutation::Insert {
+            parent: Some(1),
+            index: 0,
+            item: TreeItem::leaf(2, "lib.rs"),
+        },
+        TreeMutation::SetExpanded {
+            id: 1,
+            expanded: true,
+        },
+    ])
+    .expect("valid retained tree batch");
+
+let tree = TreeView::new().model(model).virtualized(true);
+# let _ = tree;
+```
+
+`TreeView::nodes` and `TreeView::bind_nodes` remain suitable for small
+snapshots, but conversion happens only when their source changes. A
+`TreeModelHandle` is UI-local and must not cross a worker thread. Filesystem
+workers exchange requests and owned `FileTreeDelta` values, then wake the UI;
+the UI applies those deltas to its model.
+
+Filesystem watch payloads are non-exhaustive. Consumers that previously used
+struct literals should use `WatchEvent::new(...)`, optional builders such as
+`with_previous_uri(...)` and `with_identity(...)`, and accessors. Match
+`WatchEventKind` with a wildcard arm so future provider-neutral events remain
+source compatible.
 
 ## Development
 
