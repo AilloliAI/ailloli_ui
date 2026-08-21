@@ -145,6 +145,7 @@ pub struct TextSystem {
     engine: ParleyEngine,
     face_blobs: HashMap<u64, Arc<[u8]>>,
     cache: LruCache<TextLayoutKey, TextLayoutHandle>,
+    metrics_revision: u64,
 }
 
 impl Default for TextSystem {
@@ -162,6 +163,7 @@ impl TextSystem {
             engine: ParleyEngine::new(),
             face_blobs: HashMap::new(),
             cache: LruCache::new(cap),
+            metrics_revision: 1,
         }
     }
 
@@ -240,6 +242,17 @@ impl TextSystem {
 
     pub fn cached_layout_count(&self) -> usize {
         self.cache.len()
+    }
+
+    /// Monotone revision of inputs that can alter text metrics.
+    pub const fn metrics_revision(&self) -> u64 {
+        self.metrics_revision
+    }
+
+    /// Invalidates metric-dependent caches after a font or shaping change.
+    pub fn invalidate_metrics(&mut self) {
+        self.metrics_revision = self.metrics_revision.wrapping_add(1).max(1);
+        self.cache.clear();
     }
 }
 

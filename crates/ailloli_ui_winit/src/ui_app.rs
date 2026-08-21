@@ -31,9 +31,9 @@ use ailloli_ui_render_wgpu::{
 #[cfg(feature = "devtools")]
 use ailloli_ui_runtime::app::UiWakeError;
 use ailloli_ui_runtime::app::{
-    PendingPresentationIntents, PresentationCursor, PresentationEvent, PresentationGeneration,
-    PresentationIntent, PresentationLifecycle, PresentationState, PresentationUnavailableReason,
-    Runtime, RuntimeHandle, UiWake, WindowChromeOp,
+    FrameWorkPlan, PendingPresentationIntents, PresentationCursor, PresentationEvent,
+    PresentationGeneration, PresentationIntent, PresentationLifecycle, PresentationState,
+    PresentationUnavailableReason, Runtime, RuntimeHandle, UiWake, WindowChromeOp,
 };
 use ailloli_ui_runtime::component::{IntoView, View};
 use ailloli_ui_runtime::element::ViewKeyResolveError;
@@ -698,6 +698,7 @@ impl<A: 'static> UiApp<A> {
 
     pub(crate) fn install_host_wake(&mut self, wake: Arc<dyn UiWake>) {
         self.host_wake = Some(wake.clone());
+        self.runtime.install_ui_wake(wake.clone());
         #[cfg(feature = "devtools")]
         {
             let mut first_error = None;
@@ -2350,6 +2351,9 @@ impl<A: 'static> UiApp<A> {
                     h: size.height,
                 });
                 let request_redraw = state.resize.request(size);
+                if let Some(root) = state.runtime.root {
+                    state.runtime.runtime.request_layout(root);
+                }
                 if !request_redraw {
                     Self::mark_attachment_unavailable(
                         &mut state.retained,
@@ -2374,6 +2378,9 @@ impl<A: 'static> UiApp<A> {
                     h: size.height,
                 });
                 let request_redraw = state.resize.request(size);
+                if let Some(root) = state.runtime.root {
+                    state.runtime.runtime.request_layout(root);
+                }
                 if !request_redraw {
                     Self::mark_attachment_unavailable(
                         &mut state.retained,
@@ -2391,6 +2398,7 @@ impl<A: 'static> UiApp<A> {
             WindowEvent::RedrawRequested => {
                 Self::trace_startup(format_args!("redraw requested for {id:?}"));
                 let mut skip_render = false;
+                let mut presentation_requires_layout = false;
                 match state
                     .resize
                     .prepare_redraw(state.window.as_ref(), &mut state.renderer)
@@ -2415,6 +2423,7 @@ impl<A: 'static> UiApp<A> {
                         Self::trace_startup(format_args!("skipped zero-sized resize for {id:?}"));
                     }
                     Ok(ResizeRedrawAction::Applied(applied)) => {
+                        presentation_requires_layout = true;
                         ailloli_ui_bench::record(ailloli_ui_bench::Event::ResizeApply {
                             ts_ms: now_ms(),
                             w: applied.size.width,
@@ -2460,8 +2469,16 @@ impl<A: 'static> UiApp<A> {
                         return;
                     }
 
+                    let root_has_layout = runtime_has_root_layout(&state.runtime);
+                    let frame_work_plan = state.runtime.prepare_frame();
                     let layout_start = Instant::now();
-                    layout_window(state);
+                    if frame_requires_layout(
+                        frame_work_plan,
+                        presentation_requires_layout,
+                        root_has_layout,
+                    ) {
+                        layout_window(state);
+                    }
                     let layout_us = layout_start.elapsed().as_micros();
                     {
                         let retained = &mut state.retained;
@@ -3111,6 +3128,14 @@ fn runtime_has_root_layout<A>(runtime: &Runtime<A>) -> bool {
         .and_then(|id| runtime.tree.get(id))
         .and_then(|el| el.layout.as_ref())
         .is_some()
+}
+
+fn frame_requires_layout(
+    plan: FrameWorkPlan,
+    presentation_requires_layout: bool,
+    root_has_layout: bool,
+) -> bool {
+    presentation_requires_layout || !root_has_layout || plan.needs_layout()
 }
 
 /// Snaps the IME cursor rect to physical pixels for stable frame-to-frame comparison (DPR included).
@@ -3843,6 +3868,27 @@ fn convert_mouse_button(button: winit::event::MouseButton) -> MouseButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_work_plan_skips_layout_for_paint_but_not_layout_build_or_resize() {
+        assert!(!frame_requires_layout(
+            FrameWorkPlan::from_invalidation(ailloli_ui_runtime::Invalidation::Paint),
+            false,
+            true,
+        ));
+        assert!(frame_requires_layout(
+            FrameWorkPlan::from_invalidation(ailloli_ui_runtime::Invalidation::Layout),
+            false,
+            true,
+        ));
+        assert!(frame_requires_layout(
+            FrameWorkPlan::from_invalidation(ailloli_ui_runtime::Invalidation::Build),
+            false,
+            true,
+        ));
+        assert!(frame_requires_layout(FrameWorkPlan::none(), true, true));
+        assert!(frame_requires_layout(FrameWorkPlan::none(), false, false));
+    }
 
     fn touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> winit::event::Touch {
         winit::event::Touch {

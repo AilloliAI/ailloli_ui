@@ -26,9 +26,6 @@ impl FileUri {
         };
         let scheme = normalize_scheme(scheme)?;
         let (authority, path) = split_authority_and_path(rest)?;
-        if scheme == "file" && path == "/" {
-            return Err(FileError::InvalidUri("file uri path is empty".into()));
-        }
         Ok(Self {
             scheme,
             authority,
@@ -94,7 +91,7 @@ impl FileUri {
         let trimmed = self.path.trim_end_matches('/');
         let idx = trimmed.rfind('/')?;
         if idx == 0 {
-            return None;
+            return Self::new(self.scheme.clone(), self.authority.clone(), "/").ok();
         }
         Self::new(self.scheme.clone(), self.authority.clone(), &trimmed[..idx]).ok()
     }
@@ -260,10 +257,10 @@ mod tests {
             FileUri::parse("file://"),
             Err(FileError::InvalidUri(_))
         ));
-        assert!(matches!(
-            FileUri::parse("file:///"),
-            Err(FileError::InvalidUri(_))
-        ));
+        let root = FileUri::parse("file:///").expect("filesystem root");
+        assert_eq!(root.path(), "/");
+        assert_eq!(root.parent(), None);
+        assert_eq!(root.join_child("bin").unwrap().to_string(), "file:///bin");
     }
 
     #[test]
@@ -284,6 +281,10 @@ mod tests {
         assert_eq!(file.to_string(), "file:///tmp/octav%20ui/main%20file.rs");
         assert_eq!(file.file_name_decoded().as_deref(), Some("main file.rs"));
         assert_eq!(file.parent(), Some(root.clone()));
+        assert_eq!(
+            FileUri::parse("file:///bin").unwrap().parent(),
+            Some(FileUri::parse("file:///").unwrap())
+        );
         assert_eq!(
             file.with_file_name("lib.rs").expect("rename").to_string(),
             "file:///tmp/octav%20ui/lib.rs"

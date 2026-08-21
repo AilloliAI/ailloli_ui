@@ -327,11 +327,24 @@ fn local_file_explorer_lazy_cached_loads_children_when_root_folder_opens() {
     );
     layout_app(&mut app);
 
+    let root_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !painted_text_contains(&app, "src") && std::time::Instant::now() < root_deadline {
+        runtime.service_ui_sources();
+        layout_app(&mut app);
+        std::thread::yield_now();
+    }
+    assert!(painted_text_contains(&app, "src"), "root load timed out");
+
     assert!(!painted_text_contains(&app, "lib.rs"));
 
     let mut router = InputRouter::default();
-    click(&mut router, &app, runtime, 30.0, 36.0);
-    layout_app(&mut app);
+    click(&mut router, &app, runtime.clone(), 30.0, 36.0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !painted_text_contains(&app, "lib.rs") && std::time::Instant::now() < deadline {
+        runtime.service_ui_sources();
+        layout_app(&mut app);
+        std::thread::yield_now();
+    }
 
     assert!(
         painted_text_contains(&app, "lib.rs"),

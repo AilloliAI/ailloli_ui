@@ -164,7 +164,7 @@ fn focus_on_trigger_descendant_opens_immediately_and_escape_closes() {
         &paint(&app, router.snapshot()),
         "Keyboard help"
     ));
-    app.runtime.mark_dirty(root);
+    app.runtime.request_build(root);
     layout(&mut app);
     assert!(!scene_has_text(
         &paint(&app, router.snapshot()),

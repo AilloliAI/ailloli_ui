@@ -97,8 +97,8 @@ pub use ailloli_ui_fs::{
 pub use ailloli_ui_runtime::component::{IntoView, IntoViewKeyExt, Memo, State, View, Widget};
 pub use ailloli_ui_runtime::input::{ClickAction, DeferredAction, IntoClickAction};
 pub use ailloli_ui_runtime::{
-    DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText, Layer, LayoutCtx, PaintCtx,
-    Painter, Scene,
+    DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText, Invalidation, Layer,
+    LayoutCtx, PaintCtx, Painter, Scene,
 };
 #[cfg(feature = "terminal_pty_portable")]
 pub use ailloli_ui_terminal_pty::PortablePtyBackend;
@@ -114,7 +114,8 @@ pub use ailloli_ui_widgets::controls::{
     ChatWidgetCopyHandler, ChatWidgetRetryHandler, ChatWidgetSendHandler, ChatWidgetStyle,
     ContextMenu, ContextMenuEntry, ContextMenuItem, ContextMenuStyle, Link, LinkStyle,
     PopupAlignment, PopupPlacement, Terminal, TerminalSelectionMode, TerminalWidgetStyle, Tooltip,
-    TooltipStyle,
+    TooltipStyle, TreeItem, TreeModel, TreeModelDelta, TreeModelError, TreeModelHandle,
+    TreeMutation,
 };
 pub use ailloli_ui_widgets::editor::{
     CodeEditorFeatureFlags, CodeFileSummary, CodeSymbol, Diagnostic, DiagnosticHit,

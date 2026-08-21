@@ -1,6 +1,6 @@
-use ailloli_ui_core::geometry::Constraints;
 #[cfg(feature = "devtools")]
 use ailloli_ui_core::geometry::Size;
+use ailloli_ui_core::geometry::{Constraints, Rect};
 use ailloli_ui_core::ids::ElementId;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_text::TextSystem;
@@ -17,8 +17,23 @@ pub struct LayoutContext<'a> {
     pub scale: Scale,
     /// Shared text layout engine (optional for text-free tests).
     pub text_system: Option<&'a mut TextSystem>,
+    virtual_viewport: Option<VirtualViewport>,
     #[cfg(feature = "devtools")]
     pub debug_layouts: HashMap<ElementId, LayoutDebugInfo>,
+}
+
+/// Viewport made available to widgets whose content is larger than the
+/// visible scroll container. Coordinates are local to the content.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VirtualViewport {
+    pub rect: Rect,
+    pub overscan: f32,
+}
+
+impl VirtualViewport {
+    pub const fn new(rect: Rect, overscan: f32) -> Self {
+        Self { rect, overscan }
+    }
 }
 
 pub type LayoutCtx<'a> = LayoutContext<'a>;
@@ -28,6 +43,7 @@ impl<'a> LayoutContext<'a> {
         Self {
             scale,
             text_system: None,
+            virtual_viewport: None,
             #[cfg(feature = "devtools")]
             debug_layouts: HashMap::new(),
         }
@@ -37,9 +53,23 @@ impl<'a> LayoutContext<'a> {
         Self {
             scale,
             text_system: Some(text_system),
+            virtual_viewport: None,
             #[cfg(feature = "devtools")]
             debug_layouts: HashMap::new(),
         }
+    }
+
+    pub const fn virtual_viewport(&self) -> Option<VirtualViewport> {
+        self.virtual_viewport
+    }
+
+    /// Replaces the current content viewport and returns the previous value.
+    /// Layout containers use this to scope the hint to their child traversal.
+    pub fn replace_virtual_viewport(
+        &mut self,
+        viewport: Option<VirtualViewport>,
+    ) -> Option<VirtualViewport> {
+        std::mem::replace(&mut self.virtual_viewport, viewport)
     }
 
     #[cfg(feature = "devtools")]

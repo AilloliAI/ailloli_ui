@@ -146,8 +146,12 @@ pub fn reconcile_element<A: 'static>(
             ViewKind::Widget(w) => ElementKind::Widget(w.clone()),
             ViewKind::Component(c) => ElementKind::Component(c.clone()),
         };
-        // MVP: conservateur.
+        // Replacing declarative inputs invalidates this element's cached
+        // layout; unaffected sibling components are not traversed here.
         el.dirty = super::DirtyFlags::layout();
+        el.layout_revision = el.layout_revision.wrapping_add(1).max(1);
+        el.layout_cache_key = None;
+        el.commit_dirty = true;
     }
     tree.set_view_metadata(element_id, flex_item, size_hint);
 
@@ -223,6 +227,9 @@ pub fn reconcile_existing_component<A: 'static>(
 
     if let Some(el) = tree.get_mut(element_id) {
         el.dirty = super::DirtyFlags::layout();
+        el.layout_revision = el.layout_revision.wrapping_add(1).max(1);
+        el.layout_cache_key = None;
+        el.commit_dirty = true;
     }
 
     let mut ctx = Context::new(element_id, runtime.clone());

@@ -2,7 +2,7 @@ use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_text::TextSystem;
 
-use crate::app::RuntimeHandle;
+use crate::app::{FrameWorkPlan, Invalidation, RuntimeHandle};
 use crate::component::{IntoView, View};
 use crate::element::reconcile::{reconcile_existing_component, reconcile_root};
 use crate::element::{ElementKind, ElementTree};
@@ -44,7 +44,7 @@ impl<A: 'static> Runtime<A> {
     }
 
     pub fn layout(&mut self, constraints: Constraints, scale: Scale, text_system: &mut TextSystem) {
-        self.reconcile_dirty_components();
+        let _ = self.prepare_frame();
         let Some(root_id) = self.root else {
             return;
         };
@@ -55,11 +55,23 @@ impl<A: 'static> Runtime<A> {
         }
         let mut ctx = crate::layout::LayoutCtx::with_text_system(scale, text_system);
         commit_layout_element(
-            &self.tree,
+            &mut self.tree,
             &mut ctx,
             root_id,
             ailloli_ui_core::Offset::default(),
         );
+    }
+
+    /// Applies pending element-scoped invalidations and returns only the
+    /// aggregate work visible to a presentation host.
+    ///
+    /// Exact dirty roots remain encapsulated by the runtime. A host may skip
+    /// layout when this plan only requests paint, while resize/DPI changes can
+    /// still force layout independently.
+    pub fn prepare_frame(&mut self) -> FrameWorkPlan {
+        let plan = self.runtime.frame_work_plan();
+        self.reconcile_dirty_components();
+        plan
     }
 
     pub fn paint(&self, text_system: &mut TextSystem) -> Scene {
@@ -99,16 +111,35 @@ impl<A: 'static> Runtime<A> {
     }
 
     pub fn reconcile_dirty_components(&mut self) {
-        let dirty = self.runtime.take_dirty_elements();
-        if dirty.is_empty() {
+        let invalidations = self.runtime.take_invalidations();
+        if invalidations.is_empty() {
             return;
         }
 
         let mut components = Vec::new();
-        for element_id in dirty {
-            if let Some(component_id) = self.owner_component(element_id) {
-                if !components.contains(&component_id) {
-                    components.push(component_id);
+        for (element_id, invalidation) in invalidations {
+            match invalidation {
+                Invalidation::Paint => self.tree.mark_paint_dirty(element_id),
+                Invalidation::Layout => {
+                    self.tree.mark_layout_path_dirty(element_id);
+                    if self
+                        .tree
+                        .get(element_id)
+                        .is_some_and(|element| matches!(element.kind, ElementKind::Component(_)))
+                    {
+                        for child in self.tree.children_of(element_id).to_vec() {
+                            self.tree.mark_element_layout_dirty(child);
+                        }
+                    }
+                }
+                Invalidation::Build => {
+                    if let Some(component_id) = self.owner_component(element_id) {
+                        if !components.contains(&component_id) {
+                            components.push(component_id);
+                        }
+                    } else {
+                        self.tree.mark_layout_path_dirty(element_id);
+                    }
                 }
             }
         }
@@ -125,7 +156,9 @@ impl<A: 'static> Runtime<A> {
         }
 
         for component_id in selected {
-            let _ = reconcile_existing_component(&mut self.tree, &self.runtime, component_id);
+            if reconcile_existing_component(&mut self.tree, &self.runtime, component_id) {
+                self.tree.mark_layout_path_dirty(component_id);
+            }
         }
         self.prune_stale_popup_owners();
     }

@@ -94,3 +94,27 @@ fn provider_event_matches_keep_forward_compatible_fallbacks() {
         "close-requested"
     );
 }
+
+#[test]
+fn targeted_invalidation_and_retained_tree_are_available_through_the_facade() {
+    assert_eq!(
+        Invalidation::Paint.merge(Invalidation::Layout),
+        Invalidation::Layout,
+    );
+
+    let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    model
+        .apply(TreeMutation::Insert {
+            parent: None,
+            index: 0,
+            item: TreeItem::branch(1, "root"),
+        })
+        .unwrap();
+    model
+        .apply(TreeMutation::SetExpanded {
+            id: 1,
+            expanded: true,
+        })
+        .unwrap();
+    assert_eq!(model.read(TreeModel::visible_len), 1);
+}

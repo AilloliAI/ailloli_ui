@@ -5,9 +5,11 @@ use ailloli_ui_core::{Color, Offset};
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, View, Widget};
 use ailloli_ui_runtime::input::EventCtx;
 use ailloli_ui_runtime::layout::LayoutEngine;
-use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
+use ailloli_ui_runtime::layout::{
+    ChildLayout, LayoutChild, LayoutCtx, LayoutResult, VirtualViewport,
+};
 use ailloli_ui_runtime::scene::PaintCtx;
-use ailloli_ui_runtime::{DrawCmd, DrawRRect};
+use ailloli_ui_runtime::{DrawCmd, DrawRRect, Invalidation};
 
 /// Visual style for [`ScrollView`] scrollbars.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -144,8 +146,12 @@ struct ScrollViewComponent<A> {
 
 impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
-        let state = context.signal(ScrollState::with_offset(self.initial_offset));
-        let follow_end_active = context.signal(self.follow_end);
+        let state = context.signal_with_invalidation(
+            ScrollState::with_offset(self.initial_offset),
+            Invalidation::Layout,
+        );
+        let follow_end_active =
+            context.signal_with_invalidation(self.follow_end, Invalidation::Layout);
         let mut children = Vec::new();
         if let Some(child) = self.child.clone() {
             children.push(child);
@@ -195,10 +201,30 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
 
         if let Some(child) = children.first_mut() {
             let child_constraints = self.child_constraints(constraints_max);
-            let r = child.layout(engine, ctx, child_constraints);
+            let viewport_hint_size = finite_or_zero_size(constraints_max);
+            let previous_viewport = ctx.replace_virtual_viewport(Some(VirtualViewport::new(
+                Rect::new(
+                    state.offset.x,
+                    state.offset.y,
+                    viewport_hint_size.w,
+                    viewport_hint_size.h,
+                ),
+                0.0,
+            )));
+            let mut r = child.layout(engine, ctx, child_constraints);
+            ctx.replace_virtual_viewport(previous_viewport);
             size = viewport_size(constraints_max, r.size);
             let metrics = ScrollMetrics::new(size, r.size);
-            state = self.sync_scroll_state_for_layout(state, metrics);
+            let next_state = self.sync_scroll_state_for_layout(state, metrics);
+            if !same_offset(state.offset, next_state.offset) {
+                let previous_viewport = ctx.replace_virtual_viewport(Some(VirtualViewport::new(
+                    Rect::new(next_state.offset.x, next_state.offset.y, size.w, size.h),
+                    0.0,
+                )));
+                r = child.layout(engine, ctx, child_constraints);
+                ctx.replace_virtual_viewport(previous_viewport);
+            }
+            state = next_state;
             child_layouts.push(ChildLayout {
                 offset: Offset::new(-state.offset.x, -state.offset.y),
                 size: r.size,

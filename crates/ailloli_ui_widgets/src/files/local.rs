@@ -1,20 +1,29 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint, LayoutStyle};
-use ailloli_ui_fs::{FileEntry, FileError, FileKind, FileProvider, FileUri};
-use ailloli_ui_fs_local::LocalFileProvider;
+use ailloli_ui_fs::{
+    DirectoryLoadState, FileEntry, FileError, FileKind, FileMetadata,
+    FileTreeNodeId as RetainedFileTreeNodeId, FileTreeStore as RetainedFileTreeStore, FileUri,
+};
+use ailloli_ui_fs_local::{LocalFileProvider, LocalFileTreeSourceFactory};
+use ailloli_ui_fs_runtime::{FileTreeEnqueueOutcome, FileTreeRuntime, FileTreeWorkerResponse};
+use ailloli_ui_runtime::app::UiServiceRegistration;
 use ailloli_ui_runtime::component::{Binding, ComponentNode, Context, IntoView, View};
 use ailloli_ui_runtime::input::EventCtx;
+use ailloli_ui_runtime::Invalidation;
 
 use crate::layout::layout_ext::finish_view_sized;
 
 use super::explorer::{FileExplorer, FileExplorerAction, FileExplorerSize, FileExplorerStyle};
 use super::model::FileExplorerNode;
-use super::store::FileTreeStore;
 use super::tree::{
-    dedupe_file_uris, file_uri_ancestors_between, load_file_tree, FileTreeLoadMode, FileTreeOptions,
+    dedupe_file_uris, error_placeholder, file_uri_ancestors_between, large_directory_placeholder,
+    load_file_tree, loading_placeholder, should_include_file_entry, FileTreeLoadMode,
+    FileTreeOptions,
 };
 
 type ActionHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileExplorerAction)>;
@@ -289,21 +298,12 @@ struct LocalFileExplorerComponent<A> {
 
 impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
-        let root = local_uri_or_error(&self.root_path);
-        let provider = LocalFileProvider::new();
         let selected = self
             .selected_path
             .as_ref()
             .and_then(|path| FileUri::local(path).ok());
-        let Ok(root_uri) = root else {
+        let Ok(root_uri) = local_uri_or_error(&self.root_path) else {
             return FileExplorer::new(error_nodes("Invalid local root"))
-                .disabled(self.disabled.clone())
-                .file_style(self.style.clone())
-                .scrollable(self.scrollable)
-                .into_view();
-        };
-        let Ok(root_entry) = root_entry(&provider, &root_uri) else {
-            return FileExplorer::new(error_nodes("File tree root error"))
                 .disabled(self.disabled.clone())
                 .file_style(self.style.clone())
                 .scrollable(self.scrollable)
@@ -311,51 +311,54 @@ impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
         };
         let default_expanded =
             default_expanded_uris(&root_uri, &self.default_expanded_paths, selected.as_ref());
-        let _async_loading = self.async_loading;
-
-        let runtime = context.signal(Rc::new(RefCell::new(LocalFileExplorerRuntime::new(
-            root_entry.clone(),
-            selected.clone(),
-            self.options,
-            self.loading_mode,
-            self.cache_mode,
-        ))));
-        let nodes = context.signal(Vec::<FileExplorerNode>::new());
-        let expanded = context.signal(default_expanded.clone());
-
+        let root_for_state = root_uri.clone();
+        let selected_for_state = selected.clone();
+        let runtime_signal = context.signal_with(|| {
+            Rc::new(RefCell::new(LocalFileExplorerRuntime::<A>::new(
+                root_for_state,
+                selected_for_state,
+                self.options,
+                self.loading_mode,
+                self.cache_mode,
+            )))
+        });
+        let runtime = runtime_signal.read();
+        let invalidate = context.invalidation_target(Invalidation::Build);
         {
-            let runtime = runtime.read();
-            let mut runtime = runtime.borrow_mut();
-            runtime.sync_root(
-                root_entry,
+            let mut runtime_state = runtime.borrow_mut();
+            if runtime_state.root_uri() != &root_uri {
+                *runtime_state = LocalFileExplorerRuntime::new(
+                    root_uri.clone(),
+                    selected.clone(),
+                    self.options,
+                    self.loading_mode,
+                    self.cache_mode,
+                );
+            }
+            runtime_state.configure(
                 selected.clone(),
                 self.options,
                 self.loading_mode,
                 self.cache_mode,
+                &default_expanded,
             );
-            runtime.bootstrap(&provider, &default_expanded);
-            nodes.set(runtime.nodes());
-            expanded.set(runtime.expanded_uris());
+            runtime_state.ensure_service(&runtime, context, invalidate);
+            runtime_state.service_pending();
         }
+        let _async_loading_compat = self.async_loading;
+        let nodes = runtime.borrow().nodes();
+        let expanded = runtime.borrow().expanded_uris();
 
-        let nodes_for_toggle = nodes.clone();
-        let expanded_for_toggle = expanded.clone();
         let runtime_for_toggle = runtime.clone();
-        let provider_for_toggle = LocalFileProvider::new();
-        let mut explorer = FileExplorer::new(Vec::new())
-            .bind_nodes(nodes.clone())
-            .bind_expanded(expanded.clone())
+        let mut explorer = FileExplorer::new(nodes)
+            .default_expanded_many(expanded)
             .disabled(self.disabled.clone())
             .file_style(self.style.clone())
             .virtualized(self.virtualized)
             .scrollable(self.scrollable)
             .on_toggle_ctx(move |ctx, uri, open| {
-                let runtime = runtime_for_toggle.read();
-                let mut runtime = runtime.borrow_mut();
-                runtime.toggle(&provider_for_toggle, &uri, open);
-                nodes_for_toggle.set(runtime.nodes());
-                expanded_for_toggle.set(runtime.expanded_uris());
-                ctx.request_repaint();
+                runtime_for_toggle.borrow_mut().toggle(&uri, open);
+                ctx.request_build();
             });
         explorer.layout = self.layout;
 
@@ -380,91 +383,361 @@ impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
     }
 }
 
-struct LocalFileExplorerRuntime {
-    store: FileTreeStore,
+struct LocalFileExplorerRuntime<A> {
+    store: RetainedFileTreeStore,
+    worker: Option<FileTreeRuntime>,
     options: FileTreeOptions,
     loading_mode: LocalFileExplorerLoadingMode,
     cache_mode: LocalFileExplorerCacheMode,
-    bootstrapped_revision: u64,
+    selected: Option<FileUri>,
+    desired_expanded: Vec<FileUri>,
+    truncated: std::collections::HashSet<RetainedFileTreeNodeId>,
+    watched: HashSet<RetainedFileTreeNodeId>,
+    error: Option<String>,
+    bootstrapped: bool,
+    service_callback: Option<Rc<dyn Fn() -> bool>>,
+    service_registration: Option<UiServiceRegistration<A>>,
 }
 
-impl LocalFileExplorerRuntime {
+impl<A: 'static> LocalFileExplorerRuntime<A> {
     fn new(
-        root: FileEntry,
+        root: FileUri,
         selected: Option<FileUri>,
         options: FileTreeOptions,
         loading_mode: LocalFileExplorerLoadingMode,
         cache_mode: LocalFileExplorerCacheMode,
     ) -> Self {
+        let store = RetainedFileTreeStore::new(root, FileMetadata::new(FileKind::Directory))
+            .expect("valid local tree root");
+        let worker = FileTreeRuntime::spawn(Arc::new(LocalFileTreeSourceFactory)).ok();
         Self {
-            store: FileTreeStore::new(root, selected),
+            store,
+            worker,
             options,
             loading_mode,
             cache_mode,
-            bootstrapped_revision: 0,
+            selected,
+            desired_expanded: Vec::new(),
+            truncated: std::collections::HashSet::new(),
+            watched: HashSet::new(),
+            error: None,
+            bootstrapped: false,
+            service_callback: None,
+            service_registration: None,
         }
     }
 
-    fn sync_root(
+    fn root_uri(&self) -> &FileUri {
+        self.store
+            .node(self.store.root())
+            .expect("root exists")
+            .uri()
+    }
+
+    fn configure(
         &mut self,
-        root: FileEntry,
         selected: Option<FileUri>,
         options: FileTreeOptions,
         loading_mode: LocalFileExplorerLoadingMode,
         cache_mode: LocalFileExplorerCacheMode,
+        desired_expanded: &[FileUri],
     ) {
-        if self.store.root_uri() != &root.uri {
-            *self = Self::new(root, selected, options, loading_mode, cache_mode);
-            return;
-        }
-        self.store.set_selected(selected);
+        self.selected = selected;
         self.options = options;
         self.loading_mode = loading_mode;
         self.cache_mode = cache_mode;
+        self.desired_expanded.clear();
+        self.desired_expanded.extend_from_slice(desired_expanded);
+        if !self.bootstrapped {
+            self.bootstrapped = true;
+            let root = self.store.root();
+            let _ = self.store.set_expanded(root, true);
+            self.watch(root, true);
+            self.request_load(root, false);
+        }
+        self.drive_load_policy();
     }
 
-    fn bootstrap(&mut self, provider: &dyn FileProvider, default_expanded: &[FileUri]) {
-        if self.bootstrapped_revision == self.store.revision() {
-            self.store.set_expanded_uris(default_expanded);
-        }
-        match self.loading_mode {
-            LocalFileExplorerLoadingMode::LazyReload | LocalFileExplorerLoadingMode::LazyCached => {
-                self.store.load_root(provider, self.options);
-            }
-            LocalFileExplorerLoadingMode::ControlledDepth(depth) => {
-                self.store.preload_depth(provider, depth, self.options);
-            }
-            LocalFileExplorerLoadingMode::FullLoad => {
-                self.store.full_load(provider, self.options);
+    fn ensure_service(
+        &mut self,
+        owner: &Rc<RefCell<Self>>,
+        context: &Context<A>,
+        invalidate: Rc<dyn Fn()>,
+    ) {
+        if let (Some(worker), Some(wake)) = (self.worker.as_ref(), context.runtime().ui_wake()) {
+            if let Err(error) = worker.install_wake(wake) {
+                self.error.get_or_insert_with(|| error.to_string());
             }
         }
-        for uri in default_expanded {
-            self.store.ensure_loaded_path(provider, uri, self.options);
-            self.store.expand_uri(uri);
-        }
-        self.bootstrapped_revision = self.store.revision();
-    }
-
-    fn toggle(&mut self, provider: &dyn FileProvider, uri: &FileUri, open: bool) {
-        self.store.toggle_uri(uri, open);
-        if !open || self.cache_mode == LocalFileExplorerCacheMode::LoadOnceSnapshot {
+        if self.service_registration.is_some() {
             return;
         }
+        let owner = Rc::downgrade(owner);
+        let callback: Rc<dyn Fn() -> bool> = Rc::new(move || {
+            let Some(owner) = owner.upgrade() else {
+                return false;
+            };
+            let changed = owner.borrow_mut().service_pending();
+            if changed {
+                invalidate();
+            }
+            changed
+        });
+        let registration = context.register_ui_service(&callback);
+        self.service_callback = Some(callback);
+        self.service_registration = Some(registration);
+    }
+
+    fn service_pending(&mut self) -> bool {
+        let Some(worker) = self.worker.as_mut() else {
+            return false;
+        };
+        let drain = match worker.drain() {
+            Ok(drain) => drain,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return true;
+            }
+        };
+        let mut changed = false;
+        for response in drain.responses {
+            match response {
+                FileTreeWorkerResponse::Directory { request, result } => {
+                    let result =
+                        result.map(|entries| self.filter_entries(request.node_id(), entries));
+                    match self.store.apply_directory_result(&request, result) {
+                        Ok(delta) => changed |= !delta.changes().is_empty(),
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                }
+                FileTreeWorkerResponse::Watch { events } => match events {
+                    Ok(events) => {
+                        for event in events {
+                            match self.store.apply_watch_event(&event) {
+                                Ok(delta) => changed |= !delta.changes().is_empty(),
+                                Err(error) => self.error = Some(error.to_string()),
+                            }
+                        }
+                    }
+                    Err(error) => self.error = Some(error.to_string()),
+                },
+                FileTreeWorkerResponse::WatchConfigured {
+                    result: Err(error), ..
+                } => self.error = Some(error.to_string()),
+                FileTreeWorkerResponse::WatchConfigured { result: Ok(()), .. } => {}
+                _ => {}
+            }
+        }
+        changed | self.drive_load_policy()
+    }
+
+    fn filter_entries(
+        &mut self,
+        parent: RetainedFileTreeNodeId,
+        entries: Vec<(FileEntry, Option<ailloli_ui_fs::FileIdentity>)>,
+    ) -> Vec<(FileEntry, Option<ailloli_ui_fs::FileIdentity>)> {
+        let mut entries = entries
+            .into_iter()
+            .filter(|(entry, _)| {
+                should_include_file_entry(entry, self.selected.as_ref(), self.options)
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|(a, _), (b, _)| {
+            (!a.metadata.is_directory_like())
+                .cmp(&(!b.metadata.is_directory_like()))
+                .then_with(|| {
+                    a.name
+                        .to_ascii_lowercase()
+                        .cmp(&b.name.to_ascii_lowercase())
+                })
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        let truncated = self
+            .options
+            .max_entries_per_directory
+            .is_some_and(|limit| entries.len() > limit);
+        if let Some(limit) = self.options.max_entries_per_directory {
+            entries.truncate(limit);
+        }
+        if truncated {
+            self.truncated.insert(parent);
+        } else {
+            self.truncated.remove(&parent);
+        }
+        entries
+    }
+
+    fn drive_load_policy(&mut self) -> bool {
+        let mut changed = false;
+        for uri in self.desired_expanded.clone() {
+            if let Some(id) = self.store.node_id(&uri) {
+                if let Ok(delta) = self.store.set_expanded(id, true) {
+                    changed |= !delta.changes().is_empty();
+                }
+                self.watch(id, true);
+                changed |= self.request_load(id, false);
+            }
+        }
+        let depth_limit = match self.loading_mode {
+            LocalFileExplorerLoadingMode::LazyReload | LocalFileExplorerLoadingMode::LazyCached => {
+                None
+            }
+            LocalFileExplorerLoadingMode::ControlledDepth(depth) => Some(depth),
+            LocalFileExplorerLoadingMode::FullLoad => Some(self.options.max_depth),
+        };
+        if let Some(depth_limit) = depth_limit {
+            let mut pending = vec![(self.store.root(), 0_usize)];
+            let mut candidates = Vec::new();
+            while let Some((id, depth)) = pending.pop() {
+                let Some(node) = self.store.node(id) else {
+                    continue;
+                };
+                pending.extend(
+                    node.children()
+                        .iter()
+                        .copied()
+                        .map(|child| (child, depth + 1)),
+                );
+                if depth <= depth_limit && node.metadata().is_directory_like() {
+                    candidates.push(id);
+                }
+            }
+            for id in candidates {
+                changed |= self.request_load(id, false);
+            }
+        }
+        changed
+    }
+
+    fn request_load(&mut self, id: RetainedFileTreeNodeId, force: bool) -> bool {
+        let should_load = self
+            .store
+            .node(id)
+            .is_some_and(|node| match node.directory_state() {
+                DirectoryLoadState::Loading { .. } => false,
+                DirectoryLoadState::Loaded { .. } => force,
+                DirectoryLoadState::Unloaded
+                | DirectoryLoadState::Stale
+                | DirectoryLoadState::Error(_) => true,
+                _ => false,
+            });
+        if !should_load {
+            return false;
+        }
+        let Ok((request, delta)) = self.store.begin_directory_load(id) else {
+            return false;
+        };
+        let Some(worker) = self.worker.as_ref() else {
+            let _ = self.store.apply_directory_result(
+                &request,
+                Err(FileError::Other("filesystem worker unavailable".into())),
+            );
+            return true;
+        };
+        match worker.request_directory(request.clone()) {
+            Ok(FileTreeEnqueueOutcome::Enqueued | FileTreeEnqueueOutcome::Coalesced) => {
+                !delta.changes().is_empty()
+            }
+            Err(error) => {
+                let _ = self
+                    .store
+                    .apply_directory_result(&request, Err(FileError::Other(error.to_string())));
+                true
+            }
+        }
+    }
+
+    fn watch(&mut self, id: RetainedFileTreeNodeId, enabled: bool) {
+        if enabled && !self.watched.insert(id) {
+            return;
+        }
+        if !enabled && !self.watched.remove(&id) {
+            return;
+        }
+        let Some(uri) = self.store.node(id).map(|node| node.uri().clone()) else {
+            return;
+        };
+        let Some(worker) = self.worker.as_ref() else {
+            return;
+        };
+        let result = if enabled {
+            worker.watch_directory(uri)
+        } else {
+            worker.unwatch_directory(uri)
+        };
+        if let Err(error) = result {
+            self.error = Some(error.to_string());
+        }
+    }
+
+    fn toggle(&mut self, uri: &FileUri, open: bool) {
         let Some(id) = self.store.node_id(uri) else {
             return;
         };
-        let force_reload = self.cache_mode == LocalFileExplorerCacheMode::ReloadOnToggle
-            || self.loading_mode == LocalFileExplorerLoadingMode::LazyReload;
-        self.store
-            .load_directory(id, provider, self.options, force_reload);
+        let _ = self.store.set_expanded(id, open);
+        self.watch(id, open);
+        if open && self.cache_mode != LocalFileExplorerCacheMode::LoadOnceSnapshot {
+            let force = self.cache_mode == LocalFileExplorerCacheMode::ReloadOnToggle
+                || self.loading_mode == LocalFileExplorerLoadingMode::LazyReload;
+            self.request_load(id, force);
+        }
     }
 
     fn nodes(&self) -> Vec<FileExplorerNode> {
-        self.store.to_file_explorer_nodes()
+        let mut nodes = vec![self.node_snapshot(self.store.root())];
+        if let Some(error) = &self.error {
+            nodes[0]
+                .children
+                .push(error_placeholder(self.root_uri(), error));
+        }
+        nodes
+    }
+
+    fn node_snapshot(&self, id: RetainedFileTreeNodeId) -> FileExplorerNode {
+        let node = self.store.node(id).expect("snapshot node exists");
+        let mut entry = FileEntry::new(node.uri().clone(), node.metadata().clone());
+        if entry.name.is_empty() {
+            entry.name = node.uri().path().to_string();
+        }
+        let mut snapshot = FileExplorerNode::new(entry);
+        snapshot.disabled = matches!(node.directory_state(), DirectoryLoadState::Loading { .. });
+        snapshot.children = node
+            .children()
+            .iter()
+            .map(|child| self.node_snapshot(*child))
+            .collect();
+        if node.is_expanded() {
+            match node.directory_state() {
+                DirectoryLoadState::Loading { .. } => {
+                    snapshot.children.push(loading_placeholder(node.uri()))
+                }
+                DirectoryLoadState::Error(error) => snapshot
+                    .children
+                    .push(error_placeholder(node.uri(), error.to_string())),
+                _ => {}
+            }
+            if self.truncated.contains(&id) {
+                snapshot
+                    .children
+                    .push(large_directory_placeholder(node.uri()));
+            }
+        }
+        snapshot
     }
 
     fn expanded_uris(&self) -> Vec<FileUri> {
-        self.store.expanded_uris()
+        let mut expanded = Vec::new();
+        let mut pending = vec![self.store.root()];
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.store.node(id) else {
+                continue;
+            };
+            if node.is_expanded() {
+                expanded.push(node.uri().clone());
+            }
+            pending.extend(node.children().iter().copied());
+        }
+        expanded
     }
 }
 
@@ -491,12 +764,6 @@ pub fn local_file_tree_nodes(
         selected.as_ref(),
         options,
     )
-}
-
-fn root_entry(provider: &dyn FileProvider, root: &FileUri) -> Result<FileEntry, FileError> {
-    provider
-        .metadata(root)
-        .map(|metadata| FileEntry::new(root.clone(), metadata))
 }
 
 fn error_nodes(message: impl Into<String>) -> Vec<FileExplorerNode> {

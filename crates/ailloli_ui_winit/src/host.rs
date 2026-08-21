@@ -226,6 +226,9 @@ impl<A: 'static, D: HostDriver<A>> WinitHost<A, D> {
         }
         self.service_inbox();
         self.service_capture_requests();
+        if self.ui.runtime().service_ui_sources() {
+            self.ui.request_redraw_all();
+        }
         let outcome = self.driver.service(&self.ui.runtime(), Instant::now());
         if outcome.redraw_all {
             self.ui.request_redraw_all();

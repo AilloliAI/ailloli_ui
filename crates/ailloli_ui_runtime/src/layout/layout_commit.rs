@@ -5,7 +5,7 @@ use crate::element::{ElementKind, ElementTree};
 use crate::layout::LayoutCtx;
 
 pub fn commit_layout_element<A: 'static>(
-    tree: &ElementTree<A>,
+    tree: &mut ElementTree<A>,
     ctx: &mut LayoutCtx<'_>,
     element_id: ElementId,
     origin: Offset,
@@ -22,7 +22,7 @@ pub fn commit_layout_element<A: 'static>(
 }
 
 fn commit_layout_element_with_bounds<A: 'static>(
-    tree: &ElementTree<A>,
+    tree: &mut ElementTree<A>,
     ctx: &mut LayoutCtx<'_>,
     element_id: ElementId,
     bounds: Rect,
@@ -34,11 +34,28 @@ fn commit_layout_element_with_bounds<A: 'static>(
         return;
     };
 
-    if let ElementKind::Widget(widget) = &el.kind {
-        widget.layout_committed(ctx, bounds, layout);
+    let bounds_changed = el.committed_bounds != Some(bounds);
+    if !el.commit_dirty && !bounds_changed {
+        return;
+    }
+    let should_commit_widget = el.layout_changed || bounds_changed;
+    let kind = el.kind.clone();
+    let layout = layout.clone();
+    let children = el.children.clone();
+
+    if let Some(el) = tree.get_mut(element_id) {
+        el.committed_bounds = Some(bounds);
+        el.layout_changed = false;
+        el.commit_dirty = false;
     }
 
-    for (idx, child_id) in el.children.iter().copied().enumerate() {
+    if should_commit_widget {
+        if let ElementKind::Widget(widget) = kind {
+            widget.layout_committed(ctx, bounds, &layout);
+        }
+    }
+
+    for (idx, child_id) in children.into_iter().enumerate() {
         let Some(child_layout) = layout.children.get(idx) else {
             continue;
         };

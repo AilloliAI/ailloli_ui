@@ -36,6 +36,11 @@ pub mod popup_mount;
 /// Scene graph and draw commands.
 pub mod scene;
 
+pub use app::{
+    FrameWorkPlan, Invalidation, UiDrain, UiInbox, UiInboxStats, UiSendError, UiSender, UiWake,
+    UiWakeError,
+};
+
 #[cfg(feature = "devtools")]
 pub use layout::LayoutDebugInfo;
 pub use layout::{LayoutCtx, Widget};

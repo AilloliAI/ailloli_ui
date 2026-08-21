@@ -2,6 +2,7 @@ use crate::component::signal::Signal;
 use crate::popup::ElementTreeId;
 use ailloli_ui_core::ids::ElementId;
 use std::any::Any;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -53,6 +54,25 @@ impl StateStore {
         initial: T,
         invalidate: Rc<dyn Fn()>,
     ) -> Signal<T> {
+        self.signal_scoped_with(
+            element_tree_id,
+            element_id,
+            slot_index,
+            || initial,
+            invalidate,
+        )
+    }
+
+    /// Lazily initializes a retained signal slot. The factory is never
+    /// evaluated again while the same typed slot remains mounted.
+    pub fn signal_scoped_with<T: 'static>(
+        &mut self,
+        element_tree_id: ElementTreeId,
+        element_id: ElementId,
+        slot_index: usize,
+        initial: impl FnOnce() -> T,
+        invalidate: Rc<dyn Fn()>,
+    ) -> Signal<T> {
         let slot = ScopedStateSlot {
             element_tree_id,
             slot: StateSlot {
@@ -61,19 +81,18 @@ impl StateStore {
             },
         };
 
-        self.values
-            .entry(slot)
-            .or_insert_with(|| Box::new(Rc::new(RefCell::new(initial))) as Box<dyn Any>);
+        self.values.entry(slot).or_insert_with(|| {
+            Box::new((Rc::new(RefCell::new(initial())), Rc::new(Cell::new(0_u64)))) as Box<dyn Any>
+        });
 
-        let value = self
+        let (value, revision) = self
             .values
             .get(&slot)
             .expect("state slot must exist")
-            .downcast_ref::<Rc<RefCell<T>>>()
-            .expect("state slot type mismatch")
-            .clone();
+            .downcast_ref::<(Rc<RefCell<T>>, Rc<Cell<u64>>)>()
+            .expect("state slot type mismatch");
 
-        Signal::new(value, invalidate)
+        Signal::with_revision(value.clone(), invalidate, revision.clone())
     }
 
     /// Removes an element from the legacy root-tree namespace (`tree 0`).

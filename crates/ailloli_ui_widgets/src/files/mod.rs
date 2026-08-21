@@ -5,6 +5,7 @@
 //! convenience wrapper that builds that snapshot from the local provider.
 
 mod breadcrumb;
+mod bridge;
 mod explorer;
 mod icons;
 #[cfg(feature = "files_local")]
@@ -18,6 +19,7 @@ mod tree;
 pub use breadcrumb::{
     breadcrumb_segments, FileBreadcrumb, FileBreadcrumbSegment, FileBreadcrumbStyle,
 };
+pub use bridge::{FileTreeModelBridge, FileTreeModelBridgeError};
 pub use explorer::{
     FileExplorer, FileExplorerAction, FileExplorerCreateDir, FileExplorerCreateFile,
     FileExplorerMove, FileExplorerRename, FileExplorerSize, FileExplorerStyle,

@@ -3,7 +3,7 @@ use ailloli_ui_core::Constraints;
 use ailloli_ui_core::{ClipShape, Offset, Rect, Size};
 use ailloli_ui_text::TextLayoutHandle;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChildLayout {
     pub offset: Offset,
     pub size: Size,
@@ -59,5 +59,15 @@ impl LayoutResult {
 
     pub fn zero() -> Self {
         Self::empty()
+    }
+
+    pub(crate) fn geometry_eq(&self, other: &Self) -> bool {
+        self.size == other.size
+            && self.children == other.children
+            && self.paint_bounds == other.paint_bounds
+            && self.visual_bounds == other.visual_bounds
+            && self.overlay_hit_bounds == other.overlay_hit_bounds
+            && self.clip == other.clip
+            && self.is_window_root_clip == other.is_window_root_clip
     }
 }

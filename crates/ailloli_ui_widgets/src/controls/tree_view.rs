@@ -1,3 +1,6 @@
+use std::cell::{Cell, RefCell};
+use std::fmt;
+use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +17,9 @@ use ailloli_ui_runtime::component::{
 use ailloli_ui_runtime::input::{EventCtx, FocusPolicy, InputRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
-use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText};
+use ailloli_ui_runtime::{
+    DrawBorder, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText, Invalidation,
+};
 use ailloli_ui_text::{
     PreparedTextLayout, TextBuffer, TextEditState, TextLayoutParams, TextSelection, WrapMode,
 };
@@ -24,6 +29,7 @@ use super::text_field_core::{
     handle_single_line_text_event, ime_cursor_rect, paint_single_line_text, TextFieldEventOptions,
 };
 use super::text_input::TextInputStyle;
+use super::tree_model::{TreeModelHandle, TreeModelSubscription, TreeMutation};
 
 const TREE_ACTIVATE_MAX_DELAY: Duration = Duration::from_millis(500);
 const TREE_ACTIVATE_MAX_DISTANCE: f32 = 4.0;
@@ -338,11 +344,70 @@ type TreeContextMenuHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeContextMenu<
 type TreeShortcutHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeShortcut<T>)>;
 type TreeCreateFactory<T> = Rc<dyn Fn(TreeCreateRequest<T>) -> Option<TreeNode<T>>>;
 
+trait RetainedTreeSource<T> {
+    fn visible_len(&self) -> usize;
+    fn flat_node_at(&self, index: usize) -> Option<FlatNode<T>>;
+    fn row_of(&self, id: &T) -> Option<usize>;
+    fn first_enabled_row(&self) -> Option<usize>;
+    fn is_expanded(&self, id: &T) -> bool;
+    fn set_expanded(&self, id: T, expanded: bool) -> bool;
+    fn subscribe(&self, callback: &Rc<dyn Fn(u64)>) -> TreeModelSubscription;
+}
+
+impl<T> RetainedTreeSource<T> for TreeModelHandle<T>
+where
+    T: Clone + Eq + Hash + fmt::Debug + 'static,
+{
+    fn visible_len(&self) -> usize {
+        self.read(|model| model.visible_len())
+    }
+
+    fn flat_node_at(&self, index: usize) -> Option<FlatNode<T>> {
+        self.read(|model| {
+            let row = model.flat_index().rows().get(index)?;
+            let item = model.item(row.node_id())?;
+            Some(FlatNode {
+                id: item.id().clone(),
+                label: item.label().to_string(),
+                depth: usize::from(row.depth()),
+                branch: item.is_branch(),
+                disabled: item.is_disabled(),
+                leading_icon: item.leading_icon_ref().cloned(),
+                leading_icon_tint: item.leading_icon_tint_ref(),
+                trailing_action: item.trailing_action_ref().cloned(),
+                parent: model.parent(item.id()).cloned(),
+            })
+        })
+    }
+
+    fn row_of(&self, id: &T) -> Option<usize> {
+        self.read(|model| model.flat_index().row_of(id))
+    }
+
+    fn first_enabled_row(&self) -> Option<usize> {
+        self.read(|model| model.flat_index().first_enabled_row())
+    }
+
+    fn is_expanded(&self, id: &T) -> bool {
+        self.read(|model| model.is_expanded(id))
+    }
+
+    fn set_expanded(&self, id: T, expanded: bool) -> bool {
+        self.apply(TreeMutation::SetExpanded { id, expanded })
+            .is_ok()
+    }
+
+    fn subscribe(&self, callback: &Rc<dyn Fn(u64)>) -> TreeModelSubscription {
+        TreeModelHandle::subscribe(self, callback)
+    }
+}
+
 pub struct TreeView<T, A = ()> {
     pub(crate) layout: LayoutStyle,
     pub(crate) flex_item: FlexItemStyle,
     nodes: Vec<TreeNode<T>>,
     bound_nodes: Option<Signal<Vec<TreeNode<T>>>>,
+    model: Option<Rc<dyn RetainedTreeSource<T>>>,
     selected: Option<Binding<T>>,
     bound_selected: Option<Signal<T>>,
     expanded: Option<Binding<Vec<T>>>,
@@ -389,6 +454,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
             flex_item: FlexItemStyle::default(),
             nodes: Vec::new(),
             bound_nodes: None,
+            model: None,
             selected: None,
             bound_selected: None,
             expanded: None,
@@ -429,6 +495,16 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
 
     pub fn bind_nodes(mut self, nodes: impl Into<Signal<Vec<TreeNode<T>>>>) -> Self {
         self.bound_nodes = Some(nodes.into());
+        self
+    }
+
+    /// Uses a retained, revisioned model. This is the recommended path for
+    /// large or incrementally updated trees.
+    pub fn model(mut self, model: TreeModelHandle<T>) -> Self
+    where
+        T: Eq + Hash + fmt::Debug,
+    {
+        self.model = Some(Rc::new(model));
         self
     }
 
@@ -693,6 +769,7 @@ struct TreeViewComponent<T, A> {
     layout: LayoutStyle,
     nodes: Vec<TreeNode<T>>,
     bound_nodes: Option<Signal<Vec<TreeNode<T>>>>,
+    model: Option<Rc<dyn RetainedTreeSource<T>>>,
     selected: Option<Binding<T>>,
     bound_selected: Option<Signal<T>>,
     expanded: Option<Binding<Vec<T>>>,
@@ -731,10 +808,22 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
             .bound_expanded
             .clone()
             .or_else(|| self.expanded.is_none().then_some(internal_expanded));
+        let model_callback = self.model.as_ref().map(|_| {
+            let invalidate = context.invalidation_target(Invalidation::Layout);
+            Rc::new(move |_revision: u64| invalidate()) as Rc<dyn Fn(u64)>
+        });
+        let model_subscription = self
+            .model
+            .as_ref()
+            .zip(model_callback.as_ref())
+            .map(|(model, callback)| model.subscribe(callback));
         View::leaf(TreeViewWidget {
             layout: self.layout,
             nodes: self.nodes.clone(),
             bound_nodes: self.bound_nodes.clone(),
+            model: self.model.clone(),
+            _model_callback: model_callback,
+            _model_subscription: model_subscription,
             selected: self.selected.clone(),
             bound_selected: self.bound_selected.clone(),
             expanded,
@@ -766,6 +855,8 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
             edit_buffer: context.signal(TextBuffer::from_string(String::new())),
             edit_state: context.signal(TextEditState::new()),
             last_click: context.signal(None),
+            observed_max_width: Rc::new(Cell::new(160.0)),
+            snapshot_flat_cache: Rc::new(RefCell::new(SnapshotFlatCache::default())),
         })
     }
 }
@@ -777,6 +868,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for TreeView<T, A> 
                 layout: self.layout,
                 nodes: self.nodes,
                 bound_nodes: self.bound_nodes,
+                model: self.model,
                 selected: self.selected,
                 bound_selected: self.bound_selected,
                 expanded: self.expanded,
@@ -867,6 +959,26 @@ struct TreeEditing<T> {
     create: Option<TreeCreateRequest<T>>,
 }
 
+struct SnapshotFlatCache<T> {
+    nodes_revision: u64,
+    initialized: bool,
+    expanded: Vec<T>,
+    rows: Vec<FlatNode<T>>,
+    rebuilds: u64,
+}
+
+impl<T> Default for SnapshotFlatCache<T> {
+    fn default() -> Self {
+        Self {
+            nodes_revision: 0,
+            initialized: false,
+            expanded: Vec::new(),
+            rows: Vec::new(),
+            rebuilds: 0,
+        }
+    }
+}
+
 struct TreeNodePaint<'a, T> {
     row: Rect,
     node: &'a FlatNode<T>,
@@ -881,6 +993,9 @@ struct TreeViewWidget<T, A> {
     layout: LayoutStyle,
     nodes: Vec<TreeNode<T>>,
     bound_nodes: Option<Signal<Vec<TreeNode<T>>>>,
+    model: Option<Rc<dyn RetainedTreeSource<T>>>,
+    _model_callback: Option<Rc<dyn Fn(u64)>>,
+    _model_subscription: Option<TreeModelSubscription>,
     selected: Option<Binding<T>>,
     bound_selected: Option<Signal<T>>,
     expanded: Binding<Vec<T>>,
@@ -912,6 +1027,8 @@ struct TreeViewWidget<T, A> {
     edit_buffer: Signal<TextBuffer>,
     edit_state: Signal<TextEditState>,
     last_click: Signal<Option<TreeClickState<T>>>,
+    observed_max_width: Rc<Cell<f32>>,
+    snapshot_flat_cache: Rc<RefCell<SnapshotFlatCache<T>>>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T, A> {
@@ -927,8 +1044,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         constraints: Constraints,
     ) -> LayoutResult {
         self.consume_pending_command();
-        let nodes = self.visible_nodes();
-        let mut max_w: f32 = 160.0;
+        let total_rows = self.visible_len();
+        let layout_range = self.layout_row_range(ctx, constraints, total_rows);
+        let nodes = self.visible_nodes_range(layout_range);
+        let mut max_w = self.observed_max_width.get().max(160.0);
         for node in &nodes {
             let text_w = measure_text(ctx, &node.label, self.text_style(node)).unwrap_or(80.0);
             let icon_w = node
@@ -951,9 +1070,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
                     + action_w,
             );
         }
+        self.observed_max_width.set(max_w);
         let intrinsic = Size::new(
             max_w,
-            self.style.padding_y * 2.0 + nodes.len() as f32 * self.style.row_height,
+            self.style.padding_y * 2.0 + total_rows as f32 * self.style.row_height,
         );
         let size = apply_layout_size(intrinsic, self.layout, constraints);
         LayoutResult {
@@ -978,14 +1098,15 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
             }));
         }
 
-        let nodes = self.visible_nodes();
+        let total_rows = self.visible_len();
+        let paint_range = self.paint_row_range(ctx, bounds, total_rows);
+        let nodes = self.visible_nodes_range(paint_range.clone());
         let selected = self.selected_value();
-        let active = self.normalized_active_index(&nodes);
+        let active = self.normalized_active_index_for_source();
         let drag = self.drag.read();
         let editing = self.editing.read();
-        let paint_range = self.paint_row_range(ctx, bounds, nodes.len());
-        for idx in paint_range {
-            let node = &nodes[idx];
+        for (local_index, node) in nodes.iter().enumerate() {
+            let idx = paint_range.start + local_index;
             let row = self.row_rect(bounds, idx);
             let is_selected = selected.as_ref().is_some_and(|value| value == &node.id);
             let is_active = ctx.is_focused() && active == Some(idx);
@@ -1088,7 +1209,11 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
     }
 
     fn focus_policy(&self) -> FocusPolicy {
-        if self.disabled.read() || !self.visible_nodes().iter().any(|node| !node.disabled) {
+        let has_enabled = self.model.as_ref().map_or_else(
+            || self.visible_nodes().iter().any(|node| !node.disabled),
+            |model| model.first_enabled_row().is_some(),
+        );
+        if self.disabled.read() || !has_enabled {
             FocusPolicy::NotFocusable
         } else {
             FocusPolicy::Focusable
@@ -1154,6 +1279,40 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             .unwrap_or_else(|| self.nodes.clone())
     }
 
+    fn visible_len(&self) -> usize {
+        self.model.as_ref().map_or_else(
+            || {
+                self.sync_snapshot_flat_cache();
+                self.snapshot_flat_cache.borrow().rows.len()
+            },
+            |model| model.visible_len(),
+        )
+    }
+
+    fn visible_node_at(&self, index: usize) -> Option<FlatNode<T>> {
+        self.model.as_ref().map_or_else(
+            || {
+                self.sync_snapshot_flat_cache();
+                self.snapshot_flat_cache.borrow().rows.get(index).cloned()
+            },
+            |model| model.flat_node_at(index),
+        )
+    }
+
+    fn visible_nodes_range(&self, range: std::ops::Range<usize>) -> Vec<FlatNode<T>> {
+        if let Some(model) = &self.model {
+            return range
+                .filter_map(|index| model.flat_node_at(index))
+                .collect();
+        }
+        self.sync_snapshot_flat_cache();
+        self.snapshot_flat_cache
+            .borrow()
+            .rows
+            .get(range)
+            .map_or_else(Vec::new, |nodes| nodes.to_vec())
+    }
+
     fn set_current_nodes(&self, nodes: Vec<TreeNode<T>>) -> bool {
         let Some(bound) = &self.bound_nodes else {
             return false;
@@ -1175,12 +1334,93 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
     }
 
     fn visible_nodes(&self) -> Vec<FlatNode<T>> {
+        if let Some(model) = &self.model {
+            return (0..model.visible_len())
+                .filter_map(|index| model.flat_node_at(index))
+                .collect();
+        }
+        self.visible_nodes_snapshot()
+    }
+
+    fn visible_nodes_snapshot(&self) -> Vec<FlatNode<T>> {
+        self.sync_snapshot_flat_cache();
+        self.snapshot_flat_cache.borrow().rows.clone()
+    }
+
+    fn sync_snapshot_flat_cache(&self) {
         let expanded = self.expanded_values();
+        let nodes_revision = self.bound_nodes.as_ref().map_or(0, Signal::revision);
+        {
+            let cache = self.snapshot_flat_cache.borrow();
+            if cache.initialized
+                && cache.nodes_revision == nodes_revision
+                && cache.expanded == expanded
+            {
+                return;
+            }
+        }
         let mut out = Vec::new();
         for node in &self.current_nodes() {
             flatten_node(node, 0, None, &expanded, &mut out);
         }
-        out
+        let mut cache = self.snapshot_flat_cache.borrow_mut();
+        cache.nodes_revision = nodes_revision;
+        cache.initialized = true;
+        cache.expanded = expanded;
+        cache.rows = out;
+        cache.rebuilds = cache.rebuilds.saturating_add(1);
+    }
+
+    fn layout_row_range(
+        &self,
+        ctx: &LayoutCtx<'_>,
+        constraints: Constraints,
+        len: usize,
+    ) -> std::ops::Range<usize> {
+        if !self.virtualized || len == 0 {
+            return 0..len;
+        }
+        if let Some(viewport) = ctx.virtual_viewport() {
+            return row_range_with_overscan(
+                viewport.rect.y,
+                viewport.rect.h,
+                self.style.padding_y,
+                self.style.row_height,
+                len,
+                TREE_VIRTUAL_OVERSCAN_ROWS,
+            );
+        }
+        if constraints.max_h.is_finite() {
+            return row_range_with_overscan(
+                0.0,
+                constraints.max_h,
+                self.style.padding_y,
+                self.style.row_height,
+                len,
+                TREE_VIRTUAL_OVERSCAN_ROWS,
+            );
+        }
+        0..len
+    }
+
+    fn normalized_active_index_for_source(&self) -> Option<usize> {
+        if let Some(model) = &self.model {
+            if let Some(index) = self.active_index.read() {
+                if model.flat_node_at(index).is_some_and(|node| !node.disabled) {
+                    return Some(index);
+                }
+            }
+            if let Some(selected) = self.selected_value() {
+                if let Some(index) = model.row_of(&selected) {
+                    if model.flat_node_at(index).is_some_and(|node| !node.disabled) {
+                        return Some(index);
+                    }
+                }
+            }
+            return model.first_enabled_row();
+        }
+        let nodes = self.visible_nodes_snapshot();
+        self.normalized_active_index(&nodes)
     }
 
     fn row_rect(&self, bounds: Rect, index: usize) -> Rect {
@@ -1211,16 +1451,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             return 0..len;
         }
         let clip = ctx.current_clip_bbox().unwrap_or(bounds);
-        let top = clip.y - bounds.y - self.style.padding_y;
-        let bottom = clip.bottom() - bounds.y - self.style.padding_y;
-        let first = (top / self.style.row_height).floor().max(0.0) as usize;
-        let last = (bottom / self.style.row_height).ceil().max(0.0) as usize;
-        let start = first.saturating_sub(TREE_VIRTUAL_OVERSCAN_ROWS).min(len);
-        let end = last
-            .saturating_add(TREE_VIRTUAL_OVERSCAN_ROWS)
-            .saturating_add(1)
-            .min(len);
-        start..end.max(start)
+        row_range_with_overscan(
+            clip.y - bounds.y,
+            clip.h,
+            self.style.padding_y,
+            self.style.row_height,
+            len,
+            TREE_VIRTUAL_OVERSCAN_ROWS,
+        )
     }
 
     fn chevron_rect(&self, row: Rect, node: &FlatNode<T>) -> Rect {
@@ -1468,23 +1706,24 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
     }
 
     fn handle_pointer(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
-        let nodes = self.visible_nodes();
-        let Some(idx) = self.row_index_at(bounds, pos.y, nodes.len()) else {
+        let Some(idx) = self.row_index_at(bounds, pos.y, self.visible_len()) else {
             return;
         };
-        let node = &nodes[idx];
+        let Some(node) = self.visible_node_at(idx) else {
+            return;
+        };
         if node.disabled {
             return;
         }
         self.active_index.set(Some(idx));
         let row = self.row_rect(bounds, idx);
-        if node.branch && self.chevron_rect(row, node).contains(pos.x, pos.y) {
-            self.toggle_node(ctx, node);
+        if node.branch && self.chevron_rect(row, &node).contains(pos.x, pos.y) {
+            self.toggle_node(ctx, &node);
         } else {
-            let click_count = self.register_row_click(ctx, node, pos);
-            self.select_node(ctx, node);
+            let click_count = self.register_row_click(ctx, &node, pos);
+            self.select_node(ctx, &node);
             if click_count == 2 {
-                self.activate_node(ctx, node);
+                self.activate_node(ctx, &node);
             }
         }
     }
@@ -1493,9 +1732,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         let Some(on_context_menu) = &self.on_context_menu else {
             return;
         };
-        let nodes = self.visible_nodes();
-        if let Some(idx) = self.row_index_at(bounds, pos.y, nodes.len()) {
-            let node = &nodes[idx];
+        if let Some(idx) = self.row_index_at(bounds, pos.y, self.visible_len()) {
+            let Some(node) = self.visible_node_at(idx) else {
+                return;
+            };
             if node.disabled {
                 return;
             }
@@ -1506,7 +1746,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
                 .as_ref()
                 .is_none_or(|selected| selected != &node.id)
             {
-                self.select_node(ctx, node);
+                self.select_node(ctx, &node);
             }
             on_context_menu(
                 ctx,
@@ -1531,24 +1771,25 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
     }
 
     fn handle_pointer_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
-        let nodes = self.visible_nodes();
-        let Some(idx) = self.row_index_at(bounds, pos.y, nodes.len()) else {
+        let Some(idx) = self.row_index_at(bounds, pos.y, self.visible_len()) else {
             return;
         };
-        let node = &nodes[idx];
+        let Some(node) = self.visible_node_at(idx) else {
+            return;
+        };
         if node.disabled {
             return;
         }
         self.active_index.set(Some(idx));
         let row = self.row_rect(bounds, idx);
-        if self.trailing_action_hit(&nodes, row, node, pos) {
+        if self.trailing_action_hit(row, &node, pos) {
             ctx.stop_propagation();
             ctx.request_repaint();
             return;
         }
         if self.draggable.read()
             && self.can_mutate_nodes()
-            && !self.chevron_rect(row, node).contains(pos.x, pos.y)
+            && !self.chevron_rect(row, &node).contains(pos.x, pos.y)
         {
             self.drag.set(Some(TreeDragState {
                 source: node.id.clone(),
@@ -1592,13 +1833,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
                 return;
             }
         }
-        let nodes = self.visible_nodes();
-        if let Some(idx) = self.row_index_at(bounds, pos.y, nodes.len()) {
-            let node = &nodes[idx];
+        if let Some(idx) = self.row_index_at(bounds, pos.y, self.visible_len()) {
+            let Some(node) = self.visible_node_at(idx) else {
+                return;
+            };
             let row = self.row_rect(bounds, idx);
-            if self.trailing_action_hit(&nodes, row, node, pos) {
+            if self.trailing_action_hit(row, &node, pos) {
                 self.active_index.set(Some(idx));
-                self.emit_trailing_action(ctx, node);
+                self.emit_trailing_action(ctx, &node);
                 return;
             }
         }
@@ -1607,13 +1849,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
-    fn trailing_action_hit(
-        &self,
-        nodes: &[FlatNode<T>],
-        row: Rect,
-        node: &FlatNode<T>,
-        pos: Point,
-    ) -> bool {
+    fn trailing_action_hit(&self, row: Rect, node: &FlatNode<T>, pos: Point) -> bool {
         if node.disabled || node.trailing_action.is_none() {
             return false;
         }
@@ -1621,9 +1857,6 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             return false;
         };
         if selected != node.id {
-            return false;
-        }
-        if !nodes.iter().any(|row| row.id == node.id) {
             return false;
         }
         self.trailing_action_rect(row).contains(pos.x, pos.y)
@@ -1879,31 +2112,44 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             return;
         }
         let next_open = !self.is_expanded(&node.id);
-        let mut expanded = self.expanded_values();
-        if next_open {
-            if !expanded.iter().any(|id| id == &node.id) {
-                expanded.push(node.id.clone());
+        if let Some(model) = &self.model {
+            if !model.set_expanded(node.id.clone(), next_open) {
+                return;
             }
         } else {
-            expanded.retain(|id| id != &node.id);
-        }
-        if let Some(bound) = &self.mutable_expanded {
-            bound.set(expanded);
+            let mut expanded = self.expanded_values();
+            if next_open {
+                if !expanded.iter().any(|id| id == &node.id) {
+                    expanded.push(node.id.clone());
+                }
+            } else {
+                expanded.retain(|id| id != &node.id);
+            }
+            if let Some(bound) = &self.mutable_expanded {
+                bound.set(expanded);
+            }
         }
         if let Some(on_toggle) = &self.on_toggle {
             on_toggle(ctx, node.id.clone(), next_open);
         }
-        self.active_index.set(
-            self.visible_nodes()
-                .iter()
-                .position(|row| !row.disabled && row.id == node.id),
+        let active = self.model.as_ref().map_or_else(
+            || {
+                self.visible_nodes_snapshot()
+                    .iter()
+                    .position(|row| !row.disabled && row.id == node.id)
+            },
+            |model| model.row_of(&node.id),
         );
+        self.active_index.set(active);
         ctx.request_repaint();
         ctx.stop_propagation();
     }
 
     fn is_expanded(&self, id: &T) -> bool {
-        self.expanded_values().iter().any(|expanded| expanded == id)
+        self.model.as_ref().map_or_else(
+            || self.expanded_values().iter().any(|expanded| expanded == id),
+            |model| model.is_expanded(id),
+        )
     }
 
     fn handle_editing_event(
@@ -2313,6 +2559,29 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         expanded.retain(|id| !ids.iter().any(|deleted| deleted == id));
         bound.set(expanded);
     }
+}
+
+fn row_range_with_overscan(
+    viewport_y: f32,
+    viewport_height: f32,
+    padding_y: f32,
+    row_height: f32,
+    len: usize,
+    overscan_rows: usize,
+) -> std::ops::Range<usize> {
+    if len == 0 || row_height <= 0.0 || viewport_height <= 0.0 {
+        return 0..0;
+    }
+    let top = viewport_y - padding_y;
+    let bottom = viewport_y + viewport_height - padding_y;
+    let first = (top / row_height).floor().max(0.0) as usize;
+    let last = (bottom / row_height).ceil().max(0.0) as usize;
+    let start = first.saturating_sub(overscan_rows).min(len);
+    let end = last
+        .saturating_add(overscan_rows)
+        .saturating_add(1)
+        .min(len);
+    start..end.max(start)
 }
 
 fn flatten_node<T: Clone + PartialEq>(

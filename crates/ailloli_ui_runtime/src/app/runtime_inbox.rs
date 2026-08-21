@@ -7,24 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use ailloli_ui_core::LogicalWindowId;
 
+use super::ui_inbox::{UiWake, UiWakeError};
 use super::RuntimeHandle;
 
 /// Maximum number of mailbox messages applied during one host callback.
 pub const RUNTIME_INBOX_DRAIN_BUDGET: usize = 256;
-
-/// Narrow thread-safe callback used to wake the UI host.
-pub trait UiWake: Send + Sync + 'static {
-    fn wake(&self) -> Result<(), UiWakeError>;
-}
-
-/// Failure reported by a UI-host wake implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum UiWakeError {
-    #[error("the UI wake target is closed")]
-    TargetClosed,
-    #[error("the UI wake target is temporarily unavailable")]
-    TemporarilyUnavailable,
-}
 
 /// Result of attempting to enqueue one runtime message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

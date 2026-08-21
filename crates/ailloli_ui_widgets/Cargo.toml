@@ -9,13 +9,14 @@ publish.workspace = true
 [features]
 tree_sitter = ["ailloli_ui_editor/tree_sitter"]
 files = ["dep:devicons", "dep:ailloli_ui_devicons_font", "dep:ailloli_ui_fs"]
-files_local = ["files", "dep:ailloli_ui_fs_local"]
+files_local = ["files", "dep:ailloli_ui_fs_local", "dep:ailloli_ui_fs_runtime"]
 
 [dependencies]
 ailloli_ui_core = { path = "../ailloli_ui_core" }
 ailloli_ui_editor = { path = "../ailloli_ui_editor" }
 ailloli_ui_fs = { path = "../ailloli_ui_fs", optional = true }
 ailloli_ui_fs_local = { path = "../ailloli_ui_fs_local", optional = true }
+ailloli_ui_fs_runtime = { path = "../ailloli_ui_fs_runtime", optional = true }
 ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
 ailloli_ui_terminal_core = { path = "../ailloli_ui_terminal_core" }
 ailloli_ui_text = { path = "../ailloli_ui_text" }
@@ -23,3 +24,4 @@ devicons = { workspace = true, optional = true }
 ailloli_ui_devicons_font = { workspace = true, optional = true }
 lucide-icons.workspace = true
 tracing = "0.1"
+thiserror.workspace = true

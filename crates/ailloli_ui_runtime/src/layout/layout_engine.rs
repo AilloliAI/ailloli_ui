@@ -2,6 +2,7 @@ use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::ids::ElementId;
 use ailloli_ui_core::{Rect, Size};
 
+use crate::element::element_node::LayoutCacheKey;
 use crate::element::{ElementKind, ElementTree};
 use crate::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 
@@ -20,6 +21,41 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
         element_id: ElementId,
         constraints: Constraints,
     ) -> LayoutResult {
+        let text_metrics_revision = ctx
+            .text_system
+            .as_deref()
+            .map_or(0, ailloli_ui_text::TextSystem::metrics_revision);
+        let virtual_viewport = ctx.virtual_viewport().map(|viewport| {
+            [
+                viewport.rect.x.to_bits(),
+                viewport.rect.y.to_bits(),
+                viewport.rect.w.to_bits(),
+                viewport.rect.h.to_bits(),
+                viewport.overscan.to_bits(),
+            ]
+        });
+        let Some(element) = self.tree.get(element_id) else {
+            return LayoutResult::zero();
+        };
+        let cache_key = LayoutCacheKey {
+            constraints: [
+                constraints.min_w.to_bits(),
+                constraints.max_w.to_bits(),
+                constraints.min_h.to_bits(),
+                constraints.max_h.to_bits(),
+            ],
+            scale: ctx.scale.dpr.to_bits(),
+            text_metrics_revision,
+            layout_revision: element.layout_revision,
+            topology_revision: element.topology_revision,
+            virtual_viewport,
+        };
+        if !element.dirty.layout && element.layout_cache_key == Some(cache_key) {
+            if let Some(layout) = &element.layout {
+                return layout.clone();
+            }
+        }
+
         let child_ids = self.tree.children_of(element_id).to_vec();
         let mut children = child_ids
             .into_iter()
@@ -80,7 +116,8 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
             self.tree.set_layout_debug(element_id, debug);
         }
 
-        self.tree.set_layout(element_id, result.clone());
+        self.tree
+            .set_layout_with_cache_key(element_id, result.clone(), cache_key);
         result
     }
 }

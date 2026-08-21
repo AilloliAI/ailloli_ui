@@ -47,7 +47,7 @@ fn dirty_elements_are_consumed_only_by_their_tree() {
     let (_shared, first, second) = two_trees();
     let element = ElementId(7);
 
-    first.runtime.mark_dirty(element);
+    first.runtime.request_build(element);
 
     assert!(first.runtime.has_dirty_elements());
     assert!(!second.runtime.has_dirty_elements());
@@ -162,11 +162,11 @@ fn dropping_runtime_releases_only_its_complete_tree_namespace() {
         .open_popup_unpositioned(sibling_popup)
         .unwrap();
 
-    first_handle.mark_dirty(first_root);
+    first_handle.request_build(first_root);
     first_handle.request_repaint_after(first_root, Duration::from_secs(60));
     first_handle.request_focus_key("first-focus");
     first_handle.set_presentation_scope(window.clone(), generation);
-    sibling_handle.mark_dirty(sibling_root);
+    sibling_handle.request_build(sibling_root);
     sibling_handle.request_repaint_after(sibling_root, Duration::from_secs(60));
     sibling_handle.request_focus_key("sibling-focus");
     sibling_handle.set_presentation_scope(window.clone(), generation);

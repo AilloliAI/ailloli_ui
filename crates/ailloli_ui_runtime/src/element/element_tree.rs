@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint};
 use ailloli_ui_core::{ElementId, WidgetId};
 
+use super::element_node::LayoutCacheKey;
 use super::{DirtyFlags, Element, ElementKind, Key};
 #[cfg(feature = "devtools")]
 use crate::layout::LayoutDebugInfo;
@@ -70,6 +71,12 @@ impl<A> ElementTree<A> {
             parent,
             children: Vec::new(),
             layout: None,
+            layout_cache_key: None,
+            layout_revision: 1,
+            topology_revision: 1,
+            layout_changed: true,
+            commit_dirty: true,
+            committed_bounds: None,
             flex_item: FlexItemStyle::default(),
             size_hint: LayoutSizeHint::default(),
             #[cfg(feature = "devtools")]
@@ -84,7 +91,14 @@ impl<A> ElementTree<A> {
 
     pub fn set_children(&mut self, parent: ElementId, children: Vec<ElementId>) {
         if let Some(p) = self.elements.get_mut(&parent) {
-            p.children = children;
+            if p.children != children {
+                p.children = children;
+                p.topology_revision = p.topology_revision.wrapping_add(1).max(1);
+                p.layout_revision = p.layout_revision.wrapping_add(1).max(1);
+                p.layout_cache_key = None;
+                p.dirty = DirtyFlags::layout();
+                p.commit_dirty = true;
+            }
         }
     }
 
@@ -115,6 +129,61 @@ impl<A> ElementTree<A> {
     pub fn set_layout(&mut self, id: ElementId, layout: LayoutResult) {
         if let Some(e) = self.elements.get_mut(&id) {
             e.layout = Some(layout);
+            e.dirty.layout = false;
+            e.dirty.paint = false;
+        }
+    }
+
+    pub(crate) fn set_layout_with_cache_key(
+        &mut self,
+        id: ElementId,
+        layout: LayoutResult,
+        cache_key: LayoutCacheKey,
+    ) {
+        if let Some(element) = self.elements.get_mut(&id) {
+            element.layout_changed = element
+                .layout
+                .as_ref()
+                .is_none_or(|previous| !previous.geometry_eq(&layout));
+            element.layout = Some(layout);
+            element.layout_cache_key = Some(cache_key);
+            element.dirty.layout = false;
+            element.dirty.paint = false;
+            element.commit_dirty |= element.layout_changed;
+        }
+    }
+
+    pub(crate) fn mark_paint_dirty(&mut self, id: ElementId) {
+        if let Some(element) = self.elements.get_mut(&id) {
+            element.dirty.paint = true;
+        }
+    }
+
+    pub(crate) fn mark_element_layout_dirty(&mut self, id: ElementId) {
+        if let Some(element) = self.elements.get_mut(&id) {
+            element.dirty.layout = true;
+            element.dirty.paint = true;
+            element.layout_revision = element.layout_revision.wrapping_add(1).max(1);
+            element.commit_dirty = true;
+        }
+    }
+
+    /// Marks one layout root and its ancestor chain without touching siblings.
+    pub(crate) fn mark_layout_path_dirty(&mut self, mut id: ElementId) {
+        loop {
+            let parent = if let Some(element) = self.elements.get_mut(&id) {
+                element.dirty.layout = true;
+                element.dirty.paint = true;
+                element.layout_revision = element.layout_revision.wrapping_add(1).max(1);
+                element.commit_dirty = true;
+                element.parent
+            } else {
+                None
+            };
+            let Some(next) = parent else {
+                break;
+            };
+            id = next;
         }
     }
 

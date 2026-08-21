@@ -7,7 +7,7 @@ pub mod layout_node;
 pub mod layout_result;
 
 pub use layout_commit::commit_layout_element;
-pub use layout_ctx::{LayoutChild, LayoutContext, LayoutCtx};
+pub use layout_ctx::{LayoutChild, LayoutContext, LayoutCtx, VirtualViewport};
 pub use layout_engine::LayoutEngine;
 pub use layout_node::{LayoutNode, Widget};
 #[cfg(feature = "devtools")]

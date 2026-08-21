@@ -7,7 +7,7 @@
 //  Button::with_label("Send")
 //    .disabled_signal(can_send.map(|v| !v))
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::rc::Rc;
 
@@ -15,6 +15,7 @@ use std::rc::Rc;
 pub struct Signal<T> {
     value: Rc<RefCell<T>>,
     invalidate: Rc<dyn Fn()>,
+    revision: Rc<Cell<u64>>,
 }
 
 impl<T> Clone for Signal<T> {
@@ -22,23 +23,70 @@ impl<T> Clone for Signal<T> {
         Self {
             value: self.value.clone(),
             invalidate: self.invalidate.clone(),
+            revision: self.revision.clone(),
         }
     }
 }
 
 impl<T> Signal<T> {
     pub fn new(value: Rc<RefCell<T>>, invalidate: Rc<dyn Fn()>) -> Self {
-        Self { value, invalidate }
+        Self {
+            value,
+            invalidate,
+            revision: Rc::new(Cell::new(0)),
+        }
+    }
+
+    pub(crate) fn with_revision(
+        value: Rc<RefCell<T>>,
+        invalidate: Rc<dyn Fn()>,
+        revision: Rc<Cell<u64>>,
+    ) -> Self {
+        Self {
+            value,
+            invalidate,
+            revision,
+        }
     }
 
     pub fn set(&self, value: T) {
         *self.value.borrow_mut() = value;
+        self.bump_revision();
         (self.invalidate)();
     }
 
     pub fn update(&self, f: impl FnOnce(&mut T)) {
         f(&mut self.value.borrow_mut());
+        self.bump_revision();
         (self.invalidate)();
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+
+    fn bump_revision(&self) {
+        self.revision
+            .set(self.revision.get().wrapping_add(1).max(1));
+    }
+}
+
+impl<T: PartialEq> Signal<T> {
+    /// Replaces a small comparable value only when it actually changed.
+    ///
+    /// This avoids needless invalidations for scalar/domain revision signals;
+    /// it is not intended as a substitute for retained models or for comparing
+    /// complete trees.
+    pub fn set_if_changed(&self, value: T) -> bool {
+        let mut current = self.value.borrow_mut();
+        if *current == value {
+            return false;
+        }
+        *current = value;
+        drop(current);
+        self.bump_revision();
+        (self.invalidate)();
+        true
     }
 }
 
@@ -85,6 +133,7 @@ impl<T: Default> Signal<T> {
     pub fn take(&self) -> T {
         let mut value = self.value.borrow_mut();
         let old = std::mem::take(&mut *value);
+        self.bump_revision();
         (self.invalidate)();
         old
     }

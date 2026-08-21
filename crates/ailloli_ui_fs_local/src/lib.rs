@@ -3,6 +3,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod source;
+
+pub use source::{LocalFileTreeSource, LocalFileTreeSourceFactory};
+
 use ailloli_ui_fs::{
     FileCapabilities, FileEntry, FileError, FileKind, FileMetadata, FileProvider, FileUri,
 };
@@ -18,7 +22,10 @@ impl LocalFileProvider {
 
 impl FileProvider for LocalFileProvider {
     fn capabilities(&self) -> FileCapabilities {
-        FileCapabilities::READ_WRITE
+        FileCapabilities {
+            watch: true,
+            ..FileCapabilities::READ_WRITE
+        }
     }
 
     fn read_dir(&self, uri: &FileUri) -> Result<Vec<FileEntry>, FileError> {

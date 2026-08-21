@@ -11,7 +11,9 @@ pub mod metadata;
 pub mod operations;
 pub mod progress;
 pub mod provider;
+pub mod source;
 pub mod transfer;
+pub mod tree;
 pub mod uri;
 pub mod watch;
 
@@ -23,6 +25,11 @@ pub use metadata::{FileKind, FileMetadata};
 pub use operations::{FileOperation, FileOperationKind};
 pub use progress::FileProgress;
 pub use provider::FileProvider;
+pub use source::{FileTreeSource, FileTreeSourceFactory};
 pub use transfer::FileTransfer;
+pub use tree::{
+    DirectoryLoadRequest, DirectoryLoadState, FileIdentity, FileTreeDelta, FileTreeNode,
+    FileTreeNodeId, FileTreeStore, FileTreeStoreDelta, FileTreeStoreError,
+};
 pub use uri::FileUri;
 pub use watch::{WatchEvent, WatchEventKind};

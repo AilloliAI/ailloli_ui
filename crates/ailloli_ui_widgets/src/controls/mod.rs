@@ -36,6 +36,7 @@ pub(crate) mod text_field_core;
 pub mod text_input;
 pub mod toast;
 pub mod tooltip;
+pub mod tree_model;
 pub mod tree_view;
 pub mod upload_dropzone;
 
@@ -98,6 +99,10 @@ pub use terminal_widget::{
 pub use text_input::{TextInput, TextInputStyle};
 pub use toast::{Toast, ToastHost, ToastPosition, ToastStyle, ToastTone};
 pub use tooltip::{Tooltip, TooltipStyle};
+pub use tree_model::{
+    FlatTreeIndex, FlatTreeRow, TreeItem, TreeModel, TreeModelDelta, TreeModelError,
+    TreeModelHandle, TreeModelSubscription, TreeMutation,
+};
 pub use tree_view::{
     TreeContextMenu, TreeCreate, TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition,
     TreeMove, TreeMutationMode, TreeNode, TreeNodeTrailingAction, TreeRename, TreeShortcut,

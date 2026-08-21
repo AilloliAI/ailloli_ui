@@ -1,5 +1,6 @@
 use super::external_url::{ExternalUrl, ExternalUrlOpener, MemoryExternalUrlOpener, OpenUrlError};
 use super::state_store::StateStore;
+use super::{FrameWorkPlan, Invalidation, UiWake};
 use crate::app::PresentationGeneration;
 use crate::popup::{
     ElementTreeId, PopupContent, PopupDismissReason, PopupId, PopupIntent, PopupPlacementSpec,
@@ -9,7 +10,9 @@ use ailloli_ui_core::geometry::{Point, Rect};
 use ailloli_ui_core::ids::{ElementId, LogicalWindowId};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::fmt;
+use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Platform clipboard access (text); implemented by winit bridge or [`MemoryClipboard`].
@@ -52,6 +55,34 @@ pub enum WindowChromeOp {
 pub struct RuntimeHandle<A> {
     pub(crate) inner: Rc<RefCell<RuntimeInner<A>>>,
     element_tree_id: ElementTreeId,
+}
+
+/// RAII lifetime for one UI-thread background service registration.
+pub struct UiServiceRegistration<A> {
+    id: u64,
+    element_tree_id: ElementTreeId,
+    runtime: Weak<RefCell<RuntimeInner<A>>>,
+}
+
+impl<A> fmt::Debug for UiServiceRegistration<A> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UiServiceRegistration")
+            .field("id", &self.id)
+            .field("element_tree_id", &self.element_tree_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<A> Drop for UiServiceRegistration<A> {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime
+                .borrow_mut()
+                .ui_services
+                .remove(&(self.element_tree_id, self.id));
+        }
+    }
 }
 
 impl<A> Clone for RuntimeHandle<A> {
@@ -164,8 +195,11 @@ impl<A> RuntimeHandle<A> {
         let mut inner = self.inner.borrow_mut();
         inner.dirty_elements.remove(&element_tree_id);
         inner
+            .ui_services
+            .retain(|(tree_id, _), _| *tree_id != element_tree_id);
+        inner
             .scheduled_repaints
-            .retain(|(tree_id, _, _)| *tree_id != element_tree_id);
+            .retain(|scheduled| scheduled.element_tree_id != element_tree_id);
         inner.pending_focus_keys.remove(&element_tree_id);
         inner.presentation_scopes.remove(&element_tree_id);
         inner
@@ -186,13 +220,110 @@ impl<A> RuntimeHandle<A> {
         self.inner.borrow_mut().actions.push(action);
     }
 
-    pub fn mark_dirty(&self, element_id: ElementId) {
-        self.inner
-            .borrow_mut()
+    /// Requests the smallest retained unit of work required by `element_id`.
+    /// Repeated requests are coalesced to the strongest invalidation.
+    pub fn invalidate(&self, element_id: ElementId, invalidation: Invalidation) {
+        let mut inner = self.inner.borrow_mut();
+        let pending = inner
             .dirty_elements
             .entry(self.element_tree_id)
-            .or_default()
-            .push(element_id);
+            .or_default();
+        pending
+            .entry(element_id)
+            .and_modify(|current| *current = current.merge(invalidation))
+            .or_insert(invalidation);
+    }
+
+    /// Compatibility alias for the historical rebuild invalidation.
+    #[deprecated(note = "use invalidate(element_id, Invalidation::Build)")]
+    pub fn mark_dirty(&self, element_id: ElementId) {
+        self.invalidate(element_id, Invalidation::Build);
+    }
+
+    pub fn request_repaint(&self, element_id: ElementId) {
+        self.invalidate(element_id, Invalidation::Paint);
+    }
+
+    pub fn request_layout(&self, element_id: ElementId) {
+        self.invalidate(element_id, Invalidation::Layout);
+    }
+
+    pub fn request_build(&self, element_id: ElementId) {
+        self.invalidate(element_id, Invalidation::Build);
+    }
+
+    /// Installs the payload-free host wake shared by background UI services.
+    pub fn install_ui_wake(&self, wake: Arc<dyn UiWake>) {
+        self.inner.borrow_mut().ui_wake = Some(wake);
+    }
+
+    /// Returns the thread-safe host wake without exposing the UI-local runtime.
+    pub fn ui_wake(&self) -> Option<Arc<dyn UiWake>> {
+        self.inner.borrow().ui_wake.clone()
+    }
+
+    /// Registers UI-thread work to service after a payload-free host wake.
+    /// The registry owns only a weak target; the returned RAII guard and the
+    /// component state own the callback lifetime.
+    pub fn register_ui_service(&self, service: &Rc<dyn Fn() -> bool>) -> UiServiceRegistration<A> {
+        let id = {
+            let mut inner = self.inner.borrow_mut();
+            let id = inner.next_ui_service_id;
+            inner.next_ui_service_id = id.wrapping_add(1);
+            inner
+                .ui_services
+                .insert((self.element_tree_id, id), Rc::downgrade(service));
+            id
+        };
+        UiServiceRegistration {
+            id,
+            element_tree_id: self.element_tree_id,
+            runtime: Rc::downgrade(&self.inner),
+        }
+    }
+
+    /// Services every live UI-local worker target. Callbacks run outside the
+    /// runtime borrow so they may invalidate their owning component.
+    pub fn service_ui_sources(&self) -> bool {
+        let callbacks = {
+            let mut inner = self.inner.borrow_mut();
+            let callbacks = inner
+                .ui_services
+                .values()
+                .filter_map(Weak::upgrade)
+                .collect::<Vec<_>>();
+            inner
+                .ui_services
+                .retain(|_, service| service.strong_count() != 0);
+            callbacks
+        };
+        let mut changed = false;
+        for service in callbacks {
+            changed |= service();
+        }
+        changed
+    }
+
+    pub(crate) fn weak_invalidator(
+        &self,
+        element_id: ElementId,
+        invalidation: Invalidation,
+    ) -> Rc<dyn Fn()>
+    where
+        A: 'static,
+    {
+        let inner: Weak<RefCell<RuntimeInner<A>>> = Rc::downgrade(&self.inner);
+        let element_tree_id = self.element_tree_id;
+        Rc::new(move || {
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            let handle = RuntimeHandle {
+                inner,
+                element_tree_id,
+            };
+            handle.invalidate(element_id, invalidation);
+        })
     }
 
     pub fn request_focus_key(&self, key: impl Into<String>) {
@@ -210,34 +341,57 @@ impl<A> RuntimeHandle<A> {
     }
 
     pub fn request_repaint_after(&self, element_id: ElementId, delay: Duration) {
+        self.invalidate_after(element_id, Invalidation::Paint, delay);
+    }
+
+    pub fn request_layout_after(&self, element_id: ElementId, delay: Duration) {
+        self.invalidate_after(element_id, Invalidation::Layout, delay);
+    }
+
+    pub fn request_build_after(&self, element_id: ElementId, delay: Duration) {
+        self.invalidate_after(element_id, Invalidation::Build, delay);
+    }
+
+    pub fn invalidate_after(
+        &self,
+        element_id: ElementId,
+        invalidation: Invalidation,
+        delay: Duration,
+    ) {
         let due = Instant::now() + delay;
         let mut inner = self.inner.borrow_mut();
-        if let Some((_, current_due)) = inner
+        if let Some(current_due) = inner
             .scheduled_repaints
             .iter_mut()
-            .filter(|(tree_id, _, _)| *tree_id == self.element_tree_id)
-            .map(|(_, id, due)| (id, due))
-            .find(|(id, _)| **id == element_id)
+            .find(|scheduled| {
+                scheduled.element_tree_id == self.element_tree_id
+                    && scheduled.element_id == element_id
+                    && scheduled.invalidation == invalidation
+            })
+            .map(|scheduled| &mut scheduled.due)
         {
             if due < *current_due {
                 *current_due = due;
             }
             return;
         }
-        inner
-            .scheduled_repaints
-            .push((self.element_tree_id, element_id, due));
+        inner.scheduled_repaints.push(ScheduledInvalidation {
+            element_tree_id: self.element_tree_id,
+            element_id,
+            invalidation,
+            due,
+        });
     }
 
     pub fn take_due_scheduled_repaints(&self, now: Instant) -> Vec<ElementId> {
         let mut inner = self.inner.borrow_mut();
         let mut due = Vec::new();
         let mut pending = Vec::with_capacity(inner.scheduled_repaints.len());
-        for (tree_id, element_id, due_at) in inner.scheduled_repaints.drain(..) {
-            if tree_id == self.element_tree_id && due_at <= now {
-                due.push(element_id);
+        for scheduled in inner.scheduled_repaints.drain(..) {
+            if scheduled.element_tree_id == self.element_tree_id && scheduled.due <= now {
+                due.push(scheduled.element_id);
             } else {
-                pending.push((tree_id, element_id, due_at));
+                pending.push(scheduled);
             }
         }
         inner.scheduled_repaints = pending;
@@ -252,16 +406,21 @@ impl<A> RuntimeHandle<A> {
         let mut inner = self.inner.borrow_mut();
         let scheduled = std::mem::take(&mut inner.scheduled_repaints);
         let mut promoted = 0;
-        for (tree_id, element_id, due_at) in scheduled {
-            if due_at <= now {
-                inner
+        for scheduled in scheduled {
+            if scheduled.due <= now {
+                let pending = inner
                     .dirty_elements
-                    .entry(tree_id)
-                    .or_default()
-                    .push(element_id);
+                    .entry(scheduled.element_tree_id)
+                    .or_default();
+                pending
+                    .entry(scheduled.element_id)
+                    .and_modify(|current| {
+                        *current = current.merge(scheduled.invalidation);
+                    })
+                    .or_insert(scheduled.invalidation);
                 promoted += 1;
             } else {
-                inner.scheduled_repaints.push((tree_id, element_id, due_at));
+                inner.scheduled_repaints.push(scheduled);
             }
         }
         promoted
@@ -272,8 +431,8 @@ impl<A> RuntimeHandle<A> {
             .borrow()
             .scheduled_repaints
             .iter()
-            .filter(|(tree_id, _, _)| *tree_id == self.element_tree_id)
-            .map(|(_, _, due)| *due)
+            .filter(|scheduled| scheduled.element_tree_id == self.element_tree_id)
+            .map(|scheduled| scheduled.due)
             .min()
     }
 
@@ -283,7 +442,7 @@ impl<A> RuntimeHandle<A> {
             .borrow()
             .scheduled_repaints
             .iter()
-            .map(|(_, _, due)| *due)
+            .map(|scheduled| scheduled.due)
             .min()
     }
 
@@ -296,11 +455,38 @@ impl<A> RuntimeHandle<A> {
     }
 
     pub fn take_dirty_elements(&self) -> Vec<ElementId> {
+        let mut elements: Vec<_> = self
+            .inner
+            .borrow_mut()
+            .dirty_elements
+            .remove(&self.element_tree_id)
+            .unwrap_or_default()
+            .into_keys()
+            .collect();
+        elements.sort_by_key(|element_id| element_id.0);
+        elements
+    }
+
+    /// Returns and clears exact invalidations for this retained tree.
+    pub(crate) fn take_invalidations(&self) -> HashMap<ElementId, Invalidation> {
         self.inner
             .borrow_mut()
             .dirty_elements
             .remove(&self.element_tree_id)
             .unwrap_or_default()
+    }
+
+    /// Aggregate work currently pending for this tree without draining it.
+    pub fn frame_work_plan(&self) -> FrameWorkPlan {
+        self.inner
+            .borrow()
+            .dirty_elements
+            .get(&self.element_tree_id)
+            .into_iter()
+            .flat_map(|pending| pending.values().copied())
+            .fold(FrameWorkPlan::none(), |plan, invalidation| {
+                plan.merge(FrameWorkPlan::from_invalidation(invalidation))
+            })
     }
 
     pub fn take_actions(&self) -> Vec<A> {
@@ -714,7 +900,10 @@ impl<A> Default for RuntimeHandle<A> {
 pub struct RuntimeInner<A> {
     pub states: Rc<RefCell<StateStore>>,
     pub actions: Vec<A>,
-    pub dirty_elements: HashMap<ElementTreeId, Vec<ElementId>>,
+    ui_wake: Option<Arc<dyn UiWake>>,
+    ui_services: HashMap<(ElementTreeId, u64), Weak<dyn Fn() -> bool>>,
+    next_ui_service_id: u64,
+    pub dirty_elements: HashMap<ElementTreeId, HashMap<ElementId, Invalidation>>,
     pub clipboard: Rc<dyn ClipboardProvider>,
     pub external_url_opener: Rc<dyn ExternalUrlOpener>,
     pub open_url_errors: Vec<OpenUrlError>,
@@ -722,7 +911,7 @@ pub struct RuntimeInner<A> {
     pub close_requested: bool,
     /// Pending minimize/maximize per logical window id (`Window::new("main")`).
     pub window_chrome_ops: Vec<(LogicalWindowId, WindowChromeOp)>,
-    pub scheduled_repaints: Vec<(ElementTreeId, ElementId, Instant)>,
+    scheduled_repaints: Vec<ScheduledInvalidation>,
     pub pending_focus_keys: HashMap<ElementTreeId, String>,
     pub presentation_scopes: HashMap<ElementTreeId, (LogicalWindowId, PresentationGeneration)>,
     pub popup_portal: Rc<RefCell<PopupPortal<A>>>,
@@ -731,6 +920,14 @@ pub struct RuntimeInner<A> {
     pub(crate) pending_popup_intents: Vec<PendingPopupIntent>,
     pub popup_errors: Vec<PopupPortalError>,
     next_element_tree_id: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScheduledInvalidation {
+    element_tree_id: ElementTreeId,
+    element_id: ElementId,
+    invalidation: Invalidation,
+    due: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -768,6 +965,9 @@ impl<A> RuntimeInner<A> {
         Self {
             states: Rc::new(RefCell::new(StateStore::default())),
             actions: Vec::new(),
+            ui_wake: None,
+            ui_services: HashMap::new(),
+            next_ui_service_id: 1,
             dirty_elements: HashMap::new(),
             clipboard: Rc::new(MemoryClipboard::new()),
             external_url_opener: Rc::new(MemoryExternalUrlOpener::new()),
@@ -824,7 +1024,7 @@ mod tests {
         let due = runtime.take_due_scheduled_repaints(Instant::now() + Duration::from_secs(1));
         assert_eq!(due, vec![id]);
         for element_id in due {
-            runtime.mark_dirty(element_id);
+            runtime.request_build(element_id);
         }
         assert_eq!(runtime.take_dirty_elements(), vec![id]);
         assert!(runtime.next_scheduled_repaint_due().is_none());

@@ -77,11 +77,11 @@ pub use crate::{
     HomeSymlinkViewStatus, LogicalWindowPosition, LogicalWindowSize, WindowSnapshot,
     WindowStateDocument,
 };
+pub use crate::{Invalidation, RuntimeInbox, RuntimeInboxStats, RuntimeSendError, RuntimeSender};
 #[cfg(feature = "native_overlay")]
 pub use crate::{
     NativeOverlayInputMode, NativeOverlayOptions, NativeOverlayRect, NativeOverlayTarget,
 };
-pub use crate::{RuntimeInbox, RuntimeInboxStats, RuntimeSendError, RuntimeSender};
 
 pub use crate::runtime::component::{IntoView, IntoViewKeyExt, Memo, State, View};
 pub use crate::widgets::layout::FlexItemExt;
@@ -122,7 +122,8 @@ pub use crate::widgets::controls::{
     TerminalSearchMatch, TerminalSelection, TerminalSelectionMode, TerminalView, TerminalViewStyle,
     TerminalWidgetStyle, TextInput, TextInputStyle, TimePicker, TimePickerSize, TimePickerStyle,
     Toast, ToastHost, ToastPosition, ToastStyle, ToastTone, Tooltip, TooltipStyle, TreeCreate,
-    TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition, TreeMove, TreeNode,
+    TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition, TreeItem, TreeModel,
+    TreeModelDelta, TreeModelError, TreeModelHandle, TreeMove, TreeMutation, TreeNode,
     TreeNodeTrailingAction, TreeRename, TreeView, TreeViewSize, TreeViewStyle, UploadDropzone,
     UploadDropzoneStyle, UploadDropzoneVariant,
 };
