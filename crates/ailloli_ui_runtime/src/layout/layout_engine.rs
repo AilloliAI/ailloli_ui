@@ -52,9 +52,12 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
         };
         if !element.dirty.layout && element.layout_cache_key == Some(cache_key) {
             if let Some(layout) = &element.layout {
+                self.tree.record_layout_cache_hit(element_id);
                 return layout.clone();
             }
         }
+        self.tree.record_layout_cache_miss(element_id);
+        self.tree.record_layout(element_id);
 
         let child_ids = self.tree.children_of(element_id).to_vec();
         let mut children = child_ids

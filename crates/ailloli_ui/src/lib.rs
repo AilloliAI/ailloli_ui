@@ -115,7 +115,7 @@ pub use ailloli_ui_widgets::controls::{
     ContextMenu, ContextMenuEntry, ContextMenuItem, ContextMenuStyle, Link, LinkStyle,
     PopupAlignment, PopupPlacement, Terminal, TerminalSelectionMode, TerminalWidgetStyle, Tooltip,
     TooltipStyle, TreeItem, TreeModel, TreeModelDelta, TreeModelError, TreeModelHandle,
-    TreeMutation,
+    TreeMutation, TreeViewDiagnostics, TreeViewDiagnosticsSnapshot,
 };
 pub use ailloli_ui_widgets::editor::{
     CodeEditorFeatureFlags, CodeFileSummary, CodeSymbol, Diagnostic, DiagnosticHit,

@@ -2,7 +2,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use ailloli_ui_core::{Constraints, Offset, Rect, Scale, Size};
-use ailloli_ui_runtime::app::{Invalidation, Runtime, RuntimeHandle};
+use ailloli_ui_runtime::app::{
+    Invalidation, InvalidationSource, Runtime, RuntimeHandle, INVALIDATION_PROVENANCE_CAPACITY,
+};
 use ailloli_ui_runtime::component::{ComponentNode, Context, Signal, View, Widget};
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutEngine, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
@@ -176,4 +178,23 @@ fn paint_layout_and_build_requests_coalesce_to_the_strongest_level() {
     assert!(!runtime.runtime.frame_work_plan().needs_build());
     runtime.runtime.invalidate(chat, Invalidation::Build);
     assert!(runtime.runtime.frame_work_plan().needs_build());
+}
+
+#[test]
+fn invalidation_provenance_is_bounded_and_reports_coalescing() {
+    let (runtime, _text, _file, _chat, _signal) = fixture();
+    let chat = runtime.tree.resolve_element_by_view_key("chat").unwrap();
+    for _ in 0..1_000 {
+        runtime.runtime.invalidate(chat, Invalidation::Paint);
+    }
+    let diagnostics = runtime.runtime.invalidation_diagnostics();
+    assert_eq!(diagnostics.requests, 1_000);
+    assert_eq!(diagnostics.paint_requests, 1_000);
+    assert_eq!(diagnostics.coalesced_requests, 999);
+    assert_eq!(diagnostics.records.len(), INVALIDATION_PROVENANCE_CAPACITY);
+    assert_eq!(
+        diagnostics.records.last().unwrap().source(),
+        InvalidationSource::Runtime,
+    );
+    assert!(diagnostics.records.last().unwrap().was_coalesced());
 }

@@ -50,6 +50,7 @@ fn commit_layout_element_with_bounds<A: 'static>(
     }
 
     if should_commit_widget {
+        tree.record_layout_commit(element_id);
         if let ElementKind::Widget(widget) = kind {
             widget.layout_committed(ctx, bounds, &layout);
         }

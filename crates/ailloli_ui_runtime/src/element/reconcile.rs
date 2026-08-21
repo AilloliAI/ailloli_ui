@@ -107,6 +107,7 @@ fn create_from_view<A: 'static>(
             tree.set_children(id, children);
         }
         ViewKind::Component(component) => {
+            tree.record_build(id);
             let mut ctx = Context::new(id, runtime.clone());
             let built = component.build(&mut ctx);
             let child_id = create_from_view(tree, runtime, Some(id), built);
@@ -162,6 +163,7 @@ pub fn reconcile_element<A: 'static>(
         ViewKind::Empty => Vec::new(),
         ViewKind::Widget(_) => new_view.children,
         ViewKind::Component(component) => {
+            tree.record_build(element_id);
             let mut ctx = Context::new(element_id, runtime.clone());
             vec![component.build(&mut ctx)]
         }
@@ -232,6 +234,7 @@ pub fn reconcile_existing_component<A: 'static>(
         el.commit_dirty = true;
     }
 
+    tree.record_build(element_id);
     let mut ctx = Context::new(element_id, runtime.clone());
     let built = component.build(&mut ctx);
     reconcile_child_views(tree, runtime, element_id, vec![built]);

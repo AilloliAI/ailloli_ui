@@ -237,6 +237,7 @@ fn hit_test_overlay_bounds_with_bounds<A>(
     pos: Point,
     bounds: Rect,
 ) -> Option<ElementId> {
+    tree.record_hit_test(element_id);
     let el = tree.get(element_id)?;
     let layout = el.layout.as_ref()?;
 
@@ -287,6 +288,7 @@ fn hit_test_element_with_bounds<A>(
     bounds: Rect,
     mut clips: Vec<ClipShape>,
 ) -> Option<ElementId> {
+    tree.record_hit_test(element_id);
     let el = tree.get(element_id)?;
     let layout = el.layout.as_ref()?;
 

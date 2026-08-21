@@ -181,6 +181,8 @@ pub enum TreeModelError<T: fmt::Debug> {
     NotBranch { id: T },
     #[error("tree model revision space is exhausted")]
     RevisionExhausted,
+    #[error("stale tree mutation: expected revision {expected}, current revision {actual}")]
+    StaleRevision { expected: u64, actual: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,6 +326,23 @@ where
         mutation: TreeMutation<T>,
     ) -> Result<TreeModelDelta<T>, TreeModelError<T>> {
         self.apply_batch([mutation])
+    }
+
+    /// Applies a batch only when the caller still observes `expected_revision`.
+    /// This lets worker/UI bridges reject stale structural mutations without
+    /// partially changing the retained model.
+    pub fn apply_batch_if_revision(
+        &mut self,
+        expected_revision: u64,
+        mutations: impl IntoIterator<Item = TreeMutation<T>>,
+    ) -> Result<TreeModelDelta<T>, TreeModelError<T>> {
+        if self.revision != expected_revision {
+            return Err(TreeModelError::StaleRevision {
+                expected: expected_revision,
+                actual: self.revision,
+            });
+        }
+        self.apply_batch(mutations)
     }
 
     pub fn apply_batch(
@@ -733,16 +752,25 @@ where
     }
 
     fn push_visible(&self, id: &T, depth: u16, rows: &mut Vec<FlatTreeRow<T>>) {
-        let Some(record) = self.nodes.get(id) else {
-            return;
-        };
-        rows.push(FlatTreeRow {
-            node_id: id.clone(),
-            depth,
-        });
-        if record.expanded {
-            for child in &record.children {
-                self.push_visible(child, depth.saturating_add(1), rows);
+        // Model depth is user-controlled; never recurse on the process stack.
+        let mut pending = vec![(id.clone(), depth)];
+        while let Some((current, current_depth)) = pending.pop() {
+            let Some(record) = self.nodes.get(&current) else {
+                continue;
+            };
+            rows.push(FlatTreeRow {
+                node_id: current,
+                depth: current_depth,
+            });
+            if record.expanded {
+                pending.extend(
+                    record
+                        .children
+                        .iter()
+                        .rev()
+                        .cloned()
+                        .map(|child| (child, current_depth.saturating_add(1))),
+                );
             }
         }
     }
@@ -815,6 +843,21 @@ where
         mutations: impl IntoIterator<Item = TreeMutation<T>>,
     ) -> Result<TreeModelDelta<T>, TreeModelError<T>> {
         let delta = self.model.borrow_mut().apply_batch(mutations)?;
+        if !delta.mutations.is_empty() {
+            self.notify(delta.revision);
+        }
+        Ok(delta)
+    }
+
+    pub fn apply_batch_if_revision(
+        &self,
+        expected_revision: u64,
+        mutations: impl IntoIterator<Item = TreeMutation<T>>,
+    ) -> Result<TreeModelDelta<T>, TreeModelError<T>> {
+        let delta = self
+            .model
+            .borrow_mut()
+            .apply_batch_if_revision(expected_revision, mutations)?;
         if !delta.mutations.is_empty() {
             self.notify(delta.revision);
         }

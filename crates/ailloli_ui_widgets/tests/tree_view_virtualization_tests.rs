@@ -3,7 +3,9 @@ use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::IntoView;
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
-use ailloli_ui_widgets::controls::{TreeItem, TreeModel, TreeModelHandle, TreeMutation, TreeView};
+use ailloli_ui_widgets::controls::{
+    TreeItem, TreeModel, TreeModelHandle, TreeMutation, TreeView, TreeViewDiagnostics,
+};
 use ailloli_ui_widgets::layout::ScrollView;
 
 fn flat_model(count: usize) -> TreeModelHandle<u64> {
@@ -33,10 +35,16 @@ fn one_hundred_thousand_rows_layout_only_the_viewport_and_overscan() {
     let initial_rebuilds = model.read(|model| model.flat_index().rebuilds());
     let runtime = RuntimeHandle::<()>::new();
     let mut app = Runtime::new(runtime);
+    let diagnostics = TreeViewDiagnostics::new();
     app.reconcile(
         ScrollView::vertical()
             .initial_scroll_y(50_000.0 * 28.0)
-            .child(TreeView::new().model(model.clone()).virtualized(true))
+            .child(
+                TreeView::new()
+                    .model(model.clone())
+                    .virtualized(true)
+                    .diagnostics(diagnostics.clone()),
+            )
             .into_view(),
     );
 
@@ -60,6 +68,12 @@ fn one_hundred_thousand_rows_layout_only_the_viewport_and_overscan() {
         initial_rebuilds,
         "layout and paint must not rebuild the flattened index",
     );
+    let first_diagnostics = diagnostics.snapshot();
+    assert_eq!(first_diagnostics.loaded_rows, 100_000);
+    assert!(first_diagnostics.visible_rows <= 53);
+    assert!(first_diagnostics.layout_rows_visited <= 53);
+    assert!(first_diagnostics.paint_rows_visited <= 53);
+    assert_eq!(first_diagnostics.virtualization_fallbacks, 0);
 
     let cached_layouts = text.cached_layout_count();
     for _ in 0..10 {
@@ -70,6 +84,20 @@ fn one_hundred_thousand_rows_layout_only_the_viewport_and_overscan() {
     assert_eq!(
         model.read(|model| model.flat_index().rebuilds()),
         initial_rebuilds,
+    );
+    let after_redraws = diagnostics.snapshot();
+    assert_eq!(after_redraws.layout_calls, first_diagnostics.layout_calls);
+    assert_eq!(
+        after_redraws.layout_rows_visited,
+        first_diagnostics.layout_rows_visited,
+    );
+    assert_eq!(
+        after_redraws.flatten_rebuilds,
+        first_diagnostics.flatten_rebuilds
+    );
+    assert_eq!(
+        after_redraws.paint_calls,
+        first_diagnostics.paint_calls + 10
     );
 }
 

@@ -37,8 +37,9 @@ pub mod popup_mount;
 pub mod scene;
 
 pub use app::{
-    FrameWorkPlan, Invalidation, UiDrain, UiInbox, UiInboxStats, UiSendError, UiSender, UiWake,
-    UiWakeError,
+    ElementTreeDiagnosticsSnapshot, ElementWorkCounters, FrameWorkPlan, Invalidation,
+    InvalidationDiagnosticsSnapshot, InvalidationRecord, InvalidationSource, UiDrain, UiInbox,
+    UiInboxStats, UiSendError, UiSender, UiWake, UiWakeError,
 };
 
 #[cfg(feature = "devtools")]

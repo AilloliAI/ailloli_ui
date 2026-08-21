@@ -1,6 +1,7 @@
 //! Application loop: runtime instance, handles, scheduler, and shared state.
 
 pub mod command;
+pub mod diagnostics;
 pub mod external_url;
 pub mod invalidation;
 pub mod presentation;
@@ -12,6 +13,10 @@ pub mod state_store;
 pub mod ui_inbox;
 
 pub use command::Command;
+pub use diagnostics::{
+    ElementTreeDiagnosticsSnapshot, ElementWorkCounters, InvalidationDiagnosticsSnapshot,
+    InvalidationRecord, InvalidationSource, INVALIDATION_PROVENANCE_CAPACITY,
+};
 pub use external_url::{
     ExternalUrl, ExternalUrlError, ExternalUrlOpener, MemoryExternalUrlOpener, OpenUrlError,
 };

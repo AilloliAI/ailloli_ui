@@ -27,6 +27,7 @@ fn paint_element_with_bounds<A: 'static>(
     element_id: ElementId,
     bounds: Rect,
 ) {
+    tree.record_paint(element_id);
     let Some(el) = tree.get(element_id) else {
         return;
     };

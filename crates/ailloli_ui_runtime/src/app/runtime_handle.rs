@@ -1,6 +1,9 @@
+use super::diagnostics::InvalidationDiagnostics;
 use super::external_url::{ExternalUrl, ExternalUrlOpener, MemoryExternalUrlOpener, OpenUrlError};
 use super::state_store::StateStore;
-use super::{FrameWorkPlan, Invalidation, UiWake};
+use super::{
+    FrameWorkPlan, Invalidation, InvalidationDiagnosticsSnapshot, InvalidationSource, UiWake,
+};
 use crate::app::PresentationGeneration;
 use crate::popup::{
     ElementTreeId, PopupContent, PopupDismissReason, PopupId, PopupIntent, PopupPlacementSpec,
@@ -223,15 +226,40 @@ impl<A> RuntimeHandle<A> {
     /// Requests the smallest retained unit of work required by `element_id`.
     /// Repeated requests are coalesced to the strongest invalidation.
     pub fn invalidate(&self, element_id: ElementId, invalidation: Invalidation) {
+        self.invalidate_from(element_id, invalidation, InvalidationSource::Runtime);
+    }
+
+    /// Requests retained work while preserving its diagnostic provenance.
+    pub fn invalidate_from(
+        &self,
+        element_id: ElementId,
+        invalidation: Invalidation,
+        source: InvalidationSource,
+    ) {
         let mut inner = self.inner.borrow_mut();
-        let pending = inner
-            .dirty_elements
-            .entry(self.element_tree_id)
-            .or_default();
-        pending
-            .entry(element_id)
-            .and_modify(|current| *current = current.merge(invalidation))
-            .or_insert(invalidation);
+        let coalesced = {
+            let pending = inner
+                .dirty_elements
+                .entry(self.element_tree_id)
+                .or_default();
+            let coalesced = pending.contains_key(&element_id);
+            pending
+                .entry(element_id)
+                .and_modify(|current| *current = current.merge(invalidation))
+                .or_insert(invalidation);
+            coalesced
+        };
+        inner.invalidation_diagnostics.record(
+            self.element_tree_id,
+            element_id,
+            invalidation,
+            source,
+            coalesced,
+        );
+    }
+
+    pub fn invalidation_diagnostics(&self) -> InvalidationDiagnosticsSnapshot {
+        self.inner.borrow().invalidation_diagnostics.snapshot()
     }
 
     /// Compatibility alias for the historical rebuild invalidation.
@@ -322,7 +350,7 @@ impl<A> RuntimeHandle<A> {
                 inner,
                 element_tree_id,
             };
-            handle.invalidate(element_id, invalidation);
+            handle.invalidate_from(element_id, invalidation, InvalidationSource::Model);
         })
     }
 
@@ -412,12 +440,20 @@ impl<A> RuntimeHandle<A> {
                     .dirty_elements
                     .entry(scheduled.element_tree_id)
                     .or_default();
+                let coalesced = pending.contains_key(&scheduled.element_id);
                 pending
                     .entry(scheduled.element_id)
                     .and_modify(|current| {
                         *current = current.merge(scheduled.invalidation);
                     })
                     .or_insert(scheduled.invalidation);
+                inner.invalidation_diagnostics.record(
+                    scheduled.element_tree_id,
+                    scheduled.element_id,
+                    scheduled.invalidation,
+                    InvalidationSource::Timer,
+                    coalesced,
+                );
                 promoted += 1;
             } else {
                 inner.scheduled_repaints.push(scheduled);
@@ -904,6 +940,7 @@ pub struct RuntimeInner<A> {
     ui_services: HashMap<(ElementTreeId, u64), Weak<dyn Fn() -> bool>>,
     next_ui_service_id: u64,
     pub dirty_elements: HashMap<ElementTreeId, HashMap<ElementId, Invalidation>>,
+    invalidation_diagnostics: InvalidationDiagnostics,
     pub clipboard: Rc<dyn ClipboardProvider>,
     pub external_url_opener: Rc<dyn ExternalUrlOpener>,
     pub open_url_errors: Vec<OpenUrlError>,
@@ -969,6 +1006,7 @@ impl<A> RuntimeInner<A> {
             ui_services: HashMap::new(),
             next_ui_service_id: 1,
             dirty_elements: HashMap::new(),
+            invalidation_diagnostics: InvalidationDiagnostics::default(),
             clipboard: Rc::new(MemoryClipboard::new()),
             external_url_opener: Rc::new(MemoryExternalUrlOpener::new()),
             open_url_errors: Vec::new(),

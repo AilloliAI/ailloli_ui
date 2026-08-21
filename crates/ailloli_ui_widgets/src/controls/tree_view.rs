@@ -35,6 +35,43 @@ const TREE_ACTIVATE_MAX_DELAY: Duration = Duration::from_millis(500);
 const TREE_ACTIVATE_MAX_DISTANCE: f32 = 4.0;
 const TREE_VIRTUAL_OVERSCAN_ROWS: usize = 8;
 
+/// Permanent structural counters for a [`TreeView`]. The handle is UI-local
+/// and intentionally cheap to clone into a benchmark or diagnostics panel.
+#[derive(Clone, Default)]
+pub struct TreeViewDiagnostics {
+    inner: Rc<RefCell<TreeViewDiagnosticsSnapshot>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TreeViewDiagnosticsSnapshot {
+    pub layout_calls: u64,
+    pub paint_calls: u64,
+    pub hit_tests: u64,
+    pub loaded_rows: usize,
+    pub visible_rows: usize,
+    pub layout_rows_visited: u64,
+    pub paint_rows_visited: u64,
+    pub hit_test_rows_visited: u64,
+    pub flatten_rebuilds: u64,
+    pub snapshot_rows_cloned: u64,
+    pub text_measurements: u64,
+    pub virtualization_fallbacks: u64,
+}
+
+impl TreeViewDiagnostics {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> TreeViewDiagnosticsSnapshot {
+        *self.inner.borrow()
+    }
+
+    fn update(&self, update: impl FnOnce(&mut TreeViewDiagnosticsSnapshot)) {
+        update(&mut self.inner.borrow_mut());
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TreeViewSize {
     Compact,
@@ -352,6 +389,7 @@ trait RetainedTreeSource<T> {
     fn is_expanded(&self, id: &T) -> bool;
     fn set_expanded(&self, id: T, expanded: bool) -> bool;
     fn subscribe(&self, callback: &Rc<dyn Fn(u64)>) -> TreeModelSubscription;
+    fn flatten_rebuilds(&self) -> u64;
 }
 
 impl<T> RetainedTreeSource<T> for TreeModelHandle<T>
@@ -400,6 +438,10 @@ where
     fn subscribe(&self, callback: &Rc<dyn Fn(u64)>) -> TreeModelSubscription {
         TreeModelHandle::subscribe(self, callback)
     }
+
+    fn flatten_rebuilds(&self) -> u64 {
+        self.read(|model| model.flat_index().rebuilds())
+    }
 }
 
 pub struct TreeView<T, A = ()> {
@@ -433,6 +475,7 @@ pub struct TreeView<T, A = ()> {
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
     style: TreeViewStyle,
     virtualized: bool,
+    diagnostics: Option<TreeViewDiagnostics>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Default for TreeView<T, A> {
@@ -480,6 +523,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
             on_shortcut: None,
             style: TreeViewStyle::default(),
             virtualized: false,
+            diagnostics: None,
         }
     }
 
@@ -604,6 +648,11 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
 
     pub fn virtualized(mut self, virtualized: bool) -> Self {
         self.virtualized = virtualized;
+        self
+    }
+
+    pub fn diagnostics(mut self, diagnostics: TreeViewDiagnostics) -> Self {
+        self.diagnostics = Some(diagnostics);
         self
     }
 
@@ -795,6 +844,7 @@ struct TreeViewComponent<T, A> {
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
     style: TreeViewStyle,
     virtualized: bool,
+    diagnostics: Option<TreeViewDiagnostics>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewComponent<T, A> {
@@ -848,6 +898,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
             on_shortcut: self.on_shortcut.clone(),
             style: self.style.clone(),
             virtualized: self.virtualized,
+            diagnostics: self.diagnostics.clone(),
             active_index: context.signal(None),
             drag: context.signal(None),
             editing: context.signal(None),
@@ -894,6 +945,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for TreeView<T, A> 
                 on_shortcut: self.on_shortcut,
                 style: self.style,
                 virtualized: self.virtualized,
+                diagnostics: self.diagnostics,
             }),
             self.flex_item,
             LayoutSizeHint::from_layout(self.layout),
@@ -1029,6 +1081,7 @@ struct TreeViewWidget<T, A> {
     last_click: Signal<Option<TreeClickState<T>>>,
     observed_max_width: Rc<Cell<f32>>,
     snapshot_flat_cache: Rc<RefCell<SnapshotFlatCache<T>>>,
+    diagnostics: Option<TreeViewDiagnostics>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T, A> {
@@ -1046,7 +1099,32 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         self.consume_pending_command();
         let total_rows = self.visible_len();
         let layout_range = self.layout_row_range(ctx, constraints, total_rows);
+        let layout_rows = layout_range.len();
         let nodes = self.visible_nodes_range(layout_range);
+        if let Some(diagnostics) = &self.diagnostics {
+            let flatten_rebuilds = self
+                .model
+                .as_ref()
+                .map_or(0, |model| model.flatten_rebuilds());
+            let fallback = self.virtualized
+                && ctx.virtual_viewport().is_none()
+                && !constraints.max_h.is_finite();
+            diagnostics.update(|snapshot| {
+                snapshot.layout_calls = snapshot.layout_calls.saturating_add(1);
+                snapshot.loaded_rows = total_rows;
+                snapshot.visible_rows = layout_rows;
+                snapshot.layout_rows_visited = snapshot
+                    .layout_rows_visited
+                    .saturating_add(layout_rows as u64);
+                snapshot.text_measurements = snapshot
+                    .text_measurements
+                    .saturating_add(layout_rows as u64);
+                snapshot.flatten_rebuilds = flatten_rebuilds.max(snapshot.flatten_rebuilds);
+                snapshot.virtualization_fallbacks = snapshot
+                    .virtualization_fallbacks
+                    .saturating_add(u64::from(fallback));
+            });
+        }
         let mut max_w = self.observed_max_width.get().max(160.0);
         for node in &nodes {
             let text_w = measure_text(ctx, &node.label, self.text_style(node)).unwrap_or(80.0);
@@ -1100,7 +1178,18 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
 
         let total_rows = self.visible_len();
         let paint_range = self.paint_row_range(ctx, bounds, total_rows);
+        let paint_rows = paint_range.len();
         let nodes = self.visible_nodes_range(paint_range.clone());
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.update(|snapshot| {
+                snapshot.paint_calls = snapshot.paint_calls.saturating_add(1);
+                snapshot.loaded_rows = total_rows;
+                snapshot.visible_rows = paint_rows;
+                snapshot.paint_rows_visited = snapshot
+                    .paint_rows_visited
+                    .saturating_add(paint_rows as u64);
+            });
+        }
         let selected = self.selected_value();
         let active = self.normalized_active_index_for_source();
         let drag = self.drag.read();
@@ -1369,6 +1458,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         cache.expanded = expanded;
         cache.rows = out;
         cache.rebuilds = cache.rebuilds.saturating_add(1);
+        if let Some(diagnostics) = &self.diagnostics {
+            let rows = cache.rows.len() as u64;
+            let rebuilds = cache.rebuilds;
+            diagnostics.update(|snapshot| {
+                snapshot.flatten_rebuilds = rebuilds;
+                snapshot.snapshot_rows_cloned = snapshot.snapshot_rows_cloned.saturating_add(rows);
+            });
+        }
     }
 
     fn layout_row_range(
@@ -1433,12 +1530,26 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
     }
 
     fn row_index_at(&self, bounds: Rect, y: f32, len: usize) -> Option<usize> {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.update(|snapshot| {
+                snapshot.hit_tests = snapshot.hit_tests.saturating_add(1);
+            });
+        }
         let local_y = y - bounds.y - self.style.padding_y;
         if local_y < 0.0 {
             return None;
         }
         let idx = (local_y / self.style.row_height).floor() as usize;
-        (idx < len).then_some(idx)
+        let result = (idx < len).then_some(idx);
+        if result.is_some() {
+            if let Some(diagnostics) = &self.diagnostics {
+                diagnostics.update(|snapshot| {
+                    snapshot.hit_test_rows_visited =
+                        snapshot.hit_test_rows_visited.saturating_add(1);
+                });
+            }
+        }
+        result
     }
 
     fn paint_row_range(

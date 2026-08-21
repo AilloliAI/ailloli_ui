@@ -155,3 +155,39 @@ fn subscriptions_are_weak_and_raii_scoped() {
     assert_eq!(calls.get(), 1);
     drop(guard);
 }
+
+#[test]
+fn stale_revision_is_rejected_atomically() {
+    let handle = TreeModelHandle::new(TreeModel::<u64>::new());
+    handle.apply(insert(1, None, 0, false)).unwrap();
+    let error = handle
+        .apply_batch_if_revision(0, [insert(2, None, 1, false)])
+        .unwrap_err();
+    assert_eq!(
+        error,
+        TreeModelError::StaleRevision {
+            expected: 0,
+            actual: 1,
+        }
+    );
+    assert!(handle.read(|model| model.item(&2).is_none()));
+}
+
+#[test]
+fn deeply_nested_models_materialize_without_process_stack_recursion() {
+    const DEPTH: u64 = 20_000;
+    let mut mutations = Vec::with_capacity((DEPTH * 2) as usize);
+    for id in 0..DEPTH {
+        mutations.push(insert(id, id.checked_sub(1), 0, true));
+        mutations.push(TreeMutation::SetExpanded { id, expanded: true });
+    }
+    let mut model = TreeModel::new();
+    model.apply_batch(mutations).unwrap();
+    assert_eq!(model.visible_len(), DEPTH as usize);
+    assert_eq!(
+        model.flat_index().rows().last().unwrap().depth(),
+        (DEPTH - 1) as u16,
+    );
+    model.apply(TreeMutation::Remove { id: 0 }).unwrap();
+    assert!(model.is_empty());
+}

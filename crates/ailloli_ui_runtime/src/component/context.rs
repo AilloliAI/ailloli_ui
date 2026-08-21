@@ -1,5 +1,5 @@
 use crate::app::runtime_handle::RuntimeHandle;
-use crate::app::{Invalidation, UiServiceRegistration};
+use crate::app::{Invalidation, InvalidationSource, UiServiceRegistration};
 use crate::component::signal::Signal;
 use crate::component::state::State;
 use ailloli_ui_core::ids::ElementId;
@@ -58,7 +58,7 @@ impl<A: 'static> Context<A> {
         let element_id = self.element_id;
 
         let invalidate = Rc::new(move || {
-            runtime.invalidate(element_id, invalidation);
+            runtime.invalidate_from(element_id, invalidation, InvalidationSource::Signal);
         });
 
         let element_tree_id = self.runtime.element_tree_id();
@@ -85,7 +85,8 @@ impl<A: 'static> Context<A> {
     }
 
     pub fn invalidate(&self, invalidation: Invalidation) {
-        self.runtime.invalidate(self.element_id, invalidation);
+        self.runtime
+            .invalidate_from(self.element_id, invalidation, InvalidationSource::Context);
     }
 
     pub fn request_repaint(&self) {

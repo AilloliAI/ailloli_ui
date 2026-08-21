@@ -106,6 +106,7 @@ pub use tree_model::{
 pub use tree_view::{
     TreeContextMenu, TreeCreate, TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition,
     TreeMove, TreeMutationMode, TreeNode, TreeNodeTrailingAction, TreeRename, TreeShortcut,
-    TreeView, TreeViewCommand, TreeViewSize, TreeViewStyle,
+    TreeView, TreeViewCommand, TreeViewDiagnostics, TreeViewDiagnosticsSnapshot, TreeViewSize,
+    TreeViewStyle,
 };
 pub use upload_dropzone::{UploadDropzone, UploadDropzoneStyle, UploadDropzoneVariant};

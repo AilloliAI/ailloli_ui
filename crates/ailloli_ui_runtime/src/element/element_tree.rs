@@ -5,6 +5,8 @@ use ailloli_ui_core::{ElementId, WidgetId};
 
 use super::element_node::LayoutCacheKey;
 use super::{DirtyFlags, Element, ElementKind, Key};
+use crate::app::diagnostics::ElementTreeDiagnostics;
+use crate::app::ElementTreeDiagnosticsSnapshot;
 #[cfg(feature = "devtools")]
 use crate::layout::LayoutDebugInfo;
 use crate::layout::LayoutResult;
@@ -22,6 +24,7 @@ pub struct ElementTree<A> {
     next_widget: u64,
     elements: HashMap<ElementId, Element<A>>,
     root: Option<ElementId>,
+    diagnostics: ElementTreeDiagnostics,
 }
 
 impl<A> Default for ElementTree<A> {
@@ -31,6 +34,7 @@ impl<A> Default for ElementTree<A> {
             next_widget: 0,
             elements: HashMap::new(),
             root: None,
+            diagnostics: ElementTreeDiagnostics::default(),
         }
     }
 }
@@ -171,6 +175,7 @@ impl<A> ElementTree<A> {
     /// Marks one layout root and its ancestor chain without touching siblings.
     pub(crate) fn mark_layout_path_dirty(&mut self, mut id: ElementId) {
         loop {
+            self.diagnostics.layout_propagation(id);
             let parent = if let Some(element) = self.elements.get_mut(&id) {
                 element.dirty.layout = true;
                 element.dirty.paint = true;
@@ -207,11 +212,44 @@ impl<A> ElementTree<A> {
     }
 
     pub fn remove_element(&mut self, id: ElementId) -> Option<Element<A>> {
+        self.diagnostics.remove(id);
         self.elements.remove(&id)
     }
 
     pub fn iter_elements(&self) -> impl Iterator<Item = (ElementId, &Element<A>)> {
         self.elements.iter().map(|(&id, el)| (id, el))
+    }
+
+    pub fn diagnostics(&self) -> ElementTreeDiagnosticsSnapshot {
+        self.diagnostics.snapshot()
+    }
+
+    pub(crate) fn record_build(&self, id: ElementId) {
+        self.diagnostics.build(id);
+    }
+
+    pub(crate) fn record_layout(&self, id: ElementId) {
+        self.diagnostics.layout(id);
+    }
+
+    pub(crate) fn record_paint(&self, id: ElementId) {
+        self.diagnostics.paint(id);
+    }
+
+    pub(crate) fn record_hit_test(&self, id: ElementId) {
+        self.diagnostics.hit_test(id);
+    }
+
+    pub(crate) fn record_layout_cache_hit(&self, id: ElementId) {
+        self.diagnostics.layout_cache_hit(id);
+    }
+
+    pub(crate) fn record_layout_cache_miss(&self, id: ElementId) {
+        self.diagnostics.layout_cache_miss(id);
+    }
+
+    pub(crate) fn record_layout_commit(&self, id: ElementId) {
+        self.diagnostics.layout_commit(id);
     }
 
     /// Resolves a unique view key in the window (at most one element per key).

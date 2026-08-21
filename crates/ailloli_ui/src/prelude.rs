@@ -124,8 +124,8 @@ pub use crate::widgets::controls::{
     Toast, ToastHost, ToastPosition, ToastStyle, ToastTone, Tooltip, TooltipStyle, TreeCreate,
     TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition, TreeItem, TreeModel,
     TreeModelDelta, TreeModelError, TreeModelHandle, TreeMove, TreeMutation, TreeNode,
-    TreeNodeTrailingAction, TreeRename, TreeView, TreeViewSize, TreeViewStyle, UploadDropzone,
-    UploadDropzoneStyle, UploadDropzoneVariant,
+    TreeNodeTrailingAction, TreeRename, TreeView, TreeViewDiagnostics, TreeViewDiagnosticsSnapshot,
+    TreeViewSize, TreeViewStyle, UploadDropzone, UploadDropzoneStyle, UploadDropzoneVariant,
 };
 pub use crate::widgets::editor::{
     CodeEditor, CodeEditorConfig, CodeEditorFeatureFlags, CodeFileSummary, CodeSymbol, CodeTheme,

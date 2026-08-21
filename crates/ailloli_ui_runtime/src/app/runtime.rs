@@ -2,7 +2,7 @@ use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_text::TextSystem;
 
-use crate::app::{FrameWorkPlan, Invalidation, RuntimeHandle};
+use crate::app::{ElementTreeDiagnosticsSnapshot, FrameWorkPlan, Invalidation, RuntimeHandle};
 use crate::component::{IntoView, View};
 use crate::element::reconcile::{reconcile_existing_component, reconcile_root};
 use crate::element::{ElementKind, ElementTree};
@@ -30,6 +30,10 @@ impl<A: 'static> Runtime<A> {
             tree: ElementTree::new(),
             root: None,
         }
+    }
+
+    pub fn work_diagnostics(&self) -> ElementTreeDiagnosticsSnapshot {
+        self.tree.diagnostics()
     }
 
     pub fn reconcile<V: IntoView<A>>(&mut self, root: V) -> ailloli_ui_core::ids::ElementId {

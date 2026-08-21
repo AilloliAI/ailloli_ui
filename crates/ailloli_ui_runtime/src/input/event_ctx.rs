@@ -1,5 +1,5 @@
 use crate::app::runtime_handle::RuntimeHandle;
-use crate::app::{ExternalUrl, Invalidation, OpenUrlError};
+use crate::app::{ExternalUrl, Invalidation, InvalidationSource, OpenUrlError};
 use ailloli_ui_core::ids::{ElementId, LogicalWindowId};
 use std::sync::Arc;
 use std::time::Duration;
@@ -78,7 +78,7 @@ impl<A> EventContext<A> {
     }
 
     pub fn request_repaint(&mut self) {
-        self.runtime.request_repaint(self.target);
+        self.invalidate(Invalidation::Paint);
     }
 
     pub fn request_repaint_after(&mut self, delay: Duration) {
@@ -86,15 +86,16 @@ impl<A> EventContext<A> {
     }
 
     pub fn invalidate(&mut self, invalidation: Invalidation) {
-        self.runtime.invalidate(self.target, invalidation);
+        self.runtime
+            .invalidate_from(self.target, invalidation, InvalidationSource::Event);
     }
 
     pub fn request_layout(&mut self) {
-        self.runtime.request_layout(self.target);
+        self.invalidate(Invalidation::Layout);
     }
 
     pub fn request_build(&mut self) {
-        self.runtime.request_build(self.target);
+        self.invalidate(Invalidation::Build);
     }
 
     pub fn request_layout_after(&mut self, delay: Duration) {
