@@ -16,6 +16,12 @@ pub trait FileTreeSource: Send + 'static {
         ))
     }
 
+    fn create_file(&mut self, _uri: &FileUri) -> Result<(), FileError> {
+        Err(FileError::Unsupported(
+            "this filesystem source cannot create files".into(),
+        ))
+    }
+
     fn move_entry(&mut self, _from: &FileUri, _to: &FileUri) -> Result<(), FileError> {
         Err(FileError::Unsupported(
             "this filesystem source cannot move entries".into(),

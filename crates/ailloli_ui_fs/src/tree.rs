@@ -243,6 +243,8 @@ pub enum FileTreeStoreError {
     StaleResponse { request_id: u64 },
     #[error("filesystem tree identifier space is exhausted")]
     IdentifierExhausted,
+    #[error("filesystem tree identifier is not reserved: {0:?}")]
+    InvalidReservedNodeId(FileTreeNodeId),
     #[error("filesystem tree revision space is exhausted")]
     RevisionExhausted,
     #[error("destination parent is not loaded in the filesystem tree: {0}")]
@@ -258,6 +260,7 @@ pub struct FileTreeStore {
     revision: u64,
     generation: u64,
     next_node_id: u64,
+    reserved_node_ids: HashSet<FileTreeNodeId>,
     next_request_id: u64,
     active_requests: HashMap<FileTreeNodeId, u64>,
     cache: HashMap<FileTreeNodeId, FileTreeCacheState>,
@@ -301,6 +304,7 @@ impl FileTreeStore {
             revision: 0,
             generation: 1,
             next_node_id: 2,
+            reserved_node_ids: HashSet::new(),
             next_request_id: 1,
             active_requests: HashMap::new(),
             cache: HashMap::from([(
@@ -344,6 +348,26 @@ impl FileTreeStore {
 
     pub fn node_id(&self, uri: &FileUri) -> Option<FileTreeNodeId> {
         self.uri_index.get(uri).copied()
+    }
+
+    /// Reserves an opaque identity for an inline create draft. Cancelling the
+    /// draft consumes the identity permanently; successful provider I/O must
+    /// commit it with [`Self::apply_attested_insert_reserved`].
+    pub fn reserve_node_id(&mut self) -> Result<FileTreeNodeId, FileTreeStoreError> {
+        let id = self.allocate_node_id()?;
+        self.reserved_node_ids.insert(id);
+        Ok(id)
+    }
+
+    /// Releases a draft reservation without making its identity reusable.
+    pub fn discard_reserved_node_id(
+        &mut self,
+        id: FileTreeNodeId,
+    ) -> Result<(), FileTreeStoreError> {
+        if !self.reserved_node_ids.remove(&id) {
+            return Err(FileTreeStoreError::InvalidReservedNodeId(id));
+        }
+        Ok(())
     }
 
     pub const fn limits(&self) -> FileTreeStoreLimits {
@@ -506,6 +530,32 @@ impl FileTreeStore {
         entry: FileEntry,
         identity: Option<FileIdentity>,
     ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        let id = self.allocate_node_id()?;
+        self.apply_attested_insert_with_id(parent, id, entry, identity)
+    }
+
+    /// Applies a successful provider-side create using the identity reserved
+    /// for its inline UI draft.
+    pub fn apply_attested_insert_reserved(
+        &mut self,
+        parent: FileTreeNodeId,
+        id: FileTreeNodeId,
+        entry: FileEntry,
+        identity: Option<FileIdentity>,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        if !self.reserved_node_ids.remove(&id) {
+            return Err(FileTreeStoreError::InvalidReservedNodeId(id));
+        }
+        self.apply_attested_insert_with_id(parent, id, entry, identity)
+    }
+
+    fn apply_attested_insert_with_id(
+        &mut self,
+        parent: FileTreeNodeId,
+        id: FileTreeNodeId,
+        entry: FileEntry,
+        identity: Option<FileIdentity>,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
         if !self.nodes.contains_key(&parent) {
             return Err(FileTreeStoreError::MissingNode(parent));
         }
@@ -515,7 +565,6 @@ impl FileTreeStore {
             self.record_watch_echo(WatchEcho::Created(entry.uri));
             return self.commit(vec![FileTreeDelta::Updated { id: existing }]);
         }
-        let id = self.allocate_node_id()?;
         let index = self
             .nodes
             .get(&parent)

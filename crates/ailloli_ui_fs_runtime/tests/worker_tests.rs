@@ -55,6 +55,15 @@ impl FileTreeSource for Source {
         Ok(())
     }
 
+    fn create_file(&mut self, uri: &FileUri) -> Result<(), FileError> {
+        self.0
+            .mutations
+            .lock()
+            .unwrap()
+            .push(format!("create-file:{uri}"));
+        Ok(())
+    }
+
     fn move_entry(&mut self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
         self.0
             .mutations
@@ -268,6 +277,35 @@ fn provider_mutations_run_on_the_worker_then_update_the_store() {
         ]
     );
     assert_eq!(runtime.stats().mutations, 3);
+    runtime.finish().unwrap();
+}
+
+#[test]
+fn reserved_file_create_keeps_the_inline_draft_identity() {
+    let state = Arc::new(SourceState::default());
+    let mut runtime = FileTreeRuntime::spawn(Arc::new(Factory(state.clone()))).unwrap();
+    let mut store = store();
+    let root = store.root();
+    let node_id = store.reserve_node_id().unwrap();
+    let uri = FileUri::parse("file:///tmp/new-file.txt").unwrap();
+    runtime
+        .request_mutation(
+            &mut store,
+            FileTreeMutation::CreateEntry {
+                parent: root,
+                node_id,
+                uri: uri.clone(),
+                kind: FileKind::File,
+            },
+        )
+        .unwrap();
+    wait_until(&mut runtime, &mut store, |store| {
+        store.node_id(&uri) == Some(node_id)
+    });
+    assert_eq!(
+        state.mutations.lock().unwrap().as_slice(),
+        ["create-file:file:///tmp/new-file.txt"]
+    );
     runtime.finish().unwrap();
 }
 

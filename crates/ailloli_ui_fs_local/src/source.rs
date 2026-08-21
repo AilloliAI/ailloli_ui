@@ -163,6 +163,10 @@ impl FileTreeSource for LocalFileTreeSource {
         self.provider.create_dir(uri)
     }
 
+    fn create_file(&mut self, uri: &FileUri) -> Result<(), FileError> {
+        self.provider.write_file(uri, &[])
+    }
+
     fn move_entry(&mut self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
         self.provider.move_entry(from, to)
     }

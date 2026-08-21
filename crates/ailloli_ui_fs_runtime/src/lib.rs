@@ -34,6 +34,12 @@ pub enum FileTreeMutation {
         parent: FileTreeNodeId,
         uri: FileUri,
     },
+    CreateEntry {
+        parent: FileTreeNodeId,
+        node_id: FileTreeNodeId,
+        uri: FileUri,
+        kind: FileKind,
+    },
     Move {
         node_id: FileTreeNodeId,
         from: FileUri,
@@ -49,8 +55,15 @@ pub enum FileTreeMutation {
 impl FileTreeMutation {
     pub const fn target_node_id(&self) -> FileTreeNodeId {
         match self {
-            Self::CreateDirectory { parent, .. } => *parent,
+            Self::CreateDirectory { parent, .. } | Self::CreateEntry { parent, .. } => *parent,
             Self::Move { node_id, .. } | Self::Remove { node_id, .. } => *node_id,
+        }
+    }
+
+    pub const fn reserved_node_id(&self) -> Option<FileTreeNodeId> {
+        match self {
+            Self::CreateEntry { node_id, .. } => Some(*node_id),
+            _ => None,
         }
     }
 }
@@ -450,6 +463,7 @@ impl FileTreeRuntime {
         mutation: FileTreeMutation,
     ) -> Result<FileTreeMutationEnqueue, FileTreeRuntimeError> {
         let target = mutation.target_node_id();
+        let reserved_node_id = mutation.reserved_node_id();
         {
             let mut active = self
                 .active_mutations
@@ -505,6 +519,9 @@ impl FileTreeRuntime {
                 .unwrap_or_else(|poison| poison.into_inner())
                 .remove(&target);
             let _ = store.set_pending_operation(target, false);
+            if let Some(node_id) = reserved_node_id {
+                let _ = store.discard_reserved_node_id(node_id);
+            }
             return Err(map_request_send_error(error));
         }
         self.stats.requests_enqueued.fetch_add(1, Ordering::Relaxed);
@@ -631,6 +648,17 @@ impl FileTreeRuntime {
                                         ),
                                         identity,
                                     )?,
+                                FileTreeMutation::CreateEntry {
+                                    parent,
+                                    node_id,
+                                    uri,
+                                    kind,
+                                } => store.apply_attested_insert_reserved(
+                                    *parent,
+                                    *node_id,
+                                    FileEntry::new(uri.clone(), FileMetadata::new(*kind)),
+                                    identity,
+                                )?,
                                 FileTreeMutation::Move { node_id, to, .. } => {
                                     store.apply_attested_move(*node_id, to.clone(), identity)?
                                 }
@@ -640,7 +668,12 @@ impl FileTreeRuntime {
                             };
                             report.deltas.push(delta);
                         }
-                        Err(error) => report.mutation_errors.push((request, error)),
+                        Err(error) => {
+                            if let Some(node_id) = request.mutation.reserved_node_id() {
+                                let _ = store.discard_reserved_node_id(node_id);
+                            }
+                            report.mutation_errors.push((request, error));
+                        }
                     }
                 }
             }
@@ -763,6 +796,14 @@ fn worker_loop(
                     FileTreeMutation::CreateDirectory { uri, .. } => source
                         .create_directory(uri)
                         .and_then(|()| source.identity(uri)),
+                    FileTreeMutation::CreateEntry { uri, kind, .. } => match kind {
+                        FileKind::Directory => source.create_directory(uri),
+                        FileKind::File => source.create_file(uri),
+                        _ => Err(FileError::Unsupported(format!(
+                            "creating {kind:?} filesystem entries is not supported"
+                        ))),
+                    }
+                    .and_then(|()| source.identity(uri)),
                     FileTreeMutation::Move { from, to, .. } => source
                         .move_entry(from, to)
                         .and_then(|()| source.identity(to)),

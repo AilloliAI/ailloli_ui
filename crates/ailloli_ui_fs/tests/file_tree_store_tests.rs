@@ -399,3 +399,35 @@ fn attested_operations_apply_immediately_and_deduplicate_watcher_echoes() {
     assert!(store.apply_watch_event(&remove_echo).unwrap().is_empty());
     assert_eq!(store.diagnostics().duplicate_watch_events, 3);
 }
+
+#[test]
+fn reserved_create_identity_is_committed_once_and_never_reused() {
+    let mut store = root_store();
+    let root = store.root();
+    let reserved = store.reserve_node_id().unwrap();
+    let uri = FileUri::parse("file:///draft.txt").unwrap();
+    let delta = store
+        .apply_attested_insert_reserved(
+            root,
+            reserved,
+            FileEntry::new(uri.clone(), FileMetadata::new(FileKind::File)),
+            None,
+        )
+        .unwrap();
+    assert!(!delta.is_empty());
+    assert_eq!(store.node_id(&uri), Some(reserved));
+    assert!(matches!(
+        store.apply_attested_insert_reserved(
+            root,
+            reserved,
+            FileEntry::new(uri, FileMetadata::new(FileKind::File)),
+            None,
+        ),
+        Err(FileTreeStoreError::InvalidReservedNodeId(id)) if id == reserved
+    ));
+
+    let cancelled = store.reserve_node_id().unwrap();
+    store.discard_reserved_node_id(cancelled).unwrap();
+    let next = store.reserve_node_id().unwrap();
+    assert!(next.get() > cancelled.get());
+}
