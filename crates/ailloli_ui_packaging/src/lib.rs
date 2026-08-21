@@ -13,7 +13,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -318,6 +319,17 @@ fn package_command(
     let package = select_package(cwd, metadata, args.selection.package.as_deref())?;
     let binary = select_binary(package, args.selection.bin.as_deref())?;
     let platform = requested_platform(args.format, args.target.as_deref())?;
+    let distribution_name = distribution_name(&package.name)?;
+    let debian_architecture = if platform == Platform::Linux {
+        Some(linux::debian_architecture(args.target.as_deref())?)
+    } else {
+        None
+    };
+    let debian_plan = debian_architecture
+        .map(|architecture| {
+            linux::resolve_debian_plan(package_root(package), &distribution_name, architecture)
+        })
+        .transpose()?;
     let source_icon = conventional_icon_path(package);
     if !source_icon.is_file() {
         return Err(PackagingError::message(format!(
@@ -343,7 +355,7 @@ fn package_command(
     let context = PackageContext {
         consumer_root: package_root(package).to_path_buf(),
         package_name: package.name.clone(),
-        distribution_name: distribution_name(&package.name)?,
+        distribution_name,
         binary_name: binary.name.clone(),
         version: package.version.clone(),
         authors: package.authors.clone(),
@@ -355,12 +367,40 @@ fn package_command(
         profile: args.profile.clone(),
         target: args.target.clone(),
     };
+    let payloads: Vec<_> = debian_plan
+        .as_ref()
+        .map(|plan| {
+            plan.payloads
+                .iter()
+                .map(|payload| payload.attestation.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let packaging_config_sha256 = debian_plan
+        .as_ref()
+        .and_then(|plan| plan.config_sha256.as_deref());
 
     let receipt_path = receipt_path(metadata, &context);
     if args.no_build {
-        validate_receipt(&receipt_path, &context, package, &executable, &app_icon)?;
+        validate_receipt(
+            &receipt_path,
+            &context,
+            package,
+            &executable,
+            &app_icon,
+            packaging_config_sha256,
+            &payloads,
+        )?;
     } else {
-        write_receipt(&receipt_path, &context, package, &executable, &app_icon)?;
+        write_receipt(
+            &receipt_path,
+            &context,
+            package,
+            &executable,
+            &app_icon,
+            packaging_config_sha256,
+            &payloads,
+        )?;
     }
 
     let icon_cache = metadata
@@ -383,20 +423,24 @@ fn package_command(
 
     let artifact = match platform {
         Platform::Linux => {
+            let plan = debian_plan
+                .as_ref()
+                .expect("Linux packaging resolved a Debian plan");
             let rootfs = linux::stage_linux_root(
                 &context,
                 &executable,
                 &source_icon,
                 &generated_icons,
                 &temp_staging,
+                &plan.payloads,
             )?;
-            let arch = linux::debian_architecture(args.target.as_deref())?;
+            let arch = debian_architecture.expect("Linux packaging resolved an architecture");
             let artifact = dist.join(format!(
                 "{}_{}_{}.deb",
                 context.distribution_name, context.version, arch
             ));
             write_replacing(&artifact, |temp| {
-                linux::build_deb(&context, &rootfs, temp, arch)
+                linux::build_deb(&context, &rootfs, temp, arch, plan)
             })?;
             artifact
         }
@@ -431,7 +475,14 @@ fn package_command(
         fs::remove_dir_all(&final_staging)?;
     }
     fs::rename(&temp_staging, &final_staging)?;
-    write_distribution_manifest(&dist, &context, platform, &artifact)?;
+    write_distribution_manifest(
+        &dist,
+        &context,
+        platform,
+        &artifact,
+        packaging_config_sha256,
+        &payloads,
+    )?;
     println!("packaged {}", artifact.display());
     Ok(())
 }
@@ -545,7 +596,7 @@ fn validate_embedded_identity(
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct BuildReceipt {
     schema_version: u32,
     package: String,
@@ -556,6 +607,8 @@ struct BuildReceipt {
     manifest_sha256: String,
     icon_sha256: String,
     identity: AppIdentityMetadata,
+    packaging_config_sha256: Option<String>,
+    payloads: Vec<linux::PayloadAttestation>,
 }
 
 fn receipt_path(metadata: &CargoMetadata, context: &PackageContext) -> PathBuf {
@@ -576,9 +629,11 @@ fn expected_receipt(
     package: &CargoPackage,
     executable: &Path,
     icon: &ailloli_ui_core::AppIcon,
+    packaging_config_sha256: Option<&str>,
+    payloads: &[linux::PayloadAttestation],
 ) -> Result<BuildReceipt, PackagingError> {
     Ok(BuildReceipt {
-        schema_version: 1,
+        schema_version: 2,
         package: context.package_name.clone(),
         binary: context.binary_name.clone(),
         profile: context.profile.clone(),
@@ -587,6 +642,8 @@ fn expected_receipt(
         manifest_sha256: hash_file(&package.manifest_path)?,
         icon_sha256: icon.sha256(),
         identity: context.identity.clone(),
+        packaging_config_sha256: packaging_config_sha256.map(ToOwned::to_owned),
+        payloads: payloads.to_vec(),
     })
 }
 
@@ -596,8 +653,17 @@ fn write_receipt(
     package: &CargoPackage,
     executable: &Path,
     icon: &ailloli_ui_core::AppIcon,
+    packaging_config_sha256: Option<&str>,
+    payloads: &[linux::PayloadAttestation],
 ) -> Result<(), PackagingError> {
-    let receipt = expected_receipt(context, package, executable, icon)?;
+    let receipt = expected_receipt(
+        context,
+        package,
+        executable,
+        icon,
+        packaging_config_sha256,
+        payloads,
+    )?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -611,13 +677,27 @@ fn validate_receipt(
     package: &CargoPackage,
     executable: &Path,
     icon: &ailloli_ui_core::AppIcon,
+    packaging_config_sha256: Option<&str>,
+    payloads: &[linux::PayloadAttestation],
 ) -> Result<(), PackagingError> {
-    let stored: BuildReceipt = serde_json::from_slice(&fs::read(path).map_err(|_| {
+    let stored_bytes = fs::read(path).map_err(|_| {
         PackagingError::message(
             "--no-build requires a prior successful cargo ailloli-ui package build",
         )
-    })?)?;
-    let expected = expected_receipt(context, package, executable, icon)?;
+    })?;
+    let stored: BuildReceipt = serde_json::from_slice(&stored_bytes).map_err(|_| {
+        PackagingError::message(
+            "--no-build receipt is stale; rerun cargo ailloli-ui package without --no-build",
+        )
+    })?;
+    let expected = expected_receipt(
+        context,
+        package,
+        executable,
+        icon,
+        packaging_config_sha256,
+        payloads,
+    )?;
     if stored != expected {
         return Err(PackagingError::message(
             "--no-build receipt is stale; rerun cargo ailloli-ui package without --no-build",
@@ -641,6 +721,8 @@ struct DistributionManifest<'a> {
     artifact: ArtifactEntry,
     homepage: Option<&'a str>,
     repository: Option<&'a str>,
+    packaging_config_sha256: Option<&'a str>,
+    payloads: &'a [linux::PayloadAttestation],
 }
 
 #[derive(Debug, Serialize)]
@@ -655,6 +737,8 @@ fn write_distribution_manifest(
     context: &PackageContext,
     platform: Platform,
     artifact: &Path,
+    packaging_config_sha256: Option<&str>,
+    payloads: &[linux::PayloadAttestation],
 ) -> Result<(), PackagingError> {
     let sha256 = hash_file(artifact)?;
     let file = artifact
@@ -663,7 +747,7 @@ fn write_distribution_manifest(
         .to_string_lossy()
         .to_string();
     let manifest = DistributionManifest {
-        schema_version: 1,
+        schema_version: 2,
         application_id: context.identity.application_id.as_str(),
         display_name: &context.identity.display_name,
         package: &context.package_name,
@@ -680,6 +764,8 @@ fn write_distribution_manifest(
         },
         homepage: context.homepage.as_deref(),
         repository: context.repository.as_deref(),
+        packaging_config_sha256,
+        payloads,
     };
     atomic_write(
         &dist.join("manifest.json"),
@@ -710,7 +796,10 @@ fn write_replacing(
     if temp.exists() {
         fs::remove_file(&temp)?;
     }
-    write(&temp)?;
+    if let Err(error) = write(&temp) {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
     if destination.exists() {
         fs::remove_file(destination)?;
     }
@@ -719,8 +808,21 @@ fn write_replacing(
 }
 
 fn hash_file(path: &Path) -> Result<String, PackagingError> {
-    let digest = Sha256::digest(fs::read(path)?);
-    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+    let mut input = BufReader::new(File::open(path)?);
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn distribution_name(name: &str) -> Result<String, PackagingError> {
@@ -809,6 +911,8 @@ fn target_label(target: Option<&str>, platform: Platform) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ailloli_ui_core::app_identity::AppIconMetadata;
+    use ailloli_ui_core::{ApplicationId, APP_IDENTITY_METADATA_VERSION};
 
     #[test]
     fn distribution_names_are_debian_safe() {
@@ -840,5 +944,47 @@ mod tests {
         };
         assert!(select_binary(&package, None).is_err());
         assert_eq!(select_binary(&package, Some("b")).unwrap().name, "b");
+    }
+
+    #[test]
+    fn schema_two_receipt_is_invalidated_by_payload_or_config_changes() {
+        let receipt = BuildReceipt {
+            schema_version: 2,
+            package: "sample_app".into(),
+            binary: "sample_app".into(),
+            profile: "release".into(),
+            target: None,
+            executable_sha256: "exe".into(),
+            manifest_sha256: "manifest".into(),
+            icon_sha256: "icon".into(),
+            identity: AppIdentityMetadata {
+                schema_version: APP_IDENTITY_METADATA_VERSION,
+                application_id: ApplicationId::parse("org.example.sample-app").unwrap(),
+                display_name: "Sample App".into(),
+                icon: AppIconMetadata {
+                    conventional_path: CONVENTIONAL_APP_ICON_PATH.into(),
+                    sha256: "icon".into(),
+                },
+            },
+            packaging_config_sha256: Some("config-a".into()),
+            payloads: vec![linux::PayloadAttestation {
+                source: "src/providers/tool".into(),
+                destination: "usr/libexec/sample-app/providers/tool/tool".into(),
+                architecture: "amd64".into(),
+                size: 7,
+                mode: "0755".into(),
+                sha256: "payload-a".into(),
+            }],
+        };
+        let mut changed_payload = receipt.clone();
+        changed_payload.payloads[0].sha256 = "payload-b".into();
+        assert_ne!(receipt, changed_payload);
+        let mut changed_config = receipt.clone();
+        changed_config.packaging_config_sha256 = Some("config-b".into());
+        assert_ne!(receipt, changed_config);
+
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(serialized["schema_version"], 2);
+        assert_eq!(serialized["payloads"][0]["architecture"], "amd64");
     }
 }
