@@ -10,6 +10,24 @@ pub trait FileTreeSource: Send + 'static {
         Ok(None)
     }
 
+    fn create_directory(&mut self, _uri: &FileUri) -> Result<(), FileError> {
+        Err(FileError::Unsupported(
+            "this filesystem source cannot create directories".into(),
+        ))
+    }
+
+    fn move_entry(&mut self, _from: &FileUri, _to: &FileUri) -> Result<(), FileError> {
+        Err(FileError::Unsupported(
+            "this filesystem source cannot move entries".into(),
+        ))
+    }
+
+    fn remove_entry(&mut self, _uri: &FileUri, _recursive: bool) -> Result<(), FileError> {
+        Err(FileError::Unsupported(
+            "this filesystem source cannot remove entries".into(),
+        ))
+    }
+
     fn watch_directory(&mut self, _uri: &FileUri) -> Result<(), FileError> {
         Err(FileError::Unsupported(
             "this filesystem source does not provide native watch events".into(),

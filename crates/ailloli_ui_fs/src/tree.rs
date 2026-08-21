@@ -1,6 +1,61 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use crate::{FileEntry, FileError, FileMetadata, FileUri, WatchEvent, WatchEventKind};
+
+pub const DEFAULT_FILE_TREE_MAX_NODES: usize = 100_000;
+pub const DEFAULT_FILE_TREE_MAX_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
+pub const DEFAULT_FILE_TREE_COLLAPSED_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// Session cache policy. Limits are inspected and enforced by the product
+/// coordinator; the store never performs hidden I/O to satisfy them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileTreeStoreLimits {
+    pub max_nodes: usize,
+    pub max_payload_bytes: usize,
+    pub collapsed_ttl: Duration,
+}
+
+impl Default for FileTreeStoreLimits {
+    fn default() -> Self {
+        Self {
+            max_nodes: DEFAULT_FILE_TREE_MAX_NODES,
+            max_payload_bytes: DEFAULT_FILE_TREE_MAX_PAYLOAD_BYTES,
+            collapsed_ttl: DEFAULT_FILE_TREE_COLLAPSED_TTL,
+        }
+    }
+}
+
+/// Permanent structural counters for one live filesystem store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileTreeStoreDiagnostics {
+    pub nodes: usize,
+    pub estimated_payload_bytes: usize,
+    pub directory_loads_started: u64,
+    pub directory_results_applied: u64,
+    pub directory_errors: u64,
+    pub stale_responses: u64,
+    pub watch_events: u64,
+    pub duplicate_watch_events: u64,
+    pub watch_sequence_gaps: u64,
+    pub evicted_nodes: u64,
+    pub emitted_deltas: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FileTreeCacheState {
+    last_used: Instant,
+    collapsed_at: Option<Instant>,
+}
+
+const WATCH_ECHO_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WatchEcho {
+    Created(FileUri),
+    Removed(FileUri),
+    Moved { from: FileUri, to: FileUri },
+}
 
 /// Stable identity supplied by a filesystem backend when available.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -169,6 +224,10 @@ impl FileTreeStoreDelta {
     pub fn changes(&self) -> &[FileTreeDelta] {
         &self.changes
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
 }
 
 #[non_exhaustive]
@@ -186,6 +245,8 @@ pub enum FileTreeStoreError {
     IdentifierExhausted,
     #[error("filesystem tree revision space is exhausted")]
     RevisionExhausted,
+    #[error("destination parent is not loaded in the filesystem tree: {0}")]
+    MissingDestinationParent(FileUri),
 }
 
 /// UI-independent, session-persistent filesystem tree cache.
@@ -199,11 +260,24 @@ pub struct FileTreeStore {
     next_node_id: u64,
     next_request_id: u64,
     active_requests: HashMap<FileTreeNodeId, u64>,
+    cache: HashMap<FileTreeNodeId, FileTreeCacheState>,
+    limits: FileTreeStoreLimits,
+    diagnostics: FileTreeStoreDiagnostics,
+    last_watch_generation: u64,
     last_watch_sequence: u64,
+    watch_echoes: VecDeque<WatchEcho>,
 }
 
 impl FileTreeStore {
     pub fn new(root_uri: FileUri, root_metadata: FileMetadata) -> Result<Self, FileTreeStoreError> {
+        Self::with_limits(root_uri, root_metadata, FileTreeStoreLimits::default())
+    }
+
+    pub fn with_limits(
+        root_uri: FileUri,
+        root_metadata: FileMetadata,
+        limits: FileTreeStoreLimits,
+    ) -> Result<Self, FileTreeStoreError> {
         let root = FileTreeNodeId(1);
         let root_node = FileTreeNode {
             id: root,
@@ -218,6 +292,7 @@ impl FileTreeStore {
             focused: false,
             pending_operation: false,
         };
+        let now = Instant::now();
         Ok(Self {
             nodes: HashMap::from([(root, root_node)]),
             uri_index: HashMap::from([(root_uri, root)]),
@@ -228,7 +303,18 @@ impl FileTreeStore {
             next_node_id: 2,
             next_request_id: 1,
             active_requests: HashMap::new(),
+            cache: HashMap::from([(
+                root,
+                FileTreeCacheState {
+                    last_used: now,
+                    collapsed_at: Some(now),
+                },
+            )]),
+            limits,
+            diagnostics: FileTreeStoreDiagnostics::default(),
+            last_watch_generation: 0,
             last_watch_sequence: 0,
+            watch_echoes: VecDeque::new(),
         })
     }
 
@@ -260,6 +346,32 @@ impl FileTreeStore {
         self.uri_index.get(uri).copied()
     }
 
+    pub const fn limits(&self) -> FileTreeStoreLimits {
+        self.limits
+    }
+
+    pub fn diagnostics(&self) -> FileTreeStoreDiagnostics {
+        FileTreeStoreDiagnostics {
+            nodes: self.nodes.len(),
+            estimated_payload_bytes: self.estimated_payload_bytes(),
+            ..self.diagnostics
+        }
+    }
+
+    pub fn touch(&mut self, id: FileTreeNodeId, now: Instant) -> Result<(), FileTreeStoreError> {
+        if !self.nodes.contains_key(&id) {
+            return Err(FileTreeStoreError::MissingNode(id));
+        }
+        self.cache
+            .entry(id)
+            .and_modify(|cache| cache.last_used = now)
+            .or_insert(FileTreeCacheState {
+                last_used: now,
+                collapsed_at: None,
+            });
+        Ok(())
+    }
+
     pub fn set_expanded(
         &mut self,
         id: FileTreeNodeId,
@@ -273,6 +385,17 @@ impl FileTreeStore {
             return self.commit(Vec::new());
         }
         node.expanded = expanded;
+        let now = Instant::now();
+        self.cache
+            .entry(id)
+            .and_modify(|cache| {
+                cache.last_used = now;
+                cache.collapsed_at = (!expanded).then_some(now);
+            })
+            .or_insert(FileTreeCacheState {
+                last_used: now,
+                collapsed_at: (!expanded).then_some(now),
+            });
         self.commit(vec![FileTreeDelta::Updated { id }])
     }
 
@@ -289,6 +412,7 @@ impl FileTreeStore {
             return self.commit(Vec::new());
         }
         node.selected = selected;
+        self.touch(id, Instant::now())?;
         self.commit(vec![FileTreeDelta::Updated { id }])
     }
 
@@ -305,7 +429,201 @@ impl FileTreeStore {
             return self.commit(Vec::new());
         }
         node.focused = focused;
+        self.touch(id, Instant::now())?;
         self.commit(vec![FileTreeDelta::Updated { id }])
+    }
+
+    pub fn set_pending_operation(
+        &mut self,
+        id: FileTreeNodeId,
+        pending: bool,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        let node = self
+            .nodes
+            .get_mut(&id)
+            .ok_or(FileTreeStoreError::MissingNode(id))?;
+        if node.pending_operation == pending {
+            return self.commit(Vec::new());
+        }
+        node.pending_operation = pending;
+        self.touch(id, Instant::now())?;
+        self.commit(vec![FileTreeDelta::Updated { id }])
+    }
+
+    /// Evicts descendants of expired collapsed directories while retaining the
+    /// collapsed directory node and its minimal metadata. Pinned descendants
+    /// make the whole candidate ineligible.
+    pub fn evict_expired(
+        &mut self,
+        now: Instant,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        let mut candidates = self
+            .cache
+            .iter()
+            .filter_map(|(id, cache)| {
+                let collapsed_at = cache.collapsed_at?;
+                let node = self.nodes.get(id)?;
+                (!node.expanded
+                    && !node.children.is_empty()
+                    && now.saturating_duration_since(collapsed_at) >= self.limits.collapsed_ttl)
+                    .then_some((*id, collapsed_at))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(_, collapsed_at)| *collapsed_at);
+
+        let mut changes = Vec::new();
+        for (id, _) in candidates {
+            let children = self
+                .nodes
+                .get(&id)
+                .map(|node| node.children.clone())
+                .unwrap_or_default();
+            if children.is_empty() || self.subtrees_contain_pin(&children) {
+                continue;
+            }
+            self.nodes
+                .get_mut(&id)
+                .expect("candidate exists")
+                .children
+                .clear();
+            for child in children {
+                self.remove_subtree(child, &mut changes);
+            }
+            let node = self.nodes.get_mut(&id).expect("candidate exists");
+            node.directory_state = DirectoryLoadState::Unloaded;
+            changes.push(FileTreeDelta::DirectoryState {
+                id,
+                state: DirectoryLoadState::Unloaded,
+            });
+        }
+        self.commit(changes)
+    }
+
+    /// Applies a successful provider-side create without rescanning its parent.
+    pub fn apply_attested_insert(
+        &mut self,
+        parent: FileTreeNodeId,
+        entry: FileEntry,
+        identity: Option<FileIdentity>,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        if !self.nodes.contains_key(&parent) {
+            return Err(FileTreeStoreError::MissingNode(parent));
+        }
+        if let Some(existing) = self.node_id(&entry.uri) {
+            let node = self.nodes.get_mut(&existing).expect("indexed node exists");
+            node.metadata = entry.metadata;
+            self.record_watch_echo(WatchEcho::Created(entry.uri));
+            return self.commit(vec![FileTreeDelta::Updated { id: existing }]);
+        }
+        let id = self.allocate_node_id()?;
+        let index = self
+            .nodes
+            .get(&parent)
+            .map_or(0, |node| node.children.len());
+        let node = FileTreeNode {
+            id,
+            parent: Some(parent),
+            uri: entry.uri.clone(),
+            identity: identity.clone(),
+            metadata: entry.metadata,
+            children: Vec::new(),
+            directory_state: DirectoryLoadState::Unloaded,
+            expanded: false,
+            selected: false,
+            focused: false,
+            pending_operation: false,
+        };
+        self.nodes
+            .get_mut(&parent)
+            .expect("validated parent")
+            .children
+            .push(id);
+        self.uri_index.insert(entry.uri.clone(), id);
+        if let Some(identity) = identity {
+            self.identity_index.insert(identity, id);
+        }
+        self.nodes.insert(id, node.clone());
+        let now = Instant::now();
+        self.cache.insert(
+            id,
+            FileTreeCacheState {
+                last_used: now,
+                collapsed_at: Some(now),
+            },
+        );
+        self.record_watch_echo(WatchEcho::Created(entry.uri));
+        self.commit(vec![FileTreeDelta::Inserted {
+            parent,
+            index,
+            node: Box::new(node),
+        }])
+    }
+
+    /// Applies a successful provider-side removal immediately.
+    pub fn apply_attested_remove(
+        &mut self,
+        id: FileTreeNodeId,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        let uri = self
+            .nodes
+            .get(&id)
+            .ok_or(FileTreeStoreError::MissingNode(id))?
+            .uri
+            .clone();
+        self.detach_from_parent(id);
+        let mut changes = Vec::new();
+        self.remove_subtree(id, &mut changes);
+        self.record_watch_echo(WatchEcho::Removed(uri));
+        self.commit(changes)
+    }
+
+    /// Applies a successful provider-side rename/move while preserving the
+    /// logical node ID and all retained UI state.
+    pub fn apply_attested_move(
+        &mut self,
+        id: FileTreeNodeId,
+        to: FileUri,
+        identity: Option<FileIdentity>,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        let (from, previous_parent) = self
+            .nodes
+            .get(&id)
+            .map(|node| (node.uri.clone(), node.parent))
+            .ok_or(FileTreeStoreError::MissingNode(id))?;
+        let next_parent = to
+            .parent()
+            .and_then(|uri| self.node_id(&uri))
+            .ok_or_else(|| FileTreeStoreError::MissingDestinationParent(to.clone()))?;
+        self.rebase_subtree_uri(id, to.clone());
+        if let Some(identity) = identity {
+            let node = self.nodes.get_mut(&id).expect("validated node");
+            if let Some(previous) = node.identity.replace(identity.clone()) {
+                self.identity_index.remove(&previous);
+            }
+            self.identity_index.insert(identity, id);
+        }
+        let mut changes = Vec::new();
+        if previous_parent != Some(next_parent) {
+            self.detach_from_parent(id);
+            let index = self
+                .nodes
+                .get(&next_parent)
+                .map_or(0, |node| node.children.len());
+            self.nodes
+                .get_mut(&next_parent)
+                .expect("destination parent exists")
+                .children
+                .push(id);
+            self.nodes.get_mut(&id).expect("validated node").parent = Some(next_parent);
+            changes.push(FileTreeDelta::Moved {
+                id,
+                new_parent: next_parent,
+                index,
+            });
+        }
+        changes.push(FileTreeDelta::Updated { id });
+        self.record_watch_echo(WatchEcho::Moved { from, to });
+        self.commit(changes)
     }
 
     pub fn mark_stale(
@@ -322,14 +640,33 @@ impl FileTreeStore {
         &mut self,
         event: &WatchEvent,
     ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        self.diagnostics.watch_events = self.diagnostics.watch_events.saturating_add(1);
+        if event.generation() < self.last_watch_generation {
+            self.diagnostics.duplicate_watch_events =
+                self.diagnostics.duplicate_watch_events.saturating_add(1);
+            return self.commit(Vec::new());
+        }
+        if event.generation() > self.last_watch_generation {
+            self.last_watch_generation = event.generation();
+            self.last_watch_sequence = 0;
+        }
         if event.sequence() <= self.last_watch_sequence {
+            self.diagnostics.duplicate_watch_events =
+                self.diagnostics.duplicate_watch_events.saturating_add(1);
             return self.commit(Vec::new());
         }
         let sequence_gap = self.last_watch_sequence != 0
             && event.sequence() > self.last_watch_sequence.saturating_add(1);
         self.last_watch_sequence = event.sequence();
+        if self.consume_watch_echo(event) {
+            self.diagnostics.duplicate_watch_events =
+                self.diagnostics.duplicate_watch_events.saturating_add(1);
+            return self.commit(Vec::new());
+        }
         let mut changes = Vec::new();
         if sequence_gap {
+            self.diagnostics.watch_sequence_gaps =
+                self.diagnostics.watch_sequence_gaps.saturating_add(1);
             self.mark_event_parent_stale(event.uri(), &mut changes)?;
         }
         match event.kind() {
@@ -432,6 +769,9 @@ impl FileTreeStore {
             .checked_add(1)
             .ok_or(FileTreeStoreError::IdentifierExhausted)?;
         self.active_requests.insert(id, request_id);
+        self.diagnostics.directory_loads_started =
+            self.diagnostics.directory_loads_started.saturating_add(1);
+        self.touch(id, Instant::now())?;
         let state = DirectoryLoadState::Loading {
             generation: self.generation,
         };
@@ -457,14 +797,19 @@ impl FileTreeStore {
         if request.store_generation != self.generation
             || self.active_requests.get(&request.node_id) != Some(&request.request_id)
         {
+            self.diagnostics.stale_responses = self.diagnostics.stale_responses.saturating_add(1);
             return Err(FileTreeStoreError::StaleResponse {
                 request_id: request.request_id,
             });
         }
         self.active_requests.remove(&request.node_id);
+        self.diagnostics.directory_results_applied =
+            self.diagnostics.directory_results_applied.saturating_add(1);
         match result {
             Ok(entries) => self.reconcile_directory(request.node_id, entries),
             Err(error) => {
+                self.diagnostics.directory_errors =
+                    self.diagnostics.directory_errors.saturating_add(1);
                 let state = DirectoryLoadState::Error(error);
                 self.nodes
                     .get_mut(&request.node_id)
@@ -580,6 +925,13 @@ impl FileTreeStore {
                         self.identity_index.insert(identity, id);
                     }
                     self.nodes.insert(id, node.clone());
+                    self.cache.insert(
+                        id,
+                        FileTreeCacheState {
+                            last_used: Instant::now(),
+                            collapsed_at: Some(Instant::now()),
+                        },
+                    );
                     changes.push(FileTreeDelta::Inserted {
                         parent,
                         index,
@@ -612,18 +964,28 @@ impl FileTreeStore {
     }
 
     fn remove_subtree(&mut self, id: FileTreeNodeId, changes: &mut Vec<FileTreeDelta>) {
-        let Some(node) = self.nodes.remove(&id) else {
-            return;
-        };
-        for child in node.children {
-            self.remove_subtree(child, changes);
+        let mut pending = vec![(id, false)];
+        while let Some((current, visited)) = pending.pop() {
+            if !visited {
+                let Some(node) = self.nodes.get(&current) else {
+                    continue;
+                };
+                pending.push((current, true));
+                pending.extend(node.children.iter().copied().map(|child| (child, false)));
+                continue;
+            }
+            let Some(node) = self.nodes.remove(&current) else {
+                continue;
+            };
+            self.uri_index.remove(&node.uri);
+            if let Some(identity) = node.identity {
+                self.identity_index.remove(&identity);
+            }
+            self.active_requests.remove(&current);
+            self.cache.remove(&current);
+            self.diagnostics.evicted_nodes = self.diagnostics.evicted_nodes.saturating_add(1);
+            changes.push(FileTreeDelta::Removed { id: current });
         }
-        self.uri_index.remove(&node.uri);
-        if let Some(identity) = node.identity {
-            self.identity_index.remove(&identity);
-        }
-        self.active_requests.remove(&id);
-        changes.push(FileTreeDelta::Removed { id });
     }
 
     fn detach_from_parent(&mut self, id: FileTreeNodeId) {
@@ -667,29 +1029,95 @@ impl FileTreeStore {
     }
 
     fn rebase_subtree_uri(&mut self, id: FileTreeNodeId, next_uri: FileUri) {
-        let Some(node) = self.nodes.get(&id) else {
-            return;
-        };
-        let previous_uri = node.uri.clone();
-        let children = node.children.clone();
-        self.uri_index.remove(&previous_uri);
-        self.nodes.get_mut(&id).expect("node exists").uri = next_uri.clone();
-        self.uri_index.insert(next_uri.clone(), id);
-        for child in children {
-            let child_uri = self.nodes.get(&child).expect("child exists").uri.clone();
-            let suffix = child_uri
-                .path()
-                .strip_prefix(previous_uri.path().trim_end_matches('/'))
-                .unwrap_or(child_uri.path());
-            let next_path = format!("{}{}", next_uri.path().trim_end_matches('/'), suffix);
-            if let Ok(rebased) = FileUri::new(
-                next_uri.scheme().to_string(),
-                next_uri.authority().map(str::to_string),
-                next_path,
-            ) {
-                self.rebase_subtree_uri(child, rebased);
+        let mut pending = vec![(id, next_uri)];
+        while let Some((current, next_uri)) = pending.pop() {
+            let Some(node) = self.nodes.get(&current) else {
+                continue;
+            };
+            let previous_uri = node.uri.clone();
+            let children = node.children.clone();
+            self.uri_index.remove(&previous_uri);
+            self.nodes.get_mut(&current).expect("node exists").uri = next_uri.clone();
+            self.uri_index.insert(next_uri.clone(), current);
+            for child in children {
+                let child_uri = self.nodes.get(&child).expect("child exists").uri.clone();
+                let suffix = child_uri
+                    .path()
+                    .strip_prefix(previous_uri.path().trim_end_matches('/'))
+                    .unwrap_or(child_uri.path());
+                let next_path = format!("{}{}", next_uri.path().trim_end_matches('/'), suffix);
+                if let Ok(rebased) = FileUri::new(
+                    next_uri.scheme().to_string(),
+                    next_uri.authority().map(str::to_string),
+                    next_path,
+                ) {
+                    pending.push((child, rebased));
+                }
             }
         }
+    }
+
+    fn subtrees_contain_pin(&self, roots: &[FileTreeNodeId]) -> bool {
+        let mut pending = roots.to_vec();
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.nodes.get(&id) else {
+                continue;
+            };
+            if node.is_pinned() {
+                return true;
+            }
+            pending.extend(node.children.iter().copied());
+        }
+        false
+    }
+
+    fn record_watch_echo(&mut self, echo: WatchEcho) {
+        if self.watch_echoes.len() == WATCH_ECHO_CAPACITY {
+            self.watch_echoes.pop_front();
+        }
+        self.watch_echoes.push_back(echo);
+    }
+
+    fn consume_watch_echo(&mut self, event: &WatchEvent) -> bool {
+        let expected = match event.kind() {
+            WatchEventKind::Created => WatchEcho::Created(event.uri().clone()),
+            WatchEventKind::Removed => WatchEcho::Removed(event.uri().clone()),
+            WatchEventKind::Renamed | WatchEventKind::Moved => {
+                let Some(from) = event.previous_uri() else {
+                    return false;
+                };
+                WatchEcho::Moved {
+                    from: from.clone(),
+                    to: event.uri().clone(),
+                }
+            }
+            WatchEventKind::Modified | WatchEventKind::Overflow => return false,
+        };
+        let Some(index) = self.watch_echoes.iter().position(|echo| *echo == expected) else {
+            return false;
+        };
+        self.watch_echoes.remove(index);
+        true
+    }
+
+    fn estimated_payload_bytes(&self) -> usize {
+        self.nodes
+            .values()
+            .map(|node| {
+                std::mem::size_of::<FileTreeNode>()
+                    .saturating_add(node.uri.to_string().len())
+                    .saturating_add(
+                        node.identity
+                            .as_ref()
+                            .map_or(0, |identity| identity.provider.len() + identity.value.len()),
+                    )
+                    .saturating_add(
+                        node.children
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<FileTreeNodeId>()),
+                    )
+            })
+            .sum()
     }
 
     fn allocate_node_id(&mut self) -> Result<FileTreeNodeId, FileTreeStoreError> {
@@ -715,6 +1143,7 @@ impl FileTreeStore {
             .revision
             .checked_add(1)
             .ok_or(FileTreeStoreError::RevisionExhausted)?;
+        self.diagnostics.emitted_deltas = self.diagnostics.emitted_deltas.saturating_add(1);
         Ok(FileTreeStoreDelta {
             revision: self.revision,
             changes,

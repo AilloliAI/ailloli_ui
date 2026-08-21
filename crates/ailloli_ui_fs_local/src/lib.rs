@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 mod source;
 
-pub use source::{LocalFileTreeSource, LocalFileTreeSourceFactory};
+pub use source::{
+    LocalFileTreeSource, LocalFileTreeSourceFactory, DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS,
+};
 
 use ailloli_ui_fs::{
     FileCapabilities, FileEntry, FileError, FileKind, FileMetadata, FileProvider, FileUri,

@@ -1,7 +1,8 @@
 use ailloli_ui_fs::{
     DirectoryLoadState, FileEntry, FileError, FileIdentity, FileKind, FileMetadata, FileTreeDelta,
-    FileTreeStore, FileTreeStoreError, FileUri, WatchEvent, WatchEventKind,
+    FileTreeStore, FileTreeStoreError, FileTreeStoreLimits, FileUri, WatchEvent, WatchEventKind,
 };
+use std::time::{Duration, Instant};
 
 fn root_store() -> FileTreeStore {
     FileTreeStore::new(
@@ -197,4 +198,171 @@ fn paired_watch_move_changes_parent_without_full_reload() {
     )));
     assert!(!store.node(a).unwrap().children().contains(&x));
     assert!(store.node(b).unwrap().children().contains(&x));
+}
+
+#[test]
+fn a_new_watch_generation_restarts_sequence_without_dropping_events() {
+    let mut store = root_store();
+    let old = WatchEvent::new(
+        WatchEventKind::Modified,
+        FileUri::parse("file:///old").unwrap(),
+        12,
+        4,
+    );
+    store.apply_watch_event(&old).unwrap();
+    let next_generation = WatchEvent::new(
+        WatchEventKind::Created,
+        FileUri::parse("file:///new").unwrap(),
+        1,
+        5,
+    );
+    store.apply_watch_event(&next_generation).unwrap();
+
+    let diagnostics = store.diagnostics();
+    assert_eq!(diagnostics.watch_events, 2);
+    assert_eq!(diagnostics.duplicate_watch_events, 0);
+
+    let stale_generation = WatchEvent::new(
+        WatchEventKind::Created,
+        FileUri::parse("file:///stale").unwrap(),
+        99,
+        4,
+    );
+    assert!(store
+        .apply_watch_event(&stale_generation)
+        .unwrap()
+        .is_empty());
+    assert_eq!(store.diagnostics().duplicate_watch_events, 1);
+}
+
+#[test]
+fn collapsed_cache_eviction_retains_root_metadata_and_respects_pins() {
+    let limits = FileTreeStoreLimits {
+        collapsed_ttl: Duration::ZERO,
+        ..FileTreeStoreLimits::default()
+    };
+    let mut store = FileTreeStore::with_limits(
+        FileUri::parse("file:///").unwrap(),
+        FileMetadata::new(FileKind::Directory),
+        limits,
+    )
+    .unwrap();
+    let root = store.root();
+    store.set_expanded(root, true).unwrap();
+    let (request, _) = store.begin_directory_load(root).unwrap();
+    store
+        .apply_directory_result(&request, Ok(vec![entry("cached", FileKind::Directory)]))
+        .unwrap();
+    let cached = store
+        .node_id(&FileUri::parse("file:///cached").unwrap())
+        .unwrap();
+    store.set_expanded(cached, true).unwrap();
+    let (request, _) = store.begin_directory_load(cached).unwrap();
+    store
+        .apply_directory_result(&request, Ok(vec![entry("cached/item", FileKind::File)]))
+        .unwrap();
+    let item = store
+        .node_id(&FileUri::parse("file:///cached/item").unwrap())
+        .unwrap();
+    store.set_selected(item, true).unwrap();
+    store.set_expanded(cached, false).unwrap();
+
+    assert!(store.evict_expired(Instant::now()).unwrap().is_empty());
+    assert!(
+        store.node(item).is_some(),
+        "a selected descendant pins the cache"
+    );
+
+    store.set_selected(item, false).unwrap();
+    let delta = store.evict_expired(Instant::now()).unwrap();
+    assert!(!delta.is_empty());
+    assert!(store.node(cached).is_some());
+    assert!(store.node(item).is_none());
+    assert!(store.node(cached).unwrap().children().is_empty());
+    assert!(matches!(
+        store.node(cached).unwrap().directory_state(),
+        DirectoryLoadState::Unloaded
+    ));
+    assert_eq!(store.diagnostics().evicted_nodes, 1);
+}
+
+#[test]
+fn store_diagnostics_count_io_results_errors_and_stale_responses() {
+    let mut store = root_store();
+    let root = store.root();
+    let (failed, _) = store.begin_directory_load(root).unwrap();
+    store
+        .apply_directory_result(&failed, Err(FileError::PermissionDenied("root".into())))
+        .unwrap();
+    let (stale, _) = store.begin_directory_load(root).unwrap();
+    store.invalidate_generation().unwrap();
+    assert!(matches!(
+        store.apply_directory_result(&stale, Ok(Vec::new())),
+        Err(FileTreeStoreError::StaleResponse { .. })
+    ));
+
+    let diagnostics = store.diagnostics();
+    assert_eq!(diagnostics.directory_loads_started, 2);
+    assert_eq!(diagnostics.directory_results_applied, 1);
+    assert_eq!(diagnostics.directory_errors, 1);
+    assert_eq!(diagnostics.stale_responses, 1);
+    assert_eq!(diagnostics.nodes, 1);
+    assert!(diagnostics.estimated_payload_bytes > 0);
+}
+
+#[test]
+fn attested_operations_apply_immediately_and_deduplicate_watcher_echoes() {
+    let mut store = root_store();
+    let root = store.root();
+    let (request, _) = store.begin_directory_load(root).unwrap();
+    store
+        .apply_directory_result(
+            &request,
+            Ok(vec![
+                entry("a", FileKind::Directory),
+                entry("b", FileKind::Directory),
+            ]),
+        )
+        .unwrap();
+    let a = store
+        .node_id(&FileUri::parse("file:///a").unwrap())
+        .unwrap();
+    let b = store
+        .node_id(&FileUri::parse("file:///b").unwrap())
+        .unwrap();
+
+    let created_uri = FileUri::parse("file:///a/new").unwrap();
+    store
+        .apply_attested_insert(
+            a,
+            FileEntry::new(created_uri.clone(), FileMetadata::new(FileKind::Directory)),
+            Some(FileIdentity::new("test", b"created")),
+        )
+        .unwrap();
+    let created = store.node_id(&created_uri).unwrap();
+    store.set_expanded(created, true).unwrap();
+    store.set_selected(created, true).unwrap();
+    let create_echo = WatchEvent::new(WatchEventKind::Created, created_uri.clone(), 1, 1);
+    assert!(store.apply_watch_event(&create_echo).unwrap().is_empty());
+
+    let moved_uri = FileUri::parse("file:///b/new").unwrap();
+    store
+        .apply_attested_move(
+            created,
+            moved_uri.clone(),
+            Some(FileIdentity::new("test", b"created")),
+        )
+        .unwrap();
+    assert_eq!(store.node(created).unwrap().parent(), Some(b));
+    assert!(store.node(created).unwrap().is_expanded());
+    assert!(store.node(created).unwrap().is_pinned());
+    let move_echo = WatchEvent::new(WatchEventKind::Moved, moved_uri.clone(), 2, 1)
+        .with_previous_uri(created_uri);
+    assert!(store.apply_watch_event(&move_echo).unwrap().is_empty());
+
+    store.apply_attested_remove(created).unwrap();
+    assert!(store.node(created).is_none());
+    let remove_echo = WatchEvent::new(WatchEventKind::Removed, moved_uri, 3, 1);
+    assert!(store.apply_watch_event(&remove_echo).unwrap().is_empty());
+    assert_eq!(store.diagnostics().duplicate_watch_events, 3);
 }

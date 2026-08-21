@@ -55,3 +55,18 @@ fn local_watch_is_non_recursive_and_debounced() {
         .iter()
         .any(|event| event.uri().file_name() == Some("deep.txt")));
 }
+
+#[test]
+fn local_watch_limit_is_explicit_and_existing_watches_are_idempotent() {
+    let first = TempDir::new();
+    let second = TempDir::new();
+    let first_uri = FileUri::local(&first.0).unwrap();
+    let second_uri = FileUri::local(&second.0).unwrap();
+    let mut source = LocalFileTreeSource::with_max_watchers(1).unwrap();
+    source.watch_directory(&first_uri).unwrap();
+    source.watch_directory(&first_uri).unwrap();
+    let error = source.watch_directory(&second_uri).unwrap_err();
+    assert!(error.to_string().contains("watcher limit reached (1)"));
+    source.unwatch_directory(&first_uri).unwrap();
+    source.watch_directory(&second_uri).unwrap();
+}

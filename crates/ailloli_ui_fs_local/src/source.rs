@@ -14,15 +14,39 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use crate::LocalFileProvider;
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
+pub const DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS: usize = 1_024;
 
 type RawWatchEvent = (Instant, notify::Result<Event>);
 
-#[derive(Debug, Clone, Default)]
-pub struct LocalFileTreeSourceFactory;
+#[derive(Debug, Clone)]
+pub struct LocalFileTreeSourceFactory {
+    max_watchers: usize,
+}
+
+impl LocalFileTreeSourceFactory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn max_watchers(mut self, max_watchers: usize) -> Self {
+        self.max_watchers = max_watchers;
+        self
+    }
+}
+
+impl Default for LocalFileTreeSourceFactory {
+    fn default() -> Self {
+        Self {
+            max_watchers: DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS,
+        }
+    }
+}
 
 impl FileTreeSourceFactory for LocalFileTreeSourceFactory {
     fn create(&self) -> Result<Box<dyn FileTreeSource>, FileError> {
-        Ok(Box::new(LocalFileTreeSource::new()?))
+        Ok(Box::new(LocalFileTreeSource::with_max_watchers(
+            self.max_watchers,
+        )?))
     }
 }
 
@@ -35,10 +59,15 @@ pub struct LocalFileTreeSource {
     watched: HashMap<PathBuf, FileUri>,
     next_sequence: u64,
     generation: u64,
+    max_watchers: usize,
 }
 
 impl LocalFileTreeSource {
     pub fn new() -> Result<Self, FileError> {
+        Self::with_max_watchers(DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS)
+    }
+
+    pub fn with_max_watchers(max_watchers: usize) -> Result<Self, FileError> {
         let (sender, receiver) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send((Instant::now(), event));
@@ -52,6 +81,7 @@ impl LocalFileTreeSource {
             watched: HashMap::new(),
             next_sequence: 1,
             generation: 1,
+            max_watchers,
         })
     }
 
@@ -129,10 +159,32 @@ impl FileTreeSource for LocalFileTreeSource {
         identity_for_path(&uri.to_local_path()?).map(Some)
     }
 
+    fn create_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
+        self.provider.create_dir(uri)
+    }
+
+    fn move_entry(&mut self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
+        self.provider.move_entry(from, to)
+    }
+
+    fn remove_entry(&mut self, uri: &FileUri, recursive: bool) -> Result<(), FileError> {
+        if recursive {
+            self.provider.remove_recursive(uri)
+        } else {
+            self.provider.remove(uri)
+        }
+    }
+
     fn watch_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         let path = uri.to_local_path()?;
         if self.watched.contains_key(&path) {
             return Ok(());
+        }
+        if self.watched.len() >= self.max_watchers {
+            return Err(FileError::Other(format!(
+                "local filesystem watcher limit reached ({})",
+                self.max_watchers
+            )));
         }
         self.watcher
             .watch(&path, RecursiveMode::NonRecursive)

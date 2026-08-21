@@ -29,7 +29,9 @@ pub use source::{FileTreeSource, FileTreeSourceFactory};
 pub use transfer::FileTransfer;
 pub use tree::{
     DirectoryLoadRequest, DirectoryLoadState, FileIdentity, FileTreeDelta, FileTreeNode,
-    FileTreeNodeId, FileTreeStore, FileTreeStoreDelta, FileTreeStoreError,
+    FileTreeNodeId, FileTreeStore, FileTreeStoreDelta, FileTreeStoreDiagnostics,
+    FileTreeStoreError, FileTreeStoreLimits, DEFAULT_FILE_TREE_COLLAPSED_TTL,
+    DEFAULT_FILE_TREE_MAX_NODES, DEFAULT_FILE_TREE_MAX_PAYLOAD_BYTES,
 };
 pub use uri::FileUri;
 pub use watch::{WatchEvent, WatchEventKind};
