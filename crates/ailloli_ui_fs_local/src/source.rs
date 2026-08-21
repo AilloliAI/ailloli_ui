@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -56,6 +56,7 @@ pub struct LocalFileTreeSource {
     watcher: RecommendedWatcher,
     receiver: Receiver<RawWatchEvent>,
     pending: VecDeque<RawWatchEvent>,
+    normalized: VecDeque<WatchEvent>,
     watched: HashMap<PathBuf, FileUri>,
     next_sequence: u64,
     generation: u64,
@@ -78,6 +79,7 @@ impl LocalFileTreeSource {
             watcher,
             receiver,
             pending: VecDeque::new(),
+            normalized: VecDeque::new(),
             watched: HashMap::new(),
             next_sequence: 1,
             generation: 1,
@@ -136,6 +138,60 @@ impl LocalFileTreeSource {
             EventKind::Access(_) => Ok(Vec::new()),
             _ => Ok(Vec::new()),
         }
+    }
+
+    fn normalize_events(&mut self, raw: Vec<Event>) -> Result<Vec<WatchEvent>, FileError> {
+        let mut rename_halves = HashMap::<usize, (Option<PathBuf>, Option<PathBuf>)>::new();
+        let mut complete_trackers = HashSet::new();
+        for event in &raw {
+            let Some(tracker) = event.tracker() else {
+                continue;
+            };
+            match event.kind {
+                EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
+                    rename_halves.entry(tracker).or_default().0 = event.paths.first().cloned();
+                }
+                EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+                    rename_halves.entry(tracker).or_default().1 = event.paths.first().cloned();
+                }
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+                    complete_trackers.insert(tracker);
+                }
+                _ => {}
+            }
+        }
+
+        let mut emitted_pairs = HashSet::new();
+        let mut normalized = Vec::new();
+        for event in raw {
+            let tracker = event.tracker();
+            let rename_half = matches!(
+                event.kind,
+                EventKind::Modify(ModifyKind::Name(RenameMode::From | RenameMode::To))
+            );
+            if rename_half {
+                if tracker.is_some_and(|tracker| complete_trackers.contains(&tracker)) {
+                    continue;
+                }
+                if let Some(tracker) = tracker {
+                    if let Some((Some(from), Some(to))) = rename_halves.get(&tracker) {
+                        if emitted_pairs.insert(tracker) {
+                            let from = FileUri::local(from)?;
+                            let to = FileUri::local(to)?;
+                            let kind = if from.parent() == to.parent() {
+                                WatchEventKind::Renamed
+                            } else {
+                                WatchEventKind::Moved
+                            };
+                            normalized.push(self.next_event(kind, to, Some(from)));
+                        }
+                        continue;
+                    }
+                }
+            }
+            normalized.extend(self.map_event(event)?);
+        }
+        Ok(normalized)
     }
 
     fn events_for_paths(
@@ -208,6 +264,9 @@ impl FileTreeSource for LocalFileTreeSource {
     }
 
     fn poll_watch(&mut self, limit: usize) -> Result<Vec<WatchEvent>, FileError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         loop {
             match self.receiver.try_recv() {
                 Ok(event) => self.pending.push_back(event),
@@ -220,8 +279,8 @@ impl FileTreeSource for LocalFileTreeSource {
         let cutoff = Instant::now()
             .checked_sub(WATCH_DEBOUNCE)
             .unwrap_or_else(Instant::now);
-        let mut events = Vec::new();
-        while events.len() < limit {
+        let mut raw = Vec::new();
+        loop {
             let Some((received_at, _)) = self.pending.front() else {
                 break;
             };
@@ -229,19 +288,23 @@ impl FileTreeSource for LocalFileTreeSource {
                 break;
             }
             let (_, event) = self.pending.pop_front().expect("front exists");
-            let mapped = self.map_event(event.map_err(notify_error)?)?;
-            for event in mapped {
-                let duplicate = events.iter().any(|existing: &WatchEvent| {
-                    existing.kind() == event.kind()
-                        && existing.uri() == event.uri()
-                        && existing.previous_uri() == event.previous_uri()
-                });
-                if !duplicate {
-                    events.push(event);
-                    if events.len() == limit {
-                        break;
-                    }
-                }
+            raw.push(event.map_err(notify_error)?);
+        }
+        let normalized = self.normalize_events(raw)?;
+        self.normalized.extend(normalized);
+
+        let mut events = Vec::new();
+        while events.len() < limit {
+            let Some(event) = self.normalized.pop_front() else {
+                break;
+            };
+            let duplicate = events.iter().any(|existing: &WatchEvent| {
+                existing.kind() == event.kind()
+                    && existing.uri() == event.uri()
+                    && existing.previous_uri() == event.previous_uri()
+            });
+            if !duplicate {
+                events.push(event);
             }
         }
         Ok(events)
@@ -273,4 +336,48 @@ fn identity_for_path(_path: &Path) -> Result<FileIdentity, FileError> {
 
 fn notify_error(error: notify::Error) -> FileError {
     FileError::Io(format!("filesystem watch: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rename_event(mode: RenameMode, tracker: usize, paths: &[&str]) -> Event {
+        let mut event = Event::new(EventKind::Modify(ModifyKind::Name(mode))).set_tracker(tracker);
+        for path in paths {
+            event = event.add_path(PathBuf::from(path));
+        }
+        event
+    }
+
+    #[test]
+    fn rename_from_to_and_both_collapse_to_one_semantic_event() {
+        let mut source = LocalFileTreeSource::new().unwrap();
+        let events = source
+            .normalize_events(vec![
+                rename_event(RenameMode::From, 7, &["/tmp/foo"]),
+                rename_event(RenameMode::To, 7, &["/tmp/bar"]),
+                rename_event(RenameMode::Both, 7, &["/tmp/foo", "/tmp/bar"]),
+            ])
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), WatchEventKind::Renamed);
+        assert_eq!(events[0].previous_uri().unwrap().path(), "/tmp/foo");
+        assert_eq!(events[0].uri().path(), "/tmp/bar");
+    }
+
+    #[test]
+    fn paired_halves_are_normalized_when_backend_omits_both() {
+        let mut source = LocalFileTreeSource::new().unwrap();
+        let events = source
+            .normalize_events(vec![
+                rename_event(RenameMode::From, 9, &["/tmp/a/foo"]),
+                rename_event(RenameMode::To, 9, &["/tmp/b/foo"]),
+            ])
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), WatchEventKind::Moved);
+        assert_eq!(events[0].previous_uri().unwrap().path(), "/tmp/a/foo");
+        assert_eq!(events[0].uri().path(), "/tmp/b/foo");
+    }
 }
