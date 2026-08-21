@@ -23,14 +23,14 @@
   "runs": [
     {
       "path": "replicate-01/run.jsonl",
-      "sha256": "3d93b87e6b61e578f935075d2b4345c2e3026fd49f23e01b7c711bbf4ab19662",
-      "run_id": "1584102-1787302135780467108-1",
+      "sha256": "c74a512a644b04a379f22de1bf29689c25dc131057c33d985a88122cce5c41dd",
+      "run_id": "1651119-1787304508291888147-1",
       "run_schema_version": 1,
       "warmup_process": false,
       "final_metadata": {
         "scenario": "tree_virtualization",
         "phase": "candidate",
-        "git_revision": "b98c40bb25c44f07e3e4d7435a7ceec8e8c96c86",
+        "git_revision": "a7a69a5dc4a1cd2846a84727e7e7d3708865ce24",
         "dirty_diff_hash": null,
         "profile": "release",
         "harness": "phase127_regression_bench",

@@ -23,14 +23,14 @@
   "runs": [
     {
       "path": "replicate-01/run.jsonl",
-      "sha256": "839d174660fed885cedc3b53d534bfb6ea847c7a138d445962091a546ca10028",
-      "run_id": "1584099-1787302135655178213-1",
+      "sha256": "35f65edb4867c74c0b11091cbcc65d48919373dce2abe7a8af34207e016bab39",
+      "run_id": "1651117-1787304508164667110-1",
       "run_schema_version": 1,
       "warmup_process": false,
       "final_metadata": {
         "scenario": "component_isolation",
         "phase": "candidate",
-        "git_revision": "b98c40bb25c44f07e3e4d7435a7ceec8e8c96c86",
+        "git_revision": "a7a69a5dc4a1cd2846a84727e7e7d3708865ce24",
         "dirty_diff_hash": null,
         "profile": "release",
         "harness": "phase127_regression_bench",
