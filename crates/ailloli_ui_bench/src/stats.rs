@@ -18,6 +18,33 @@ pub struct SampleSummary {
     pub max: f64,
 }
 
+/// Maximum accepted RSS growth during a Phase 127 steady-state soak.
+pub const MAX_RSS_SLOPE_MIB_PER_SEC: f64 = 0.10;
+
+/// Maximum accepted RSS extent after the soak warmup period.
+pub const MAX_RSS_EXTENT_MIB: f64 = 32.0;
+
+/// Deterministic memory-trend decision for a sampled process.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MemoryTrendSummary {
+    pub count: usize,
+    pub slope_mib_per_sec: f64,
+    pub min_mib: f64,
+    pub max_mib: f64,
+    pub extent_mib: f64,
+    pub slope_limit_mib_per_sec: f64,
+    pub extent_limit_mib: f64,
+    pub slope_failed: bool,
+    pub extent_failed: bool,
+}
+
+impl MemoryTrendSummary {
+    /// Returns true when either the robust growth slope or memory extent fails.
+    pub const fn failed(&self) -> bool {
+        self.slope_failed || self.extent_failed
+    }
+}
+
 /// Summary of one named metric, including its gate behavior and process count.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MetricSummary {
@@ -43,6 +70,10 @@ pub enum StatsError {
         first: MetricRole,
         second: MetricRole,
     },
+    #[error("a trend requires at least two samples, got {count}")]
+    InsufficientTrendSamples { count: usize },
+    #[error("trend timestamps do not contain two distinct values")]
+    NoDistinctTrendTimestamps,
 }
 
 /// Computes standard median, nearest-rank p95/p99, and median absolute deviation.
@@ -92,6 +123,64 @@ fn nearest_rank(sorted: &[f64], numerator: usize, denominator: usize) -> f64 {
         .div_ceil(denominator)
         .max(1);
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
+/// Computes the deterministic Theil–Sen slope of `(seconds, value)` samples.
+///
+/// The estimator is the median of every pairwise slope with distinct
+/// timestamps. Input ordering does not affect the result. It is robust to
+/// isolated RSS spikes and is therefore preferable to an endpoint delta for a
+/// long-running memory gate.
+pub fn theil_sen_slope(samples: &[(f64, f64)]) -> Result<f64, StatsError> {
+    if samples.len() < 2 {
+        return Err(StatsError::InsufficientTrendSamples {
+            count: samples.len(),
+        });
+    }
+    for (index, (timestamp, value)) in samples.iter().copied().enumerate() {
+        if !timestamp.is_finite() || !value.is_finite() {
+            return Err(StatsError::NonFinite { index });
+        }
+    }
+
+    let mut slopes = Vec::with_capacity(samples.len().saturating_mul(samples.len() - 1) / 2);
+    for (left_index, (left_time, left_value)) in samples.iter().copied().enumerate() {
+        for (right_time, right_value) in samples.iter().copied().skip(left_index + 1) {
+            let elapsed = right_time - left_time;
+            if elapsed == 0.0 {
+                continue;
+            }
+            slopes.push((right_value - left_value) / elapsed);
+        }
+    }
+    if slopes.is_empty() {
+        return Err(StatsError::NoDistinctTrendTimestamps);
+    }
+    slopes.sort_by(f64::total_cmp);
+    Ok(median_of_sorted(&slopes))
+}
+
+/// Evaluates the locked Phase 127 RSS slope and extent limits.
+pub fn summarize_memory_trend(samples: &[(f64, f64)]) -> Result<MemoryTrendSummary, StatsError> {
+    let slope_mib_per_sec = theil_sen_slope(samples)?;
+    let mut min_mib = f64::INFINITY;
+    let mut max_mib = f64::NEG_INFINITY;
+    for (_, value) in samples.iter().copied() {
+        min_mib = min_mib.min(value);
+        max_mib = max_mib.max(value);
+    }
+    let extent_mib = max_mib - min_mib;
+    Ok(MemoryTrendSummary {
+        count: samples.len(),
+        slope_mib_per_sec,
+        min_mib,
+        max_mib,
+        extent_mib,
+        slope_limit_mib_per_sec: MAX_RSS_SLOPE_MIB_PER_SEC,
+        extent_limit_mib: MAX_RSS_EXTENT_MIB,
+        slope_failed: slope_mib_per_sec > MAX_RSS_SLOPE_MIB_PER_SEC,
+        extent_failed: extent_mib > MAX_RSS_EXTENT_MIB,
+    })
 }
 
 /// Whether a comparison represents steady-state or cold-start measurements.
@@ -350,5 +439,52 @@ mod tests {
         );
         assert!(comparison.correctness_failed);
         assert!(comparison.failed());
+    }
+
+    #[test]
+    fn theil_sen_is_order_independent_and_robust_to_one_spike() {
+        let mut samples = (0..181)
+            .map(|second| (f64::from(second), 300.0 + f64::from(second) * 0.05))
+            .collect::<Vec<_>>();
+        samples[90].1 += 128.0;
+        let forward = theil_sen_slope(&samples).unwrap();
+        samples.reverse();
+        let reverse = theil_sen_slope(&samples).unwrap();
+        assert!((forward - 0.05).abs() < 1.0e-9, "slope={forward}");
+        assert_eq!(forward, reverse);
+    }
+
+    #[test]
+    fn memory_trend_gates_the_locked_slope_and_extent() {
+        let stable = (0..181)
+            .map(|second| (f64::from(second), 300.0 + f64::from(second) * 0.05))
+            .collect::<Vec<_>>();
+        let stable = summarize_memory_trend(&stable).unwrap();
+        assert!(!stable.failed());
+        assert!(stable.slope_mib_per_sec <= MAX_RSS_SLOPE_MIB_PER_SEC);
+
+        let leaking = (0..181)
+            .map(|second| (f64::from(second), 300.0 + f64::from(second) * 0.20))
+            .collect::<Vec<_>>();
+        let leaking = summarize_memory_trend(&leaking).unwrap();
+        assert!(leaking.slope_failed);
+        assert!(leaking.extent_failed);
+        assert!(leaking.failed());
+    }
+
+    #[test]
+    fn trend_rejects_non_finite_and_duplicate_only_timestamps() {
+        assert_eq!(
+            theil_sen_slope(&[(0.0, 1.0)]),
+            Err(StatsError::InsufficientTrendSamples { count: 1 })
+        );
+        assert_eq!(
+            theil_sen_slope(&[(1.0, 1.0), (1.0, 2.0)]),
+            Err(StatsError::NoDistinctTrendTimestamps)
+        );
+        assert_eq!(
+            theil_sen_slope(&[(0.0, 1.0), (1.0, f64::NAN)]),
+            Err(StatsError::NonFinite { index: 1 })
+        );
     }
 }

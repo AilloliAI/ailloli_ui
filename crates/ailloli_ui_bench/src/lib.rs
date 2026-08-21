@@ -71,8 +71,10 @@ pub use session::{
     BenchInit, BenchInitError, BenchSession, BenchWriteError, CompletedRun, Recorder,
 };
 pub use stats::{
-    compare_metric, compare_metric_with_role, summarize_runs, summarize_runs_with_roles,
-    summarize_samples, ComparisonMode, MetricComparison, MetricSummary, SampleSummary, StatsError,
+    compare_metric, compare_metric_with_role, summarize_memory_trend, summarize_runs,
+    summarize_runs_with_roles, summarize_samples, theil_sen_slope, ComparisonMode,
+    MemoryTrendSummary, MetricComparison, MetricSummary, SampleSummary, StatsError,
+    MAX_RSS_EXTENT_MIB, MAX_RSS_SLOPE_MIB_PER_SEC,
 };
 
 const DEFAULT_QUEUE_CAPACITY: usize = 4096;
