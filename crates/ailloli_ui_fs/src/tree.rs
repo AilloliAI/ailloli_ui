@@ -7,8 +7,9 @@ pub const DEFAULT_FILE_TREE_MAX_NODES: usize = 100_000;
 pub const DEFAULT_FILE_TREE_MAX_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
 pub const DEFAULT_FILE_TREE_COLLAPSED_TTL: Duration = Duration::from_secs(5 * 60);
 
-/// Session cache policy. Limits are inspected and enforced by the product
-/// coordinator; the store never performs hidden I/O to satisfy them.
+/// Session cache policy. Cache maintenance is explicit and never performs
+/// hidden I/O: coordinators call [`FileTreeStore::evict_expired`] at the
+/// instant returned by [`FileTreeStore::next_cache_maintenance_due`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileTreeStoreLimits {
     pub max_nodes: usize,
@@ -487,16 +488,21 @@ impl FileTreeStore {
             .filter_map(|(id, cache)| {
                 let collapsed_at = cache.collapsed_at?;
                 let node = self.nodes.get(id)?;
-                (!node.expanded
-                    && !node.children.is_empty()
-                    && now.saturating_duration_since(collapsed_at) >= self.limits.collapsed_ttl)
-                    .then_some((*id, collapsed_at))
+                (!node.expanded && !node.children.is_empty()).then_some((*id, collapsed_at))
             })
             .collect::<Vec<_>>();
         candidates.sort_by_key(|(_, collapsed_at)| *collapsed_at);
 
         let mut changes = Vec::new();
-        for (id, _) in candidates {
+        let mut remaining_nodes = self.nodes.len();
+        let mut remaining_payload_bytes = self.estimated_payload_bytes();
+        let mut over_limits = remaining_nodes > self.limits.max_nodes
+            || remaining_payload_bytes > self.limits.max_payload_bytes;
+        for (id, collapsed_at) in candidates {
+            let expired = now.saturating_duration_since(collapsed_at) >= self.limits.collapsed_ttl;
+            if !expired && !over_limits {
+                break;
+            }
             let children = self
                 .nodes
                 .get(&id)
@@ -505,6 +511,7 @@ impl FileTreeStore {
             if children.is_empty() || self.subtrees_contain_pin(&children) {
                 continue;
             }
+            let (removed_nodes, removed_payload_bytes) = self.subtree_footprint(&children);
             self.nodes
                 .get_mut(&id)
                 .expect("candidate exists")
@@ -519,8 +526,38 @@ impl FileTreeStore {
                 id,
                 state: DirectoryLoadState::Unloaded,
             });
+            remaining_nodes = remaining_nodes.saturating_sub(removed_nodes);
+            remaining_payload_bytes = remaining_payload_bytes.saturating_sub(removed_payload_bytes);
+            over_limits = remaining_nodes > self.limits.max_nodes
+                || remaining_payload_bytes > self.limits.max_payload_bytes;
         }
         self.commit(changes)
+    }
+
+    /// Earliest time at which an evictable collapsed subtree needs cache
+    /// maintenance. Capacity pressure is immediate; ordinary cache entries
+    /// use their configured TTL. Pinned subtrees are excluded so a host timer
+    /// cannot spin on work that is forbidden to evict.
+    pub fn next_cache_maintenance_due(&self, now: Instant) -> Option<Instant> {
+        let over_limits = self.cache_limits_exceeded();
+        self.cache
+            .iter()
+            .filter_map(|(id, cache)| {
+                let collapsed_at = cache.collapsed_at?;
+                let node = self.nodes.get(id)?;
+                if node.expanded
+                    || node.children.is_empty()
+                    || self.subtrees_contain_pin(&node.children)
+                {
+                    return None;
+                }
+                Some(if over_limits {
+                    now
+                } else {
+                    collapsed_at + self.limits.collapsed_ttl
+                })
+            })
+            .min()
     }
 
     /// Applies a successful provider-side create without rescanning its parent.
@@ -1245,23 +1282,42 @@ impl FileTreeStore {
     }
 
     fn estimated_payload_bytes(&self) -> usize {
-        self.nodes
-            .values()
-            .map(|node| {
-                std::mem::size_of::<FileTreeNode>()
-                    .saturating_add(node.uri.to_string().len())
-                    .saturating_add(
-                        node.identity
-                            .as_ref()
-                            .map_or(0, |identity| identity.provider.len() + identity.value.len()),
-                    )
-                    .saturating_add(
-                        node.children
-                            .capacity()
-                            .saturating_mul(std::mem::size_of::<FileTreeNodeId>()),
-                    )
-            })
-            .sum()
+        self.nodes.values().map(Self::node_payload_bytes).sum()
+    }
+
+    fn cache_limits_exceeded(&self) -> bool {
+        self.nodes.len() > self.limits.max_nodes
+            || self.estimated_payload_bytes() > self.limits.max_payload_bytes
+    }
+
+    fn node_payload_bytes(node: &FileTreeNode) -> usize {
+        std::mem::size_of::<FileTreeNode>()
+            .saturating_add(node.uri.to_string().len())
+            .saturating_add(
+                node.identity
+                    .as_ref()
+                    .map_or(0, |identity| identity.provider.len() + identity.value.len()),
+            )
+            .saturating_add(
+                node.children
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<FileTreeNodeId>()),
+            )
+    }
+
+    fn subtree_footprint(&self, roots: &[FileTreeNodeId]) -> (usize, usize) {
+        let mut nodes = 0_usize;
+        let mut payload_bytes = 0_usize;
+        let mut pending = roots.to_vec();
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.nodes.get(&id) else {
+                continue;
+            };
+            nodes = nodes.saturating_add(1);
+            payload_bytes = payload_bytes.saturating_add(Self::node_payload_bytes(node));
+            pending.extend(node.children.iter().copied());
+        }
+        (nodes, payload_bytes)
     }
 
     fn allocate_node_id(&mut self) -> Result<FileTreeNodeId, FileTreeStoreError> {

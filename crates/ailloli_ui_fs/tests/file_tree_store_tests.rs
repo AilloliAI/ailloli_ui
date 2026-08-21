@@ -364,6 +364,48 @@ fn collapsed_cache_eviction_retains_root_metadata_and_respects_pins() {
 }
 
 #[test]
+fn cache_pressure_evicts_collapsed_children_before_ttl_without_busy_timer() {
+    let limits = FileTreeStoreLimits {
+        max_nodes: 2,
+        max_payload_bytes: usize::MAX,
+        collapsed_ttl: Duration::from_secs(3_600),
+    };
+    let mut store = FileTreeStore::with_limits(
+        FileUri::parse("file:///").unwrap(),
+        FileMetadata::new(FileKind::Directory),
+        limits,
+    )
+    .unwrap();
+    let root = store.root();
+    store.set_expanded(root, true).unwrap();
+    let (request, _) = store.begin_directory_load(root).unwrap();
+    store
+        .apply_directory_result(&request, Ok(vec![entry("cached", FileKind::Directory)]))
+        .unwrap();
+    let cached = store
+        .node_id(&FileUri::parse("file:///cached").unwrap())
+        .unwrap();
+    store.set_expanded(cached, true).unwrap();
+    let (request, _) = store.begin_directory_load(cached).unwrap();
+    store
+        .apply_directory_result(&request, Ok(vec![entry("cached/item", FileKind::File)]))
+        .unwrap();
+    store.set_expanded(cached, false).unwrap();
+
+    let now = Instant::now();
+    assert_eq!(store.next_cache_maintenance_due(now), Some(now));
+    let delta = store.evict_expired(now).unwrap();
+    assert!(!delta.is_empty());
+    assert_eq!(store.len(), 2);
+    assert!(store.node(cached).unwrap().children().is_empty());
+    assert!(matches!(
+        store.node(cached).unwrap().directory_state(),
+        DirectoryLoadState::Unloaded
+    ));
+    assert_eq!(store.next_cache_maintenance_due(now), None);
+}
+
+#[test]
 fn store_diagnostics_count_io_results_errors_and_stale_responses() {
     let mut store = root_store();
     let root = store.root();
