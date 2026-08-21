@@ -789,6 +789,33 @@ impl FileTreeStore {
         Ok((request, delta))
     }
 
+    /// Cancels the currently active load for one directory.
+    ///
+    /// The worker may still finish the owned request. Its response is then
+    /// rejected as stale because the request identifier is no longer active.
+    /// This keeps collapse and root replacement UI-local and never blocks on
+    /// filesystem I/O.
+    pub fn cancel_directory_load(
+        &mut self,
+        id: FileTreeNodeId,
+    ) -> Result<FileTreeStoreDelta, FileTreeStoreError> {
+        let node = self
+            .nodes
+            .get_mut(&id)
+            .ok_or(FileTreeStoreError::MissingNode(id))?;
+        if self.active_requests.remove(&id).is_none() {
+            return self.commit(Vec::new());
+        }
+        if matches!(node.directory_state, DirectoryLoadState::Loading { .. }) {
+            node.directory_state = DirectoryLoadState::Stale;
+            return self.commit(vec![FileTreeDelta::DirectoryState {
+                id,
+                state: DirectoryLoadState::Stale,
+            }]);
+        }
+        self.commit(Vec::new())
+    }
+
     pub fn apply_directory_result(
         &mut self,
         request: &DirectoryLoadRequest,

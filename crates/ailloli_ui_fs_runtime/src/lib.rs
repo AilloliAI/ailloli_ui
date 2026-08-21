@@ -154,10 +154,14 @@ impl AtomicWorkerStats {
         }
     }
 
-    fn request_enqueued(&self) {
+    fn request_reserved(&self) {
         let depth = self.request_queue_depth.fetch_add(1, Ordering::AcqRel) + 1;
         self.request_queue_max_depth
             .fetch_max(depth, Ordering::Relaxed);
+    }
+
+    fn request_reservation_cancelled(&self) {
+        self.request_queue_depth.fetch_sub(1, Ordering::AcqRel);
     }
 
     fn request_received(&self) {
@@ -292,7 +296,7 @@ pub struct FileTreeApplyReport {
 pub struct FileTreeRuntime {
     requests: SyncSender<WorkerRequest>,
     responses: UiInbox<FileTreeWorkerResponse>,
-    active_directories: Arc<Mutex<HashSet<FileTreeNodeId>>>,
+    active_directories: Arc<Mutex<HashMap<FileTreeNodeId, u64>>>,
     active_mutations: Arc<Mutex<HashMap<FileTreeNodeId, FileTreeMutation>>>,
     next_mutation_request_id: AtomicU64,
     watch_pending: Arc<AtomicBool>,
@@ -306,7 +310,7 @@ impl FileTreeRuntime {
         let capacity = NonZeroUsize::new(FILE_TREE_QUEUE_CAPACITY).expect("non-zero capacity");
         let (request_sender, request_receiver) = mpsc::sync_channel(capacity.get());
         let (response_sender, responses) = UiInbox::channel(capacity);
-        let active_directories = Arc::new(Mutex::new(HashSet::new()));
+        let active_directories = Arc::new(Mutex::new(HashMap::new()));
         let active_mutations = Arc::new(Mutex::new(HashMap::new()));
         let watch_pending = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(AtomicWorkerStats::default());
@@ -372,32 +376,48 @@ impl FileTreeRuntime {
         request: DirectoryLoadRequest,
     ) -> Result<FileTreeEnqueueOutcome, FileTreeRuntimeError> {
         let node_id = request.node_id();
-        {
+        let request_id = request.request_id();
+        let previous_request = {
             let mut active = self
                 .active_directories
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if !active.insert(node_id) {
+            if active.get(&node_id) == Some(&request_id) {
                 self.stats
                     .requests_coalesced
                     .fetch_add(1, Ordering::Relaxed);
                 return Ok(FileTreeEnqueueOutcome::Coalesced);
             }
-            self.stats
-                .active_directory_requests
-                .fetch_add(1, Ordering::Relaxed);
-        }
+            let previous = active.insert(node_id, request_id);
+            if previous.is_none() {
+                self.stats
+                    .active_directory_requests
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            previous
+        };
+        self.stats.request_reserved();
         if let Err(error) = self.requests.try_send(WorkerRequest::Directory(request)) {
-            self.active_directories
+            self.stats.request_reservation_cancelled();
+            let mut active = self
+                .active_directories
                 .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .remove(&node_id);
-            self.stats
-                .active_directory_requests
-                .fetch_sub(1, Ordering::Relaxed);
+                .unwrap_or_else(|poison| poison.into_inner());
+            if active.get(&node_id) == Some(&request_id) {
+                match previous_request {
+                    Some(previous_request) => {
+                        active.insert(node_id, previous_request);
+                    }
+                    None => {
+                        active.remove(&node_id);
+                        self.stats
+                            .active_directory_requests
+                            .fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+            }
             return Err(map_request_send_error(error));
         }
-        self.stats.request_enqueued();
         self.stats.requests_enqueued.fetch_add(1, Ordering::Relaxed);
         Ok(FileTreeEnqueueOutcome::Enqueued)
     }
@@ -412,13 +432,14 @@ impl FileTreeRuntime {
                 .fetch_add(1, Ordering::Relaxed);
             return Ok(FileTreeEnqueueOutcome::Coalesced);
         }
+        self.stats.request_reserved();
         if let Err(error) = self.requests.try_send(WorkerRequest::Watch {
             limit: limit.min(FILE_TREE_UI_DRAIN_BUDGET),
         }) {
+            self.stats.request_reservation_cancelled();
             self.watch_pending.store(false, Ordering::Release);
             return Err(map_request_send_error(error));
         }
-        self.stats.request_enqueued();
         self.stats.requests_enqueued.fetch_add(1, Ordering::Relaxed);
         Ok(FileTreeEnqueueOutcome::Enqueued)
     }
@@ -476,7 +497,9 @@ impl FileTreeRuntime {
             request_id,
             mutation,
         };
+        self.stats.request_reserved();
         if let Err(error) = self.requests.try_send(WorkerRequest::Mutation(request)) {
+            self.stats.request_reservation_cancelled();
             self.active_mutations
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
@@ -484,7 +507,6 @@ impl FileTreeRuntime {
             let _ = store.set_pending_operation(target, false);
             return Err(map_request_send_error(error));
         }
-        self.stats.request_enqueued();
         self.stats.requests_enqueued.fetch_add(1, Ordering::Relaxed);
         Ok(FileTreeMutationEnqueue {
             outcome: FileTreeEnqueueOutcome::Enqueued,
@@ -505,10 +527,14 @@ impl FileTreeRuntime {
         uri: FileUri,
         enabled: bool,
     ) -> Result<(), FileTreeRuntimeError> {
-        self.requests
+        self.stats.request_reserved();
+        if let Err(error) = self
+            .requests
             .try_send(WorkerRequest::ConfigureWatch { uri, enabled })
-            .map_err(map_request_send_error)?;
-        self.stats.request_enqueued();
+        {
+            self.stats.request_reservation_cancelled();
+            return Err(map_request_send_error(error));
+        }
         self.stats.requests_enqueued.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -522,13 +548,21 @@ impl FileTreeRuntime {
         for response in &drain.messages {
             match response {
                 FileTreeWorkerResponse::Directory { request, .. } => {
-                    self.active_directories
+                    let mut active = self
+                        .active_directories
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .remove(&request.node_id());
-                    self.stats
-                        .active_directory_requests
-                        .fetch_sub(1, Ordering::Relaxed);
+                        .unwrap_or_else(|error| error.into_inner());
+                    let removed = if active.get(&request.node_id()) == Some(&request.request_id()) {
+                        active.remove(&request.node_id());
+                        true
+                    } else {
+                        false
+                    };
+                    if removed {
+                        self.stats
+                            .active_directory_requests
+                            .fetch_sub(1, Ordering::Relaxed);
+                    }
                 }
                 FileTreeWorkerResponse::Watch { .. } => {
                     self.watch_pending.store(false, Ordering::Release);
@@ -635,13 +669,18 @@ impl FileTreeRuntime {
         let mut shutdown_sent = false;
         while Instant::now() < deadline {
             if !shutdown_sent {
+                self.stats.request_reserved();
                 match self.requests.try_send(WorkerRequest::Shutdown) {
                     Ok(()) => {
-                        self.stats.request_enqueued();
                         shutdown_sent = true;
                     }
-                    Err(TrySendError::Full(_)) => {}
-                    Err(TrySendError::Disconnected(_)) => shutdown_sent = true,
+                    Err(TrySendError::Full(_)) => {
+                        self.stats.request_reservation_cancelled();
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        self.stats.request_reservation_cancelled();
+                        shutdown_sent = true;
+                    }
                 }
             }
             let _ = self
@@ -663,9 +702,11 @@ impl FileTreeRuntime {
 
 impl Drop for FileTreeRuntime {
     fn drop(&mut self) {
+        self.stats.request_reserved();
         if self.requests.try_send(WorkerRequest::Shutdown).is_ok() {
-            self.stats.request_enqueued();
+            return;
         }
+        self.stats.request_reservation_cancelled();
     }
 }
 

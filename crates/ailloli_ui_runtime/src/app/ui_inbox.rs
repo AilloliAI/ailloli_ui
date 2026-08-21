@@ -91,10 +91,17 @@ impl Shared {
         }
     }
 
-    fn enqueued(&self) {
-        self.stats.enqueued.fetch_add(1, Ordering::Relaxed);
+    fn reserve_depth(&self) {
         let depth = self.stats.current_depth.fetch_add(1, Ordering::AcqRel) + 1;
         self.stats.max_depth.fetch_max(depth, Ordering::Relaxed);
+    }
+
+    fn cancel_depth_reservation(&self) {
+        self.stats.current_depth.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn enqueued(&self) {
+        self.stats.enqueued.fetch_add(1, Ordering::Relaxed);
     }
 
     fn drained(&self) {
@@ -225,13 +232,19 @@ impl<T> fmt::Debug for UiSender<T> {
 
 impl<T> UiSender<T> {
     pub fn send(&self, message: T) -> Result<(), UiSendError> {
+        // Reserve the diagnostic depth before publishing the message. The
+        // consumer is allowed to run immediately after `try_send`, so updating
+        // the counter afterwards can otherwise underflow during `drain`.
+        self.shared.reserve_depth();
         match self.sender.try_send(message) {
             Ok(()) => self.shared.enqueued(),
             Err(TrySendError::Full(_)) => {
+                self.shared.cancel_depth_reservation();
                 self.shared.stats.overflow.fetch_add(1, Ordering::Relaxed);
                 return Err(UiSendError::Full);
             }
             Err(TrySendError::Disconnected(_)) => {
+                self.shared.cancel_depth_reservation();
                 self.shared.disconnected();
                 return Err(UiSendError::Closed);
             }
@@ -247,7 +260,9 @@ impl<T> UiSender<T> {
     /// their protocol. UI threads should prefer [`Self::send`] so they never
     /// block on a full mailbox.
     pub fn send_blocking(&self, message: T) -> Result<(), UiSendError> {
+        self.shared.reserve_depth();
         if self.sender.send(message).is_err() {
+            self.shared.cancel_depth_reservation();
             self.shared.disconnected();
             return Err(UiSendError::Closed);
         }
@@ -389,5 +404,31 @@ mod tests {
         assert!(!second.remaining);
         sender.send(3).unwrap();
         assert_eq!(wake.0.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn concurrent_blocking_sender_keeps_depth_counters_balanced() {
+        const MESSAGE_COUNT: usize = 10_000;
+        let (sender, mut inbox) = UiInbox::channel(NonZeroUsize::new(1).unwrap());
+        let producer = std::thread::spawn(move || {
+            for message in 0..MESSAGE_COUNT {
+                sender.send_blocking(message).unwrap();
+            }
+        });
+        let mut received = 0;
+        while received < MESSAGE_COUNT {
+            let drain = inbox.drain(NonZeroUsize::new(1).unwrap()).unwrap();
+            received += drain.messages.len();
+            if drain.messages.is_empty() {
+                std::thread::yield_now();
+            }
+        }
+        producer.join().unwrap();
+
+        let stats = inbox.stats();
+        assert_eq!(stats.enqueued, MESSAGE_COUNT as u64);
+        assert_eq!(stats.drained, MESSAGE_COUNT as u64);
+        assert_eq!(stats.current_depth, 0);
+        assert!(stats.max_depth >= 1);
     }
 }

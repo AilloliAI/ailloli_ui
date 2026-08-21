@@ -141,6 +141,30 @@ fn stale_store_generation_drops_owned_response_without_retry() {
 }
 
 #[test]
+fn a_reopened_directory_supersedes_the_cancelled_worker_request() {
+    let state = Arc::new(SourceState::default());
+    let mut runtime = FileTreeRuntime::spawn(Arc::new(Factory(state.clone()))).unwrap();
+    let mut store = store();
+    let root = store.root();
+    let (cancelled, _) = store.begin_directory_load(root).unwrap();
+    runtime.request_directory(cancelled).unwrap();
+    store.cancel_directory_load(root).unwrap();
+    let (current, _) = store.begin_directory_load(root).unwrap();
+    runtime.request_directory(current).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while store.len() == 1 {
+        let report = runtime.drain_into_store(&mut store).unwrap();
+        assert!(report.stale_responses <= 1);
+        assert!(Instant::now() < deadline, "worker response timeout");
+        std::thread::yield_now();
+    }
+    assert_eq!(state.reads.load(Ordering::Relaxed), 2);
+    assert_eq!(runtime.stats().active_directory_requests, 0);
+    runtime.finish().unwrap();
+}
+
+#[test]
 fn remote_polling_only_schedules_expanded_directories_with_bounded_backoff() {
     let mut scheduler = FileTreeReconcileScheduler::new(false);
     let root = store().root();

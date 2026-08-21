@@ -82,6 +82,39 @@ fn stale_worker_responses_never_overwrite_a_new_generation() {
 }
 
 #[test]
+fn cancelled_directory_response_is_stale_and_a_new_request_can_start() {
+    let mut store = root_store();
+    let root = store.root();
+    let (cancelled, _) = store.begin_directory_load(root).unwrap();
+    let delta = store.cancel_directory_load(root).unwrap();
+    assert!(matches!(
+        store.node(root).unwrap().directory_state(),
+        DirectoryLoadState::Stale
+    ));
+    assert!(!delta.is_empty());
+
+    let (current, _) = store.begin_directory_load(root).unwrap();
+    assert_ne!(cancelled.request_id(), current.request_id());
+    assert_eq!(
+        store
+            .apply_directory_result(&cancelled, Ok(vec![entry("late", FileKind::File)]))
+            .unwrap_err(),
+        FileTreeStoreError::StaleResponse {
+            request_id: cancelled.request_id()
+        }
+    );
+    store
+        .apply_directory_result(&current, Ok(vec![entry("current", FileKind::File)]))
+        .unwrap();
+    assert!(store
+        .node_id(&FileUri::parse("file:///current").unwrap())
+        .is_some());
+    assert!(store
+        .node_id(&FileUri::parse("file:///late").unwrap())
+        .is_none());
+}
+
+#[test]
 fn reconcile_emits_deltas_without_reusing_removed_ids() {
     let mut store = root_store();
     let root = store.root();
