@@ -14,6 +14,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use crate::LocalFileProvider;
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
+const WATCH_RENAME_ECHO_TTL: Duration = Duration::from_millis(500);
 pub const DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS: usize = 1_024;
 
 type RawWatchEvent = (Instant, notify::Result<Event>);
@@ -57,6 +58,7 @@ pub struct LocalFileTreeSource {
     receiver: Receiver<RawWatchEvent>,
     pending: VecDeque<RawWatchEvent>,
     normalized: VecDeque<WatchEvent>,
+    recent_rename_sources: HashMap<PathBuf, Instant>,
     watched: HashMap<PathBuf, FileUri>,
     next_sequence: u64,
     generation: u64,
@@ -80,6 +82,7 @@ impl LocalFileTreeSource {
             receiver,
             pending: VecDeque::new(),
             normalized: VecDeque::new(),
+            recent_rename_sources: HashMap::new(),
             watched: HashMap::new(),
             next_sequence: 1,
             generation: 1,
@@ -141,8 +144,13 @@ impl LocalFileTreeSource {
     }
 
     fn normalize_events(&mut self, raw: Vec<Event>) -> Result<Vec<WatchEvent>, FileError> {
+        let now = Instant::now();
+        self.recent_rename_sources
+            .retain(|_, emitted_at| now.duration_since(*emitted_at) <= WATCH_RENAME_ECHO_TTL);
         let mut rename_halves = HashMap::<usize, (Option<PathBuf>, Option<PathBuf>)>::new();
         let mut complete_trackers = HashSet::new();
+        let mut renamed_from_paths = HashSet::new();
+        let mut renamed_paths = HashSet::new();
         for event in &raw {
             let Some(tracker) = event.tracker() else {
                 continue;
@@ -156,14 +164,47 @@ impl LocalFileTreeSource {
                 }
                 EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
                     complete_trackers.insert(tracker);
+                    if let Some(from) = event.paths.first() {
+                        renamed_from_paths.insert(from.clone());
+                    }
+                    renamed_paths.extend(event.paths.iter().cloned());
                 }
                 _ => {}
             }
         }
+        renamed_from_paths.extend(rename_halves.values().filter_map(|(from, to)| {
+            to.as_ref()?;
+            from.clone()
+        }));
 
         let mut emitted_pairs = HashSet::new();
         let mut normalized = Vec::new();
         for event in raw {
+            if matches!(
+                event.kind,
+                EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(RenameMode::From))
+            ) && !event.paths.is_empty()
+                && event.paths.iter().all(|path| {
+                    renamed_from_paths.contains(path)
+                        || self.recent_rename_sources.contains_key(path)
+                })
+            {
+                // A non-recursive watch attached to the renamed directory may
+                // report its own old path as removed (or as an unpaired rename
+                // source) after the parent already emitted the complete pair.
+                // It is a self-watch echo, not a second filesystem mutation.
+                continue;
+            }
+            if matches!(event.kind, EventKind::Modify(ModifyKind::Metadata(_)))
+                && !event.paths.is_empty()
+                && event.paths.iter().all(|path| renamed_paths.contains(path))
+            {
+                // Linux may append an inode-metadata notification to the same
+                // debounced burst as a complete rename. The semantic rename
+                // already updates that retained node; treating this duplicate
+                // as a content modification would stale and reread its parent.
+                continue;
+            }
             let tracker = event.tracker();
             let rename_half = matches!(
                 event.kind,
@@ -190,6 +231,19 @@ impl LocalFileTreeSource {
                 }
             }
             normalized.extend(self.map_event(event)?);
+        }
+        for event in &normalized {
+            if matches!(
+                event.kind(),
+                WatchEventKind::Renamed | WatchEventKind::Moved
+            ) {
+                if let Some(path) = event
+                    .previous_uri()
+                    .and_then(|uri| uri.to_local_path().ok())
+                {
+                    self.recent_rename_sources.insert(path, now);
+                }
+            }
         }
         Ok(normalized)
     }
@@ -379,5 +433,44 @@ mod tests {
         assert_eq!(events[0].kind(), WatchEventKind::Moved);
         assert_eq!(events[0].previous_uri().unwrap().path(), "/tmp/a/foo");
         assert_eq!(events[0].uri().path(), "/tmp/b/foo");
+    }
+
+    #[test]
+    fn metadata_echo_for_a_complete_rename_does_not_force_reconciliation() {
+        let mut source = LocalFileTreeSource::new().unwrap();
+        let metadata = Event::new(EventKind::Modify(ModifyKind::Metadata(
+            notify::event::MetadataKind::Any,
+        )))
+        .add_path(PathBuf::from("/tmp/bar"));
+        let events = source
+            .normalize_events(vec![
+                rename_event(RenameMode::Both, 11, &["/tmp/foo", "/tmp/bar"]),
+                metadata,
+            ])
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), WatchEventKind::Renamed);
+    }
+
+    #[test]
+    fn watched_path_remove_echo_for_a_complete_rename_is_suppressed() {
+        let from = PathBuf::from("/tmp/foo");
+        let to = PathBuf::from("/tmp/bar");
+        let mut source = LocalFileTreeSource::new().unwrap();
+        source
+            .watched
+            .insert(from.clone(), FileUri::local(&from).unwrap());
+        let events = source
+            .normalize_events(vec![
+                rename_event(
+                    RenameMode::Both,
+                    12,
+                    &[from.to_str().unwrap(), to.to_str().unwrap()],
+                ),
+                Event::new(EventKind::Remove(notify::event::RemoveKind::Folder)).add_path(from),
+            ])
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), WatchEventKind::Renamed);
     }
 }

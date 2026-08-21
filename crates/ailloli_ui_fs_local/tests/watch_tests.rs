@@ -70,3 +70,40 @@ fn local_watch_limit_is_explicit_and_existing_watches_are_idempotent() {
     source.unwatch_directory(&first_uri).unwrap();
     source.watch_directory(&second_uri).unwrap();
 }
+
+#[test]
+fn renaming_a_watched_directory_emits_only_the_semantic_rename() {
+    let temp = TempDir::new();
+    let from_path = temp.0.join("foo");
+    let to_path = temp.0.join("bar");
+    fs::create_dir(&from_path).unwrap();
+    let root_uri = FileUri::local(&temp.0).unwrap();
+    let from_uri = FileUri::local(&from_path).unwrap();
+    let to_uri = FileUri::local(&to_path).unwrap();
+    let mut source = LocalFileTreeSource::new().unwrap();
+    source.watch_directory(&root_uri).unwrap();
+    source.watch_directory(&from_uri).unwrap();
+
+    fs::rename(&from_path, &to_path).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut events = Vec::new();
+    let mut last_event_at = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(20));
+        let batch = source.poll_watch(256).unwrap();
+        if !batch.is_empty() {
+            last_event_at = Some(Instant::now());
+            events.extend(batch);
+        }
+        if last_event_at.is_some_and(|last| last.elapsed() >= Duration::from_millis(150)) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "watch event timeout: {events:?}");
+    }
+
+    assert_eq!(events.len(), 1, "unexpected watcher echo: {events:?}");
+    assert_eq!(events[0].kind(), WatchEventKind::Renamed);
+    assert_eq!(events[0].previous_uri(), Some(&from_uri));
+    assert_eq!(events[0].uri(), &to_uri);
+}

@@ -179,6 +179,18 @@ impl FileTreeNode {
         self.expanded
     }
 
+    pub const fn is_selected(&self) -> bool {
+        self.selected
+    }
+
+    pub const fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    pub const fn has_pending_operation(&self) -> bool {
+        self.pending_operation
+    }
+
     pub const fn is_pinned(&self) -> bool {
         self.expanded || self.selected || self.focused || self.pending_operation
     }
