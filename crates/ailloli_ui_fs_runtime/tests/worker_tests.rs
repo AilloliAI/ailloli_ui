@@ -181,6 +181,10 @@ fn remote_polling_only_schedules_expanded_directories_with_bounded_backoff() {
     scheduler.set_expanded(root, true, start);
     assert!(scheduler.due(start, 256).is_empty());
     assert_eq!(
+        scheduler.next_due(),
+        Some(start + FILE_TREE_REMOTE_POLL_INTERVAL)
+    );
+    assert_eq!(
         scheduler.due(start + FILE_TREE_REMOTE_POLL_INTERVAL, 256),
         vec![root]
     );
@@ -199,6 +203,7 @@ fn remote_polling_only_schedules_expanded_directories_with_bounded_backoff() {
 
     scheduler.set_expanded(root, false, now);
     assert!(scheduler.is_empty());
+    assert_eq!(scheduler.next_due(), None);
 }
 
 #[test]
@@ -208,6 +213,7 @@ fn native_watch_scheduler_never_creates_a_polling_loop() {
     let now = Instant::now();
     scheduler.set_expanded(root, true, now);
     assert!(scheduler.is_empty());
+    assert_eq!(scheduler.next_due(), None);
     assert!(scheduler.due(now + Duration::from_secs(60), 256).is_empty());
 }
 

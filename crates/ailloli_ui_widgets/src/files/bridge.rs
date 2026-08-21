@@ -77,9 +77,16 @@ impl FileTreeModelBridge {
                     index: *index,
                 }),
                 FileTreeDelta::Updated { id } | FileTreeDelta::DirectoryState { id, .. } => {
-                    let node = store
-                        .node(*id)
-                        .ok_or(FileTreeModelBridgeError::MissingNode(*id))?;
+                    let Some(node) = store.node(*id) else {
+                        // One bounded worker drain can contain an intermediate
+                        // `pending=false` update immediately followed by a
+                        // successful removal. The store is already at its
+                        // final state when deltas reach this projection.
+                        if self.model.read(|model| model.item(id).is_some()) {
+                            mutations.push(TreeMutation::Remove { id: *id });
+                        }
+                        continue;
+                    };
                     if self.model.read(|model| model.item(id).is_some()) {
                         mutations.push(TreeMutation::Update {
                             item: tree_item(node),
@@ -108,19 +115,30 @@ fn collect_subtree(
     index: usize,
     mutations: &mut Vec<TreeMutation<FileTreeNodeId>>,
 ) -> Result<(), FileTreeModelBridgeError> {
-    let node = store
-        .node(id)
-        .ok_or(FileTreeModelBridgeError::MissingNode(id))?;
-    mutations.push(TreeMutation::Insert {
-        parent,
-        index,
-        item: tree_item(node),
-    });
-    if node.is_expanded() && node.metadata().is_directory_like() {
-        mutations.push(TreeMutation::SetExpanded { id, expanded: true });
-    }
-    for (index, child) in node.children().iter().copied().enumerate() {
-        collect_subtree(store, child, Some(id), index, mutations)?;
+    let mut pending = vec![(id, parent, index)];
+    while let Some((current, parent, index)) = pending.pop() {
+        let node = store
+            .node(current)
+            .ok_or(FileTreeModelBridgeError::MissingNode(current))?;
+        mutations.push(TreeMutation::Insert {
+            parent,
+            index,
+            item: tree_item(node),
+        });
+        if node.is_expanded() && node.metadata().is_directory_like() {
+            mutations.push(TreeMutation::SetExpanded {
+                id: current,
+                expanded: true,
+            });
+        }
+        pending.extend(
+            node.children()
+                .iter()
+                .copied()
+                .enumerate()
+                .rev()
+                .map(|(index, child)| (child, Some(current), index)),
+        );
     }
     Ok(())
 }

@@ -230,6 +230,16 @@ impl FileTreeReconcileScheduler {
         due
     }
 
+    /// Earliest instant at which a non-native expanded directory must be
+    /// reconciled. Hosts use this to arm one targeted UI timer instead of
+    /// polling from every frame.
+    pub fn next_due(&self) -> Option<Instant> {
+        self.scheduled
+            .values()
+            .map(|schedule| schedule.next_due)
+            .min()
+    }
+
     pub fn note_success(&mut self, node_id: FileTreeNodeId, now: Instant) {
         if let Some(schedule) = self.scheduled.get_mut(&node_id) {
             schedule.backoff = FILE_TREE_REMOTE_POLL_INTERVAL;
