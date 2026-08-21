@@ -1,0 +1,62 @@
+{
+  "index_schema_version": 1,
+  "benchmark_schema_version": 1,
+  "phase": "candidate",
+  "winit_version": "0.30.13",
+  "backend": "headless",
+  "scenario": "tree_virtualization",
+  "profile": "release",
+  "harness": "phase127_regression_bench",
+  "target": "x86_64-unknown-linux-gnu",
+  "machine": "local-linux-01",
+  "requested_dpr": 1.0,
+  "window_width": 720,
+  "window_height": 520,
+  "mode": "steady",
+  "warmups": 3,
+  "samples": 30,
+  "duration_ms": 10000,
+  "historical_wake_baseline": {
+    "status": "N/A",
+    "reason": "the wake/mailbox path did not exist before Phase 125; no comparable historical run exists"
+  },
+  "runs": [
+    {
+      "path": "replicate-01/run.jsonl",
+      "sha256": "3d93b87e6b61e578f935075d2b4345c2e3026fd49f23e01b7c711bbf4ab19662",
+      "run_id": "1584102-1787302135780467108-1",
+      "run_schema_version": 1,
+      "warmup_process": false,
+      "final_metadata": {
+        "scenario": "tree_virtualization",
+        "phase": "candidate",
+        "git_revision": "b98c40bb25c44f07e3e4d7435a7ceec8e8c96c86",
+        "dirty_diff_hash": null,
+        "profile": "release",
+        "harness": "phase127_regression_bench",
+        "target": "x86_64-unknown-linux-gnu",
+        "machine": "local-linux-01",
+        "operating_system": "linux",
+        "winit_version": "0.30.13",
+        "backend": "headless",
+        "window_backend": "headless",
+        "renderer_backend": null,
+        "gpu": null,
+        "driver": null,
+        "window_width": 720,
+        "window_height": 520,
+        "scale_factor": 1.0,
+        "observed_scale_factor": 1.0,
+        "warmup_samples": 3,
+        "measured_samples": 30,
+        "time_origin": "app_run",
+        "extensions": {
+          "filesystem_io_during_frame": false,
+          "scenario_fidelity": "exact",
+          "scenario_gate_ready": true,
+          "surface_backed": false
+        }
+      }
+    }
+  ]
+}
