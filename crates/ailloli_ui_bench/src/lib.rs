@@ -54,6 +54,7 @@
 
 mod log;
 mod model;
+mod process;
 mod session;
 mod stats;
 
@@ -66,6 +67,9 @@ pub use model::{
     BenchEventRecord, BenchSurfaceId, BenchWindowId, Event, EventContext, EventId, FrameId,
     MetadataUpdateRecord, MetricRole, RunEndRecord, RunId, RunMetadata, RunStartRecord,
     SamplePhase, TimeOrigin, SCHEMA_VERSION,
+};
+pub use process::{
+    sample_current_process, sample_process, ProcessResourceSnapshot, ProcessSampleError,
 };
 pub use session::{
     BenchInit, BenchInitError, BenchSession, BenchWriteError, CompletedRun, Recorder,
