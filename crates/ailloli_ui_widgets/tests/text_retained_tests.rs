@@ -229,6 +229,23 @@ fn bound_text_rewraps_when_state_content_changes() {
 }
 
 #[test]
+fn derived_text_memo_preserves_the_source_layout_revision() {
+    let state = State::new("short".to_string());
+    let mut app: Runtime<()> = Runtime::new(RuntimeHandle::new());
+    let root_id = app.reconcile(Text::new(state.to_text()).width(140.0).into_view());
+    layout_app(&mut app, Constraints::loose(400.0, 220.0));
+
+    state.set("A derived memo must also invalidate wrapping geometry.".to_string());
+    layout_app(&mut app, Constraints::loose(400.0, 220.0));
+
+    let layout = app.tree.get(root_id).unwrap().layout.as_ref().unwrap();
+    let artifact = match layout.artifact.as_ref().unwrap() {
+        LayoutArtifact::Text(layout_handle) => layout_handle.clone(),
+    };
+    assert!(artifact.lines.len() > 1);
+}
+
+#[test]
 fn slider_bound_text_paints_updated_value_after_interaction() {
     let value = State::new(5.0_f32);
     let runtime = RuntimeHandle::new();

@@ -69,4 +69,16 @@ impl<T> Binding<T> {
     pub fn is_signal(&self) -> bool {
         matches!(self, Binding::Signal(_))
     }
+
+    /// Revision of the reactive source used by layout caches.
+    ///
+    /// Static bindings and opaque memos without a reactive source remain at
+    /// revision zero. Memos derived from a [`Signal`] preserve its revision.
+    pub fn revision(&self) -> u64 {
+        match self {
+            Self::Static(_) => 0,
+            Self::Signal(signal) => signal.revision(),
+            Self::Memo(memo) => memo.revision(),
+        }
+    }
 }

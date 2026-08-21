@@ -15,6 +15,7 @@ pub(crate) struct LayoutCacheKey {
     pub scale: u32,
     pub text_metrics_revision: u64,
     pub layout_revision: u64,
+    pub layout_dependency_revision: u64,
     pub topology_revision: u64,
     pub virtual_viewport: Option<[u32; 5]>,
 }

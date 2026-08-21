@@ -92,6 +92,10 @@ impl<A: 'static> Widget<A> for TextWidget {
         "Text"
     }
 
+    fn layout_dependency_revision(&self) -> u64 {
+        self.content.revision()
+    }
+
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,

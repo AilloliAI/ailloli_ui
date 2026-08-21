@@ -100,11 +100,15 @@ impl<T: Clone> Signal<T> {
         T: 'static,
     {
         let signal = self.clone();
+        let revision_signal = self.clone();
 
-        Memo::new(move || {
-            let value = signal.read();
-            f(value)
-        })
+        Memo::with_revision(
+            move || {
+                let value = signal.read();
+                f(value)
+            },
+            move || revision_signal.revision(),
+        )
     }
 }
 
@@ -142,12 +146,14 @@ impl<T: Default> Signal<T> {
 /// Derived read-only value computed from signals or other memos.
 pub struct Memo<T> {
     read_fn: Rc<dyn Fn() -> T>,
+    revision_fn: Rc<dyn Fn() -> u64>,
 }
 
 impl<T> Clone for Memo<T> {
     fn clone(&self) -> Self {
         Self {
             read_fn: self.read_fn.clone(),
+            revision_fn: self.revision_fn.clone(),
         }
     }
 }
@@ -156,6 +162,17 @@ impl<T> Memo<T> {
     pub fn new(read_fn: impl Fn() -> T + 'static) -> Self {
         Self {
             read_fn: Rc::new(read_fn),
+            revision_fn: Rc::new(|| 0),
+        }
+    }
+
+    fn with_revision(
+        read_fn: impl Fn() -> T + 'static,
+        revision_fn: impl Fn() -> u64 + 'static,
+    ) -> Self {
+        Self {
+            read_fn: Rc::new(read_fn),
+            revision_fn: Rc::new(revision_fn),
         }
     }
 
@@ -163,16 +180,24 @@ impl<T> Memo<T> {
         (self.read_fn)()
     }
 
+    pub fn revision(&self) -> u64 {
+        (self.revision_fn)()
+    }
+
     pub fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Memo<U>
     where
         T: 'static,
     {
         let memo = self.clone();
+        let revision_memo = self.clone();
 
-        Memo::new(move || {
-            let value = memo.read();
-            f(value)
-        })
+        Memo::with_revision(
+            move || {
+                let value = memo.read();
+                f(value)
+            },
+            move || revision_memo.revision(),
+        )
     }
 }
 

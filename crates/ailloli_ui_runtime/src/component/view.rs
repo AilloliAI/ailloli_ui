@@ -151,6 +151,16 @@ impl<T, A> IntoViewKeyExt<A> for T where T: IntoView<A> {}
 pub trait Widget<A>: 'static {
     fn debug_name(&self) -> &'static str;
 
+    /// Revision of widget-owned inputs that can change its layout result.
+    ///
+    /// Runtime-created signals normally invalidate their owning element. This
+    /// hook also covers externally created reactive bindings when a layout pass
+    /// is requested for another reason, without invalidating stable siblings.
+    /// Implementations must return a cheap, stable and monotone value.
+    fn layout_dependency_revision(&self) -> u64 {
+        0
+    }
+
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, A>,

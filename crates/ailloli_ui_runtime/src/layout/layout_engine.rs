@@ -37,6 +37,10 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
         let Some(element) = self.tree.get(element_id) else {
             return LayoutResult::zero();
         };
+        let layout_dependency_revision = match &element.kind {
+            ElementKind::Widget(widget) => widget.layout_dependency_revision(),
+            ElementKind::Empty | ElementKind::Component(_) => 0,
+        };
         let cache_key = LayoutCacheKey {
             constraints: [
                 constraints.min_w.to_bits(),
@@ -47,6 +51,7 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
             scale: ctx.scale.dpr.to_bits(),
             text_metrics_revision,
             layout_revision: element.layout_revision,
+            layout_dependency_revision,
             topology_revision: element.topology_revision,
             virtual_viewport,
         };
