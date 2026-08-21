@@ -113,18 +113,22 @@ impl Widget<()> for HorizontalRoot {
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
-pub(crate) type Fixture = (
-    Runtime<()>,
-    TextSystem,
-    Rc<Counters>,
-    Rc<Counters>,
-    Rc<RefCell<Option<Signal<u64>>>>,
-);
+pub(crate) struct Fixture {
+    pub(crate) runtime: Runtime<()>,
+    pub(crate) text: TextSystem,
+    pub(crate) file: Rc<Counters>,
+    pub(crate) chat: Rc<Counters>,
+    pub(crate) chat_signal: Rc<RefCell<Option<Signal<u64>>>>,
+    pub(crate) terminal: Rc<Counters>,
+    pub(crate) terminal_signal: Rc<RefCell<Option<Signal<u64>>>>,
+}
 
 pub(crate) fn fixture() -> Fixture {
     let file = Rc::new(Counters::default());
     let chat = Rc::new(Counters::default());
     let chat_signal = Rc::new(RefCell::new(None));
+    let terminal = Rc::new(Counters::default());
+    let terminal_signal = Rc::new(RefCell::new(None));
     let root = View::node(
         HorizontalRoot,
         vec![
@@ -138,56 +142,152 @@ pub(crate) fn fixture() -> Fixture {
                 signal: Some(chat_signal.clone()),
             })
             .key("chat"),
+            View::component(CountingComponent {
+                counters: terminal.clone(),
+                signal: Some(terminal_signal.clone()),
+            })
+            .key("terminal"),
         ],
     );
     let mut runtime = Runtime::new(RuntimeHandle::new());
     runtime.reconcile_view(root);
     let mut text = TextSystem::new();
     runtime.layout(Constraints::tight(500.0, 100.0), Scale::new(1.0), &mut text);
-    (runtime, text, file, chat, chat_signal)
+    Fixture {
+        runtime,
+        text,
+        file,
+        chat,
+        chat_signal,
+        terminal,
+        terminal_signal,
+    }
 }
 
 #[test]
 fn one_thousand_chat_builds_do_not_touch_the_file_tree_sibling() {
-    let (mut runtime, mut text, file, chat, chat_signal) = fixture();
-    let file_before = (file.builds.get(), file.layouts.get(), file.reads.get());
-    let chat_builds_before = chat.builds.get();
+    let mut fixture = fixture();
+    let file_before = (
+        fixture.file.builds.get(),
+        fixture.file.layouts.get(),
+        fixture.file.reads.get(),
+    );
+    let chat_builds_before = fixture.chat.builds.get();
 
     for revision in 1..=1_000 {
-        chat_signal.borrow().as_ref().unwrap().set(revision);
-        runtime.layout(Constraints::tight(500.0, 100.0), Scale::new(1.0), &mut text);
+        fixture.chat_signal.borrow().as_ref().unwrap().set(revision);
+        fixture.runtime.layout(
+            Constraints::tight(500.0, 100.0),
+            Scale::new(1.0),
+            &mut fixture.text,
+        );
     }
 
     assert_eq!(
-        (file.builds.get(), file.layouts.get(), file.reads.get()),
+        (
+            fixture.file.builds.get(),
+            fixture.file.layouts.get(),
+            fixture.file.reads.get(),
+        ),
         file_before,
         "a chat invalidation must not rebuild, relayout, or reread its sibling",
     );
-    assert_eq!(chat.builds.get() - chat_builds_before, 1_000);
+    assert_eq!(fixture.chat.builds.get() - chat_builds_before, 1_000);
+}
+
+#[test]
+fn one_thousand_terminal_builds_do_not_touch_file_tree_or_chat_siblings() {
+    let mut fixture = fixture();
+    let file_before = (
+        fixture.file.builds.get(),
+        fixture.file.layouts.get(),
+        fixture.file.reads.get(),
+    );
+    let chat_before = (
+        fixture.chat.builds.get(),
+        fixture.chat.layouts.get(),
+        fixture.chat.reads.get(),
+    );
+    let terminal_builds_before = fixture.terminal.builds.get();
+
+    for revision in 1..=1_000 {
+        fixture
+            .terminal_signal
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .set(revision);
+        fixture.runtime.layout(
+            Constraints::tight(500.0, 100.0),
+            Scale::new(1.0),
+            &mut fixture.text,
+        );
+    }
+
+    assert_eq!(
+        (
+            fixture.file.builds.get(),
+            fixture.file.layouts.get(),
+            fixture.file.reads.get(),
+        ),
+        file_before,
+    );
+    assert_eq!(
+        (
+            fixture.chat.builds.get(),
+            fixture.chat.layouts.get(),
+            fixture.chat.reads.get(),
+        ),
+        chat_before,
+    );
+    assert_eq!(
+        fixture.terminal.builds.get() - terminal_builds_before,
+        1_000
+    );
 }
 
 #[test]
 fn paint_layout_and_build_requests_coalesce_to_the_strongest_level() {
-    let (runtime, _text, _file, _chat, _signal) = fixture();
-    let chat = runtime.tree.resolve_element_by_view_key("chat").unwrap();
-    runtime.runtime.invalidate(chat, Invalidation::Paint);
-    assert!(runtime.runtime.frame_work_plan().needs_paint());
-    assert!(!runtime.runtime.frame_work_plan().needs_layout());
-    runtime.runtime.invalidate(chat, Invalidation::Layout);
-    assert!(runtime.runtime.frame_work_plan().needs_layout());
-    assert!(!runtime.runtime.frame_work_plan().needs_build());
-    runtime.runtime.invalidate(chat, Invalidation::Build);
-    assert!(runtime.runtime.frame_work_plan().needs_build());
+    let fixture = fixture();
+    let chat = fixture
+        .runtime
+        .tree
+        .resolve_element_by_view_key("chat")
+        .unwrap();
+    fixture
+        .runtime
+        .runtime
+        .invalidate(chat, Invalidation::Paint);
+    assert!(fixture.runtime.runtime.frame_work_plan().needs_paint());
+    assert!(!fixture.runtime.runtime.frame_work_plan().needs_layout());
+    fixture
+        .runtime
+        .runtime
+        .invalidate(chat, Invalidation::Layout);
+    assert!(fixture.runtime.runtime.frame_work_plan().needs_layout());
+    assert!(!fixture.runtime.runtime.frame_work_plan().needs_build());
+    fixture
+        .runtime
+        .runtime
+        .invalidate(chat, Invalidation::Build);
+    assert!(fixture.runtime.runtime.frame_work_plan().needs_build());
 }
 
 #[test]
 fn invalidation_provenance_is_bounded_and_reports_coalescing() {
-    let (runtime, _text, _file, _chat, _signal) = fixture();
-    let chat = runtime.tree.resolve_element_by_view_key("chat").unwrap();
+    let fixture = fixture();
+    let chat = fixture
+        .runtime
+        .tree
+        .resolve_element_by_view_key("chat")
+        .unwrap();
     for _ in 0..1_000 {
-        runtime.runtime.invalidate(chat, Invalidation::Paint);
+        fixture
+            .runtime
+            .runtime
+            .invalidate(chat, Invalidation::Paint);
     }
-    let diagnostics = runtime.runtime.invalidation_diagnostics();
+    let diagnostics = fixture.runtime.runtime.invalidation_diagnostics();
     assert_eq!(diagnostics.requests, 1_000);
     assert_eq!(diagnostics.paint_requests, 1_000);
     assert_eq!(diagnostics.coalesced_requests, 999);
