@@ -104,9 +104,9 @@ pub use tree_model::{
     TreeModelHandle, TreeModelSubscription, TreeMutation,
 };
 pub use tree_view::{
-    TreeContextMenu, TreeCreate, TreeCreateKind, TreeCreateRequest, TreeDelete, TreeDropPosition,
-    TreeMove, TreeMutationMode, TreeNode, TreeNodeTrailingAction, TreeRename, TreeShortcut,
-    TreeView, TreeViewCommand, TreeViewDiagnostics, TreeViewDiagnosticsSnapshot, TreeViewSize,
-    TreeViewStyle,
+    TreeContextMenu, TreeCreate, TreeCreateCancel, TreeCreateKind, TreeCreateRequest, TreeDelete,
+    TreeDropPosition, TreeMove, TreeMutationMode, TreeNode, TreeNodeTrailingAction, TreeRename,
+    TreeShortcut, TreeView, TreeViewCommand, TreeViewDiagnostics, TreeViewDiagnosticsSnapshot,
+    TreeViewSize, TreeViewStyle,
 };
 pub use upload_dropzone::{UploadDropzone, UploadDropzoneStyle, UploadDropzoneVariant};

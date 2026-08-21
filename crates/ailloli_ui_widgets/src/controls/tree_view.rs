@@ -214,6 +214,12 @@ pub struct TreeCreate<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeCreateCancel<T> {
+    pub id: T,
+    pub request: TreeCreateRequest<T>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeDelete<T> {
     pub id: T,
     pub parent: Option<T>,
@@ -376,6 +382,7 @@ type TreeTrailingActionHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
 type TreeMoveHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeMove<T>)>;
 type TreeRenameHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeRename<T>)>;
 type TreeCreateHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeCreate<T>)>;
+type TreeCreateCancelHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeCreateCancel<T>)>;
 type TreeDeleteHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeDelete<T>)>;
 type TreeContextMenuHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeContextMenu<T>)>;
 type TreeShortcutHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeShortcut<T>)>;
@@ -470,6 +477,7 @@ pub struct TreeView<T, A = ()> {
     on_move: Option<TreeMoveHandler<T, A>>,
     on_rename: Option<TreeRenameHandler<T, A>>,
     on_create: Option<TreeCreateHandler<T, A>>,
+    on_create_cancel: Option<TreeCreateCancelHandler<T, A>>,
     on_delete: Option<TreeDeleteHandler<T, A>>,
     on_context_menu: Option<TreeContextMenuHandler<T, A>>,
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
@@ -518,6 +526,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
             on_move: None,
             on_rename: None,
             on_create: None,
+            on_create_cancel: None,
             on_delete: None,
             on_context_menu: None,
             on_shortcut: None,
@@ -777,6 +786,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    pub fn on_create_cancel_ctx(
+        mut self,
+        f: impl Fn(&mut EventCtx<A>, TreeCreateCancel<T>) + 'static,
+    ) -> Self {
+        self.on_create_cancel = Some(Rc::new(f));
+        self
+    }
+
     pub fn on_delete(mut self, f: impl Fn(TreeDelete<T>) -> A + 'static) -> Self {
         self.on_delete = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
@@ -839,6 +856,7 @@ struct TreeViewComponent<T, A> {
     on_move: Option<TreeMoveHandler<T, A>>,
     on_rename: Option<TreeRenameHandler<T, A>>,
     on_create: Option<TreeCreateHandler<T, A>>,
+    on_create_cancel: Option<TreeCreateCancelHandler<T, A>>,
     on_delete: Option<TreeDeleteHandler<T, A>>,
     on_context_menu: Option<TreeContextMenuHandler<T, A>>,
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
@@ -893,6 +911,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
             on_move: self.on_move.clone(),
             on_rename: self.on_rename.clone(),
             on_create: self.on_create.clone(),
+            on_create_cancel: self.on_create_cancel.clone(),
             on_delete: self.on_delete.clone(),
             on_context_menu: self.on_context_menu.clone(),
             on_shortcut: self.on_shortcut.clone(),
@@ -902,6 +921,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
             active_index: context.signal(None),
             drag: context.signal(None),
             editing: context.signal(None),
+            draft: context.signal(None),
             edit_value: context.signal(String::new()),
             edit_buffer: context.signal(TextBuffer::from_string(String::new())),
             edit_state: context.signal(TextEditState::new()),
@@ -940,6 +960,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for TreeView<T, A> 
                 on_move: self.on_move,
                 on_rename: self.on_rename,
                 on_create: self.on_create,
+                on_create_cancel: self.on_create_cancel,
                 on_delete: self.on_delete,
                 on_context_menu: self.on_context_menu,
                 on_shortcut: self.on_shortcut,
@@ -1011,6 +1032,12 @@ struct TreeEditing<T> {
     create: Option<TreeCreateRequest<T>>,
 }
 
+#[derive(Clone)]
+struct TreeDraft<T> {
+    node: FlatNode<T>,
+    insert_index: usize,
+}
+
 struct SnapshotFlatCache<T> {
     nodes_revision: u64,
     initialized: bool,
@@ -1067,6 +1094,7 @@ struct TreeViewWidget<T, A> {
     on_move: Option<TreeMoveHandler<T, A>>,
     on_rename: Option<TreeRenameHandler<T, A>>,
     on_create: Option<TreeCreateHandler<T, A>>,
+    on_create_cancel: Option<TreeCreateCancelHandler<T, A>>,
     on_delete: Option<TreeDeleteHandler<T, A>>,
     on_context_menu: Option<TreeContextMenuHandler<T, A>>,
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
@@ -1075,6 +1103,7 @@ struct TreeViewWidget<T, A> {
     active_index: Signal<Option<usize>>,
     drag: Signal<Option<TreeDragState<T>>>,
     editing: Signal<Option<TreeEditing<T>>>,
+    draft: Signal<Option<TreeDraft<T>>>,
     edit_value: Signal<String>,
     edit_buffer: Signal<TextBuffer>,
     edit_state: Signal<TextEditState>,
@@ -1256,6 +1285,13 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
+        // A command may come from an externally-owned `State`, which has no
+        // runtime invalidator of its own. Incremental layout can therefore
+        // legitimately reuse this widget without calling `layout`. Consume
+        // the command at the next routed event as well as during layout so
+        // the legacy command binding remains usable without defeating the
+        // layout cache.
+        self.consume_pending_command();
         if self.disabled.read() {
             return;
         }
@@ -1298,10 +1334,11 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
     }
 
     fn focus_policy(&self) -> FocusPolicy {
-        let has_enabled = self.model.as_ref().map_or_else(
-            || self.visible_nodes().iter().any(|node| !node.disabled),
-            |model| model.first_enabled_row().is_some(),
-        );
+        let has_enabled = self.draft.read().is_some_and(|draft| !draft.node.disabled)
+            || self.model.as_ref().map_or_else(
+                || self.visible_nodes().iter().any(|node| !node.disabled),
+                |model| model.first_enabled_row().is_some(),
+            );
         if self.disabled.read() || !has_enabled {
             FocusPolicy::NotFocusable
         } else {
@@ -1368,7 +1405,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             .unwrap_or_else(|| self.nodes.clone())
     }
 
-    fn visible_len(&self) -> usize {
+    fn source_visible_len(&self) -> usize {
         self.model.as_ref().map_or_else(
             || {
                 self.sync_snapshot_flat_cache();
@@ -1378,28 +1415,38 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    fn visible_len(&self) -> usize {
+        self.source_visible_len() + usize::from(self.draft.read().is_some())
+    }
+
     fn visible_node_at(&self, index: usize) -> Option<FlatNode<T>> {
+        let draft = self.draft.read();
+        if let Some(draft) = &draft {
+            if index == draft.insert_index {
+                return Some(draft.node.clone());
+            }
+        }
+        let source_index = draft
+            .as_ref()
+            .filter(|draft| index > draft.insert_index)
+            .map_or(index, |_| index.saturating_sub(1));
         self.model.as_ref().map_or_else(
             || {
                 self.sync_snapshot_flat_cache();
-                self.snapshot_flat_cache.borrow().rows.get(index).cloned()
+                self.snapshot_flat_cache
+                    .borrow()
+                    .rows
+                    .get(source_index)
+                    .cloned()
             },
-            |model| model.flat_node_at(index),
+            |model| model.flat_node_at(source_index),
         )
     }
 
     fn visible_nodes_range(&self, range: std::ops::Range<usize>) -> Vec<FlatNode<T>> {
-        if let Some(model) = &self.model {
-            return range
-                .filter_map(|index| model.flat_node_at(index))
-                .collect();
-        }
-        self.sync_snapshot_flat_cache();
-        self.snapshot_flat_cache
-            .borrow()
-            .rows
-            .get(range)
-            .map_or_else(Vec::new, |nodes| nodes.to_vec())
+        range
+            .filter_map(|index| self.visible_node_at(index))
+            .collect()
     }
 
     fn set_current_nodes(&self, nodes: Vec<TreeNode<T>>) -> bool {
@@ -1412,6 +1459,69 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
 
     fn can_mutate_nodes(&self) -> bool {
         self.bound_nodes.is_some()
+            || (self.model.is_some() && self.mutation_mode.read() == TreeMutationMode::IntentOnly)
+    }
+
+    fn source_index_to_visible(&self, source_index: usize) -> usize {
+        self.draft.read().map_or(source_index, |draft| {
+            source_index + usize::from(source_index >= draft.insert_index)
+        })
+    }
+
+    fn retained_create_position(&self, request: &TreeCreateRequest<T>) -> Option<(usize, usize)> {
+        let rows = (0..self.source_visible_len())
+            .filter_map(|index| {
+                self.model
+                    .as_ref()
+                    .and_then(|model| model.flat_node_at(index))
+            })
+            .collect::<Vec<_>>();
+        match request.kind {
+            TreeCreateKind::SiblingAfter => {
+                let Some(after) = &request.after else {
+                    return Some((rows.len(), 0));
+                };
+                let row = rows.iter().position(|node| &node.id == after)?;
+                let depth = rows[row].depth;
+                Some((visible_subtree_end(&rows, row), depth))
+            }
+            TreeCreateKind::Child => {
+                let parent = request.parent.as_ref()?;
+                let row = rows.iter().position(|node| &node.id == parent)?;
+                let depth = rows[row].depth.saturating_add(1);
+                Some((visible_subtree_end(&rows, row), depth))
+            }
+        }
+    }
+
+    fn begin_retained_create(&self, node: TreeNode<T>, request: TreeCreateRequest<T>) -> bool {
+        if self.draft.read().is_some() || self.editing.read().is_some() {
+            return false;
+        }
+        let Some((insert_index, depth)) = self.retained_create_position(&request) else {
+            return false;
+        };
+        let flat = FlatNode {
+            id: node.id,
+            label: node.label,
+            depth,
+            branch: node.branch,
+            disabled: node.disabled.read(),
+            leading_icon: node.leading_icon,
+            leading_icon_tint: node.leading_icon_tint,
+            trailing_action: node.trailing_action,
+            parent: request.parent.clone(),
+        };
+        let created_id = flat.id.clone();
+        self.draft.set(Some(TreeDraft {
+            node: flat.clone(),
+            insert_index,
+        }));
+        if let Some(bound) = &self.bound_selected {
+            bound.set(created_id);
+        }
+        self.active_index.set(Some(insert_index));
+        self.begin_create_rename(&flat, request)
     }
 
     fn expanded_values(&self) -> Vec<T> {
@@ -1423,12 +1533,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
     }
 
     fn visible_nodes(&self) -> Vec<FlatNode<T>> {
-        if let Some(model) = &self.model {
-            return (0..model.visible_len())
-                .filter_map(|index| model.flat_node_at(index))
-                .collect();
-        }
-        self.visible_nodes_snapshot()
+        (0..self.visible_len())
+            .filter_map(|index| self.visible_node_at(index))
+            .collect()
     }
 
     fn visible_nodes_snapshot(&self) -> Vec<FlatNode<T>> {
@@ -1501,6 +1608,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
     }
 
     fn normalized_active_index_for_source(&self) -> Option<usize> {
+        if self.draft.read().is_some() {
+            let nodes = self.visible_nodes();
+            return self.normalized_active_index(&nodes);
+        }
         if let Some(model) = &self.model {
             if let Some(index) = self.active_index.read() {
                 if model.flat_node_at(index).is_some_and(|node| !node.disabled) {
@@ -2224,7 +2335,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
         let next_open = !self.is_expanded(&node.id);
         if let Some(model) = &self.model {
-            if !model.set_expanded(node.id.clone(), next_open) {
+            if self.mutation_mode.read() == TreeMutationMode::ApplyLocal
+                && !model.set_expanded(node.id.clone(), next_open)
+            {
                 return;
             }
         } else {
@@ -2249,7 +2362,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
                     .iter()
                     .position(|row| !row.disabled && row.id == node.id)
             },
-            |model| model.row_of(&node.id),
+            |model| {
+                let row = model.row_of(&node.id)?;
+                Some(self.source_index_to_visible(row))
+            },
         );
         self.active_index.set(active);
         ctx.request_repaint();
@@ -2366,6 +2482,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         let Some(node) = factory(request.clone()) else {
             return false;
         };
+        if self.model.is_some() && self.mutation_mode.read() == TreeMutationMode::IntentOnly {
+            return self.begin_retained_create(node, request);
+        }
         let created_id = node.id.clone();
         let mut nodes = self.current_nodes();
         if !insert_created_node(&mut nodes, &request, node) {
@@ -2416,6 +2535,17 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
 
     fn cancel_rename(&self, ctx: &mut EventCtx<A>) {
         if let Some(editing) = self.editing.read() {
+            if let Some(request) = editing.create.clone() {
+                if let Some(on_create_cancel) = &self.on_create_cancel {
+                    on_create_cancel(
+                        ctx,
+                        TreeCreateCancel {
+                            id: editing.id.clone(),
+                            request,
+                        },
+                    );
+                }
+            }
             if editing.create.is_some() {
                 let mut nodes = self.current_nodes();
                 if delete_node_by_id(&mut nodes, &editing.id).is_some() {
@@ -2424,6 +2554,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
                 }
             }
         }
+        self.draft.set(None);
         self.editing.set(None);
         self.edit_value.set(String::new());
         self.edit_buffer.set(TextBuffer::from_string(String::new()));
@@ -2446,6 +2577,24 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             return true;
         }
         if let Some(request) = editing.create {
+            if self.model.is_some() && self.mutation_mode.read() == TreeMutationMode::IntentOnly {
+                self.draft.set(None);
+                if let Some(on_create) = &self.on_create {
+                    on_create(
+                        ctx,
+                        TreeCreate {
+                            id: editing.id,
+                            parent: request.parent,
+                            after: request.after,
+                            kind: request.kind,
+                            label: new_label,
+                        },
+                    );
+                }
+                ctx.request_repaint();
+                ctx.stop_propagation();
+                return true;
+            }
             let mut nodes = self.current_nodes();
             let _ = delete_node_by_id(&mut nodes, &editing.id);
             if !self.set_current_nodes(nodes) {
@@ -2464,6 +2613,19 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
                 );
             }
         } else if let Some(on_rename) = &self.on_rename {
+            if self.model.is_some() && self.mutation_mode.read() == TreeMutationMode::IntentOnly {
+                on_rename(
+                    ctx,
+                    TreeRename {
+                        id: editing.id,
+                        old_label: editing.original,
+                        new_label,
+                    },
+                );
+                ctx.request_repaint();
+                ctx.stop_propagation();
+                return true;
+            }
             let mut nodes = self.current_nodes();
             let old_label = if new_label == editing.original {
                 editing.original.clone()
@@ -2495,14 +2657,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         if !self.draggable.read() || !self.can_mutate_nodes() {
             return;
         }
-        let mut nodes = self.current_nodes();
-        if !move_node(&mut nodes, &source, &drop.target, drop.position) {
-            ctx.request_repaint();
-            ctx.stop_propagation();
-            return;
-        }
         let apply_local = self.mutation_mode.read() == TreeMutationMode::ApplyLocal;
         if apply_local {
+            let mut nodes = self.current_nodes();
+            if !move_node(&mut nodes, &source, &drop.target, drop.position) {
+                ctx.request_repaint();
+                ctx.stop_propagation();
+                return;
+            }
             self.set_current_nodes(nodes);
             if drop.position == TreeDropPosition::Inside {
                 self.ensure_expanded(drop.target.clone());
@@ -2559,6 +2721,13 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         let Some(node) = factory(request.clone()) else {
             return;
         };
+        if self.model.is_some() && self.mutation_mode.read() == TreeMutationMode::IntentOnly {
+            if self.begin_retained_create(node, request) {
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
+            return;
+        }
         let created_id = node.id.clone();
         let created_label = node.label.clone();
         let mut nodes = self.current_nodes();
@@ -2892,6 +3061,15 @@ fn insert_created_node<T: Clone + PartialEq>(
             insert_node_relative(nodes, parent, TreeDropPosition::Inside, node)
         }
     }
+}
+
+fn visible_subtree_end<T>(rows: &[FlatNode<T>], row: usize) -> usize {
+    let depth = rows[row].depth;
+    rows.iter()
+        .enumerate()
+        .skip(row + 1)
+        .find_map(|(index, candidate)| (candidate.depth <= depth).then_some(index))
+        .unwrap_or(rows.len())
 }
 
 fn delete_node_by_id<T: Clone + PartialEq>(

@@ -22,7 +22,8 @@ pub use breadcrumb::{
 pub use bridge::{FileTreeModelBridge, FileTreeModelBridgeError};
 pub use explorer::{
     FileExplorer, FileExplorerAction, FileExplorerCreateDir, FileExplorerCreateFile,
-    FileExplorerMove, FileExplorerRename, FileExplorerSize, FileExplorerStyle,
+    FileExplorerModelEvent, FileExplorerMove, FileExplorerRename, FileExplorerSize,
+    FileExplorerStyle, RetainedFileExplorer,
 };
 pub use icons::{
     file_icon_for_entry, file_icon_for_name, file_icon_visual_for_entry, file_icon_visual_for_name,

@@ -15,14 +15,15 @@ use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{
     Accordion, AccordionItem, AccordionSize, AccordionStyle, TreeCreateKind, TreeCreateRequest,
-    TreeDelete, TreeDropPosition, TreeMove, TreeMutationMode, TreeNode, TreeRename, TreeShortcut,
-    TreeView, TreeViewCommand, TreeViewSize, TreeViewStyle,
+    TreeDelete, TreeDropPosition, TreeItem, TreeModel, TreeModelHandle, TreeMove, TreeMutation,
+    TreeMutationMode, TreeNode, TreeRename, TreeShortcut, TreeView, TreeViewCommand, TreeViewSize,
+    TreeViewStyle,
 };
 use ailloli_ui_widgets::layout::ScrollView;
 use ailloli_ui_widgets::text::Text;
 use lucide_icons::Icon as LucideIcon;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum NodeId {
     Root,
     Src,
@@ -1007,6 +1008,111 @@ fn tree_view_begin_create_command_focuses_new_node_and_first_key_replaces_select
         runtime.take_actions().as_slice(),
         [Action::CreateNode(event)] if event.id == NodeId::NewChild && event.label == "Q"
     ));
+}
+
+#[test]
+fn retained_tree_intent_editing_never_copies_or_mutates_the_model() {
+    let mut retained = TreeModel::new();
+    retained
+        .apply_batch([
+            TreeMutation::Insert {
+                parent: None,
+                index: 0,
+                item: TreeItem::branch(NodeId::Root, "root"),
+            },
+            TreeMutation::Insert {
+                parent: Some(NodeId::Root),
+                index: 0,
+                item: TreeItem::leaf(NodeId::Src, "src"),
+            },
+            TreeMutation::Insert {
+                parent: Some(NodeId::Root),
+                index: 1,
+                item: TreeItem::leaf(NodeId::Cargo, "Cargo.toml"),
+            },
+            TreeMutation::SetExpanded {
+                id: NodeId::Root,
+                expanded: true,
+            },
+        ])
+        .unwrap();
+    let model = TreeModelHandle::new(retained);
+    let revision = model.revision();
+    let selected = State::new(NodeId::Src);
+    let command = State::new(None::<TreeViewCommand<NodeId>>);
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let root = app.reconcile(
+        TreeView::<NodeId, Action>::new()
+            .model(model.clone())
+            .bind_selected(selected.clone())
+            .bind_command(command.clone())
+            .mutation_mode(TreeMutationMode::IntentOnly)
+            .editable(true)
+            .creatable(true)
+            .create_node_with(|request| {
+                Some(TreeNode::leaf(NodeId::NewChild, request.default_label))
+            })
+            .on_rename(Action::RenameNode)
+            .on_create(Action::CreateNode)
+            .width(320.0)
+            .into_view()
+            .key("retained-intent-tree"),
+    );
+    layout_app(&mut app, 360.0, 260.0);
+    let tree = first_child(&app, root);
+
+    command.set(Some(TreeViewCommand::BeginRename(NodeId::Src)));
+    runtime.request_focus_key("retained-intent-tree");
+    runtime.request_layout(tree);
+    layout_app(&mut app, 360.0, 260.0);
+    dispatch_event_to_target(&app.tree, runtime.clone(), tree, &character_event("R"));
+    dispatch_event_to_target(
+        &app.tree,
+        runtime.clone(),
+        tree,
+        &keyboard_event(NamedKey::Enter),
+    );
+
+    command.set(Some(TreeViewCommand::BeginCreate(TreeCreateRequest {
+        parent: Some(NodeId::Root),
+        after: None,
+        kind: TreeCreateKind::Child,
+        default_label: "New item".to_string(),
+    })));
+    runtime.request_layout(tree);
+    layout_app(&mut app, 360.0, 260.0);
+    assert_eq!(selected.read(), NodeId::NewChild);
+    dispatch_event_to_target(&app.tree, runtime.clone(), tree, &character_event("N"));
+    dispatch_event_to_target(
+        &app.tree,
+        runtime.clone(),
+        tree,
+        &keyboard_event(NamedKey::Enter),
+    );
+
+    assert_eq!(model.revision(), revision);
+    model.read(|model| {
+        assert_eq!(model.item(&NodeId::Src).unwrap().label(), "src");
+        assert!(model.item(&NodeId::NewChild).is_none());
+    });
+    assert_eq!(
+        runtime.take_actions(),
+        vec![
+            Action::RenameNode(TreeRename {
+                id: NodeId::Src,
+                old_label: "src".to_string(),
+                new_label: "R".to_string(),
+            }),
+            Action::CreateNode(ailloli_ui_widgets::controls::TreeCreate {
+                id: NodeId::NewChild,
+                parent: Some(NodeId::Root),
+                after: None,
+                kind: TreeCreateKind::Child,
+                label: "N".to_string(),
+            }),
+        ]
+    );
 }
 
 #[test]

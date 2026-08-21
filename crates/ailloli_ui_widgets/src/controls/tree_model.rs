@@ -317,6 +317,10 @@ where
         self.nodes.get(id).map(|record| record.children.as_slice())
     }
 
+    pub fn roots(&self) -> &[T] {
+        &self.roots
+    }
+
     pub fn is_expanded(&self, id: &T) -> bool {
         self.nodes.get(id).is_some_and(|record| record.expanded)
     }
