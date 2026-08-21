@@ -1,6 +1,7 @@
 use ailloli_ui_core::event::{Event, PointerEvent};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
+use ailloli_ui_core::style::FlexItemStyle;
 use ailloli_ui_core::{Color, Offset};
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, View, Widget};
 use ailloli_ui_runtime::input::EventCtx;
@@ -214,17 +215,29 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
             let mut r = child.layout(engine, ctx, child_constraints);
             ctx.replace_virtual_viewport(previous_viewport);
             size = viewport_size(constraints_max, r.size);
-            let metrics = ScrollMetrics::new(size, r.size);
-            let next_state = self.sync_scroll_state_for_layout(state, metrics);
-            if !same_offset(state.offset, next_state.offset) {
-                let previous_viewport = ctx.replace_virtual_viewport(Some(VirtualViewport::new(
-                    Rect::new(next_state.offset.x, next_state.offset.y, size.w, size.h),
-                    0.0,
-                )));
-                r = child.layout(engine, ctx, child_constraints);
-                ctx.replace_virtual_viewport(previous_viewport);
+            if self.has_bounded_scroll_viewport(constraints_max) {
+                let metrics = ScrollMetrics::new(size, r.size);
+                let next_state = self.sync_scroll_state_for_layout(state, metrics);
+                if !same_offset(state.offset, next_state.offset) {
+                    let previous_viewport =
+                        ctx.replace_virtual_viewport(Some(VirtualViewport::new(
+                            Rect::new(next_state.offset.x, next_state.offset.y, size.w, size.h),
+                            0.0,
+                        )));
+                    r = child.layout(engine, ctx, child_constraints);
+                    ctx.replace_virtual_viewport(previous_viewport);
+                }
+                state = next_state;
+            } else {
+                // Flex containers probe growing children with an unbounded
+                // main axis before assigning their final slot. That probe is
+                // not a real viewport: clamping here would erase a retained
+                // deep scroll offset and then expose every virtualized row to
+                // layout. Keep the persistent state untouched and render the
+                // intrinsic probe from the origin; the following bounded pass
+                // applies and clamps the real offset.
+                state = ScrollState::new();
             }
-            state = next_state;
             child_layouts.push(ChildLayout {
                 offset: Offset::new(-state.offset.x, -state.offset.y),
                 size: r.size,
@@ -292,10 +305,19 @@ impl<A: 'static> IntoView<A> for ScrollView<A> {
             scrollbar_style: self.scrollbar_style,
             child: self.child,
         })
+        // A scroll container is a viewport, not an intrinsically-sized list.
+        // Let a flex parent shrink its probe result into the assigned slot;
+        // callers can still opt out explicitly with `.flex_shrink(0.0)`.
+        .with_flex_item(FlexItemStyle::new().flex_shrink(1.0))
     }
 }
 
 impl ScrollViewWidget {
+    fn has_bounded_scroll_viewport(&self, viewport: Size) -> bool {
+        (!self.axes.horizontal || viewport.w.is_finite())
+            && (!self.axes.vertical || viewport.h.is_finite())
+    }
+
     fn sync_scroll_state_for_layout(
         &self,
         state: ScrollState,

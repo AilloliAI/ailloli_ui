@@ -6,7 +6,7 @@ use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{
     TreeItem, TreeModel, TreeModelHandle, TreeMutation, TreeView, TreeViewDiagnostics,
 };
-use ailloli_ui_widgets::layout::ScrollView;
+use ailloli_ui_widgets::layout::{Column, FlexItemExt, ScrollView};
 
 fn flat_model(count: usize) -> TreeModelHandle<u64> {
     let mut model = TreeModel::new();
@@ -99,6 +99,44 @@ fn one_hundred_thousand_rows_layout_only_the_viewport_and_overscan() {
         after_redraws.paint_calls,
         first_diagnostics.paint_calls + 10
     );
+}
+
+#[test]
+fn flex_intrinsic_probe_preserves_deep_scroll_and_never_measures_the_full_tree() {
+    let model = flat_model(100_000);
+    let runtime = RuntimeHandle::<()>::new();
+    let mut app = Runtime::new(runtime);
+    let diagnostics = TreeViewDiagnostics::new();
+    app.reconcile(
+        Column::new()
+            .fill()
+            .child(
+                ScrollView::vertical()
+                    .initial_scroll_y(50_000.0 * 28.0)
+                    .child(
+                        TreeView::new()
+                            .model(model)
+                            .virtualized(true)
+                            .diagnostics(diagnostics.clone()),
+                    )
+                    .flex_grow(),
+            )
+            .into_view(),
+    );
+
+    let mut text = TextSystem::new();
+    app.layout(Constraints::tight(720.0, 520.0), Scale::new(1.0), &mut text);
+    let scene = app.paint(&mut text);
+    let snapshot = diagnostics.snapshot();
+
+    assert!(snapshot.layout_rows_visited <= 53, "{snapshot:?}");
+    assert!(snapshot.paint_rows_visited <= 53, "{snapshot:?}");
+    assert_eq!(snapshot.virtualization_fallbacks, 0);
+    assert!(scene
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.cmds)
+        .any(|cmd| { matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "row-050000") }));
 }
 
 #[test]
