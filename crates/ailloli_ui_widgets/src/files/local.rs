@@ -409,7 +409,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
     ) -> Self {
         let store = RetainedFileTreeStore::new(root, FileMetadata::new(FileKind::Directory))
             .expect("valid local tree root");
-        let worker = FileTreeRuntime::spawn(Arc::new(LocalFileTreeSourceFactory)).ok();
+        let worker = FileTreeRuntime::spawn(Arc::new(LocalFileTreeSourceFactory::default())).ok();
         Self {
             store,
             worker,
