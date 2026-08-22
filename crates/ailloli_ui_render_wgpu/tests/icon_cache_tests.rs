@@ -1,9 +1,12 @@
+//! Integration scenarios for icon-key source identity and SVG raster output.
+
 use ailloli_ui_core::{IconId, SvgSource};
 use ailloli_ui_render_wgpu::{rasterize_svg, IconKey};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+/// Hashes an icon key through the standard hasher for source-identity checks.
 fn hash_key(key: &IconKey) -> u64 {
     let mut h = DefaultHasher::new();
     key.hash(&mut h);

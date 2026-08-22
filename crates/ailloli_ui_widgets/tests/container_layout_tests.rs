@@ -1,3 +1,5 @@
+//! Container, flex, clipping, shadow, and scroll-view layout/input scenarios.
+
 use ailloli_ui_core::event::{Event, Modifiers, MouseButton, PointerEvent, WheelDelta};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::math::Scale;

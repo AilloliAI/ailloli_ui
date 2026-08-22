@@ -1,3 +1,5 @@
+//! Exercises provider-neutral IDs, high-fidelity pointers, IME ranges, and file batches.
+
 use ailloli_ui_core::event::{
     ActivationKind, FileEvent, ImeEvent, ImePreedit, ImePreeditError, Modifiers, MouseButton,
     PointerButton, PointerEvent, PointerId, PointerSample, PointerSampleError, PointerSource,

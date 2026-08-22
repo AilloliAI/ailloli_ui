@@ -1,3 +1,5 @@
+//! Table layout, rich-cell paint, selection, navigation, and scrolling scenarios.
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent, WheelDelta};
 use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, NamedKey};
 use ailloli_ui_core::geometry::Constraints;

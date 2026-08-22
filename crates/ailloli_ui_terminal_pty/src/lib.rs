@@ -2,7 +2,20 @@
 //!
 //! This crate is intentionally separate from `ailloli_ui_terminal_core`: it owns
 //! system I/O only. It does not parse ANSI, render widgets, or integrate with
-//! application-specific UI.
+//! application-specific UI. The default feature set provides models, batching,
+//! a handle abstraction, and an in-memory mock without opening OS resources.
+//! Feature `portable` adds the native `PortablePtyBackend` with detached worker
+//! threads and unbounded queues documented on that feature-gated type.
+//!
+//! # Examples
+//!
+//! ```
+//! use ailloli_ui_terminal_pty::{MockPtyBackend, PtyBackend, PtyEvent, PtySpawnConfig};
+//! let backend = MockPtyBackend::default();
+//! backend.push_event(PtyEvent::Output(b"ready".to_vec()));
+//! let handle = backend.spawn(PtySpawnConfig::default()).unwrap();
+//! assert_eq!(handle.drain_events(), vec![PtyEvent::Output(b"ready".to_vec())]);
+//! ```
 
 mod batch;
 mod error;
@@ -23,6 +36,7 @@ pub use model::{PtyEvent, PtyExitStatus, PtySize, PtySpawnConfig};
 pub use portable::PortablePtyBackend;
 
 #[cfg(test)]
+/// Cross-module unit tests for mock, batching, dimensions, and native smoke behavior.
 mod tests {
     use std::thread;
     use std::time::Duration;

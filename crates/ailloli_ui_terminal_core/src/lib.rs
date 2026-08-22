@@ -1,8 +1,26 @@
-//! Pure terminal state and grid model for Ailloli UI.
+//! Pure terminal parsing, state, diagnostics, snapshot, and replay model.
 //!
-//! This crate intentionally contains no PTY, parser, widget, runtime, renderer,
-//! winit, or application-specific integration. It is the inspectable model that later phases
-//! can feed from `vte`, render through widgets, or expose to DevTools/agents.
+//! The crate incrementally parses a supported VT subset into an inspectable grid,
+//! tracks shell/command metadata, classifies common output diagnostics, and
+//! produces bounded agent-facing snapshots. It intentionally performs no PTY or
+//! process I/O, clipboard I/O, rendering, window integration, or application-
+//! specific orchestration.
+//!
+//! Constructors establish nonzero rectangular grids and bounded scrollback, but
+//! most model fields are public and several types deserialize without validation.
+//! Treat untrusted serialized state as data to validate before mutation. Snapshot
+//! redaction is best-effort and has explicitly documented coverage gaps.
+//!
+//! # Examples
+//!
+//! ```
+//! use ailloli_ui_terminal_core::{TerminalParser, TerminalState, VteTerminalParser};
+//!
+//! let mut state = TerminalState::new();
+//! let mut parser = VteTerminalParser::new();
+//! parser.advance(&mut state, b"hello \x1b[31mworld");
+//! assert!(state.screen.lines[0].plain_text().starts_with("hello world"));
+//! ```
 
 pub mod cell;
 pub mod cursor;
@@ -54,6 +72,7 @@ pub use style::{TerminalColor, TerminalStyle};
 pub use warning::{TerminalWarning, TerminalWarningKind};
 
 #[cfg(test)]
+/// Cross-module tests for construction, mutation, reflow, snapshots, and policy defaults.
 mod tests {
     use super::*;
 
@@ -761,6 +780,7 @@ mod tests {
         assert_eq!(state.screen.line(0).expect("line").plain_text(), "main");
     }
 
+    /// Concatenates trimmed normal scrollback and screen rows in visual order.
     fn normal_visual_text(state: &TerminalState) -> String {
         state
             .scrollback
@@ -770,6 +790,7 @@ mod tests {
             .collect::<String>()
     }
 
+    /// Asserts that no normal visual row contains `marker` more than once.
     fn assert_no_line_contains_repeated_prompt(state: &TerminalState, marker: &str) {
         for line in state.scrollback.iter().chain(state.screen.lines.iter()) {
             let text = line.plain_text();
@@ -780,6 +801,7 @@ mod tests {
         }
     }
 
+    /// Counts non-overlapping marker occurrences across normal visual rows.
     fn visual_marker_count(state: &TerminalState, marker: &str) -> usize {
         state
             .scrollback
@@ -789,6 +811,7 @@ mod tests {
             .sum()
     }
 
+    /// Counts non-overlapping marker occurrences in retained scrollback only.
     fn scrollback_marker_count(state: &TerminalState, marker: &str) -> usize {
         state
             .scrollback

@@ -1,3 +1,5 @@
+//! Integration scenarios for retained-tree namespaces across logical windows.
+
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -6,18 +8,21 @@ use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{component, Context, View};
 use ailloli_ui_runtime::popup::{PopupContent, PopupIntent, PopupOwner, PopupRequest};
 
+/// Constructs the bool root test input.
 fn bool_root(context: &mut Context<()>, (): ()) -> View<()> {
     let value = context.signal(false);
     assert!(!value.read());
     View::empty()
 }
 
+/// Constructs the string root test input.
 fn string_root(context: &mut Context<()>, (): ()) -> View<()> {
     let value = context.signal(String::from("second tree"));
     assert_eq!(value.read(), "second tree");
     View::empty()
 }
 
+/// Constructs the two trees test input.
 fn two_trees() -> (RuntimeHandle<()>, Runtime<()>, Runtime<()>) {
     let shared = RuntimeHandle::new();
     let first = Runtime::new(shared.clone());
@@ -30,6 +35,7 @@ fn two_trees() -> (RuntimeHandle<()>, Runtime<()>, Runtime<()>) {
 }
 
 #[test]
+/// Verifies that equal slots with different types are isolated by tree.
 fn equal_slots_with_different_types_are_isolated_by_tree() {
     let (_shared, mut first, mut second) = two_trees();
 
@@ -43,6 +49,7 @@ fn equal_slots_with_different_types_are_isolated_by_tree() {
 }
 
 #[test]
+/// Verifies that dirty elements are consumed only by their tree.
 fn dirty_elements_are_consumed_only_by_their_tree() {
     let (_shared, first, second) = two_trees();
     let element = ElementId(7);
@@ -56,6 +63,7 @@ fn dirty_elements_are_consumed_only_by_their_tree() {
 }
 
 #[test]
+/// Verifies that repaint timers keep their tree when promoted globally.
 fn repaint_timers_keep_their_tree_when_promoted_globally() {
     let (shared, first, second) = two_trees();
     let element = ElementId(9);
@@ -72,6 +80,7 @@ fn repaint_timers_keep_their_tree_when_promoted_globally() {
 }
 
 #[test]
+/// Verifies that focus requests are isolated by tree.
 fn focus_requests_are_isolated_by_tree() {
     let (_shared, first, second) = two_trees();
 
@@ -91,6 +100,7 @@ fn focus_requests_are_isolated_by_tree() {
 }
 
 #[test]
+/// Verifies that popup ids are stable per element and distinct between trees.
 fn popup_ids_are_stable_per_element_and_distinct_between_trees() {
     let (_shared, first, second) = two_trees();
     let element = ElementId(11);
@@ -114,6 +124,7 @@ fn popup_ids_are_stable_per_element_and_distinct_between_trees() {
 }
 
 #[test]
+/// Verifies that dropping runtime releases only its complete tree namespace.
 fn dropping_runtime_releases_only_its_complete_tree_namespace() {
     let (shared, mut first, mut sibling) = two_trees();
     let first_root = first.reconcile(component((), bool_root));

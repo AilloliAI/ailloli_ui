@@ -1,39 +1,108 @@
+//! Deterministic heuristic classification of terminal output into IDE diagnostics.
+
 use serde::{Deserialize, Serialize};
 
 use crate::{CommandId, CommandStatus, TerminalLine, TerminalState};
 
+/// Classification-local diagnostic identity.
+///
+/// [`TerminalOutputClassifier::classify`] assigns IDs from one in output order
+/// on every call; IDs are not stable across changed classifications. Any `u64`
+/// can also be constructed or deserialized.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalDiagnosticId;
+/// assert_eq!(TerminalDiagnosticId(1).0, 1);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TerminalDiagnosticId(pub u64);
+pub struct TerminalDiagnosticId(
+    /// Raw classification-local numeric identity.
+    pub u64,
+);
 
+/// Presentation priority assigned to a terminal diagnostic.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalDiagnosticSeverity;
+/// assert_ne!(TerminalDiagnosticSeverity::Error, TerminalDiagnosticSeverity::Hint);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TerminalDiagnosticSeverity {
+    /// Failure requiring attention.
     Error,
+    /// Risk, conflict, or interactive credential prompt.
     Warning,
+    /// Informational location or URL.
     Info,
+    /// Low-priority suggestion; the built-in classifier currently emits none.
     Hint,
 }
 
+/// Heuristic pattern that produced a diagnostic.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalDiagnosticKind;
+/// assert_ne!(TerminalDiagnosticKind::RustcError, TerminalDiagnosticKind::NpmError);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TerminalDiagnosticKind {
+    /// A line beginning with `error[` or `error:`.
     RustcError,
+    /// A line containing `panicked at`.
     RustPanic,
+    /// A token resembling `path:line[:column]`.
     FileLocation,
+    /// Cargo test summary/failure marker.
     CargoTestFailure,
+    /// A line containing `npm ERR!`.
     NpmError,
+    /// Git conflict or automatic-merge-failure marker.
     GitConflict,
+    /// SSH trust, permission, or key-passphrase prompt.
     SshPrompt,
+    /// `sudo` password/error prompt.
     SudoPrompt,
+    /// Whitespace-delimited HTTP(S) URL.
     Url,
+    /// Finished shell command marked failed or interrupted.
     CommandExitFailure,
 }
 
+/// Inclusive range of global terminal line indices.
+///
+/// Values are zero-based logical history/screen indices. No invariant enforces
+/// `start_line <= end_line` for directly constructed/deserialized values.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalSourceRange;
+/// assert_eq!(TerminalSourceRange::single(7), TerminalSourceRange { start_line: 7, end_line: 7 });
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TerminalSourceRange {
+    /// Inclusive first global terminal line.
     pub start_line: u64,
+    /// Inclusive last global terminal line.
     pub end_line: u64,
 }
 
 impl TerminalSourceRange {
+    /// Creates a one-line inclusive range.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_core::TerminalSourceRange;
+    /// let range = TerminalSourceRange::single(u64::MAX);
+    /// assert_eq!((range.start_line, range.end_line), (u64::MAX, u64::MAX));
+    /// ```
     pub const fn single(line: u64) -> Self {
         Self {
             start_line: line,
@@ -42,52 +111,170 @@ impl TerminalSourceRange {
     }
 }
 
+/// Parsed source location found in terminal text.
+///
+/// Paths/URIs are lexical strings and are not canonicalized or existence-checked.
+/// Parsed line/column values are conventionally one-based, but zero is accepted.
+/// `uri == None` means a relative path could not be resolved without a CWD.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalFileLocation;
+/// let location = TerminalFileLocation { path: "src/main.rs".into(), uri: None, line: Some(3), column: Some(4) };
+/// assert_eq!(location.line, Some(3));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TerminalFileLocation {
+    /// Path token exactly as classified.
     pub path: String,
+    /// Absolute/resolved URI, or `None` when unresolved.
     pub uri: Option<String>,
+    /// Parsed line number, or `None` when unavailable.
     pub line: Option<usize>,
+    /// Parsed column number, or `None` when unavailable.
     pub column: Option<usize>,
 }
 
+/// Actionable link extracted from one diagnostic.
+///
+/// Label and target are stored verbatim; no URL validation is performed.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalDiagnosticLink;
+/// let link = TerminalDiagnosticLink { label: "docs".into(), target: "https://example.com".into() };
+/// assert_eq!(link.label, "docs");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TerminalDiagnosticLink {
+    /// User-facing link label.
     pub label: String,
+    /// Consumer-facing target string.
     pub target: String,
 }
 
+/// One classified terminal-output issue or navigation hint.
+///
+/// Fields are intentionally serializable and publicly constructible; their
+/// cross-field consistency is not validated.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::{TerminalDiagnostic, TerminalDiagnosticId, TerminalDiagnosticKind, TerminalDiagnosticSeverity, TerminalSourceRange};
+/// let diagnostic = TerminalDiagnostic { id: TerminalDiagnosticId(1), severity: TerminalDiagnosticSeverity::Info, kind: TerminalDiagnosticKind::Url, message: "URL".into(), source_range: TerminalSourceRange::single(0), file_location: None, links: vec![], command_id: None };
+/// assert_eq!(diagnostic.id.0, 1);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalDiagnostic {
+    /// Identity assigned within the latest classification.
     pub id: TerminalDiagnosticId,
+    /// Presentation priority.
     pub severity: TerminalDiagnosticSeverity,
+    /// Pattern that produced the diagnostic.
     pub kind: TerminalDiagnosticKind,
+    /// Human-readable summary; may be empty for manually built values.
     pub message: String,
+    /// Inclusive global terminal line range.
     pub source_range: TerminalSourceRange,
+    /// Optional parsed file location.
     pub file_location: Option<TerminalFileLocation>,
+    /// Zero or more actionable links.
     pub links: Vec<TerminalDiagnosticLink>,
+    /// Shell command correlated by output range, when found.
     pub command_id: Option<CommandId>,
 }
 
+/// Incremental diagnostic-list event.
+///
+/// The built-in classifier returns only `Added`; `Cleared` is available for
+/// stateful consumers clearing a previous set.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalDiagnosticEvent;
+/// assert!(matches!(TerminalDiagnosticEvent::Cleared, TerminalDiagnosticEvent::Cleared));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TerminalDiagnosticEvent {
-    Added { diagnostic: TerminalDiagnostic },
+    /// A diagnostic was added to the current set.
+    Added {
+        /// Complete added diagnostic snapshot.
+        diagnostic: TerminalDiagnostic,
+    },
+    /// The previous diagnostic set was cleared.
     Cleared,
 }
 
+/// Complete deterministic classifier result and corresponding events.
+///
+/// A default value contains two empty vectors. Normally `events.len()` equals
+/// `diagnostics.len()` and each event is `Added`, but public construction does
+/// not enforce that relationship.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalOutputClassification;
+/// let output = TerminalOutputClassification::default();
+/// assert!(output.diagnostics.is_empty() && output.events.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TerminalOutputClassification {
+    /// Sorted, deduplicated complete diagnostics.
     pub diagnostics: Vec<TerminalDiagnostic>,
+    /// One `Added` event per classified diagnostic under normal classification.
     pub events: Vec<TerminalDiagnosticEvent>,
 }
 
+/// Stateless, case-sensitive heuristic terminal-output classifier.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalOutputClassifier;
+/// let classifier = TerminalOutputClassifier::new();
+/// assert_eq!(classifier, TerminalOutputClassifier);
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TerminalOutputClassifier;
 
 impl TerminalOutputClassifier {
+    /// Creates the zero-sized stateless classifier.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_core::TerminalOutputClassifier;
+    /// assert_eq!(TerminalOutputClassifier::new(), TerminalOutputClassifier::default());
+    /// ```
     pub fn new() -> Self {
         Self
     }
 
+    /// Classifies the normal screen, retained scrollback, and failed command history.
+    ///
+    /// Patterns are case-sensitive and may emit several diagnostics for one
+    /// line. Relative file locations use `state.cwd_uri`, falling back to the
+    /// shell CWD; no filesystem access occurs. Results sort by global line then
+    /// severity (`Error`, `Warning`, `Info`, `Hint`), deduplicate equal semantic
+    /// keys, assign fresh IDs starting at one, and emit matching `Added` events.
+    /// The alternate screen is not classified even when active. Complexity is
+    /// linear in text plus command history except duplicate removal, which is
+    /// quadratic in the number of candidate diagnostics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_core::{TerminalDiagnosticKind, TerminalOutputClassifier, TerminalState};
+    /// let mut state = TerminalState::new();
+    /// state.write_str("error: build failed");
+    /// let output = TerminalOutputClassifier::new().classify(&state);
+    /// assert!(output.diagnostics.iter().any(|item| item.kind == TerminalDiagnosticKind::RustcError));
+    /// ```
     pub fn classify(&self, state: &TerminalState) -> TerminalOutputClassification {
         let lines = terminal_global_text_lines(state);
         let default_cwd = state.cwd_uri.as_deref().or(state.shell.cwd_uri.as_deref());
@@ -270,6 +457,23 @@ impl TerminalOutputClassifier {
     }
 }
 
+/// Maps currently displayed physical rows to global normal-history indices.
+///
+/// On the normal screen, output contains one `Some(index)` per retained
+/// scrollback and visible line, oldest first. Saturating arithmetic prevents
+/// wrap if counters were deserialized inconsistently. On the alternate screen,
+/// it contains one `None` per alternate row because alternate content has no
+/// stable history index.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::{terminal_visual_line_global_indices, TerminalState};
+/// let mut state = TerminalState::new();
+/// assert!(terminal_visual_line_global_indices(&state).iter().all(Option::is_some));
+/// state.switch_to_alternate_screen();
+/// assert!(terminal_visual_line_global_indices(&state).iter().all(Option::is_none));
+/// ```
 pub fn terminal_visual_line_global_indices(state: &TerminalState) -> Vec<Option<u64>> {
     match state.active_screen {
         crate::ActiveScreen::Normal => {
@@ -292,6 +496,10 @@ pub fn terminal_visual_line_global_indices(state: &TerminalState) -> Vec<Option<
     }
 }
 
+/// Materializes normal scrollback/screen text with saturating global indices.
+///
+/// This intentionally ignores the active-screen selector because diagnostics
+/// are derived only from persistent normal output.
 fn terminal_global_text_lines(state: &TerminalState) -> Vec<(u64, String)> {
     let scrollback_start = state
         .scrollback
@@ -316,6 +524,7 @@ fn terminal_global_text_lines(state: &TerminalState) -> Vec<(u64, String)> {
         .collect()
 }
 
+/// Constructs one candidate with placeholder ID zero before final ordering.
 fn diagnostic(
     severity: TerminalDiagnosticSeverity,
     kind: TerminalDiagnosticKind,
@@ -337,6 +546,10 @@ fn diagnostic(
     }
 }
 
+/// Keeps the first candidate for each formatted semantic key.
+///
+/// Link and command-ID differences are not part of the key. The vector scan is
+/// intentionally stable but quadratic in candidate count.
 fn deduplicate(diagnostics: Vec<TerminalDiagnostic>) -> Vec<TerminalDiagnostic> {
     let mut unique = Vec::new();
     let mut keys = Vec::new();
@@ -359,6 +572,7 @@ fn deduplicate(diagnostics: Vec<TerminalDiagnostic>) -> Vec<TerminalDiagnostic> 
     unique
 }
 
+/// Correlates a global line with the first finished range or current command.
 fn command_id_for_line(state: &TerminalState, line: u64) -> Option<CommandId> {
     state
         .shell
@@ -381,10 +595,12 @@ fn command_id_for_line(state: &TerminalState, line: u64) -> Option<CommandId> {
         })
 }
 
+/// Recognizes the two supported case-sensitive rustc error prefixes.
 fn is_rustc_error(text: &str) -> bool {
     text.starts_with("error[") || text.starts_with("error:")
 }
 
+/// Removes exact `error: ` and surrounding whitespace when present.
 fn rustc_message(text: &str) -> String {
     text.strip_prefix("error: ")
         .unwrap_or(text)
@@ -392,6 +608,7 @@ fn rustc_message(text: &str) -> String {
         .to_string()
 }
 
+/// Formats the four command/exit-code presence combinations.
 fn command_failure_message(command: &str, exit_code: Option<i32>) -> String {
     match (command.is_empty(), exit_code) {
         (true, Some(code)) => format!("command exited with code {code}"),
@@ -401,6 +618,7 @@ fn command_failure_message(command: &str, exit_code: Option<i32>) -> String {
     }
 }
 
+/// Searches the triggering line and next three lines for a location token.
 fn find_file_location(
     lines: &[(u64, String)],
     start: usize,
@@ -413,12 +631,14 @@ fn find_file_location(
         .find_map(|(_, text)| parse_file_location(text, cwd_uri))
 }
 
+/// Returns the first whitespace token containing a supported path location.
 fn parse_file_location(text: &str, cwd_uri: Option<&str>) -> Option<TerminalFileLocation> {
     text.split_whitespace()
         .flat_map(split_location_candidates)
         .find_map(|candidate| parse_location_candidate(candidate, cwd_uri))
 }
 
+/// Trims common punctuation and splits Rust path separators into candidates.
 fn split_location_candidates(token: &str) -> Vec<&str> {
     token
         .trim_matches(|ch: char| {
@@ -431,6 +651,10 @@ fn split_location_candidates(token: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Parses `path:line[:column]`, rejecting HTTP(S) and unsupported path shapes.
+///
+/// A two-component `path:line` token is not recognized because the rightmost
+/// component is first treated as optional column and a line remains required.
 fn parse_location_candidate(
     candidate: &str,
     cwd_uri: Option<&str>,
@@ -457,6 +681,7 @@ fn parse_location_candidate(
     })
 }
 
+/// Recognizes separators, `file://`, or a small source/config extension set.
 fn looks_like_path(path: &str) -> bool {
     path.contains('/')
         || path.contains('\\')
@@ -470,6 +695,10 @@ fn looks_like_path(path: &str) -> bool {
         || path.ends_with(".toml")
 }
 
+/// Lexically resolves a path without normalization or filesystem access.
+///
+/// Any `://` string is retained; absolute paths gain `file://`; relative paths
+/// append to a trailing-slash-trimmed CWD and remain unresolved without one.
 fn resolve_uri(path: &str, cwd_uri: Option<&str>) -> Option<String> {
     if path.contains("://") {
         return Some(path.to_string());
@@ -482,6 +711,7 @@ fn resolve_uri(path: &str, cwd_uri: Option<&str>) -> Option<String> {
     Some(format!("{cwd}/{path}"))
 }
 
+/// Extracts whitespace-delimited HTTP(S) tokens after limited punctuation trim.
 fn url_links(text: &str) -> Vec<TerminalDiagnosticLink> {
     text.split_whitespace()
         .filter_map(|token| {
@@ -496,6 +726,7 @@ fn url_links(text: &str) -> Vec<TerminalDiagnosticLink> {
         .collect()
 }
 
+/// Maps severities to deterministic ascending presentation order.
 fn severity_rank(severity: TerminalDiagnosticSeverity) -> u8 {
     match severity {
         TerminalDiagnosticSeverity::Error => 0,
@@ -506,15 +737,18 @@ fn severity_rank(severity: TerminalDiagnosticSeverity) -> u8 {
 }
 
 #[allow(dead_code)]
+/// Compile-time import-use sentinel retained for the public line type.
 fn _assert_terminal_line_is_used(_: &TerminalLine) {}
 
 #[cfg(test)]
 mod tests {
+    //! Covers classifier patterns, CWD resolution, deduplication, and global indices.
     use super::*;
     use crate::{
         TerminalConfig, TerminalParser, TerminalSecurityPolicy, TerminalSize, VteTerminalParser,
     };
 
+    /// Builds a parsed multi-tool output fixture and runs classification.
     fn classified_fixture() -> TerminalState {
         let mut state = TerminalState::with_config(TerminalConfig {
             size: TerminalSize::new(8, 96),

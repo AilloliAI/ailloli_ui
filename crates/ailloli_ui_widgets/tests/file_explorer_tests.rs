@@ -1,4 +1,5 @@
 #![cfg(feature = "files")]
+//! File-explorer model, icon, tree, popup, selection, and action scenarios.
 
 use std::time::Duration;
 

@@ -1,3 +1,10 @@
+//! CPU lowering from backend-neutral scenes to ordered Vulkan draw batches.
+//!
+//! Logical geometry is scaled to physical pixels, converted to Vulkan NDC,
+//! clipped by a conservative scissor plus at most one rounded shader mask, and
+//! expanded into six-vertex quads. Unsupported commands are counted rather than
+//! failing the frame; glyph lookup and Vulkan allocation errors propagate.
+
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::style::{BorderStyle, Radius};
 use ailloli_ui_core::{ClipShape, IconId, Rect};
@@ -10,73 +17,191 @@ use crate::error::VulkanRendererError;
 use crate::text_atlas::{AtlasGlyph, GlyphKey};
 use crate::vertices::{BorderRRectVertex, BoxShadowVertex, RRectVertex, SolidVertex, TextVertex};
 
+/// Reserved font-face identity for the bundled Lucide font.
+///
+/// # Examples
+///
+/// ```
+/// let reserved_face_id = u64::MAX - 17;
+/// assert!(reserved_face_id > 0);
+/// ```
 pub(crate) const LUCIDE_ICON_FACE_ID: u64 = u64::MAX - 17;
 
+/// Saturating counts describing scene commands lowered for one frame.
+///
+/// # Examples
+///
+/// ```
+/// let (rects, glyphs, ignored): (u32, u32, u32) = (2, 5, 1);
+/// assert_eq!(rects + glyphs + ignored, 8);
+/// ```
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FrameStats {
+    /// Solid/rounded fills and text decoration rectangles emitted.
     pub rects_rendered: u32,
+    /// Text or Lucide glyph quads emitted.
     pub glyphs_rendered: u32,
+    /// Unsupported image, ring-progress, or polyline commands skipped.
     pub commands_ignored: u32,
 }
 
+/// One ordered draw over a contiguous range in a type-specific vertex buffer.
+///
+/// `first_vertex` and `vertex_count` are counted in vertices, not bytes. Each
+/// batch carries the physical-pixel scissor active for its source layer.
+///
+/// # Examples
+///
+/// ```
+/// use ash::vk;
+/// let scissor = vk::Rect2D {
+///     offset: vk::Offset2D { x: 0, y: 0 },
+///     extent: vk::Extent2D { width: 640, height: 480 },
+/// };
+/// assert_eq!(scissor.extent.width, 640);
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DrawBatch {
+    /// Solid rectangle using the solid pipeline.
     Solid {
+        /// First [`SolidVertex`] in the frame buffer.
         first_vertex: u32,
+        /// Number of consecutive vertices, normally six per quad.
         vertex_count: u32,
+        /// Vulkan framebuffer scissor in physical pixels.
         scissor: vk::Rect2D,
     },
+    /// Rounded fill using the signed-distance fill pipeline.
     RRect {
+        /// First [`RRectVertex`] in the frame buffer.
         first_vertex: u32,
+        /// Number of consecutive vertices.
         vertex_count: u32,
+        /// Vulkan framebuffer scissor in physical pixels.
         scissor: vk::Rect2D,
     },
+    /// Uniform rounded border using the signed-distance border pipeline.
     BorderRRect {
+        /// First [`BorderRRectVertex`] in the frame buffer.
         first_vertex: u32,
+        /// Number of consecutive vertices.
         vertex_count: u32,
+        /// Vulkan framebuffer scissor in physical pixels.
         scissor: vk::Rect2D,
     },
+    /// Outset shadow using the signed-distance shadow pipeline.
     BoxShadow {
+        /// First [`BoxShadowVertex`] in the frame buffer.
         first_vertex: u32,
+        /// Number of consecutive vertices.
         vertex_count: u32,
+        /// Vulkan framebuffer scissor in physical pixels.
         scissor: vk::Rect2D,
     },
+    /// Glyph or Lucide quad sampled from one atlas page.
     Text {
+        /// Zero-based glyph-atlas page whose descriptor must be bound.
         page: u8,
+        /// First [`TextVertex`] in the frame buffer.
         first_vertex: u32,
+        /// Number of consecutive vertices.
         vertex_count: u32,
+        /// Vulkan framebuffer scissor in physical pixels.
         scissor: vk::Rect2D,
     },
 }
 
+/// Per-pipeline vertices, ordered batches, and lowering statistics for one frame.
+///
+/// # Examples
+///
+/// ```
+/// let vertices_per_quad = 6_usize;
+/// assert_eq!(2 * vertices_per_quad, 12);
+/// ```
 #[derive(Default)]
 pub(crate) struct FrameGeometry {
+    /// Vertices consumed by solid batches.
     pub solid_vertices: Vec<SolidVertex>,
+    /// Vertices consumed by rounded-fill batches.
     pub rrect_vertices: Vec<RRectVertex>,
+    /// Vertices consumed by rounded-border batches.
     pub border_vertices: Vec<BorderRRectVertex>,
+    /// Vertices consumed by shadow batches.
     pub shadow_vertices: Vec<BoxShadowVertex>,
+    /// Vertices consumed by atlas-text batches.
     pub text_vertices: Vec<TextVertex>,
+    /// Draw order preserving the scene's layer and command order.
     pub batches: Vec<DrawBatch>,
+    /// Saturating lowering counters.
     pub stats: FrameStats,
 }
 
+/// Combined hardware scissor and optional rounded shader clip for one layer.
+///
+/// # Examples
+///
+/// ```
+/// use ash::vk;
+/// let scissor = vk::Rect2D::default();
+/// assert_eq!(scissor.extent.width, 0);
+/// ```
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct VulkanClipPlan {
+    /// Conservative integer intersection in physical framebuffer pixels.
     pub scissor: vk::Rect2D,
+    /// Rounded clip parameters evaluated per fragment.
     pub mask: VulkanClipMask,
 }
 
+/// Shader representation of either no rounded clip or one rounded rectangle.
+///
+/// # Examples
+///
+/// ```
+/// let no_clip_mode: f32 = 0.0;
+/// let rounded_clip_mode: f32 = 2.0;
+/// assert_ne!(no_clip_mode, rounded_clip_mode);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct VulkanClipMask {
+    /// Physical-pixel clip `[x, y, width, height]`; zeroed when disabled.
     pub rect_px: [f32; 4],
+    /// Corner radius in physical pixels; zero when disabled.
     pub radius_px: f32,
+    /// Finite shader sentinel: [`Self::MODE_NONE`] or [`Self::MODE_ROUND`].
     pub mode: f32,
 }
 
+/// Constructors and shader sentinels for rounded clip masks.
 impl VulkanClipMask {
+    /// Shader sentinel for no rounded clip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mode: f32 = 0.0;
+    /// assert_eq!(mode.to_bits(), 0.0_f32.to_bits());
+    /// ```
     pub const MODE_NONE: f32 = 0.0;
+    /// Shader sentinel for a rounded-rectangle clip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let rounded_mode: f32 = 2.0;
+    /// assert!(rounded_mode > 0.0);
+    /// ```
     pub const MODE_ROUND: f32 = 2.0;
 
+    /// Returns a disabled, fully zeroed mask.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let rect = [0.0_f32; 4];
+    /// assert_eq!(rect, [0.0, 0.0, 0.0, 0.0]);
+    /// ```
     pub const fn none() -> Self {
         Self {
             rect_px: [0.0; 4],
@@ -85,6 +210,7 @@ impl VulkanClipMask {
         }
     }
 
+    /// Converts logical rounded-rectangle geometry to physical shader values.
     fn from_round_rect(rect: Rect, radius: f32, scale: Scale) -> Self {
         Self {
             rect_px: [
@@ -99,6 +225,26 @@ impl VulkanClipMask {
     }
 }
 
+/// Lowers every visible scene layer into backend-specific vertices and batches.
+///
+/// Empty clip intersections skip their entire layer. Rectangle/text counters
+/// saturate at `u32::MAX`; vertex offsets narrow vector lengths to `u32`, so a
+/// single frame is practically bounded by address space and GPU buffer limits.
+/// Lucide icons share the glyph callback; Devicon/SVG images, ring progress, and
+/// polylines increment `commands_ignored`.
+///
+/// # Errors
+///
+/// Propagates the first glyph lookup/rasterization error and returns no partial
+/// geometry to the caller.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::Scene;
+/// let scene = Scene { layers: Vec::new() };
+/// assert!(scene.layers.is_empty());
+/// ```
 pub(crate) fn build_frame_geometry<F>(
     scene: &Scene,
     scale: Scale,
@@ -189,6 +335,12 @@ where
     Ok(geometry)
 }
 
+/// Emits one rotated atlas quad for a supported Lucide image command.
+///
+/// Returns `false` only when the icon family/glyph is unsupported or lookup
+/// returns no bitmap. Degenerate or transparent supported images return `true`
+/// without geometry. Raster sizes are rounded and clamped to 8..=128 pixels;
+/// device scale identity is clamped to 1..=`u16::MAX` hundredths.
 fn push_lucide_icon<F>(
     geometry: &mut FrameGeometry,
     image: &DrawImage,
@@ -263,6 +415,9 @@ where
     Ok(true)
 }
 
+/// Rotates a physical-pixel point around `center` by radians.
+///
+/// Zero and non-finite angles preserve the input exactly.
 fn rotate_image_point(point: [f32; 2], center: [f32; 2], rotation_rad: f32) -> [f32; 2] {
     if rotation_rad == 0.0 || !rotation_rad.is_finite() {
         return point;
@@ -276,6 +431,9 @@ fn rotate_image_point(point: [f32; 2], center: [f32; 2], rotation_rad: f32) -> [
     ]
 }
 
+/// Maps built-in/Lucide icon identities through the bundled font charmap.
+///
+/// Devicon, SVG, invalid font, and missing-glyph ID zero return `None`.
 fn lucide_glyph_id(icon: &IconId) -> Option<u32> {
     let icon = match icon {
         IconId::Minimize => lucide_icons::Icon::Minus,
@@ -294,6 +452,7 @@ fn lucide_glyph_id(icon: &IconId) -> Option<u32> {
     (glyph_id != 0).then_some(glyph_id)
 }
 
+/// Appends a six-vertex solid quad unless its scaled extent is empty or inverted.
 fn push_rect(
     geometry: &mut FrameGeometry,
     rect: Rect,
@@ -330,6 +489,7 @@ fn push_rect(
     });
 }
 
+/// Appends a six-vertex rounded-fill quad with physical size/radius.
 fn push_rrect(
     geometry: &mut FrameGeometry,
     rect: Rect,
@@ -369,6 +529,11 @@ fn push_rrect(
     });
 }
 
+/// Lowers a visible solid border to a rounded SDF quad or four solid side quads.
+///
+/// Uniform positive-radius/width/color borders use one rounded batch. Other
+/// solid borders clamp side widths so opposing sides never overlap negatively.
+/// Invisible and non-solid styles emit nothing.
 fn push_border(
     geometry: &mut FrameGeometry,
     border: DrawBorder,
@@ -447,6 +612,7 @@ fn push_border(
     );
 }
 
+/// Appends a six-vertex uniform rounded-border quad in physical pixels.
 fn push_border_rrect(
     geometry: &mut FrameGeometry,
     rect: Rect,
@@ -542,6 +708,10 @@ fn push_border_rrect(
     });
 }
 
+/// Appends an outset shadow quad; inset or transparent shadows emit nothing.
+///
+/// Non-uniform radii conservatively use the largest corner. Blur has a minimum
+/// of one logical pixel before DPR scaling, and spread increases the shader radius.
 fn push_box_shadow(
     geometry: &mut FrameGeometry,
     shadow: DrawBoxShadow,
@@ -658,6 +828,11 @@ fn push_box_shadow(
     });
 }
 
+/// Emits one atlas quad per rasterizable, nonempty laid-out glyph.
+///
+/// Glyph raster size is rounded and clamped to 8..=128 physical pixels. Bitmap
+/// origins are rounded to whole physical pixels. Missing/empty glyphs are
+/// skipped; lookup errors abort lowering.
 fn push_text<F>(
     geometry: &mut FrameGeometry,
     text: &DrawText,
@@ -726,6 +901,9 @@ where
     Ok(())
 }
 
+/// Converts the command's first-baseline position to layout top-left origin.
+///
+/// An empty line list uses a zero baseline.
 fn text_origin_from_baseline(text: &DrawText) -> (f32, f32) {
     let first_baseline = text
         .layout
@@ -736,6 +914,7 @@ fn text_origin_from_baseline(text: &DrawText) -> (f32, f32) {
     (text.pos[0], text.pos[1] - first_baseline)
 }
 
+/// Copies common clip parameters into one solid vertex.
 fn solid_vertex(
     pos: [f32; 2],
     pos_px: [f32; 2],
@@ -752,6 +931,7 @@ fn solid_vertex(
     }
 }
 
+/// Copies rounded-fill geometry and clip parameters into one vertex.
 fn rrect_vertex(
     pos: [f32; 2],
     pos_px: [f32; 2],
@@ -774,6 +954,7 @@ fn rrect_vertex(
     }
 }
 
+/// Copies rounded-border geometry and clip parameters into one vertex.
 fn border_vertex(
     pos: [f32; 2],
     pos_px: [f32; 2],
@@ -798,6 +979,7 @@ fn border_vertex(
     }
 }
 
+/// Copies shadow geometry and clip parameters into one vertex.
 fn shadow_vertex(
     pos: [f32; 2],
     pos_px: [f32; 2],
@@ -826,6 +1008,7 @@ fn shadow_vertex(
     }
 }
 
+/// Copies glyph geometry and clip parameters into one text vertex.
 fn text_vertex(
     pos: [f32; 2],
     pos_px: [f32; 2],
@@ -844,12 +1027,14 @@ fn text_vertex(
     }
 }
 
+/// Returns whether all four radii differ by at most `f32::EPSILON`.
 fn radius_is_uniform(radius: Radius) -> bool {
     (radius.tl - radius.tr).abs() <= f32::EPSILON
         && (radius.tl - radius.br).abs() <= f32::EPSILON
         && (radius.tl - radius.bl).abs() <= f32::EPSILON
 }
 
+/// Returns a non-negative uniform radius or the largest non-uniform corner.
 fn radius_uniform(radius: Radius) -> f32 {
     if radius_is_uniform(radius) {
         radius.tl.max(0.0)
@@ -863,6 +1048,11 @@ fn radius_uniform(radius: Radius) -> f32 {
     }
 }
 
+/// Builds a scissor plus one rounded mask for a clip-stack snapshot.
+///
+/// The first window-root rounded clip wins; otherwise the first rounded clip is
+/// used. All rectangle intersections remain represented by the scissor. An
+/// empty scissor intersection returns `None` and skips the layer.
 fn layer_clip_plan(
     clip: &ClipStackSnapshot,
     scale: Scale,
@@ -888,6 +1078,10 @@ fn layer_clip_plan(
     Some(VulkanClipPlan { scissor, mask })
 }
 
+/// Converts a logical clip to an outward-rounded, framebuffer-bounded scissor.
+///
+/// `None` selects the full extent. Empty or inverted intersections return
+/// `None`; negative origins clamp to zero.
 fn layer_scissor(clip: Option<Rect>, scale: Scale, extent: vk::Extent2D) -> Option<vk::Rect2D> {
     let Some(clip) = clip else {
         return Some(full_scissor(extent));
@@ -912,6 +1106,18 @@ fn layer_scissor(clip: Option<Rect>, scale: Scale, extent: vk::Extent2D) -> Opti
     })
 }
 
+/// Returns an origin-zero scissor covering the exact framebuffer extent.
+///
+/// Zero dimensions are preserved; target validation occurs before rendering.
+///
+/// # Examples
+///
+/// ```
+/// use ash::vk;
+/// let extent = vk::Extent2D { width: 800, height: 600 };
+/// let scissor = vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent };
+/// assert!(scissor.extent == extent);
+/// ```
 pub(crate) fn full_scissor(extent: vk::Extent2D) -> vk::Rect2D {
     vk::Rect2D {
         offset: vk::Offset2D { x: 0, y: 0 },
@@ -919,6 +1125,11 @@ pub(crate) fn full_scissor(extent: vk::Extent2D) -> vk::Rect2D {
     }
 }
 
+/// Converts physical framebuffer coordinates to Vulkan NDC without Y inversion.
+///
+/// Zero dimensions use one as the divisor, preventing division by zero for
+/// defensive callers. Valid targets map top-left `(0, 0)` to `(-1, -1)` and
+/// bottom-right `(width, height)` to `(1, 1)`.
 fn to_ndc(extent: vk::Extent2D, x: f32, y: f32) -> [f32; 2] {
     [
         (x / extent.width.max(1) as f32) * 2.0 - 1.0,
@@ -927,6 +1138,7 @@ fn to_ndc(extent: vk::Extent2D, x: f32, y: f32) -> [f32; 2] {
 }
 
 #[cfg(test)]
+/// Geometry, scaling, clipping, text, icon, border, and shadow lowering scenarios.
 mod tests {
     use ailloli_ui_core::style::TextStyle;
     use ailloli_ui_core::{ClipShape, Color, FontId, TextDecoration};
@@ -936,6 +1148,7 @@ mod tests {
 
     use super::*;
 
+    /// Converts a Vulkan scissor to an assertion-friendly `(x, y, width, height)` tuple.
     fn scissor_tuple(scissor: vk::Rect2D) -> (i32, i32, u32, u32) {
         (
             scissor.offset.x,
@@ -1453,6 +1666,7 @@ mod tests {
         assert_eq!(unrotated.text_vertices[0].uv, rotated.text_vertices[0].uv);
     }
 
+    /// Builds the shared Lucide fixture with caller-selected rotation in radians.
     fn lucide_image_geometry(rotation_rad: f32) -> FrameGeometry {
         let mut layer = Layer::base(ClipStackSnapshot::empty());
         layer

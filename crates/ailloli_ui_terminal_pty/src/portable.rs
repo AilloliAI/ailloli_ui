@@ -1,3 +1,9 @@
+//! `portable-pty` backend enabled by the crate's `portable` feature.
+//!
+//! Sessions own OS resources and spawn three detached threads: raw reader,
+//! output batcher, and child waiter. Both the raw channel and public event queue
+//! are unbounded; consumers must drain events often enough for their workload.
+
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,29 +17,87 @@ use crate::batch::{PtyBatchConfig, PtyOutputBatcher};
 use crate::handle::{PtyBackend, PtySession};
 use crate::{PtyError, PtyEvent, PtyExitStatus, PtyHandle, PtySize, PtySpawnConfig};
 
+/// Native [`portable_pty`] backend with configurable output batching.
+///
+/// Construction performs no OS I/O; [`PtyBackend::spawn`] allocates the PTY and
+/// child. This backend does not sandbox programs, validate paths/environment,
+/// redact output/errors, or impose queue memory bounds.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_pty::PortablePtyBackend;
+/// let _backend = PortablePtyBackend::new();
+/// ```
 pub struct PortablePtyBackend {
+    /// Configuration copied into each spawned output-batcher thread.
     batch_config: PtyBatchConfig,
 }
 
 impl PortablePtyBackend {
+    /// Creates a backend with [`PtyBatchConfig::default`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_pty::PortablePtyBackend;
+    /// let _backend = PortablePtyBackend::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             batch_config: PtyBatchConfig::default(),
         }
     }
 
+    /// Creates a backend that copies `batch_config` into every spawned session.
+    ///
+    /// Values are stored without normalization. The batcher clamps a zero byte
+    /// threshold to one, but the portable receive loop uses the timeout exactly.
+    /// A zero timeout can therefore busy-spin whenever no raw chunk is ready.
+    /// The byte threshold remains a flush trigger, not a hard event-size bound.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use ailloli_ui_terminal_pty::{PortablePtyBackend, PtyBatchConfig};
+    /// let _backend = PortablePtyBackend::with_batch_config(PtyBatchConfig {
+    ///     max_bytes: 1024,
+    ///     flush_timeout: Duration::from_millis(4),
+    /// });
+    /// ```
     pub fn with_batch_config(batch_config: PtyBatchConfig) -> Self {
         Self { batch_config }
     }
 }
 
 impl Default for PortablePtyBackend {
+    /// Creates the same backend as [`Self::new`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_pty::PortablePtyBackend;
+    /// let _backend = PortablePtyBackend::default();
+    /// ```
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl PtyBackend for PortablePtyBackend {
+    /// Allocates a native PTY, spawns the configured child, and starts workers.
+    ///
+    /// Rows/columns clamp to at least one. `TERM` is set from `config.term`, then
+    /// ordered environment entries are applied; CWD is applied when present.
+    /// With no program the platform default is selected and `config.args` is
+    /// ignored. With a program, arguments are passed separately without shell
+    /// interpolation by this layer.
+    ///
+    /// Open/spawn/reader/writer setup errors map to [`PtyError::Spawn`] or
+    /// [`PtyError::Io`] with backend strings. A failure after child spawn but
+    /// before handle construction has no explicit kill path here and relies on
+    /// dropped backend objects. The successful threads are detached and unjoined.
     fn spawn(&self, config: PtySpawnConfig) -> Result<PtyHandle, PtyError> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
@@ -80,15 +144,25 @@ impl PtyBackend for PortablePtyBackend {
     }
 }
 
+/// Shared OS handles, event queue, child killer, and lifecycle flag for one PTY.
 struct PortablePtySession {
+    /// Locked master side used for resize operations.
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    /// Locked writer; each public write is followed by a flush.
     writer: Mutex<Box<dyn Write + Send>>,
+    /// Locked child termination capability.
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    /// Unbounded FIFO shared by reader/batcher/wait workers and consumers.
     events: Arc<Mutex<VecDeque<PtyEvent>>>,
+    /// True after shutdown request or child-wait completion.
     shutdown: Arc<AtomicBool>,
 }
 
 impl PtySession for PortablePtySession {
+    /// Serializes a complete write and flush, rejecting observed shutdown.
+    ///
+    /// Shutdown can race after the initial flag check, so a concurrent write may
+    /// still reach the OS or fail with a backend write error.
     fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(PtyError::Closed);
@@ -105,6 +179,9 @@ impl PtySession for PortablePtySession {
             .map_err(|err| PtyError::Write(err.to_string()))
     }
 
+    /// Serializes a clamped master resize, rejecting observed shutdown.
+    ///
+    /// Shutdown can race after the initial flag check.
     fn resize(&self, size: PtySize) -> Result<(), PtyError> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(PtyError::Closed);
@@ -116,10 +193,18 @@ impl PtySession for PortablePtySession {
             .map_err(|err| PtyError::Resize(err.to_string()))
     }
 
+    /// Drains the unbounded worker queue in mutex-enqueue order.
+    ///
+    /// Panics when the queue mutex is poisoned.
     fn drain_events(&self) -> Vec<PtyEvent> {
         self.events.lock().expect("pty events").drain(..).collect()
     }
 
+    /// Atomically closes the session and asks the child killer to terminate.
+    ///
+    /// The flag changes before lock/kill. Thus a failure is not retryable through
+    /// this session: later calls observe the flag and return `Ok(())`. Workers are
+    /// not joined and the wait thread can still enqueue an exit event afterward.
     fn shutdown(&self) -> Result<(), PtyError> {
         if self.shutdown.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -131,11 +216,13 @@ impl PtySession for PortablePtySession {
             .map_err(|err| PtyError::Shutdown(err.to_string()))
     }
 
+    /// Observes request/wait completion using sequential consistency.
     fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::SeqCst)
     }
 }
 
+/// Builds an explicit command with ordered args or the platform default program.
 fn command_builder(config: &PtySpawnConfig) -> CommandBuilder {
     if let Some(program) = &config.program {
         let mut command = CommandBuilder::new(program.as_os_str());
@@ -146,6 +233,7 @@ fn command_builder(config: &PtySpawnConfig) -> CommandBuilder {
     }
 }
 
+/// Clamps character dimensions and copies all fields into the backend type.
 fn to_portable_size(size: PtySize) -> portable_pty::PtySize {
     let size = PtySize::new(size.rows, size.cols, size.pixel_width, size.pixel_height);
     portable_pty::PtySize {
@@ -156,6 +244,11 @@ fn to_portable_size(size: PtySize) -> portable_pty::PtySize {
     }
 }
 
+/// Spawns a detached 4,096-byte reader feeding the unbounded raw channel.
+///
+/// EOF ends silently. A read error enqueues a raw error unless shutdown is
+/// already observed. Channel disconnect ends silently. Poisoned event locking
+/// panics this worker.
 fn spawn_reader_thread(
     mut reader: Box<dyn Read + Send>,
     raw_tx: mpsc::Sender<Vec<u8>>,
@@ -186,6 +279,11 @@ fn spawn_reader_thread(
     });
 }
 
+/// Spawns a detached receiver that batches raw chunks into the public queue.
+///
+/// Receive timeout drives inactivity ticks; channel disconnect flushes once and
+/// exits. Newline/threshold batches and final flushes preserve raw-channel order.
+/// The queue is unbounded, poison panics the worker, and a zero timeout can spin.
 fn spawn_batcher_thread(
     raw_rx: mpsc::Receiver<Vec<u8>>,
     events: Arc<Mutex<VecDeque<PtyEvent>>>,
@@ -216,6 +314,12 @@ fn spawn_batcher_thread(
     });
 }
 
+/// Spawns a detached child waiter and then marks the session shut down.
+///
+/// Successful waits always enqueue an exit (code is always `Some` here), even
+/// after an explicit kill. Wait errors enqueue only before shutdown is observed.
+/// This worker races the batcher, so exit may be queued before final output.
+/// Poisoned event locking panics before the final shutdown store.
 fn spawn_wait_thread(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     events: Arc<Mutex<VecDeque<PtyEvent>>>,

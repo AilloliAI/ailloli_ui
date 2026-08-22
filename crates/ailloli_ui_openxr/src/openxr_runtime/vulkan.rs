@@ -1,3 +1,5 @@
+//! Vulkan objects created through OpenXR's Vulkan-enable2 extension.
+
 use std::ffi::CString;
 
 use ash::vk::{self, Handle};
@@ -7,18 +9,56 @@ use openxr as xr;
 use super::error::OpenXrRuntimeError;
 use super::instance::OpenXrInstance;
 
+/// Vulkan instance/device and graphics submission resources owned by OpenXR host.
+///
+/// Drop destroys the command pool, logical device, then Vulkan instance. The
+/// selected physical device and queue are dictated by the OpenXR runtime.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrVulkanContext;
+/// fn family(context: &OpenXrVulkanContext) -> u32 { context.queue_family_index }
+/// ```
 pub struct OpenXrVulkanContext {
+    /// Dynamically loaded Vulkan entry table.
     pub vk_entry: VkEntry,
+    /// Vulkan instance created through OpenXR.
     pub vk_instance: VkInstance,
+    /// Vulkan logical device created through OpenXR.
     pub vk_device: Device,
+    /// Runtime-selected Vulkan physical device.
     pub physical_device: vk::PhysicalDevice,
+    /// Memory properties queried from the selected physical device.
     pub memory_properties: vk::PhysicalDeviceMemoryProperties,
+    /// Graphics queue at index zero of `queue_family_index`.
     pub queue: vk::Queue,
+    /// First physical-device queue family advertising graphics capability.
     pub queue_family_index: u32,
+    /// Resettable command pool for the selected graphics family.
     pub command_pool: vk::CommandPool,
 }
 
 impl OpenXrVulkanContext {
+    /// Creates Vulkan 1.1 resources through the OpenXR instance.
+    ///
+    /// Both names are converted to C strings and must contain no NUL. The runtime
+    /// must advertise Vulkan 1.1 within its supported range. Queue index zero of
+    /// the first graphics-capable family is selected.
+    ///
+    /// # Errors
+    ///
+    /// Returns graphics requirement/version, loader/name, instance/device,
+    /// physical-device, queue-family, or command-pool failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntime, OpenXrRuntimeOptions};
+    /// let runtime = OpenXrRuntime::new(OpenXrRuntimeOptions::default())?;
+    /// let _device: &ash::Device = &runtime.vk.vk_device;
+    /// # Ok::<(), ailloli_ui_openxr::OpenXrRuntimeError>(())
+    /// ```
     pub(crate) fn new(
         xr: &OpenXrInstance,
         application_name: &str,
@@ -156,6 +196,22 @@ impl OpenXrVulkanContext {
         })
     }
 
+    /// Records and synchronously submits one transient graphics command buffer.
+    ///
+    /// The callback runs between successful begin/end operations. The queue is
+    /// waited idle, and the command buffer is freed even when recording or submit
+    /// handling returns an error after allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns allocation, begin, end, submit, or queue-idle failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntimeError, OpenXrVulkanContext};
+    /// fn submit(context: &OpenXrVulkanContext) -> Result<(), OpenXrRuntimeError> { context.render_context(); Ok(()) }
+    /// ```
     pub(crate) fn submit_one_time_commands<F>(&self, record: F) -> Result<(), OpenXrRuntimeError>
     where
         F: FnOnce(vk::CommandBuffer),
@@ -207,6 +263,15 @@ impl OpenXrVulkanContext {
         result
     }
 
+    /// Borrows device, queue, pool, and memory properties for the Vulkan renderer.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrVulkanContext;
+    /// use ailloli_ui_render_vulkan::VulkanRenderContext;
+    /// fn render_context(context: &OpenXrVulkanContext) -> VulkanRenderContext<'_> { context.render_context() }
+    /// ```
     pub fn render_context(&self) -> ailloli_ui_render_vulkan::VulkanRenderContext<'_> {
         ailloli_ui_render_vulkan::VulkanRenderContext::with_memory_properties(
             &self.vk_device,

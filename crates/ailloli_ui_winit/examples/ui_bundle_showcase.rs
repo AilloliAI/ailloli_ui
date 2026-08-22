@@ -1,9 +1,13 @@
+//! Executable widget-bundle gallery with default-theme and deterministic white modes.
+
 #[path = "support/ui_bundle_showcase.rs"]
+/// Loads the shared deterministic gallery builder used by this executable.
 mod ui_bundle_showcase;
 
 use ailloli_ui::prelude::*;
 use ui_bundle_showcase::{ui_bundle_showcase, ShowcaseMode};
 
+/// Selects the requested palette and opens the full widget showcase.
 fn main() -> ailloli_ui::Result<()> {
     let mode = if std::env::args().any(|arg| arg == "--white") {
         ShowcaseMode::White

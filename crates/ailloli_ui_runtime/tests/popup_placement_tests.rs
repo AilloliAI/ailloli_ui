@@ -1,3 +1,5 @@
+//! Integration scenarios for popup placement and viewport constraints.
+
 use ailloli_ui_core::{ElementId, Rect, Size};
 use ailloli_ui_runtime::app::PresentationGeneration;
 use ailloli_ui_runtime::component::View;
@@ -7,10 +9,12 @@ use ailloli_ui_runtime::popup::{
     PopupPlacementSpec, PopupPortal, PopupRequest,
 };
 
+/// Resolves one popup placement test case.
 fn resolve(input: PopupPlacementInput) -> ailloli_ui_runtime::popup::ResolvedPopupPlacement {
     resolve_popup_placement(input, PopupBackendCapabilities::overlay_only()).unwrap()
 }
 
+/// Constructs the stable test owner reference.
 fn owner(element: u64) -> PopupOwner {
     PopupOwner::new(
         "main",
@@ -20,11 +24,13 @@ fn owner(element: u64) -> PopupOwner {
     )
 }
 
+/// Constructs the test popup content factory.
 fn content() -> PopupContent<()> {
     PopupContent::new(View::empty)
 }
 
 #[test]
+/// Verifies that top and bottom respect anchor and gap.
 fn top_and_bottom_respect_anchor_and_gap() {
     let anchor = Rect::new(40.0, 40.0, 20.0, 10.0);
     let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
@@ -53,6 +59,7 @@ fn top_and_bottom_respect_anchor_and_gap() {
 }
 
 #[test]
+/// Verifies that start center and end align against anchor.
 fn start_center_and_end_align_against_anchor() {
     let anchor = Rect::new(40.0, 20.0, 20.0, 10.0);
     let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
@@ -72,6 +79,7 @@ fn start_center_and_end_align_against_anchor() {
 }
 
 #[test]
+/// Verifies that vertical overflow flips only when opposite side is better.
 fn vertical_overflow_flips_only_when_opposite_side_is_better() {
     let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
     let bottom_anchor = Rect::new(10.0, 80.0, 20.0, 10.0);
@@ -101,6 +109,7 @@ fn vertical_overflow_flips_only_when_opposite_side_is_better() {
 }
 
 #[test]
+/// Verifies that oversize and off edge geometry is clamped to viewport.
 fn oversize_and_off_edge_geometry_is_clamped_to_viewport() {
     let resolved = resolve(
         PopupPlacementInput::new(
@@ -118,6 +127,7 @@ fn oversize_and_off_edge_geometry_is_clamped_to_viewport() {
 }
 
 #[test]
+/// Verifies that invalid and empty viewports are rejected without panicking.
 fn invalid_and_empty_viewports_are_rejected_without_panicking() {
     let anchor = Rect::new(0.0, 0.0, 10.0, 10.0);
     let desired = Size::new(20.0, 10.0);
@@ -175,6 +185,7 @@ fn invalid_and_empty_viewports_are_rejected_without_panicking() {
 }
 
 #[test]
+/// Verifies that native preference falls back unless host explicitly supports it.
 fn native_preference_falls_back_unless_host_explicitly_supports_it() {
     let input = PopupPlacementInput::new(
         Rect::new(10.0, 10.0, 20.0, 10.0),
@@ -196,6 +207,7 @@ fn native_preference_falls_back_unless_host_explicitly_supports_it() {
 }
 
 #[test]
+/// Verifies that popup request retains positioning and parent contract.
 fn popup_request_retains_positioning_and_parent_contract() {
     let parent_id = PopupId::new(1);
     let child_id = PopupId::new(2);
@@ -236,6 +248,7 @@ fn popup_request_retains_positioning_and_parent_contract() {
 }
 
 #[test]
+/// Verifies that incomplete request reports typed missing geometry.
 fn incomplete_request_reports_typed_missing_geometry() {
     let request = PopupRequest::new(PopupId::new(1), owner(1), content());
     assert_eq!(
@@ -256,6 +269,7 @@ fn incomplete_request_reports_typed_missing_geometry() {
 }
 
 #[test]
+/// Verifies that placement request replaces semantic geometry and invalidates backend bounds.
 fn placement_request_replaces_semantic_geometry_and_invalidates_backend_bounds() {
     let popup_id = PopupId::new(1);
     let mut portal = PopupPortal::new();
@@ -307,6 +321,7 @@ fn placement_request_replaces_semantic_geometry_and_invalidates_backend_bounds()
 }
 
 #[test]
+/// Verifies that rejected placement request preserves previous geometry and backend result.
 fn rejected_placement_request_preserves_previous_geometry_and_backend_result() {
     let popup_id = PopupId::new(1);
     let previous_anchor = Rect::new(10.0, 20.0, 30.0, 12.0);
@@ -376,6 +391,7 @@ fn rejected_placement_request_preserves_previous_geometry_and_backend_result() {
 }
 
 #[test]
+/// Verifies that identical placement republication preserves host resolved geometry.
 fn identical_placement_republication_preserves_host_resolved_geometry() {
     let popup_id = PopupId::new(1);
     let placement =

@@ -53,14 +53,28 @@ use crate::vertices::{
 };
 
 /// Which CPU/GPU pipeline a batch targets.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::PipelineKind;
+/// assert_eq!(PipelineKind::Rect, PipelineKind::Rect);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineKind {
+    /// Solid rectangle triangles.
     Rect,
+    /// Rounded-rectangle signed-distance quad.
     RRect,
+    /// Rounded-border signed-distance quad.
     BorderRRect,
+    /// Paint-only box-shadow signed-distance quad.
     BoxShadow,
+    /// Circular-progress signed-distance quad.
     RingProgress,
+    /// Antialiased polyline triangles.
     Stroke,
+    /// Text, icon, or isolated-composite textured triangles.
     Textured,
 }
 
@@ -68,9 +82,18 @@ pub enum PipelineKind {
 ///
 /// `None` means the "no clip" uniform; `Shape` means the layer's primary
 /// rounded-mask uniform (only valid if the layer has one).
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::ClipBindKind;
+/// assert_ne!(ClipBindKind::None, ClipBindKind::Shape);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipBindKind {
+    /// Bind the inactive clip uniform.
     None,
+    /// Bind parameters for the layer's primary rounded shape.
     Shape,
 }
 
@@ -78,73 +101,172 @@ pub enum ClipBindKind {
 ///
 /// Strict variants so `PartialEq` natively forbids batch fusion across
 /// different textures.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::TextureBindKind;
+/// assert_ne!(TextureBindKind::TextPage(0), TextureBindKind::TextPage(1));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextureBindKind {
+    /// Pipeline does not sample a texture.
     None,
+    /// Glyph-atlas page index.
     TextPage(u8),
+    /// Persistent icon-cache texture identified by its exact raster key.
     IconPage(IconKey),
 }
 
 /// One draw call in the main or isolated plan.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::{ClipBindKind, PipelineKind, PlannedBatch, TextureBindKind};
+/// let batch = PlannedBatch::Primitives { pipeline: PipelineKind::Rect,
+///     clip_bind: ClipBindKind::None, texture: TextureBindKind::None,
+///     vertex_range: 0..6 };
+/// assert!(matches!(batch, PlannedBatch::Primitives { vertex_range, .. } if vertex_range == (0..6)));
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlannedBatch {
+    /// One primitive-pipeline draw over a contiguous vertex-arena range.
     Primitives {
+        /// Vertex format and render pipeline to bind.
         pipeline: PipelineKind,
+        /// Clip uniform to bind at group zero.
         clip_bind: ClipBindKind,
+        /// Optional sampled texture identity at group one.
         texture: TextureBindKind,
+        /// Half-open range into the arena associated with `pipeline`.
         vertex_range: Range<u32>,
     },
+    /// Composite of a completed isolated pass into the main framebuffer.
     IsolatedComposite(PlannedIsolatedComposite),
 }
 
 /// One scene layer's GPU state snapshot inside the frame.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::{clip::ClipParamsGpu, ClipRenderMode, PlannedLayer};
+/// let layer = PlannedLayer { scissor: None, clip_mode: ClipRenderMode::Scissor,
+///     stencil_ref: None, stencil_mask_range: None,
+///     clip_params_none: ClipParamsGpu::none(), clip_params_shape: None,
+///     use_clip_alpha_for_content: false, batch_range: 0..0 };
+/// assert!(layer.batch_range.is_empty());
+/// ```
 #[derive(Debug, Clone)]
 pub struct PlannedLayer {
+    /// Physical or local scissor rectangle, depending on plan scope.
     pub scissor: Option<Rect>,
+    /// Effective clip mode after stencil-capability downgrade.
     pub clip_mode: ClipRenderMode,
+    /// Nonzero stencil reference allocated for this layer, when applicable.
     pub stencil_ref: Option<u32>,
     /// Range into [`FrameRenderPlan::stencil_mask_arena`].
     pub stencil_mask_range: Option<Range<u32>>,
+    /// Inactive clip uniform always available to primitive batches.
     pub clip_params_none: ClipParamsGpu,
+    /// Primary rounded-shape uniform, if the layer has one.
     pub clip_params_shape: Option<ClipParamsGpu>,
+    /// Whether content also evaluates clip alpha for shader masking or stencil AA.
     pub use_clip_alpha_for_content: bool,
     /// Range into [`FrameRenderPlan::batches`].
     pub batch_range: Range<usize>,
 }
 
 /// Legacy alias — use [`PlannedIsolatedPass`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::{IsolatedPass, PlannedIsolatedPass};
+/// fn canonical(value: IsolatedPass) -> PlannedIsolatedPass { value }
+/// ```
 pub type IsolatedPass = PlannedIsolatedPass;
 
 /// Whole-frame plan. Single owner of the per-frame vertex arenas + batches.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::FrameRenderPlan;
+/// let plan = FrameRenderPlan::default();
+/// assert!(plan.layers.is_empty() && plan.batches.is_empty());
+/// ```
 #[derive(Debug, Default)]
 pub struct FrameRenderPlan {
+    /// Solid rectangle vertices.
     pub vertex_arena: Vec<Vertex>,
+    /// Rounded-rectangle vertices.
     pub rrect_vertex_arena: Vec<RRectVertex>,
+    /// Rounded-border vertices.
     pub border_vertex_arena: Vec<BorderRRectVertex>,
+    /// Box-shadow vertices.
     pub shadow_vertex_arena: Vec<BoxShadowVertex>,
+    /// Circular-progress vertices.
     pub ring_progress_vertex_arena: Vec<RingProgressVertex>,
+    /// Polyline vertices.
     pub stroke_vertex_arena: Vec<StrokeVertex>,
+    /// Text and image vertices.
     pub tex_vertex_arena: Vec<TexVertex>,
+    /// Rounded-mask vertices for stencil prepasses.
     pub stencil_mask_arena: Vec<RRectVertex>,
     /// Quads for compositing isolated textures into the main pass.
     pub composite_vertex_arena: Vec<TexVertex>,
+    /// Layer state in input/main-pass order.
     pub layers: Vec<PlannedLayer>,
+    /// Draw batches referenced by each layer's `batch_range`.
     pub batches: Vec<PlannedBatch>,
+    /// Offscreen passes scheduled for effects or blending.
     pub planned_isolated: Vec<PlannedIsolatedPass>,
     /// Ordered backdrop snapshots (increasing `split_planned_layer_idx`).
     pub backdrop_captures: Vec<BackdropCapturePoint>,
+    /// Whether any main or isolated layer needs a stencil attachment.
     pub needs_stencil_attachment: bool,
 }
 
 /// CPU planning error for isolated passes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::FramePlanError;
+/// let error = FramePlanError::EmptyIsolatedBounds { layer_idx: 2 };
+/// assert_eq!(error, FramePlanError::EmptyIsolatedBounds { layer_idx: 2 });
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FramePlanError {
-    NestedDepthExceeded { depth: u8, max: u8 },
-    EmptyIsolatedBounds { layer_idx: usize },
-    TooManyIsolatedPasses { count: u32, max: u32 },
-    OffscreenBudgetExceeded { layer_idx: usize },
+    /// A layer requested a depth at or above the exclusive configured maximum.
+    NestedDepthExceeded {
+        /// Requested zero-based depth.
+        depth: u8,
+        /// Exclusive configured depth limit.
+        max: u8,
+    },
+    /// An isolated layer contained no commands with usable bounds.
+    EmptyIsolatedBounds {
+        /// Index in the input layer slice.
+        layer_idx: usize,
+    },
+    /// Scheduling another isolated pass exceeded the per-frame count.
+    TooManyIsolatedPasses {
+        /// Pass count that would result from scheduling the layer.
+        count: u32,
+        /// Inclusive number of passes permitted by configuration.
+        max: u32,
+    },
+    /// Legacy explicit budget error for the named layer.
+    OffscreenBudgetExceeded {
+        /// Index in the input layer slice.
+        layer_idx: usize,
+    },
 }
 
+/// Parent, depth, and identity controls for isolated-pass scheduling.
 struct IsoScheduleParams {
     parent_id: Option<OffscreenPassId>,
     isolated_depth: u8,
@@ -152,6 +274,7 @@ struct IsoScheduleParams {
     forced_pass_id: Option<OffscreenPassId>,
 }
 
+/// Intersects isolated render bounds with the layer scissor for framebuffer capture.
 fn compute_backdrop_capture_rect(layer: &LayerPass<'_>, render_bounds: Rect) -> Rect {
     let Some(scissor) = layer.clip_plan.scissor else {
         return render_bounds;
@@ -163,6 +286,7 @@ fn compute_backdrop_capture_rect(layer: &LayerPass<'_>, render_bounds: Rect) -> 
     Rect::new(x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0))
 }
 
+/// Schedules or downgrades destination-aware blend capture for one root pass.
 fn attach_blend_planning(
     plan: &mut FrameRenderPlan,
     layer: &LayerPass<'_>,
@@ -198,6 +322,7 @@ fn attach_blend_planning(
     }
 }
 
+/// Schedules or skips a clamped backdrop capture for one root pass.
 fn attach_backdrop_planning(
     plan: &mut FrameRenderPlan,
     layer: &LayerPass<'_>,
@@ -239,6 +364,7 @@ fn attach_backdrop_planning(
     }
 }
 
+/// Records a child pass on its already-scheduled parent when that parent exists.
 fn link_child_to_parent(
     plan: &mut FrameRenderPlan,
     parent_id: OffscreenPassId,
@@ -249,6 +375,7 @@ fn link_child_to_parent(
     }
 }
 
+/// Surface, scale, and optional physical translation used while emitting a layer.
 struct LayerPlanCtx {
     surface: [f32; 2],
     scale: Scale,
@@ -257,6 +384,7 @@ struct LayerPlanCtx {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Plans one isolated layer, its captures, composite, and local subplan metadata.
 fn schedule_isolated_layer(
     plan: &mut FrameRenderPlan,
     layers: &[LayerPass<'_>],
@@ -401,6 +529,7 @@ fn schedule_isolated_layer(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Flushes a contiguous depth-zero isolated segment into a root pass hierarchy.
 fn flush_depth_zero_segment(
     plan: &mut FrameRenderPlan,
     layers: &[LayerPass<'_>],
@@ -523,6 +652,21 @@ impl FrameRenderPlan {
     /// (still CPU-pure): when `false`, a layer that would normally use
     /// [`ClipRenderMode::Stencil`] is downgraded to [`ClipRenderMode::ShaderMask`]
     /// — same downgrade as the legacy `render_layer_pass` path did inline.
+    ///
+    /// # Panics
+    ///
+    /// Panics with the [`FramePlanError`] debug representation when isolated
+    /// planning fails. Use [`Self::try_build_cpu`] when failure is recoverable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::math::Scale;
+    /// use ailloli_ui_render_wgpu::{FrameRenderPlan, PreparedResources};
+    /// let plan = FrameRenderPlan::build_cpu(&[], &PreparedResources::default(),
+    ///     [800.0, 600.0], Scale::new(1.0), true);
+    /// assert!(plan.layers.is_empty());
+    /// ```
     pub fn build_cpu(
         layers: &[LayerPass<'_>],
         prepared: &PreparedResources,
@@ -541,6 +685,29 @@ impl FrameRenderPlan {
         .unwrap_or_else(|e| panic!("FrameRenderPlan::build_cpu: {e:?}"))
     }
 
+    /// Builds a CPU-only plan using caller-owned per-frame budget state.
+    ///
+    /// The budget is reset before planning. Missing prepared glyphs or icons are
+    /// skipped. Geometry and `surface` are physical after applying `scale`;
+    /// passing nonfinite or nonpositive extents violates renderer invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns an isolated-depth, empty-bounds, or pass-count error. A pass that
+    /// exceeds only the aggregate byte budget is downgraded/skipped and recorded
+    /// in `budget` rather than returned as an error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::math::Scale;
+    /// use ailloli_ui_render_wgpu::{FrameRenderPlan, IsolatedBudgetPolicy, PreparedResources};
+    /// let mut budget = IsolatedBudgetPolicy::with_defaults();
+    /// let plan = FrameRenderPlan::try_build_cpu(&[], &PreparedResources::default(),
+    ///     [1.0, 1.0], Scale::new(1.0), false, &mut budget)?;
+    /// assert!(!plan.needs_stencil_attachment);
+    /// # Ok::<(), ailloli_ui_render_wgpu::FramePlanError>(())
+    /// ```
     pub fn try_build_cpu(
         layers: &[LayerPass<'_>],
         prepared: &PreparedResources,
@@ -794,6 +961,23 @@ impl FrameRenderPlan {
     }
 
     /// Builds a sub-plan for one isolated layer in local offscreen coordinates.
+    ///
+    /// Geometry is translated by `iso.content_origin_px`; the local surface is
+    /// `iso.local_size_px`. Stencil falls back to a shader mask when unsupported.
+    /// This function plans only the supplied layer's primitive batches and does
+    /// not recursively schedule additional isolated passes.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::math::Scale;
+    /// use ailloli_ui_render_wgpu::{FrameRenderPlan, LayerPass, PlannedIsolatedPass,
+    ///     PreparedResources};
+    /// fn subplan(layer: &LayerPass<'_>, isolated: &PlannedIsolatedPass) -> FrameRenderPlan {
+    ///     FrameRenderPlan::build_isolated_subplan(layer, &PreparedResources::default(),
+    ///         isolated, Scale::new(1.0), true)
+    /// }
+    /// ```
     pub fn build_isolated_subplan(
         layer: &LayerPass<'_>,
         prepared: &PreparedResources,
@@ -896,10 +1080,12 @@ impl FrameRenderPlan {
     }
 }
 
+/// Translates a physical rectangle into pass-local coordinates.
 fn translate_rect(r: Rect, origin: [f32; 2]) -> Rect {
     Rect::new(r.x - origin[0], r.y - origin[1], r.w, r.h)
 }
 
+/// Optionally translates a solid rectangle command into pass-local coordinates.
 fn translate_dr(dr: DrawRect, origin: Option<[f32; 2]>) -> DrawRect {
     let Some(o) = origin else {
         return dr;
@@ -910,6 +1096,7 @@ fn translate_dr(dr: DrawRect, origin: Option<[f32; 2]>) -> DrawRect {
     }
 }
 
+/// Optionally translates a rounded-rectangle command into pass-local coordinates.
 fn translate_rr(rr: DrawRRect, origin: Option<[f32; 2]>) -> DrawRRect {
     let Some(o) = origin else {
         return rr;
@@ -921,6 +1108,7 @@ fn translate_rr(rr: DrawRRect, origin: Option<[f32; 2]>) -> DrawRRect {
     }
 }
 
+/// Optionally translates a border command into pass-local coordinates.
 fn translate_border(border: DrawBorder, origin: Option<[f32; 2]>) -> DrawBorder {
     let Some(o) = origin else {
         return border;
@@ -932,6 +1120,7 @@ fn translate_border(border: DrawBorder, origin: Option<[f32; 2]>) -> DrawBorder 
     }
 }
 
+/// Optionally translates box-shadow source geometry into pass-local coordinates.
 fn translate_box_shadow(shadow: DrawBoxShadow, origin: Option<[f32; 2]>) -> DrawBoxShadow {
     let Some(o) = origin else {
         return shadow;
@@ -943,6 +1132,7 @@ fn translate_box_shadow(shadow: DrawBoxShadow, origin: Option<[f32; 2]>) -> Draw
     }
 }
 
+/// Optionally translates ring-progress geometry into pass-local coordinates.
 fn translate_ring_progress(ring: DrawRingProgress, origin: Option<[f32; 2]>) -> DrawRingProgress {
     let Some(o) = origin else {
         return ring;
@@ -957,6 +1147,7 @@ fn translate_ring_progress(ring: DrawRingProgress, origin: Option<[f32; 2]>) -> 
     }
 }
 
+/// Optionally translates every polyline point into pass-local coordinates.
 fn translate_polyline(polyline: DrawPolyline, origin: Option<[f32; 2]>) -> DrawPolyline {
     let Some(o) = origin else {
         return polyline;
@@ -971,6 +1162,7 @@ fn translate_polyline(polyline: DrawPolyline, origin: Option<[f32; 2]>) -> DrawP
     }
 }
 
+/// Optionally translates image geometry into pass-local coordinates.
 fn translate_img(img: DrawImage, origin: Option<[f32; 2]>) -> DrawImage {
     let Some(o) = origin else {
         return img;
@@ -980,10 +1172,14 @@ fn translate_img(img: DrawImage, origin: Option<[f32; 2]>) -> DrawImage {
     img
 }
 
+/// Returns whether all four corner radii compare equal as `f32` values.
+///
+/// Positive and negative zero compare equal; any NaN makes the result false.
 fn radius_is_uniform(radius: Radius) -> bool {
     radius.tl == radius.tr && radius.tr == radius.br && radius.br == radius.bl
 }
 
+/// Emits one axis-aligned border side as a solid-rectangle batch.
 fn push_border_rect_batch(
     plan: &mut FrameRenderPlan,
     batch_start: usize,
@@ -1020,6 +1216,7 @@ fn push_border_rect_batch(
     }
 }
 
+/// Emits nonuniform or per-side rectangular border geometry.
 fn emit_rect_border_batches(
     plan: &mut FrameRenderPlan,
     batch_start: usize,
@@ -1079,6 +1276,7 @@ fn emit_rect_border_batches(
     );
 }
 
+/// Selects SDF uniform-border emission or per-side rectangle fallback.
 fn emit_border_batches(
     plan: &mut FrameRenderPlan,
     batch_start: usize,
@@ -1131,6 +1329,7 @@ fn emit_border_batches(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Appends all primitive batches for one layer into shared frame arenas.
 fn append_layer_draws(
     plan: &mut FrameRenderPlan,
     layer: &LayerPass<'_>,
@@ -1310,6 +1509,7 @@ fn append_layer_draws(
 
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
+/// Emits prepared text glyphs and decoration rectangles into page-grouped batches.
 fn emit_text_batches(
     arena: &mut Vec<TexVertex>,
     batches: &mut Vec<PlannedBatch>,
@@ -1473,6 +1673,7 @@ fn push_planned_batch(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Emits text batches after translating glyph and decoration geometry to local space.
 fn emit_text_batches_local(
     arena: &mut Vec<TexVertex>,
     batches: &mut Vec<PlannedBatch>,
@@ -1597,6 +1798,8 @@ fn emit_text_batches_local(
 }
 
 #[cfg(test)]
+/// Exercises arena isolation, batch fusion, stencil ordering, effects, budgets,
+/// nested-pass DAGs, destination capture, and local coordinate remapping.
 mod tests {
     use super::*;
     use crate::isolated_budget::IsolatedBudgetPolicy;
@@ -1614,6 +1817,7 @@ mod tests {
     use ailloli_ui_runtime::DrawText;
     use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
+    /// Returns the vertex range shared by primitive and composite test batches.
     fn batch_range(b: &PlannedBatch) -> std::ops::Range<u32> {
         match b {
             PlannedBatch::Primitives { vertex_range, .. } => vertex_range.clone(),
@@ -1621,6 +1825,7 @@ mod tests {
         }
     }
 
+    /// Returns primitive texture identity, mapping composites to `None`.
     fn batch_texture(b: &PlannedBatch) -> TextureBindKind {
         match b {
             PlannedBatch::Primitives { texture, .. } => texture.clone(),
@@ -1628,6 +1833,7 @@ mod tests {
         }
     }
 
+    /// Returns a primitive pipeline and excludes synthetic composites.
     fn batch_pipeline(b: &PlannedBatch) -> Option<PipelineKind> {
         match b {
             PlannedBatch::Primitives { pipeline, .. } => Some(*pipeline),
@@ -1635,6 +1841,7 @@ mod tests {
         }
     }
 
+    /// Creates a clipped or unclipped layer for CPU planning scenarios.
     fn make_rect_layer<'a>(cmds: &'a [DrawCmd], clip: Option<ClipShape>) -> LayerPass<'a> {
         match clip {
             Some(c) => LayerPass::with_clip(cmds, c),
@@ -1642,6 +1849,7 @@ mod tests {
         }
     }
 
+    /// Creates a resource-free preparation snapshot for geometry-only scenarios.
     fn empty_prepared() -> PreparedResources {
         PreparedResources::default()
     }

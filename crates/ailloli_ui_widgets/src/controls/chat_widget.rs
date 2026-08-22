@@ -1,3 +1,5 @@
+//! Stateful chat transcript and resizable composer control.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -32,34 +34,169 @@ use super::popup::PopupPlacement;
 use super::select::{Select, SelectSize};
 use super::text_input::{TextInput, TextInputStyle};
 
+/// Shared context-aware handler for every [`ChatWidgetAction`].
+///
+/// # Examples
+///
+/// ```
+/// use std::rc::Rc;
+/// use ailloli_ui_widgets::controls::ChatWidgetActionHandler;
+/// let handler: ChatWidgetActionHandler<()> = Rc::new(|_ctx, _action| {});
+/// let _ = handler;
+/// ```
 pub type ChatWidgetActionHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, ChatWidgetAction)>;
+/// Shared context-aware handler for submitted composer text.
+///
+/// # Examples
+///
+/// ```
+/// use std::rc::Rc;
+/// use ailloli_ui_widgets::controls::ChatWidgetSendHandler;
+/// let handler: ChatWidgetSendHandler<()> = Rc::new(|_ctx, text| assert!(!text.is_empty()));
+/// let _ = handler;
+/// ```
 pub type ChatWidgetSendHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, String)>;
+/// Shared context-aware handler for a message ID and copied text.
+///
+/// # Examples
+///
+/// ```
+/// use std::rc::Rc;
+/// use ailloli_ui_widgets::controls::ChatWidgetCopyHandler;
+/// let handler: ChatWidgetCopyHandler<()> = Rc::new(|_ctx, _id, _text| {});
+/// let _ = handler;
+/// ```
 pub type ChatWidgetCopyHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, ChatItemId, String)>;
+/// Shared context-aware handler for a retryable message ID.
+///
+/// # Examples
+///
+/// ```
+/// use std::rc::Rc;
+/// use ailloli_ui_widgets::controls::ChatWidgetRetryHandler;
+/// let handler: ChatWidgetRetryHandler<()> = Rc::new(|_ctx, _id| {});
+/// let _ = handler;
+/// ```
 pub type ChatWidgetRetryHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, ChatItemId)>;
+/// Shared renderer replacing the built-in message bubble for every message.
+///
+/// # Examples
+///
+/// ```
+/// use std::rc::Rc;
+/// use ailloli_ui_runtime::component::View;
+/// use ailloli_ui_widgets::controls::ChatMessageRenderer;
+/// let renderer: ChatMessageRenderer<()> = Rc::new(|_message| View::empty());
+/// let _ = renderer;
+/// ```
 pub type ChatMessageRenderer<A> = Rc<dyn Fn(&ChatMessage) -> View<A>>;
 
 #[derive(Debug, Clone, PartialEq)]
+/// User intent emitted by the transcript and composer.
+///
+/// A general action handler runs before any specialized Send/Copy/Retry handler,
+/// so configuring both intentionally produces two callbacks. Copy actions do not
+/// write the clipboard themselves. `SetComposerHeight` expects a finite logical-
+/// pixel value; NaN makes derived `PartialEq` non-reflexive despite the legacy
+/// `Eq` marker on this enum.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::ChatItemId;
+/// use ailloli_ui_widgets::controls::ChatWidgetAction;
+/// let actions = [
+///     ChatWidgetAction::Send { text: "Hi".into() },
+///     ChatWidgetAction::Copy { item_id: ChatItemId::new("1"), text: "Hi".into() },
+///     ChatWidgetAction::Retry { item_id: ChatItemId::new("1") },
+///     ChatWidgetAction::SetComposerDraft { text: "draft".into() },
+///     ChatWidgetAction::SetComposerPermission { value: "read_only".into() },
+///     ChatWidgetAction::SetComposerModel { model_id: None },
+///     ChatWidgetAction::SetComposerReasoning { reasoning_level: None },
+///     ChatWidgetAction::SetComposerHeight { height: 112.0 },
+///     ChatWidgetAction::StopTurn,
+/// ];
+/// assert_eq!(actions.len(), 9);
+/// ```
 pub enum ChatWidgetAction {
-    Send { text: String },
-    Copy { item_id: ChatItemId, text: String },
-    Retry { item_id: ChatItemId },
-    SetComposerDraft { text: String },
-    SetComposerPermission { value: String },
-    SetComposerModel { model_id: Option<String> },
-    SetComposerReasoning { reasoning_level: Option<String> },
-    SetComposerHeight { height: f32 },
+    /// Submit non-blank composer text exactly as stored, without clearing it.
+    Send {
+        /// Exact UTF-8 composer contents forwarded to the owner.
+        text: String,
+    },
+    /// Request copying one item's current text.
+    Copy {
+        /// Stable identifier of the item whose copy affordance was activated.
+        item_id: ChatItemId,
+        /// Exact UTF-8 text to place on the clipboard.
+        text: String,
+    },
+    /// Request retry for an eligible item.
+    Retry {
+        /// Stable identifier of the item from which retry should resume.
+        item_id: ChatItemId,
+    },
+    /// Notify that the already-bound composer draft changed.
+    SetComposerDraft {
+        /// Complete replacement UTF-8 draft, including any whitespace.
+        text: String,
+    },
+    /// Select a permission option value.
+    SetComposerPermission {
+        /// Provider-neutral option value supplied by the composer model.
+        value: String,
+    },
+    /// Select a model ID, or provider default with `None`.
+    SetComposerModel {
+        /// Selected opaque model ID, or `None` to request the provider default.
+        model_id: Option<String>,
+    },
+    /// Select a reasoning level, or default with `None`.
+    SetComposerReasoning {
+        /// Selected opaque reasoning value, or `None` for the model default.
+        reasoning_level: Option<String>,
+    },
+    /// Request composer height in logical pixels.
+    SetComposerHeight {
+        /// Requested composer height in logical pixels before owner-side policy.
+        height: f32,
+    },
+    /// Request stopping the running turn.
     StopTurn,
 }
 
 impl Eq for ChatWidgetAction {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One value/label pair shown in a composer select.
+///
+/// Values and labels are stored without validation; duplicates and empty strings
+/// are allowed.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ChatComposerOption;
+/// let option = ChatComposerOption::new("model-id", "Model name");
+/// assert_eq!((option.value.as_str(), option.label.as_str()), ("model-id", "Model name"));
+/// ```
 pub struct ChatComposerOption {
+    /// Value emitted when selected.
     pub value: String,
+    /// Visible option label.
     pub label: String,
 }
 
 impl ChatComposerOption {
+    /// Stores a value and label unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ChatComposerOption;
+    /// let option = ChatComposerOption::new("fast", "Fast");
+    /// assert_eq!(option.value, "fast");
+    /// ```
     pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             value: value.into(),
@@ -69,19 +206,47 @@ impl ChatComposerOption {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Composer select choices, availability, run state, and height bounds.
+///
+/// The defaults provide permission values `read_only`, `workspace_write`, and
+/// `danger_full_access`; model/reasoning lists are empty, reasoning is disabled,
+/// and the composer is not running.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ChatComposerControls;
+/// let controls = ChatComposerControls::default();
+/// assert_eq!(controls.selected_permission, "read_only");
+/// assert_eq!(controls.permission_options.len(), 3);
+/// assert_eq!((controls.height, controls.min_height, controls.max_height), (112.0, 72.0, 220.0));
+/// ```
 pub struct ChatComposerControls {
+    /// Permission choices in display order.
     pub permission_options: Vec<ChatComposerOption>,
+    /// Controlled permission value; it may be absent from the option list.
     pub selected_permission: String,
+    /// Model choices in display order; provider default is added separately.
     pub model_options: Vec<ChatComposerOption>,
+    /// Controlled model ID, or provider default with `None`.
     pub selected_model_id: Option<String>,
+    /// Reasoning choices in display order; default is added separately.
     pub reasoning_options: Vec<ChatComposerOption>,
+    /// Controlled reasoning value, or default with `None`.
     pub selected_reasoning_level: Option<String>,
+    /// Whether permission selection is enabled when not running.
     pub permission_enabled: bool,
+    /// Whether model selection is enabled when not running.
     pub model_enabled: bool,
+    /// Whether reasoning selection is enabled when nonempty and not running.
     pub reasoning_enabled: bool,
+    /// Whether the composer shows Stop and disables all selectors.
     pub running: bool,
+    /// Requested composer height in logical pixels.
     pub height: f32,
+    /// Inclusive minimum composer height in logical pixels.
     pub min_height: f32,
+    /// Inclusive maximum composer height in logical pixels.
     pub max_height: f32,
 }
 
@@ -110,6 +275,22 @@ impl Default for ChatComposerControls {
 }
 
 impl ChatComposerControls {
+    /// Returns finite height clamped to inclusive bounds, else `112.0`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `height` is finite and either bound is NaN or `min_height` is
+    /// greater than `max_height`, following [`f32::clamp`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ChatComposerControls;
+    /// let controls = ChatComposerControls { height: 500.0, ..Default::default() };
+    /// assert_eq!(controls.clamped_height(), 220.0);
+    /// let controls = ChatComposerControls { height: f32::NAN, ..Default::default() };
+    /// assert_eq!(controls.clamped_height(), 112.0);
+    /// ```
     pub fn clamped_height(&self) -> f32 {
         if self.height.is_finite() {
             self.height.clamp(self.min_height, self.max_height)
@@ -120,27 +301,62 @@ impl ChatComposerControls {
 }
 
 #[derive(Clone, Debug)]
+/// Colors, typography, radii, spacing, and preferred size of a [`ChatWidget`].
+///
+/// Numeric geometry is expressed in logical pixels. [`Self::from_theme`] uses a
+/// `520 x 260` preferred size, 8-pixel outer padding/gap, a 6-pixel message gap,
+/// and non-compact rendering.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ChatWidgetStyle;
+/// let style = ChatWidgetStyle::default();
+/// assert_eq!((style.width, style.height), (520.0, 260.0));
+/// assert!(!style.compact);
+/// ```
 pub struct ChatWidgetStyle {
+    /// Root background color.
     pub background: Color,
+    /// Root border widths and colors.
     pub border: Border,
+    /// Header and inline-action background color.
     pub header_background: Color,
+    /// Background used for user messages.
     pub user_background: Color,
+    /// Background used for assistant messages.
     pub assistant_background: Color,
+    /// Background used for system and tool messages.
     pub tool_background: Color,
+    /// Background used for error-kind or failed messages.
     pub error_background: Color,
+    /// Message-body and header text style.
     pub text: TextStyle,
+    /// Empty-state and inline-action text style.
     pub muted: TextStyle,
+    /// Message role, kind, and status text style.
     pub role_text: TextStyle,
+    /// Composer input and container style.
     pub input: TextInputStyle,
+    /// Root corner radii in logical pixels.
     pub radius: Radius,
+    /// Header corner radius in logical pixels.
     pub header_radius: f32,
+    /// Message-bubble corner radius in logical pixels.
     pub message_radius: f32,
+    /// Composer and inline-action corner radius in logical pixels.
     pub inline_button_radius: f32,
+    /// Root inner padding in logical pixels.
     pub padding: f32,
+    /// Vertical gap between header, transcript, and composer in logical pixels.
     pub gap: f32,
+    /// Vertical gap between message bubbles in logical pixels.
     pub message_gap: f32,
+    /// Preferred widget height in logical pixels.
     pub height: f32,
+    /// Preferred widget width in logical pixels.
     pub width: f32,
+    /// Whether compact header, bubble padding, and density are rendered.
     pub compact: bool,
 }
 
@@ -151,6 +367,20 @@ impl Default for ChatWidgetStyle {
 }
 
 impl ChatWidgetStyle {
+    /// Creates the default chat style from `theme`.
+    ///
+    /// Palette-derived text and border colors coexist with deliberately dark
+    /// fixed transcript surfaces. No dimension is scaled or validated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::ChatWidgetStyle;
+    /// let style = ChatWidgetStyle::from_theme(Theme::default());
+    /// assert_eq!(style.padding, 8.0);
+    /// assert_eq!(style.message_gap, 6.0);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         let mut input = TextInputStyle::from_theme(theme);
@@ -181,6 +411,20 @@ impl ChatWidgetStyle {
         }
     }
 
+    /// Applies the predefined compact density and preferred height.
+    ///
+    /// This sets `compact`, padding, both gaps, and height, while preserving the
+    /// width and all colors. By contrast, [`ChatWidget::compact`] changes only
+    /// the rendering flag on an already configured widget style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ChatWidgetStyle;
+    /// let style = ChatWidgetStyle::default().compact();
+    /// assert_eq!((style.padding, style.gap, style.message_gap), (6.0, 6.0, 4.0));
+    /// assert_eq!((style.width, style.height, style.compact), (520.0, 190.0, true));
+    /// ```
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self.padding = 6.0;
@@ -191,29 +435,89 @@ impl ChatWidgetStyle {
     }
 }
 
+/// Stateful transcript with message actions and a controlled composer.
+///
+/// `A` is the application action returned by non-context callbacks. The draft
+/// is always signal-backed. Use [`Self::bind_session`] when session changes must
+/// remain observable after construction; [`Self::new`] stores its session value
+/// in private state.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{ChatSessionId, ChatSessionState};
+/// use ailloli_ui_runtime::component::State;
+/// use ailloli_ui_widgets::controls::ChatWidget;
+/// let session = ChatSessionState::new(ChatSessionId::new("demo"), "Demo");
+/// let widget: ChatWidget<()> = ChatWidget::new(Some(session), State::new(String::new()));
+/// let _ = widget;
+/// ```
 pub struct ChatWidget<A = ()> {
+    /// Root layout, updated by layout builders and [`Self::chat_style`].
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation configured by generated layout builders.
     pub(crate) flex_item: FlexItemStyle,
+    /// Optional live chat session.
     session: Signal<Option<ChatSessionState>>,
+    /// Writable composer draft.
     draft: Signal<String>,
+    /// Visual configuration.
     style: ChatWidgetStyle,
+    /// General callback invoked for every action.
     on_action: Option<ChatWidgetActionHandler<A>>,
+    /// Specialized Send callback.
     on_send: Option<ChatWidgetSendHandler<A>>,
+    /// Specialized Copy callback.
     on_copy: Option<ChatWidgetCopyHandler<A>>,
+    /// Specialized Retry callback.
     on_retry: Option<ChatWidgetRetryHandler<A>>,
+    /// Optional replacement renderer for all transcript items.
     message_renderer: Option<ChatMessageRenderer<A>>,
+    /// Optional view inserted above the resize bar.
     composer_accessory: Option<View<A>>,
+    /// Composer state and options.
     composer_controls: ChatComposerControls,
+    /// Whether the transcript scroll follows its end.
     follow_latest: bool,
 }
 
 crate::impl_layout_builders!(ChatWidget);
 
 impl<A: 'static> ChatWidget<A> {
+    /// Creates a widget from a session snapshot and writable draft signal.
+    ///
+    /// The snapshot is moved into private state and cannot subsequently be
+    /// replaced by the caller. Use [`Self::bind_session`] for a live session.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new("draft".to_string()));
+    /// let _ = widget;
+    /// ```
     pub fn new(session: Option<ChatSessionState>, draft: impl Into<Signal<String>>) -> Self {
         Self::bind_session(State::new(session).into_signal(), draft)
     }
 
+    /// Creates a widget backed by live session and draft signals.
+    ///
+    /// `None` renders the no-session state; `Some` with no messages renders the
+    /// empty-session state. The draft signal is updated by the text input before
+    /// `SetComposerDraft` is emitted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ChatSessionState;
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let session = State::new(None::<ChatSessionState>);
+    /// let draft = State::new(String::new());
+    /// let widget: ChatWidget<()> = ChatWidget::bind_session(session, draft);
+    /// let _ = widget;
+    /// ```
     pub fn bind_session(
         session: impl Into<Signal<Option<ChatSessionState>>>,
         draft: impl Into<Signal<String>>,
@@ -238,22 +542,75 @@ impl<A: 'static> ChatWidget<A> {
         }
     }
 
+    /// Replaces the chat style and resets preferred layout width and height.
+    ///
+    /// Layout builders called after this method override those two dimensions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::{ChatWidget, ChatWidgetStyle};
+    /// let style = ChatWidgetStyle { width: 640.0, height: 320.0, ..Default::default() };
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new())).chat_style(style);
+    /// let _ = widget;
+    /// ```
     pub fn chat_style(mut self, style: ChatWidgetStyle) -> Self {
         self.layout = self.layout.width(style.width).height(style.height);
         self.style = style;
         self
     }
 
+    /// Enables or disables compact rendering without changing style geometry.
+    ///
+    /// Use [`ChatWidgetStyle::compact`] through [`Self::chat_style`] to also apply
+    /// the compact padding, gaps, and 190-pixel preferred height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new())).compact(true);
+    /// let _ = widget;
+    /// ```
     pub fn compact(mut self, compact: bool) -> Self {
         self.style.compact = compact;
         self
     }
 
+    /// Dispatches the application action returned for every widget action.
+    ///
+    /// For Send, Copy, and Retry this callback runs before the corresponding
+    /// specialized callback when both are configured.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget = ChatWidget::new(None, State::new(String::new())).on_action(|_action| ());
+    /// let _ = widget;
+    /// ```
     pub fn on_action(mut self, f: impl Fn(ChatWidgetAction) -> A + 'static) -> Self {
         self.on_action = Some(Rc::new(move |ctx, action| ctx.dispatch(f(action))));
         self
     }
 
+    /// Handles every widget action with direct event-context access.
+    ///
+    /// The handler may dispatch zero or multiple application actions and runs
+    /// before specialized Send, Copy, or Retry handlers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .on_action_ctx(|_ctx, _action| {});
+    /// let _ = widget;
+    /// ```
     pub fn on_action_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, ChatWidgetAction) + 'static,
@@ -262,16 +619,56 @@ impl<A: 'static> ChatWidget<A> {
         self
     }
 
+    /// Dispatches the application action returned for submitted text.
+    ///
+    /// Blank-after-trimming drafts are not submitted. Non-blank text is passed
+    /// unchanged, including surrounding whitespace, and the draft is not cleared.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget = ChatWidget::new(None, State::new("Hello".to_string())).on_send(|text| {
+    ///     assert_eq!(text, "Hello");
+    /// });
+    /// let _ = widget;
+    /// ```
     pub fn on_send(mut self, f: impl Fn(String) -> A + 'static) -> Self {
         self.on_send = Some(Rc::new(move |ctx, text| ctx.dispatch(f(text))));
         self
     }
 
+    /// Handles submitted text with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .on_send_ctx(|_ctx, _text| {});
+    /// let _ = widget;
+    /// ```
     pub fn on_send_ctx(mut self, f: impl Fn(&mut EventCtx<A>, String) + 'static) -> Self {
         self.on_send = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the application action returned for a copy request.
+    ///
+    /// The widget supplies the message ID and its current text but performs no
+    /// clipboard write.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget = ChatWidget::new(None, State::new(String::new()))
+    ///     .on_copy(|_item_id, _text| ());
+    /// let _ = widget;
+    /// ```
     pub fn on_copy(mut self, f: impl Fn(ChatItemId, String) -> A + 'static) -> Self {
         self.on_copy = Some(Rc::new(move |ctx, item_id, text| {
             ctx.dispatch(f(item_id, text))
@@ -279,6 +676,17 @@ impl<A: 'static> ChatWidget<A> {
         self
     }
 
+    /// Handles a copy request with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .on_copy_ctx(|_ctx, _item_id, _text| {});
+    /// let _ = widget;
+    /// ```
     pub fn on_copy_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, ChatItemId, String) + 'static,
@@ -287,31 +695,106 @@ impl<A: 'static> ChatWidget<A> {
         self
     }
 
+    /// Dispatches the application action returned for a retry request.
+    ///
+    /// User messages are retryable. Assistant messages are retryable only when
+    /// they carry a request ID; system and tool messages are never retryable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget = ChatWidget::new(None, State::new(String::new())).on_retry(|_item_id| ());
+    /// let _ = widget;
+    /// ```
     pub fn on_retry(mut self, f: impl Fn(ChatItemId) -> A + 'static) -> Self {
         self.on_retry = Some(Rc::new(move |ctx, item_id| ctx.dispatch(f(item_id))));
         self
     }
 
+    /// Handles a retry request with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .on_retry_ctx(|_ctx, _item_id| {});
+    /// let _ = widget;
+    /// ```
     pub fn on_retry_ctx(mut self, f: impl Fn(&mut EventCtx<A>, ChatItemId) + 'static) -> Self {
         self.on_retry = Some(Rc::new(f));
         self
     }
 
+    /// Replaces the complete built-in bubble for every message.
+    ///
+    /// A custom view is responsible for body, metadata, and any Copy/Retry UI;
+    /// it also bypasses the optimized retained transcript renderer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::{State, View};
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .message_renderer(|_message| View::empty());
+    /// let _ = widget;
+    /// ```
     pub fn message_renderer(mut self, f: impl Fn(&ChatMessage) -> View<A> + 'static) -> Self {
         self.message_renderer = Some(Rc::new(f));
         self
     }
 
+    /// Inserts a prebuilt view above the composer resize bar.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::{State, View};
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .composer_accessory(View::empty());
+    /// let _ = widget;
+    /// ```
     pub fn composer_accessory(mut self, accessory: View<A>) -> Self {
         self.composer_accessory = Some(accessory);
         self
     }
 
+    /// Replaces permission/model/reasoning choices, enabled state, and height.
+    ///
+    /// The values are controlled: emitted actions do not mutate this snapshot.
+    /// While `running`, selectors are disabled and the turn button emits Stop.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::{ChatComposerControls, ChatWidget};
+    /// let controls = ChatComposerControls { running: true, ..Default::default() };
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .composer_controls(controls);
+    /// let _ = widget;
+    /// ```
     pub fn composer_controls(mut self, controls: ChatComposerControls) -> Self {
         self.composer_controls = controls;
         self
     }
 
+    /// Sets whether the vertical transcript scroll follows its end.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ChatWidget;
+    /// let widget: ChatWidget<()> = ChatWidget::new(None, State::new(String::new()))
+    ///     .follow_latest(false);
+    /// let _ = widget;
+    /// ```
     pub fn follow_latest(mut self, enabled: bool) -> Self {
         self.follow_latest = enabled;
         self
@@ -342,29 +825,48 @@ impl<A: 'static> IntoView<A> for ChatWidget<A> {
     }
 }
 
+/// Reactive component that materializes the configured chat view tree.
 struct ChatWidgetComponent<A> {
+    /// Root layout copied from the public builder.
     layout: LayoutStyle,
+    /// Live session source.
     session: Signal<Option<ChatSessionState>>,
+    /// Writable composer draft.
     draft: Signal<String>,
+    /// Visual configuration shared by child builders.
     style: ChatWidgetStyle,
+    /// General action handler.
     on_action: Option<ChatWidgetActionHandler<A>>,
+    /// Specialized Send handler.
     on_send: Option<ChatWidgetSendHandler<A>>,
+    /// Specialized Copy handler.
     on_copy: Option<ChatWidgetCopyHandler<A>>,
+    /// Specialized Retry handler.
     on_retry: Option<ChatWidgetRetryHandler<A>>,
+    /// Optional replacement message renderer.
     message_renderer: Option<ChatMessageRenderer<A>>,
+    /// Optional view placed above the resize control.
     composer_accessory: Option<View<A>>,
+    /// Controlled composer settings.
     composer_controls: ChatComposerControls,
+    /// Transcript follow-end setting.
     follow_latest: bool,
 }
 
+/// Cheaply cloned callback bundle shared by generated child controls.
 struct ChatWidgetHandlers<A> {
+    /// General handler invoked first.
     on_action: Option<ChatWidgetActionHandler<A>>,
+    /// Specialized Send handler.
     on_send: Option<ChatWidgetSendHandler<A>>,
+    /// Specialized Copy handler.
     on_copy: Option<ChatWidgetCopyHandler<A>>,
+    /// Specialized Retry handler.
     on_retry: Option<ChatWidgetRetryHandler<A>>,
 }
 
 impl<A> Clone for ChatWidgetHandlers<A> {
+    /// Clones only the reference-counted callback handles.
     fn clone(&self) -> Self {
         Self {
             on_action: self.on_action.clone(),
@@ -376,6 +878,7 @@ impl<A> Clone for ChatWidgetHandlers<A> {
 }
 
 impl<A: 'static> ComponentNode<A> for ChatWidgetComponent<A> {
+    /// Builds the header, transcript, optional accessory, resize bar, and composer.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let composer_resize_start_height = context.signal(None::<f32>);
         let mut content = Column::new()
@@ -405,6 +908,7 @@ impl<A: 'static> ComponentNode<A> for ChatWidgetComponent<A> {
 }
 
 impl<A: 'static> ChatWidgetComponent<A> {
+    /// Takes cheap clones of the configured callback handles.
     fn handlers(&self) -> ChatWidgetHandlers<A> {
         ChatWidgetHandlers {
             on_action: self.on_action.clone(),
@@ -414,6 +918,7 @@ impl<A: 'static> ChatWidgetComponent<A> {
         }
     }
 
+    /// Builds the reactive `title - status - count msg` header.
     fn header(&self) -> View<A> {
         let session = self.session.clone();
         let title = session.to_text_with(|session| {
@@ -445,6 +950,7 @@ impl<A: 'static> ChatWidgetComponent<A> {
             .into_view()
     }
 
+    /// Builds either the optimized transcript leaf or custom-renderer column.
     fn messages(&self) -> View<A> {
         if self.message_renderer.is_none() {
             return ScrollView::vertical()
@@ -491,6 +997,7 @@ impl<A: 'static> ChatWidgetComponent<A> {
             .into_view()
     }
 
+    /// Builds one non-optimized message bubble with eligible action buttons.
     fn message_bubble(&self, message: &ChatMessage) -> View<A> {
         let background = message_background(&self.style, message);
         let role = format!(
@@ -540,6 +1047,7 @@ impl<A: 'static> ChatWidgetComponent<A> {
             .into_view()
     }
 
+    /// Builds the horizontal drag target and emits unclamped requested heights.
     fn composer_resize_bar(&self, resize_start_height: Signal<Option<f32>>) -> View<A> {
         let current_height = self.composer_controls.clamped_height();
         let resize_handlers = self.handlers();
@@ -579,6 +1087,7 @@ impl<A: 'static> ChatWidgetComponent<A> {
             .key("ailloli_ui-chat-composer-resize-bar")
     }
 
+    /// Builds controlled selects, text input, and Send/Stop turn button.
     fn composer(&self) -> View<A> {
         let draft = self.draft.clone();
         let handlers = self.handlers();
@@ -772,41 +1281,65 @@ impl<A: 'static> ChatWidgetComponent<A> {
     }
 }
 
+/// Retained transcript leaf that caches measured text and hit geometry.
 struct ChatMessagesWidget<A> {
+    /// Size behavior supplied to the runtime layout engine.
     layout: LayoutStyle,
+    /// Live session whose message sequence is rendered.
     session: Signal<Option<ChatSessionState>>,
+    /// Message styles and geometry constants.
     style: ChatWidgetStyle,
+    /// Copy and Retry action destinations.
     handlers: ChatWidgetHandlers<A>,
+    /// Last measured geometry, shared across layout, paint, and events.
     geometry: Rc<RefCell<ChatMessagesGeometry>>,
 }
 
 #[derive(Clone, Default)]
+/// Cached geometry for one transcript width and exact message identity/content.
 struct ChatMessagesGeometry {
+    /// Measured available width in logical pixels.
     width: f32,
+    /// Per-message measurement and action-hit geometry in session order.
     items: Vec<ChatMessageGeometry>,
+    /// Sum of message heights and inter-message gaps in logical pixels.
     total_height: f32,
 }
 
 #[derive(Clone)]
+/// Cached text layouts and local rectangles for a single message.
 struct ChatMessageGeometry {
+    /// Message identity used for cache validation.
     item_id: ChatItemId,
+    /// Rendered role/kind/status string used for cache validation.
     role_text: String,
+    /// Rendered body or empty-body sentinel used for cache validation.
     body_text: String,
+    /// Top offset in transcript-local logical pixels.
     y: f32,
+    /// Full bubble height in logical pixels.
     height: f32,
+    /// Role line height in logical pixels.
     role_height: f32,
+    /// Body text height in logical pixels.
     body_height: f32,
+    /// Prepared role text retained for painting.
     role_layout: Arc<PreparedTextLayout>,
+    /// Prepared body text retained for painting.
     body_layout: Arc<PreparedTextLayout>,
+    /// Transcript-local Copy hit rectangle.
     copy_rect: Rect,
+    /// Transcript-local Retry hit rectangle when the message is eligible.
     retry_rect: Option<Rect>,
 }
 
 impl<A: 'static> Widget<A> for ChatMessagesWidget<A> {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "ChatMessages"
     }
 
+    /// Measures the transcript, caches geometry, and clamps its runtime size.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -848,6 +1381,7 @@ impl<A: 'static> Widget<A> for ChatMessagesWidget<A> {
         }
     }
 
+    /// Paints cached messages or the appropriate empty-state text.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let session = self.session.read();
         match session.as_ref() {
@@ -886,6 +1420,7 @@ impl<A: 'static> Widget<A> for ChatMessagesWidget<A> {
         }
     }
 
+    /// Handles only pressed primary-pointer events within cached action rectangles.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         let Event::Pointer(PointerEvent::Button {
             pos,
@@ -909,6 +1444,10 @@ impl<A: 'static> Widget<A> for ChatMessagesWidget<A> {
 }
 
 impl<A> ChatMessagesWidget<A> {
+    /// Returns matching cached geometry or remeasures it for the paint context.
+    ///
+    /// `None` means the remeasured data still cannot be proven to match the
+    /// current session and width, so painting must be skipped for this frame.
     fn geometry_for_paint(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -934,6 +1473,7 @@ impl<A> ChatMessagesWidget<A> {
         }
     }
 
+    /// Hit-tests absolute coordinates against validated local Copy/Retry regions.
     fn action_at(&self, bounds: Rect, x: f32, y: f32) -> Option<ChatWidgetAction> {
         let session = self.session.read()?;
         let geometry = self.geometry.borrow();
@@ -963,6 +1503,7 @@ impl<A> ChatMessagesWidget<A> {
     }
 }
 
+/// Paints one bubble from premeasured geometry and returns its height.
 fn paint_message(
     ctx: &mut PaintCtx<'_>,
     x: f32,
@@ -1009,6 +1550,7 @@ fn paint_message(
     geometry.height
 }
 
+/// Paints a single unwrapped line when a text system is available.
 fn paint_plain_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -1022,6 +1564,7 @@ fn paint_plain_text(
     }
 }
 
+/// Paints a retained transcript action surface and vertically centered label.
 fn paint_inline_button(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, style: &ChatWidgetStyle) {
     ctx.push(DrawCmd::RRect(DrawRRect {
         rect,
@@ -1034,6 +1577,9 @@ fn paint_inline_button(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, style: &
     }
 }
 
+/// Creates a cached layout with a nonnegative maximum width.
+///
+/// Returns `None` when the paint context has no text system.
 fn layout_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -1050,6 +1596,7 @@ fn layout_text(
     }))
 }
 
+/// Emits a text draw command positioned from the first-line baseline.
 fn paint_layout(
     ctx: &mut PaintCtx<'_>,
     layout: Arc<PreparedTextLayout>,
@@ -1070,6 +1617,7 @@ fn paint_layout(
     }));
 }
 
+/// Returns measured height or a `1.25 * font size` logical-pixel fallback.
 fn text_layout_height(layout: Option<&Arc<PreparedTextLayout>>, style: TextStyle) -> f32 {
     layout
         .map(|layout| layout.metrics.height)
@@ -1077,6 +1625,9 @@ fn text_layout_height(layout: Option<&Arc<PreparedTextLayout>>, style: TextStyle
 }
 
 impl ChatMessagesGeometry {
+    /// Checks width tolerance, item count, IDs, and rendered text cache keys.
+    ///
+    /// Widths within 0.5 logical pixels are treated as equivalent.
     fn matches(&self, session: &ChatSessionState, width: f32) -> bool {
         if (self.width - width).abs() > 0.5 || self.items.len() != session.messages.len() {
             return false;
@@ -1092,6 +1643,7 @@ impl ChatMessagesGeometry {
     }
 }
 
+/// Measures all transcript geometry with the supplied or a temporary text system.
 fn measure_chat_messages_geometry(
     text_system: Option<&mut TextSystem>,
     session: &ChatSessionState,
@@ -1106,6 +1658,7 @@ fn measure_chat_messages_geometry(
     }
 }
 
+/// Measures messages in order and inserts `message_gap` before every item but the first.
 fn measure_chat_messages_geometry_with_text_system(
     text_system: &mut TextSystem,
     session: &ChatSessionState,
@@ -1129,6 +1682,7 @@ fn measure_chat_messages_geometry_with_text_system(
     }
 }
 
+/// Measures one message's text, bubble height, and local action rectangles.
 fn measure_message_geometry(
     text_system: &mut TextSystem,
     message: &ChatMessage,
@@ -1173,10 +1727,12 @@ fn measure_message_geometry(
     }
 }
 
+/// Translates a transcript-local rectangle to paint-space coordinates.
 fn rect_to_absolute(rect: Rect, x: f32, y: f32) -> Rect {
     Rect::new(x + rect.x, y + rect.y, rect.w, rect.h)
 }
 
+/// Formats the lowercase role, kind, and non-complete status suffix.
 fn message_role_text(message: &ChatMessage) -> String {
     format!(
         "{} / {}{}",
@@ -1186,6 +1742,7 @@ fn message_role_text(message: &ChatMessage) -> String {
     )
 }
 
+/// Returns message text or the visible `...` sentinel for an empty body.
 fn message_body_text(message: &ChatMessage) -> String {
     if message.text.is_empty() {
         "...".to_string()
@@ -1194,6 +1751,7 @@ fn message_body_text(message: &ChatMessage) -> String {
     }
 }
 
+/// Reports whether Retry is available for the message's role and request ID.
 fn message_is_retryable(message: &ChatMessage) -> bool {
     match message.role {
         ChatRole::User => true,
@@ -1202,6 +1760,7 @@ fn message_is_retryable(message: &ChatMessage) -> bool {
     }
 }
 
+/// Returns 6 compact or 8 regular logical pixels of bubble padding.
 fn message_padding(style: &ChatWidgetStyle) -> f32 {
     if style.compact {
         6.0
@@ -1210,10 +1769,12 @@ fn message_padding(style: &ChatWidgetStyle) -> f32 {
     }
 }
 
+/// Returns the retained action hit height in logical pixels.
 fn action_button_height() -> f32 {
     22.0
 }
 
+/// Builds a tree-based ghost action button for custom-renderer fallback paths.
 fn action_button<A: 'static>(
     label: &'static str,
     action: ChatWidgetAction,
@@ -1226,6 +1787,7 @@ fn action_button<A: 'static>(
         })
 }
 
+/// Invokes the general handler first, then the matching specialized handler.
 fn emit_chat_widget_action<A>(
     ctx: &mut EventCtx<A>,
     handlers: &ChatWidgetHandlers<A>,
@@ -1259,6 +1821,7 @@ fn emit_chat_widget_action<A>(
     }
 }
 
+/// Chooses error background first, otherwise maps the message role to a surface.
 fn message_background(style: &ChatWidgetStyle, message: &ChatMessage) -> Color {
     if message.kind == ChatMessageKind::Error || message.status == ChatMessageStatus::Failed {
         return style.error_background;
@@ -1270,6 +1833,7 @@ fn message_background(style: &ChatWidgetStyle, message: &ChatMessage) -> Color {
     }
 }
 
+/// Returns the stable lowercase role label.
 fn role_label(role: ChatRole) -> &'static str {
     match role {
         ChatRole::System => "system",
@@ -1279,6 +1843,7 @@ fn role_label(role: ChatRole) -> &'static str {
     }
 }
 
+/// Returns the stable lowercase message-kind label.
 fn kind_label(kind: ChatMessageKind) -> &'static str {
     match kind {
         ChatMessageKind::Text => "text",
@@ -1291,6 +1856,7 @@ fn kind_label(kind: ChatMessageKind) -> &'static str {
     }
 }
 
+/// Returns an optional leading-space status suffix; complete has none.
 fn status_suffix(status: ChatMessageStatus) -> &'static str {
     match status {
         ChatMessageStatus::Pending => " pending",
@@ -1300,6 +1866,7 @@ fn status_suffix(status: ChatMessageStatus) -> &'static str {
     }
 }
 
+/// Returns the stable lowercase session-status label.
 fn session_status_label(status: ChatSessionStatus) -> &'static str {
     match status {
         ChatSessionStatus::Idle => "idle",

@@ -1,3 +1,8 @@
+//! Integration scenarios for protocol decoding, warning derivation, and clipped picking.
+//!
+//! The fixtures construct retained trees with explicit layout slots so snapshot
+//! geometry and ordering can be asserted without a window or renderer.
+
 use ailloli_ui_core::geometry::{ClipShape, Rect, Size};
 use ailloli_ui_core::Offset;
 use ailloli_ui_devtools_core::{
@@ -6,6 +11,7 @@ use ailloli_ui_devtools_core::{
 use ailloli_ui_runtime::element::{ElementKind, ElementTree, Key};
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutResult};
 
+/// Builds a deterministic layout fixture whose paint/visual bounds match `size`.
 fn layout(size: Size, children: Vec<ChildLayout>, clip: Option<ClipShape>) -> LayoutResult {
     LayoutResult {
         size,

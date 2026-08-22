@@ -1,3 +1,5 @@
+//! Code gutter backgrounds, line numbers, folds, and diagnostic markers.
+
 use ailloli_ui_core::{Rect, TextStyle};
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
@@ -8,11 +10,26 @@ use crate::paint::code_decorations_painter::diagnostic_color;
 use crate::paint::EditorPaintItem;
 use crate::{CodeTheme, EditorStyle, EditorViewport};
 
+/// Fold-marker hit-box side length in logical pixels.
 const FOLD_MARKER_HIT_SIZE: f32 = 14.0;
+/// Fold-marker inset from the gutter's right edge in logical pixels.
 const FOLD_MARKER_RIGHT_PAD: f32 = 3.0;
+/// Maximum horizontal gutter space reserved beside line numbers.
 const FOLD_LINE_NUMBER_RESERVE: f32 = 22.0;
+/// Fold-guide thickness in logical pixels.
 const FOLD_GUIDE_WIDTH: f32 = 1.0;
 
+/// Builds the gutter background item when a viewport has a gutter.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_editor::{paint::gutter_painter::gutter_background_item, CodeEditorConfig, CodeTheme, EditorConfig, EditorViewport};
+/// use ailloli_ui_text::TextEditState;
+/// let viewport = EditorViewport::with_gutter(Rect::new(0.0, 0.0, 120.0, 60.0), EditorConfig::default(), &TextEditState::new(), Some(CodeEditorConfig::default().gutter));
+/// assert!(gutter_background_item(viewport, CodeTheme::default()).is_some());
+/// ```
 pub fn gutter_background_item(
     viewport: EditorViewport,
     theme: CodeTheme,
@@ -23,6 +40,24 @@ pub fn gutter_background_item(
     })
 }
 
+/// Builds one guide and one marker for each visible fold header.
+///
+/// Empty/reversed fold ranges are skipped. Marker `region_index` refers to the
+/// input slice, color reflects collapsed state, and geometry is not additionally
+/// clipped to viewport bounds. Without a gutter, the result is empty.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, Rect, TextStyle};
+/// use ailloli_ui_editor::{layout::EditorTextRun, paint::gutter_painter::fold_gutter_marker_items, CodeEditorConfig, CodeTheme, EditorConfig, EditorStyle, EditorViewport, FoldRegion};
+/// use ailloli_ui_text::{TextEditState, TextLayoutParams, TextSystem};
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("header", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 0..6, baseline_y: 12.0, layout };
+/// let viewport = EditorViewport::with_gutter(Rect::new(0.0, 0.0, 120.0, 60.0), EditorConfig::default(), &TextEditState::new(), Some(CodeEditorConfig::default().gutter));
+/// assert_eq!(fold_gutter_marker_items(viewport, &[run], &[FoldRegion::new(0, 2)], EditorStyle::default(), CodeTheme::default()).len(), 2);
+/// ```
 pub fn fold_gutter_marker_items(
     viewport: EditorViewport,
     runs: &[EditorTextRun],
@@ -74,6 +109,28 @@ pub fn fold_gutter_marker_items(
     items
 }
 
+/// Builds shaped, one-based line numbers for visible runs.
+///
+/// Numbers are right-aligned before a fold-marker reserve and clamped to the
+/// gutter's left edge. The active logical index uses the active theme color.
+/// Without a gutter, the result is empty.
+///
+/// # Panics
+///
+/// Panics in overflow-checking builds if a run index is [`usize::MAX`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, Rect, TextStyle};
+/// use ailloli_ui_editor::{layout::EditorTextRun, paint::gutter_painter::line_number_items, CodeEditorConfig, CodeTheme, EditorConfig, EditorStyle, EditorViewport};
+/// use ailloli_ui_text::{TextEditState, TextLayoutParams, TextSystem};
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("x", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 0..1, baseline_y: 12.0, layout };
+/// let viewport = EditorViewport::with_gutter(Rect::new(0.0, 0.0, 120.0, 60.0), EditorConfig::default(), &TextEditState::new(), Some(CodeEditorConfig::default().gutter));
+/// assert_eq!(line_number_items(viewport, &[run], EditorStyle::default(), CodeTheme::default(), Some(0), &mut system).len(), 1);
+/// ```
 pub fn line_number_items(
     viewport: EditorViewport,
     runs: &[EditorTextRun],
@@ -111,6 +168,25 @@ pub fn line_number_items(
     items
 }
 
+/// Builds one gutter marker per visible run having diagnostics.
+///
+/// Half-open diagnostic ranges are intersected with source run ranges. When
+/// several diagnostics overlap a run, the strongest severity wins in the order
+/// error, warning, info, hint. Without a gutter, the result is empty.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, Rect, TextStyle};
+/// use ailloli_ui_editor::{layout::EditorTextRun, paint::gutter_painter::diagnostic_gutter_marker_items, CodeEditorConfig, CodeTheme, Diagnostic, DiagnosticSeverity, EditorConfig, EditorViewport};
+/// use ailloli_ui_text::{TextEditState, TextLayoutParams, TextSystem};
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("abc", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 0..3, baseline_y: 12.0, layout };
+/// let viewport = EditorViewport::with_gutter(Rect::new(0.0, 0.0, 120.0, 60.0), EditorConfig::default(), &TextEditState::new(), Some(CodeEditorConfig::default().gutter));
+/// let diagnostics = [Diagnostic::new(1..2, DiagnosticSeverity::Hint, "hint")];
+/// assert_eq!(diagnostic_gutter_marker_items(viewport, &[run], &diagnostics, CodeTheme::default()).len(), 1);
+/// ```
 pub fn diagnostic_gutter_marker_items(
     viewport: EditorViewport,
     runs: &[EditorTextRun],
@@ -134,6 +210,7 @@ pub fn diagnostic_gutter_marker_items(
     items
 }
 
+/// Returns the strongest diagnostic severity intersecting a run.
 fn strongest_diagnostic_for_run(
     run: &EditorTextRun,
     diagnostics: &[Diagnostic],
@@ -148,6 +225,7 @@ fn strongest_diagnostic_for_run(
         .min_by_key(|severity| diagnostic_severity_rank(*severity))
 }
 
+/// Maps diagnostic severity to ascending strength rank.
 fn diagnostic_severity_rank(severity: DiagnosticSeverity) -> u8 {
     match severity {
         DiagnosticSeverity::Error => 0,

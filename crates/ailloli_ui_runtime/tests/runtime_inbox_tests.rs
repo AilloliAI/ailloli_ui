@@ -1,3 +1,5 @@
+//! Concurrency, capacity, coalescing, and shutdown scenarios for the runtime inbox.
+
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -9,12 +11,15 @@ use ailloli_ui_runtime::app::{
 };
 
 #[derive(Default)]
+/// Test support type for TestWake scenarios.
 struct TestWake {
     calls: AtomicUsize,
     fail: AtomicBool,
 }
 
+/// Implements the UiWake test contract for TestWake.
 impl UiWake for TestWake {
+    /// Records or coordinates a test wake notification.
     fn wake(&self) -> Result<(), UiWakeError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {
@@ -25,12 +30,15 @@ impl UiWake for TestWake {
     }
 }
 
+/// Test support type for RecoveringWake scenarios.
 struct RecoveringWake {
     calls: AtomicUsize,
     first_error: UiWakeError,
 }
 
+/// Provides test-helper operations for RecoveringWake.
 impl RecoveringWake {
+    /// Constructs the test helper in its initial state.
     fn new(first_error: UiWakeError) -> Self {
         Self {
             calls: AtomicUsize::new(0),
@@ -39,7 +47,9 @@ impl RecoveringWake {
     }
 }
 
+/// Implements the UiWake test contract for RecoveringWake.
 impl UiWake for RecoveringWake {
+    /// Records or coordinates a test wake notification.
     fn wake(&self) -> Result<(), UiWakeError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             Err(self.first_error)
@@ -49,13 +59,16 @@ impl UiWake for RecoveringWake {
     }
 }
 
+/// Test support type for BlockingRecoveringWake scenarios.
 struct BlockingRecoveringWake {
     calls: AtomicUsize,
     entered: Barrier,
     release: Barrier,
 }
 
+/// Provides test-helper operations for BlockingRecoveringWake.
 impl BlockingRecoveringWake {
+    /// Constructs the test helper in its initial state.
     fn new() -> Self {
         Self {
             calls: AtomicUsize::new(0),
@@ -65,7 +78,9 @@ impl BlockingRecoveringWake {
     }
 }
 
+/// Implements the UiWake test contract for BlockingRecoveringWake.
 impl UiWake for BlockingRecoveringWake {
+    /// Records or coordinates a test wake notification.
     fn wake(&self) -> Result<(), UiWakeError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             self.entered.wait();
@@ -78,6 +93,7 @@ impl UiWake for BlockingRecoveringWake {
 }
 
 #[test]
+/// Verifies that actions cross threads but runtime handle stays on ui thread.
 fn actions_cross_threads_but_runtime_handle_stays_on_ui_thread() {
     let (sender, mut inbox) =
         RuntimeInbox::channel(NonZeroUsize::new(RUNTIME_INBOX_DRAIN_BUDGET).unwrap());
@@ -95,6 +111,7 @@ fn actions_cross_threads_but_runtime_handle_stays_on_ui_thread() {
 }
 
 #[test]
+/// Verifies that full closed and enqueued but wake failed are distinct.
 fn full_closed_and_enqueued_but_wake_failed_are_distinct() {
     let (sender, inbox) = RuntimeInbox::<usize>::channel(NonZeroUsize::new(1).unwrap());
     sender.dispatch(1).unwrap();
@@ -118,6 +135,7 @@ fn full_closed_and_enqueued_but_wake_failed_are_distinct() {
 }
 
 #[test]
+/// Verifies that targeted redraws coalesce only identical windows.
 fn targeted_redraws_coalesce_only_identical_windows() {
     let (sender, mut inbox) = RuntimeInbox::<()>::channel(NonZeroUsize::new(8).unwrap());
     sender.request_window_redraw("main").unwrap();
@@ -137,6 +155,7 @@ fn targeted_redraws_coalesce_only_identical_windows() {
 }
 
 #[test]
+/// Verifies that a later send retries after each kind of wake failure.
 fn a_later_send_retries_after_each_kind_of_wake_failure() {
     for first_error in [
         UiWakeError::TemporarilyUnavailable,
@@ -161,6 +180,7 @@ fn a_later_send_retries_after_each_kind_of_wake_failure() {
 }
 
 #[test]
+/// Verifies that replacing a failed wake rearms already queued work.
 fn replacing_a_failed_wake_rearms_already_queued_work() {
     let (sender, mut inbox) = RuntimeInbox::channel(NonZeroUsize::new(2).unwrap());
     let failed = Arc::new(TestWake::default());
@@ -185,6 +205,7 @@ fn replacing_a_failed_wake_rearms_already_queued_work() {
 }
 
 #[test]
+/// Verifies that enqueue during a failing wake remains recoverable.
 fn enqueue_during_a_failing_wake_remains_recoverable() {
     let (sender, mut inbox) = RuntimeInbox::channel(NonZeroUsize::new(4).unwrap());
     let wake = Arc::new(BlockingRecoveringWake::new());
@@ -216,6 +237,7 @@ fn enqueue_during_a_failing_wake_remains_recoverable() {
 }
 
 #[test]
+/// Verifies that coalesced redraw retries a transient wake failure.
 fn coalesced_redraw_retries_a_transient_wake_failure() {
     let (sender, mut inbox) = RuntimeInbox::<()>::channel(NonZeroUsize::new(2).unwrap());
     let wake = Arc::new(RecoveringWake::new(UiWakeError::TemporarilyUnavailable));

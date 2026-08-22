@@ -13,12 +13,14 @@ use ailloli_ui_render_wgpu::CapturedFrame;
 
 #[allow(dead_code)]
 #[path = "../examples/support/ui_bundle_showcase.rs"]
+/// Reuses the deterministic gallery builder exercised by the executable example.
 mod ui_bundle_showcase;
 
 use ui_bundle_showcase::{
     ui_bundle_charts_showcase, ui_bundle_line_chart_debug_showcase, ShowcaseMode,
 };
 
+/// Resolves the repository-local directory used for diagnostic captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -26,12 +28,14 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Counts RGBA8 pixels accepted by `pred`; trailing incomplete bytes are ignored.
 fn count_pixels(rgba: &[u8], pred: impl Fn([u8; 4]) -> bool) -> u64 {
     rgba.chunks_exact(4)
         .filter(|px| pred([px[0], px[1], px[2], px[3]]))
         .count() as u64
 }
 
+/// Requires encoded PNG data and the expected minimum chart-section extent.
 fn assert_non_empty_frame(frame: &CapturedFrame, name: &str) {
     let png = frame.png_data.as_ref().expect("png data");
     assert!(!png.is_empty(), "{name}: empty png");
@@ -39,6 +43,7 @@ fn assert_non_empty_frame(frame: &CapturedFrame, name: &str) {
     assert!(frame.height > 160, "{name}: height={}", frame.height);
 }
 
+/// Requires enough distinct RGB values to reject blank or monochrome rendering.
 fn assert_non_monochrome(frame: &CapturedFrame, name: &str) {
     let distinct = frame
         .rgba
@@ -50,6 +55,7 @@ fn assert_non_monochrome(frame: &CapturedFrame, name: &str) {
     assert!(distinct > 18, "{name}: distinct sampled colors={distinct}");
 }
 
+/// Writes a frame's required PNG payload beneath the repository captures directory.
 fn write_capture(name: &str, frame: &CapturedFrame) {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir).expect("mkdir captures");
@@ -119,6 +125,7 @@ fn ui_bundle_phase54_charts_capture() {
     write_capture("ui_bundle_phase54_line_chart_debug.png", &line_debug);
 }
 
+/// Verifies chart palette colors and contrast for the selected theme.
 fn assert_phase54_frame(frame: &CapturedFrame, filename: &str, dark: bool) {
     assert_non_empty_frame(frame, filename);
     assert_non_monochrome(frame, filename);
@@ -145,10 +152,12 @@ fn assert_phase54_frame(frame: &CapturedFrame, filename: &str, dark: bool) {
     }
 }
 
+/// Classifies an opaque pixel within the fixture's broad orange range.
 fn is_orange(px: [u8; 4]) -> bool {
     px[0] > 120 && px[0] > px[1].saturating_add(20) && px[0] > px[2].saturating_add(40)
 }
 
+/// Searches a clipped square neighborhood for an orange line pixel.
 fn has_orange_near(frame: &CapturedFrame, x: i32, y: i32, radius: i32) -> bool {
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -171,6 +180,7 @@ fn has_orange_near(frame: &CapturedFrame, x: i32, y: i32, radius: i32) -> bool {
     false
 }
 
+/// Verifies diagnostic line-chart geometry using sampled orange control points.
 fn assert_line_chart_debug_frame(frame: &CapturedFrame, filename: &str) {
     let png = frame.png_data.as_ref().expect("png data");
     assert!(!png.is_empty(), "{filename}: empty png");

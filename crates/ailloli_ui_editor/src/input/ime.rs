@@ -1,12 +1,44 @@
+//! Non-mutating IME preedit projection into display buffers.
+
 use ailloli_ui_text::{TextBuffer, TextEditState};
 
 /// Display buffer used while IME preedit is active.
+///
+/// The buffer is an owned clone with non-empty preedit text inserted at the
+/// clamped caret. `caret_byte` is a UTF-8 byte offset into that display clone.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::input::ime::EditorDisplayBuffer;
+/// use ailloli_ui_text::TextBuffer;
+/// let display = EditorDisplayBuffer { buffer: TextBuffer::from_string("é"), caret_byte: 2 };
+/// assert_eq!(display.caret_byte, display.buffer.len_bytes());
+/// ```
 #[derive(Debug, Clone)]
 pub struct EditorDisplayBuffer {
+    /// Original text or an IME-preedit augmented clone.
     pub buffer: TextBuffer,
+    /// Clamped display-buffer caret byte.
     pub caret_byte: usize,
 }
 
+/// Produces text and caret geometry input for the current IME state.
+///
+/// No preedit or empty preedit returns an unchanged clone with the source caret
+/// clamped to buffer length. A preedit selection uses its end byte clamped to
+/// preedit length; absent selection positions after all preedit bytes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::input::ime::display_buffer_for_edit;
+/// use ailloli_ui_text::{TextBuffer, TextEditState};
+/// let buffer = TextBuffer::from_string("hello");
+/// let display = display_buffer_for_edit(&buffer, &TextEditState::new());
+/// assert_eq!(display.buffer.as_str(), "hello");
+/// assert_eq!(display.caret_byte, 0);
+/// ```
 pub fn display_buffer_for_edit(buffer: &TextBuffer, edit: &TextEditState) -> EditorDisplayBuffer {
     let Some(preedit) = edit.preedit.as_ref() else {
         return EditorDisplayBuffer {

@@ -1,3 +1,5 @@
+//! Low-level inner-inset layout widget.
+
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::{EdgeInsets, Offset};
 use ailloli_ui_runtime::component::Widget;
@@ -5,17 +7,41 @@ use ailloli_ui_runtime::layout::LayoutEngine;
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 
-/// Inner spacing around a child (padding).
+/// Inner logical-pixel spacing around at most one child.
+///
+/// Constraints are deflated before child layout and final size is inflated.
+/// Insets are not normalized; callers should provide finite non-negative values.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::EdgeInsets;
+/// use ailloli_ui_widgets::layout::Padding;
+/// let padding = Padding::new(EdgeInsets::all(6.0));
+/// assert_eq!(padding.padding.horizontal(), 12.0);
+/// ```
 pub struct Padding {
+    /// Inner logical-pixel insets in left/top/right/bottom order.
     pub padding: EdgeInsets,
 }
 
 impl Padding {
+    /// Creates an inner-inset widget with the exact supplied edges.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::EdgeInsets;
+    /// use ailloli_ui_widgets::layout::Padding;
+    /// let padding = Padding::new(EdgeInsets::new(1.0, 2.0, 3.0, 4.0));
+    /// assert_eq!((padding.padding.left, padding.padding.top), (1.0, 2.0));
+    /// ```
     pub fn new(padding: EdgeInsets) -> Self {
         Self { padding }
     }
 }
 
+/// Deflates constraints, offsets at most one child, and reinflates final size.
 impl<A: 'static> Widget<A> for Padding {
     fn debug_name(&self) -> &'static str {
         "Padding"

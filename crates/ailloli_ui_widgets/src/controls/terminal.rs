@@ -1,3 +1,9 @@
+//! Retained terminal-log viewer with streaming events, search, selection, and scrolling.
+//!
+//! The widget renders styled logical lines rather than emulating a terminal
+//! protocol. Event chunks are joined and split on newlines, complete history is
+//! bounded, and the optional event source is drained during layout, paint, and input.
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -20,34 +26,93 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawRect, DrawText};
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic line category used to choose a default text style.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TerminalLineKind;
+/// assert_eq!(TerminalLineKind::default(), TerminalLineKind::Stdout);
+/// assert_ne!(TerminalLineKind::Stderr, TerminalLineKind::Success);
+/// ```
 pub enum TerminalLineKind {
+    /// Shell or application prompt text.
     Prompt,
+    /// Entered command text; currently styled like a prompt.
     Command,
     #[default]
+    /// Normal process output.
     Stdout,
+    /// Error-stream output.
     Stderr,
+    /// Viewer or process-status message.
     System,
+    /// Successful-result message.
     Success,
+    /// Warning message.
     Warning,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// Optional per-line colors and emphasis flags.
+///
+/// `foreground` overrides the kind color and `background` paints the complete
+/// row. `dim` multiplies foreground alpha by `0.72`; `bold` is retained metadata
+/// but is not currently interpreted by the renderer.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Color;
+/// use ailloli_ui_widgets::controls::TerminalLineAttrs;
+/// let attrs = TerminalLineAttrs { foreground: Some(Color::WHITE), bold: true, ..Default::default() };
+/// assert!(attrs.bold);
+/// ```
 pub struct TerminalLineAttrs {
+    /// Optional text-color override.
     pub foreground: Option<Color>,
+    /// Optional full-row background.
     pub background: Option<Color>,
+    /// Reserved emphasis flag; currently not rendered.
     pub bold: bool,
+    /// Whether to multiply foreground alpha by `0.72`.
     pub dim: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// One logical terminal line with semantic and optional timestamp metadata.
+///
+/// Text is stored unchanged and never parsed for ANSI escape sequences.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+/// let line = TerminalLine::stderr("failed").timestamp_ms(1_000);
+/// assert_eq!(line.kind, TerminalLineKind::Stderr);
+/// assert_eq!(line.timestamp_ms, Some(1_000));
+/// ```
 pub struct TerminalLine {
+    /// Unparsed line text without an implied newline.
     pub text: String,
+    /// Semantic category selecting the base text style.
     pub kind: TerminalLineKind,
+    /// Optional color and emphasis overrides.
     pub attrs: TerminalLineAttrs,
+    /// Optional caller-defined timestamp in milliseconds.
     pub timestamp_ms: Option<i64>,
 }
 
 impl TerminalLine {
+    /// Creates an untimestamped stdout line with default attributes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// let line = TerminalLine::new("ready");
+    /// assert_eq!((line.text.as_str(), line.kind), ("ready", TerminalLineKind::Stdout));
+    /// ```
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -57,40 +122,115 @@ impl TerminalLine {
         }
     }
 
+    /// Creates a prompt line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// assert_eq!(TerminalLine::prompt("$ ").kind, TerminalLineKind::Prompt);
+    /// ```
     pub fn prompt(text: impl Into<String>) -> Self {
         Self::new(text).kind(TerminalLineKind::Prompt)
     }
 
+    /// Creates a command line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// assert_eq!(TerminalLine::command("cargo test").kind, TerminalLineKind::Command);
+    /// ```
     pub fn command(text: impl Into<String>) -> Self {
         Self::new(text).kind(TerminalLineKind::Command)
     }
 
+    /// Creates a stderr line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// assert_eq!(TerminalLine::stderr("error").kind, TerminalLineKind::Stderr);
+    /// ```
     pub fn stderr(text: impl Into<String>) -> Self {
         Self::new(text).kind(TerminalLineKind::Stderr)
     }
 
+    /// Creates a system-status line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// assert_eq!(TerminalLine::system("connected").kind, TerminalLineKind::System);
+    /// ```
     pub fn system(text: impl Into<String>) -> Self {
         Self::new(text).kind(TerminalLineKind::System)
     }
 
+    /// Creates a success line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// assert_eq!(TerminalLine::success("done").kind, TerminalLineKind::Success);
+    /// ```
     pub fn success(text: impl Into<String>) -> Self {
         Self::new(text).kind(TerminalLineKind::Success)
     }
 
+    /// Creates a warning line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// assert_eq!(TerminalLine::warning("retrying").kind, TerminalLineKind::Warning);
+    /// ```
     pub fn warning(text: impl Into<String>) -> Self {
         Self::new(text).kind(TerminalLineKind::Warning)
     }
 
+    /// Replaces the semantic line category.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineKind};
+    /// assert_eq!(TerminalLine::new("ok").kind(TerminalLineKind::Success).kind, TerminalLineKind::Success);
+    /// ```
     pub fn kind(mut self, kind: TerminalLineKind) -> Self {
         self.kind = kind;
         self
     }
 
+    /// Replaces all per-line attributes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalLineAttrs};
+    /// let line = TerminalLine::new("quiet").attrs(TerminalLineAttrs { dim: true, ..Default::default() });
+    /// assert!(line.attrs.dim);
+    /// ```
     pub fn attrs(mut self, attrs: TerminalLineAttrs) -> Self {
         self.attrs = attrs;
         self
     }
 
+    /// Sets caller-defined millisecond timestamp metadata.
+    ///
+    /// Negative values are retained verbatim and no clock epoch is imposed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalLine;
+    /// assert_eq!(TerminalLine::new("boot").timestamp_ms(-1).timestamp_ms, Some(-1));
+    /// ```
     pub fn timestamp_ms(mut self, timestamp_ms: i64) -> Self {
         self.timestamp_ms = Some(timestamp_ms);
         self
@@ -98,22 +238,61 @@ impl TerminalLine {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Mutation consumed by a [`TerminalView`] buffer.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalEventKind, TerminalLine};
+/// let event = TerminalEventKind::AppendLine(TerminalLine::new("ready"));
+/// assert!(matches!(event, TerminalEventKind::AppendLine(_)));
+/// ```
 pub enum TerminalEventKind {
+    /// Flushes a pending chunk then appends one complete line.
     AppendLine(TerminalLine),
+    /// Joins stdout text to the partial line and splits on `\n`.
     StdoutChunk(String),
+    /// Joins stderr text to the partial line and splits on `\n`.
     StderrChunk(String),
+    /// Flushes a pending chunk then appends an untimestamped system line.
     Status(String),
+    /// Removes complete and partial lines.
     Clear,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Sequenced terminal-buffer mutation with optional timestamp metadata.
+///
+/// Sequence numbers are retained for clients but events are applied in supplied
+/// order without sorting or duplicate rejection.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventKind};
+/// let event = TerminalEvent::clear(9);
+/// assert_eq!(event.sequence, 9);
+/// assert!(matches!(event.kind, TerminalEventKind::Clear));
+/// ```
 pub struct TerminalEvent {
+    /// Caller-assigned sequence metadata.
     pub sequence: u64,
+    /// Optional timestamp inherited by appended lines/chunks where applicable.
     pub timestamp_ms: Option<i64>,
+    /// Buffer mutation payload.
     pub kind: TerminalEventKind,
 }
 
 impl TerminalEvent {
+    /// Creates an untimestamped event with the supplied sequence metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventKind};
+    /// let event = TerminalEvent::new(1, TerminalEventKind::Clear);
+    /// assert_eq!(event.timestamp_ms, None);
+    /// ```
     pub fn new(sequence: u64, kind: TerminalEventKind) -> Self {
         Self {
             sequence,
@@ -122,88 +301,276 @@ impl TerminalEvent {
         }
     }
 
+    /// Creates a complete-line append event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventKind, TerminalLine};
+    /// let event = TerminalEvent::append_line(2, TerminalLine::new("done"));
+    /// assert!(matches!(event.kind, TerminalEventKind::AppendLine(_)));
+    /// ```
     pub fn append_line(sequence: u64, line: TerminalLine) -> Self {
         Self::new(sequence, TerminalEventKind::AppendLine(line))
     }
 
+    /// Creates a streaming stdout chunk event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventKind};
+    /// let event = TerminalEvent::stdout_chunk(3, "one\ntwo");
+    /// assert!(matches!(event.kind, TerminalEventKind::StdoutChunk(_)));
+    /// ```
     pub fn stdout_chunk(sequence: u64, text: impl Into<String>) -> Self {
         Self::new(sequence, TerminalEventKind::StdoutChunk(text.into()))
     }
 
+    /// Creates a streaming stderr chunk event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventKind};
+    /// let event = TerminalEvent::stderr_chunk(4, "warning");
+    /// assert!(matches!(event.kind, TerminalEventKind::StderrChunk(_)));
+    /// ```
     pub fn stderr_chunk(sequence: u64, text: impl Into<String>) -> Self {
         Self::new(sequence, TerminalEventKind::StderrChunk(text.into()))
     }
 
+    /// Creates a system-status event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventKind};
+    /// let event = TerminalEvent::status(5, "connected");
+    /// assert!(matches!(event.kind, TerminalEventKind::Status(_)));
+    /// ```
     pub fn status(sequence: u64, text: impl Into<String>) -> Self {
         Self::new(sequence, TerminalEventKind::Status(text.into()))
     }
 
+    /// Creates an event that clears complete and partial lines.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventKind};
+    /// assert!(matches!(TerminalEvent::clear(6).kind, TerminalEventKind::Clear));
+    /// ```
     pub fn clear(sequence: u64) -> Self {
         Self::new(sequence, TerminalEventKind::Clear)
     }
 
+    /// Sets caller-defined millisecond timestamp metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalEvent;
+    /// assert_eq!(TerminalEvent::clear(1).timestamp_ms(42).timestamp_ms, Some(42));
+    /// ```
     pub fn timestamp_ms(mut self, timestamp_ms: i64) -> Self {
         self.timestamp_ms = Some(timestamp_ms);
         self
     }
 }
 
+/// Pull source drained by the terminal during layout, paint, and input.
+///
+/// Implementations should return promptly; events are applied in returned order.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventSource};
+/// struct Empty;
+/// impl TerminalEventSource for Empty { fn drain_events(&self) -> Vec<TerminalEvent> { Vec::new() } }
+/// assert!(Empty.drain_events().is_empty());
+/// ```
 pub trait TerminalEventSource: 'static {
+    /// Removes and returns currently pending events in application order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEventBuffer, TerminalEventSource};
+    /// let source = TerminalEventBuffer::new();
+    /// assert!(source.drain_events().is_empty());
+    /// ```
     fn drain_events(&self) -> Vec<TerminalEvent>;
 }
 
 #[derive(Clone, Default)]
+/// Cloneable single-threaded FIFO event source.
+///
+/// Clones share the same `Rc<RefCell<_>>` queue. Reentrant mutable access panics
+/// according to [`RefCell`] rules; the type is not thread-safe.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventBuffer, TerminalEventSource};
+/// let writer = TerminalEventBuffer::new();
+/// let reader = writer.clone();
+/// writer.push(TerminalEvent::clear(1));
+/// assert_eq!(reader.drain_events().len(), 1);
+/// ```
 pub struct TerminalEventBuffer {
+    /// Shared pending FIFO.
     pending: Rc<RefCell<VecDeque<TerminalEvent>>>,
 }
 
 impl TerminalEventBuffer {
+    /// Creates an empty shared queue.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalEventBuffer;
+    /// assert!(TerminalEventBuffer::new().is_empty());
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Appends one event to the FIFO tail.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared queue is already mutably borrowed reentrantly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventBuffer};
+    /// let buffer = TerminalEventBuffer::new();
+    /// buffer.push(TerminalEvent::clear(1));
+    /// assert!(!buffer.is_empty());
+    /// ```
     pub fn push(&self, event: TerminalEvent) {
         self.pending.borrow_mut().push_back(event);
     }
 
+    /// Appends events to the FIFO tail in iterator order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared queue is already mutably borrowed reentrantly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalEventBuffer, TerminalEventSource};
+    /// let buffer = TerminalEventBuffer::new();
+    /// buffer.extend([TerminalEvent::clear(1), TerminalEvent::clear(2)]);
+    /// assert_eq!(buffer.drain_events().len(), 2);
+    /// ```
     pub fn extend(&self, events: impl IntoIterator<Item = TerminalEvent>) {
         self.pending.borrow_mut().extend(events);
     }
 
+    /// Reports whether the shared queue currently has no pending event.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared queue is already mutably borrowed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalEventBuffer;
+    /// assert!(TerminalEventBuffer::new().is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.pending.borrow().is_empty()
     }
 }
 
 impl TerminalEventSource for TerminalEventBuffer {
+    /// Drains every queued event in FIFO order.
     fn drain_events(&self) -> Vec<TerminalEvent> {
         self.pending.borrow_mut().drain(..).collect()
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Zero-based logical line and Unicode-scalar column.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TerminalPosition;
+/// assert_eq!(TerminalPosition::new(2, 4), TerminalPosition { line: 2, column: 4 });
+/// ```
 pub struct TerminalPosition {
+    /// Zero-based logical line index.
     pub line: usize,
+    /// Zero-based Unicode-scalar column; may exceed actual line length.
     pub column: usize,
 }
 
 impl TerminalPosition {
+    /// Creates a position without bounds validation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalPosition;
+    /// let pos = TerminalPosition::new(1, 3);
+    /// assert_eq!((pos.line, pos.column), (1, 3));
+    /// ```
     pub const fn new(line: usize, column: usize) -> Self {
         Self { line, column }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Direction-preserving anchor/focus text selection.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalPosition, TerminalSelection};
+/// let selection = TerminalSelection::new(TerminalPosition::new(0, 1), TerminalPosition::new(2, 3));
+/// assert_eq!(selection.anchor.line, 0);
+/// ```
 pub struct TerminalSelection {
+    /// Position where dragging began.
     pub anchor: TerminalPosition,
+    /// Current drag position.
     pub focus: TerminalPosition,
 }
 
 impl TerminalSelection {
+    /// Creates a selection without ordering or bounds normalization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalPosition, TerminalSelection};
+    /// let selection = TerminalSelection::new(TerminalPosition::new(3, 2), TerminalPosition::new(1, 0));
+    /// assert_eq!(selection.normalized().0.line, 1);
+    /// ```
     pub const fn new(anchor: TerminalPosition, focus: TerminalPosition) -> Self {
         Self { anchor, focus }
     }
 
+    /// Selects from column zero of `start` through the end of `end`.
+    ///
+    /// `usize::MAX` is used as the end-of-line sentinel and is clamped during
+    /// painting; line indices are not validated here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalSelection;
+    /// let selection = TerminalSelection::lines(2, 4);
+    /// assert_eq!((selection.anchor.column, selection.focus.column), (0, usize::MAX));
+    /// ```
     pub const fn lines(start: usize, end: usize) -> Self {
         Self {
             anchor: TerminalPosition::new(start, 0),
@@ -211,6 +578,15 @@ impl TerminalSelection {
         }
     }
 
+    /// Returns endpoints in lexicographic `(line, column)` order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalPosition, TerminalSelection};
+    /// let (start, end) = TerminalSelection::new(TerminalPosition::new(2, 0), TerminalPosition::new(1, 9)).normalized();
+    /// assert_eq!((start.line, end.line), (1, 2));
+    /// ```
     pub fn normalized(self) -> (TerminalPosition, TerminalPosition) {
         if (self.anchor.line, self.anchor.column) <= (self.focus.line, self.focus.column) {
             (self.anchor, self.focus)
@@ -219,6 +595,18 @@ impl TerminalSelection {
         }
     }
 
+    /// Clamps both line indices to an available buffer.
+    ///
+    /// Returns `None` for an empty buffer. Columns are retained verbatim and are
+    /// clamped against line text only when rendered.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalSelection;
+    /// assert!(TerminalSelection::lines(1, 4).clamp(0).is_none());
+    /// assert_eq!(TerminalSelection::lines(1, 4).clamp(3).unwrap().focus.line, 2);
+    /// ```
     pub fn clamp(self, line_count: usize) -> Option<Self> {
         if line_count == 0 {
             return None;
@@ -232,38 +620,90 @@ impl TerminalSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One non-overlapping search hit expressed as UTF-8 byte offsets.
+///
+/// `start` is inclusive and `end` is exclusive within the matched line.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TerminalSearchMatch;
+/// let hit = TerminalSearchMatch { line: 1, start: 2, end: 5 };
+/// assert_eq!(hit.end - hit.start, 3);
+/// ```
 pub struct TerminalSearchMatch {
+    /// Zero-based logical line index.
     pub line: usize,
+    /// Inclusive UTF-8 byte offset.
     pub start: usize,
+    /// Exclusive UTF-8 byte offset.
     pub end: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Terminal palette, typography, geometry, and scrollbar metrics.
+///
+/// Dimensions are logical pixels. Fields are consumed as supplied; nonpositive
+/// line height prevents line painting, while content dimensions are floored at
+/// zero. The default uses the default theme.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TerminalViewStyle;
+/// let style = TerminalViewStyle::default();
+/// assert_eq!((style.width, style.height, style.line_height), (680.0, 260.0, 19.0));
+/// ```
 pub struct TerminalViewStyle {
+    /// Root terminal surface.
     pub background: Color,
+    /// Unfocused root border.
     pub border: Border,
+    /// Border painted in addition while focused.
     pub focus_ring: Border,
+    /// Normal stdout text style.
     pub text: TextStyle,
+    /// Prompt and command text style.
     pub prompt_text: TextStyle,
+    /// Stderr text style.
     pub stderr_text: TextStyle,
+    /// System/status text style.
     pub system_text: TextStyle,
+    /// Success text style.
     pub success_text: TextStyle,
+    /// Warning text style.
     pub warning_text: TextStyle,
+    /// Selection highlight color.
     pub selection_background: Color,
+    /// Non-active search-hit color.
     pub search_background: Color,
+    /// First search-hit color.
     pub active_search_background: Color,
+    /// Cursor color.
     pub cursor: Color,
+    /// Scrollbar track color.
     pub scrollbar_track: Color,
+    /// Scrollbar thumb color.
     pub scrollbar_thumb: Color,
+    /// Root corner radii.
     pub radius: Radius,
+    /// Horizontal content inset in logical pixels.
     pub padding_x: f32,
+    /// Vertical content inset in logical pixels.
     pub padding_y: f32,
+    /// Default/intrinsic width in logical pixels.
     pub width: f32,
+    /// Default/intrinsic height in logical pixels.
     pub height: f32,
+    /// Row advance and vertical scrolling unit in logical pixels.
     pub line_height: f32,
+    /// Approximate character width used for hit testing and highlights.
     pub char_width: f32,
+    /// Painted cursor width in logical pixels.
     pub cursor_width: f32,
+    /// Scrollbar track/thumb width in logical pixels.
     pub scrollbar_width: f32,
+    /// Scrollbar inset from the right/top/bottom edges in logical pixels.
     pub scrollbar_inset: f32,
 }
 
@@ -274,6 +714,16 @@ impl Default for TerminalViewStyle {
 }
 
 impl TerminalViewStyle {
+    /// Derives a dark terminal palette from `theme` with fixed geometry defaults.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::TerminalViewStyle;
+    /// let style = TerminalViewStyle::from_theme(Theme::default());
+    /// assert_eq!((style.padding_x, style.padding_y, style.char_width), (12.0, 10.0, 7.8));
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         let text = TextStyle::new(FontId::Mono, 13, Color::hex_rgb(0xD9E2EC));
@@ -307,21 +757,49 @@ impl TerminalViewStyle {
     }
 }
 
+/// Scrollable terminal-log widget with static lines and/or streaming events.
+///
+/// This is a log viewer, not a PTY or ANSI parser. It is always keyboard
+/// focusable; selection controls only pointer selection. The default history cap
+/// is 2,000 complete lines and matching is ASCII-case-insensitive.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalLine, TerminalView};
+/// let terminal = TerminalView::new().line(TerminalLine::success("finished"));
+/// let _ = terminal;
+/// ```
 pub struct TerminalView {
+    /// Root layout configuration, initialized from style width/height.
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation metadata.
     pub(crate) flex_item: FlexItemStyle,
+    /// Initial complete lines.
     lines: Vec<TerminalLine>,
+    /// Initial buffer mutations applied after complete lines.
     events: Vec<TerminalEvent>,
+    /// Optional source drained during layout, paint, and input.
     event_source: Option<Rc<dyn TerminalEventSource>>,
+    /// Maximum retained complete-line count.
     max_history: usize,
+    /// Static or reactive exact search query.
     search_query: Binding<String>,
+    /// Whether search matching preserves ASCII case.
     search_case_sensitive: bool,
+    /// Optional initial selection.
     selection: Option<TerminalSelection>,
+    /// Appearance and geometry tokens.
     style: TerminalViewStyle,
+    /// Requested initial nonnegative vertical scroll offset.
     initial_scroll_y: f32,
+    /// Whether to paint a cursor after a line.
     show_cursor: bool,
+    /// Explicit cursor line, or `None` for last visible buffer line.
     cursor_line: Option<usize>,
+    /// Whether pointer dragging can update selection.
     selectable: bool,
+    /// Whether to reserve and paint a vertical scrollbar.
     scrollbars: bool,
 }
 
@@ -334,6 +812,18 @@ impl Default for TerminalView {
 }
 
 impl TerminalView {
+    /// Creates an empty terminal with default style and interaction settings.
+    ///
+    /// The initial size is `680 x 260` logical pixels, cursor/selection/scrollbar
+    /// behavior is enabled, and vertical scroll starts at zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new();
+    /// let _ = terminal;
+    /// ```
     pub fn new() -> Self {
         let style = TerminalViewStyle::default();
         Self {
@@ -357,105 +847,296 @@ impl TerminalView {
         }
     }
 
+    /// Appends one initial complete line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalView};
+    /// let terminal = TerminalView::new().line(TerminalLine::prompt("$ "));
+    /// let _ = terminal;
+    /// ```
     pub fn line(mut self, line: TerminalLine) -> Self {
         self.lines.push(line);
         self
     }
 
+    /// Extends initial complete lines in iterator order.
+    ///
+    /// Existing lines are preserved and the history cap is applied during build.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalLine, TerminalView};
+    /// let terminal = TerminalView::new().lines([TerminalLine::new("one"), TerminalLine::new("two")]);
+    /// let _ = terminal;
+    /// ```
     pub fn lines(mut self, lines: impl IntoIterator<Item = TerminalLine>) -> Self {
         self.lines.extend(lines);
         self
     }
 
+    /// Appends one initial event to apply after initial lines.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalView};
+    /// let terminal = TerminalView::new().event(TerminalEvent::stdout_chunk(1, "building"));
+    /// let _ = terminal;
+    /// ```
     pub fn event(mut self, event: TerminalEvent) -> Self {
         self.events.push(event);
         self
     }
 
+    /// Extends initial events in iterator order without sorting by sequence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEvent, TerminalView};
+    /// let terminal = TerminalView::new().events([TerminalEvent::clear(1), TerminalEvent::status(2, "ready")]);
+    /// let _ = terminal;
+    /// ```
     pub fn events(mut self, events: impl IntoIterator<Item = TerminalEvent>) -> Self {
         self.events.extend(events);
         self
     }
 
+    /// Installs a pull source, replacing any previous source.
+    ///
+    /// It is synchronously drained during layout, paint, and input; sources should
+    /// therefore return promptly and avoid blocking UI work.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::rc::Rc;
+    /// use ailloli_ui_widgets::controls::{TerminalEventBuffer, TerminalView};
+    /// let terminal = TerminalView::new().event_source(Rc::new(TerminalEventBuffer::new()));
+    /// let _ = terminal;
+    /// ```
     pub fn event_source(mut self, source: Rc<dyn TerminalEventSource>) -> Self {
         self.event_source = Some(source);
         self
     }
 
+    /// Installs a cloneable shared FIFO event buffer as the source.
+    ///
+    /// Keep a clone before moving the buffer when later producers need to push.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalEventBuffer, TerminalView};
+    /// let writer = TerminalEventBuffer::new();
+    /// let terminal = TerminalView::new().event_buffer(writer.clone());
+    /// let _ = terminal;
+    /// ```
     pub fn event_buffer(self, buffer: TerminalEventBuffer) -> Self {
         self.event_source(Rc::new(buffer))
     }
 
+    /// Sets the maximum number of retained complete lines.
+    ///
+    /// Oldest complete lines are removed first. Zero rejects complete appended
+    /// lines; an unfinished nonempty chunk may still be visible as the partial line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().max_history(500);
+    /// let _ = terminal;
+    /// ```
     pub fn max_history(mut self, max_history: usize) -> Self {
         self.max_history = max_history;
         self
     }
 
+    /// Sets the static or reactive exact search query.
+    ///
+    /// Empty queries produce no matches; whitespace is not trimmed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().search_query("error".to_string());
+    /// let _ = terminal;
+    /// ```
     pub fn search_query(mut self, query: impl Into<Binding<String>>) -> Self {
         self.search_query = query.into();
         self
     }
 
+    /// Selects exact-case or ASCII-case-insensitive matching.
+    ///
+    /// The default is `false` (ASCII-case-insensitive).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().search_case_sensitive(true);
+    /// let _ = terminal;
+    /// ```
     pub fn search_case_sensitive(mut self, case_sensitive: bool) -> Self {
         self.search_case_sensitive = case_sensitive;
         self
     }
 
+    /// Sets the initial selection; line bounds are clamped during build/paint.
+    ///
+    /// The selection still paints when pointer selection is disabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalSelection, TerminalView};
+    /// let terminal = TerminalView::new().selection(TerminalSelection::lines(0, 2));
+    /// let _ = terminal;
+    /// ```
     pub fn selection(mut self, selection: TerminalSelection) -> Self {
         self.selection = Some(selection);
         self
     }
 
+    /// Replaces style and resets explicit layout width/height to its defaults.
+    ///
+    /// Call width/height builders after this method to override the style sizes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalView, TerminalViewStyle};
+    /// let terminal = TerminalView::new().terminal_style(TerminalViewStyle::default());
+    /// let _ = terminal;
+    /// ```
     pub fn terminal_style(mut self, style: TerminalViewStyle) -> Self {
         self.layout = self.layout.width(style.width).height(style.height);
         self.style = style;
         self
     }
 
+    /// Sets requested initial vertical scroll offset in logical pixels.
+    ///
+    /// `f32::max` normalizes negative values and NaN to zero; positive infinity
+    /// is retained until scroll metrics clamp it during layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().initial_scroll_y(120.0);
+    /// let _ = terminal;
+    /// ```
     pub fn initial_scroll_y(mut self, scroll_y: f32) -> Self {
         self.initial_scroll_y = scroll_y.max(0.0);
         self
     }
 
+    /// Enables or disables cursor painting; enabled by default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().show_cursor(false);
+    /// let _ = terminal;
+    /// ```
     pub fn show_cursor(mut self, show_cursor: bool) -> Self {
         self.show_cursor = show_cursor;
         self
     }
 
+    /// Sets the zero-based line after which the cursor is painted.
+    ///
+    /// Without this call the last buffer line is used. An out-of-range index
+    /// paints no cursor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().cursor_line(3);
+    /// let _ = terminal;
+    /// ```
     pub fn cursor_line(mut self, cursor_line: usize) -> Self {
         self.cursor_line = Some(cursor_line);
         self
     }
 
+    /// Enables or disables pointer-drag selection updates.
+    ///
+    /// This does not change focusability, keyboard scrolling, or a supplied
+    /// initial selection. The default is `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().selectable(false);
+    /// let _ = terminal;
+    /// ```
     pub fn selectable(mut self, selectable: bool) -> Self {
         self.selectable = selectable;
         self
     }
 
+    /// Enables scrollbar reservation and painting; enabled by default.
+    ///
+    /// Scrolling remains available when this is `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalView;
+    /// let terminal = TerminalView::new().scrollbars(false);
+    /// let _ = terminal;
+    /// ```
     pub fn scrollbars(mut self, scrollbars: bool) -> Self {
         self.scrollbars = scrollbars;
         self
     }
 }
 
+/// Component-stage terminal configuration copied into the retained widget.
 struct TerminalViewComponent {
+    /// Root layout declarations.
     layout: LayoutStyle,
+    /// Initial complete lines.
     lines: Vec<TerminalLine>,
+    /// Initial events applied after lines.
     events: Vec<TerminalEvent>,
+    /// Optional synchronously drained event source.
     event_source: Option<Rc<dyn TerminalEventSource>>,
+    /// Complete-line history cap.
     max_history: usize,
+    /// Static or reactive search query.
     search_query: Binding<String>,
+    /// Search case behavior.
     search_case_sensitive: bool,
+    /// Optional initial selection.
     selection: Option<TerminalSelection>,
+    /// Appearance and geometry tokens.
     style: TerminalViewStyle,
+    /// Requested initial vertical scroll offset.
     initial_scroll_y: f32,
+    /// Whether to paint a cursor.
     show_cursor: bool,
+    /// Optional explicit cursor line.
     cursor_line: Option<usize>,
+    /// Whether pointer dragging changes selection.
     selectable: bool,
+    /// Whether to reserve and paint a scrollbar.
     scrollbars: bool,
 }
 
 impl<A: 'static> ComponentNode<A> for TerminalViewComponent {
+    /// Builds the initial bounded buffer and allocates retained interaction state.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let mut buffer = TerminalBufferState::new(self.max_history);
         for line in self.lines.iter().cloned() {
@@ -490,6 +1171,7 @@ impl<A: 'static> ComponentNode<A> for TerminalViewComponent {
 }
 
 impl<A: 'static> IntoView<A> for TerminalView {
+    /// Builds the retained component and preserves flex/size metadata.
     fn into_view(self) -> View<A> {
         finish_view_sized(
             View::component(TerminalViewComponent {
@@ -515,13 +1197,18 @@ impl<A: 'static> IntoView<A> for TerminalView {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Bounded complete-line history plus one streaming partial line.
 struct TerminalBufferState {
+    /// Complete lines in oldest-to-newest order.
     lines: Vec<TerminalLine>,
+    /// Current unterminated stdout/stderr chunk line.
     partial: Option<TerminalLine>,
+    /// Maximum retained complete-line count.
     max_history: usize,
 }
 
 impl TerminalBufferState {
+    /// Creates an empty buffer with an exact complete-line cap.
     fn new(max_history: usize) -> Self {
         Self {
             lines: Vec::new(),
@@ -530,6 +1217,7 @@ impl TerminalBufferState {
         }
     }
 
+    /// Appends a complete line then removes oldest overflow; zero clears state.
     fn append_line(&mut self, line: TerminalLine) {
         if self.max_history == 0 {
             self.lines.clear();
@@ -540,6 +1228,7 @@ impl TerminalBufferState {
         self.trim_history();
     }
 
+    /// Applies mutations in iterator order, ignoring sequence metadata for ordering.
     fn apply_events(&mut self, events: impl IntoIterator<Item = TerminalEvent>) {
         for event in events {
             match event.kind {
@@ -566,6 +1255,7 @@ impl TerminalBufferState {
         }
     }
 
+    /// Clones complete lines and appends a nonempty partial line for rendering.
     fn visible_lines(&self) -> Vec<TerminalLine> {
         let mut lines = self.lines.clone();
         if let Some(partial) = self.partial.as_ref() {
@@ -576,6 +1266,10 @@ impl TerminalBufferState {
         lines
     }
 
+    /// Joins chunk text, discards carriage returns, and completes lines at newlines.
+    ///
+    /// A continuing partial adopts the latest chunk kind and the first available
+    /// timestamp. An empty trailing partial remains internal but is not visible.
     fn append_chunk(&mut self, text: String, kind: TerminalLineKind, timestamp_ms: Option<i64>) {
         let mut partial = self.partial.take().unwrap_or_else(|| TerminalLine {
             text: String::new(),
@@ -608,6 +1302,7 @@ impl TerminalBufferState {
         self.partial = Some(partial);
     }
 
+    /// Promotes a nonempty partial line into bounded complete history.
     fn flush_partial(&mut self) {
         if let Some(partial) = self.partial.take() {
             if !partial.text.is_empty() {
@@ -616,6 +1311,7 @@ impl TerminalBufferState {
         }
     }
 
+    /// Removes oldest complete lines until the history cap is met.
     fn trim_history(&mut self) {
         if self.lines.len() > self.max_history {
             let trim = self.lines.len() - self.max_history;
@@ -624,28 +1320,45 @@ impl TerminalBufferState {
     }
 }
 
+/// Retained terminal widget with reactive buffer, scroll, and selection state.
 struct TerminalViewWidget {
+    /// Root layout declarations.
     layout: LayoutStyle,
+    /// Bounded complete/partial line state.
     buffer: Signal<TerminalBufferState>,
+    /// Vertical scroll state.
     scroll: Signal<ScrollState>,
+    /// Current optional selection.
     selection: Signal<Option<TerminalSelection>>,
+    /// Pointer-drag anchor while selecting.
     drag_anchor: Signal<Option<TerminalPosition>>,
+    /// Optional synchronously drained event source.
     event_source: Option<Rc<dyn TerminalEventSource>>,
+    /// Static or reactive search query.
     search_query: Binding<String>,
+    /// Search case behavior.
     search_case_sensitive: bool,
+    /// Appearance and geometry tokens.
     style: TerminalViewStyle,
+    /// Vertical wheel and line-scroll policy.
     behavior: ScrollBehavior,
+    /// Whether to paint a cursor.
     show_cursor: bool,
+    /// Optional explicit cursor line.
     cursor_line: Option<usize>,
+    /// Whether pointer dragging updates selection.
     selectable: bool,
+    /// Whether to reserve and paint a scrollbar.
     scrollbars: bool,
 }
 
 impl<A: 'static> Widget<A> for TerminalViewWidget {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "TerminalView"
     }
 
+    /// Drains events, resolves root size, and clamps vertical scroll.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -672,6 +1385,7 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
         }
     }
 
+    /// Paints surface, lines, search/selection/cursor, and optional scrollbar.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         self.drain_source();
         let lines = self.buffer.read().visible_lines();
@@ -721,6 +1435,7 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
         }
     }
 
+    /// Handles wheel/keyboard scrolling and optional pointer-drag selection.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         self.drain_source();
         let lines = self.buffer.read().visible_lines();
@@ -829,16 +1544,19 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
         }
     }
 
+    /// Keeps the terminal keyboard focusable for scrolling in every state.
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::Focusable
     }
 
+    /// Exposes a multiline-text accessibility/input role.
     fn input_role(&self) -> InputRole {
         InputRole::TextMultiLine
     }
 }
 
 impl TerminalViewWidget {
+    /// Drains and applies currently pending source events, if any.
     fn drain_source(&self) {
         let Some(source) = self.event_source.as_ref() else {
             return;
@@ -850,6 +1568,7 @@ impl TerminalViewWidget {
         self.buffer.update(|buffer| buffer.apply_events(events));
     }
 
+    /// Insets root bounds and reserves scrollbar width when enabled.
     fn content_rect(&self, bounds: Rect) -> Rect {
         let reserve = if self.scrollbars {
             self.style.scrollbar_width + self.style.scrollbar_inset * 2.0
@@ -864,6 +1583,7 @@ impl TerminalViewWidget {
         )
     }
 
+    /// Builds vertical metrics from content height and line count.
     fn scroll_metrics(&self, content: Rect, line_count: usize) -> ScrollMetrics {
         ScrollMetrics::new(
             Size::new(content.w, content.h),
@@ -871,6 +1591,7 @@ impl TerminalViewWidget {
         )
     }
 
+    /// Clamps retained vertical offset against the current viewport and content.
     fn clamp_scroll(&self, size: Size, line_count: usize) {
         let content = self.content_rect(Rect::new(0.0, 0.0, size.w, size.h));
         let metrics = self.scroll_metrics(content, line_count);
@@ -880,6 +1601,9 @@ impl TerminalViewWidget {
         }
     }
 
+    /// Converts a point inside content to a clamped line and approximate column.
+    ///
+    /// Returns `None` for an empty buffer or point outside content.
     fn position_at(
         &self,
         bounds: Rect,
@@ -904,6 +1628,10 @@ impl TerminalViewWidget {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Paints the virtualized visible line range and optional cursor.
+///
+/// Search and selection highlights are emitted before a line's explicit
+/// background, so an opaque line background can cover those highlights.
 fn paint_terminal_lines(
     ctx: &mut PaintCtx<'_>,
     content: Rect,
@@ -986,6 +1714,7 @@ fn paint_terminal_lines(
     }
 }
 
+/// Paints one unwrapped line when a text system is available.
 fn paint_terminal_text(
     ctx: &mut PaintCtx<'_>,
     x: f32,
@@ -1011,6 +1740,7 @@ fn paint_terminal_text(
     }));
 }
 
+/// Obtains a cached unwrapped layout for terminal text.
 fn terminal_layout(
     text_system: &mut TextSystem,
     text: &str,
@@ -1024,6 +1754,7 @@ fn terminal_layout(
     })
 }
 
+/// Resolves kind style, foreground override, and optional dimming.
 fn line_text_style(line: &TerminalLine, style: &TerminalViewStyle) -> TextStyle {
     let mut text = match line.kind {
         TerminalLineKind::Prompt | TerminalLineKind::Command => style.prompt_text,
@@ -1042,6 +1773,7 @@ fn line_text_style(line: &TerminalLine, style: &TerminalViewStyle) -> TextStyle 
     text
 }
 
+/// Maps a scalar-column interval to a bounded logical-pixel highlight rectangle.
 fn highlight_rect(
     content: Rect,
     row_y: f32,
@@ -1061,6 +1793,7 @@ fn highlight_rect(
     )
 }
 
+/// Intersects a normalized selection with one line's scalar-column range.
 fn selection_columns_for_line(
     selection: TerminalSelection,
     line: usize,
@@ -1082,6 +1815,7 @@ fn selection_columns_for_line(
     ))
 }
 
+/// Counts Unicode scalar values before a byte offset, tolerating invalid boundaries.
 fn char_count_until(text: &str, byte_idx: usize) -> usize {
     text.get(..byte_idx.min(text.len()))
         .unwrap_or(text)
@@ -1089,6 +1823,21 @@ fn char_count_until(text: &str, byte_idx: usize) -> usize {
         .count()
 }
 
+/// Finds non-overlapping exact substring matches in line order.
+///
+/// Results use UTF-8 byte offsets with inclusive `start` and exclusive `end`.
+/// Empty queries return no matches. When `case_sensitive` is `false`, both sides
+/// use ASCII lowercase conversion; the query is not trimmed.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{terminal_search_matches, TerminalLine};
+/// let lines = [TerminalLine::new("Cargo CHECK"), TerminalLine::new("unchecked")];
+/// let hits = terminal_search_matches(&lines, "check", false);
+/// assert_eq!(hits.iter().map(|hit| hit.line).collect::<Vec<_>>(), vec![0, 1]);
+/// assert!(terminal_search_matches(&lines, "Check", true).is_empty());
+/// ```
 pub fn terminal_search_matches(
     lines: &[TerminalLine],
     query: &str,
@@ -1131,6 +1880,9 @@ pub fn terminal_search_matches(
     matches
 }
 
+/// Paints a proportional vertical scrollbar only for overflowing content.
+///
+/// The thumb has a 24-pixel preferred minimum capped by track height.
 fn paint_terminal_scrollbar(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -1176,6 +1928,7 @@ fn paint_terminal_scrollbar(
 }
 
 #[cfg(test)]
+/// Buffer, chunking, search, and selection regression scenarios.
 mod tests {
     use super::*;
 

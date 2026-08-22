@@ -7,9 +7,22 @@ use std::time::Duration;
 
 use super::{NativeOverlayError, NativeOverlayRect};
 
+/// Maximum synchronous wait for worker startup, catalogue, show, or hide replies.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(6);
+/// Thickness of the marker perimeter in compositor logical pixels.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_winit::NativeCalibrationMarkerSpec::new(1, 0)
+///     .pixel_role(100, 100, 4, 50),
+///     ailloli_ui_winit::NativeCalibrationMarkerPixel::Border);
+/// ```
 pub const CALIBRATION_BORDER_LOGICAL_PX: u32 = 5;
 
+/// Reduces a positive integer ratio using Euclid's algorithm.
+///
+/// Zero in either component is invalid and returns `None`.
 fn reduced_ratio(numerator: u32, denominator: u32) -> Option<(u32, u32)> {
     if numerator == 0 || denominator == 0 {
         return None;
@@ -24,13 +37,37 @@ fn reduced_ratio(numerator: u32, denominator: u32) -> Option<(u32, u32)> {
     Some((numerator / left, denominator / left))
 }
 
+/// Exact positive rational scale from logical output units to physical pixels.
+///
+/// Catalogue snapshots reduce the fraction to lowest terms. The public fields
+/// permit construction of zero values, but such values are not emitted by the
+/// native probe.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::NativeOutputScale;
+/// let scale = NativeOutputScale::integer(2);
+/// assert_eq!((scale.numerator, scale.denominator), (2, 1));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeOutputScale {
+    /// Physical-pixel numerator of the reduced scale ratio.
     pub numerator: u32,
+    /// Logical-unit denominator of the reduced scale ratio.
     pub denominator: u32,
 }
 
+/// Integer-scale construction.
 impl NativeOutputScale {
+    /// Creates the exact ratio `value / 1` without validation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let scale = ailloli_ui_winit::NativeOutputScale::integer(3);
+    /// assert_eq!(scale.denominator, 1);
+    /// ```
     pub const fn integer(value: u32) -> Self {
         Self {
             numerator: value,
@@ -39,42 +76,132 @@ impl NativeOutputScale {
     }
 }
 
+/// Native output transform reported by the compositor.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::NativeOutputTransform;
+/// let transform = NativeOutputTransform::Rotate90;
+/// assert_ne!(transform, NativeOutputTransform::Normal);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeOutputTransform {
+    /// No rotation or reflection.
     Normal,
+    /// Clockwise quarter turn.
     Rotate90,
+    /// Half turn.
     Rotate180,
+    /// Clockwise three-quarter turn.
     Rotate270,
+    /// Reflected without rotation.
     Flipped,
+    /// Reflected and rotated by 90 degrees.
     Flipped90,
+    /// Reflected and rotated by 180 degrees.
     Flipped180,
+    /// Reflected and rotated by 270 degrees.
     Flipped270,
+    /// Backend value was unavailable or not recognized.
     Unknown,
 }
 
+/// One output in a generation-stamped native compositor catalogue.
+///
+/// The logical rectangle drives exact matching. Physical dimensions are pixels;
+/// scale is a reduced rational; the fingerprint is stable only for the supplied
+/// metadata and is not a hardware authentication token.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::{NativeOutputDescriptor, NativeOutputScale, NativeOutputTransform};
+/// use ailloli_ui_winit::native_overlay::NativeOverlayRect;
+/// let output = NativeOutputDescriptor {
+///     fingerprint: "demo".into(), output_name: Some("DP-1".into()),
+///     logical_rect: NativeOverlayRect::new(0.0, 0.0, 1920.0, 1080.0),
+///     physical_width_px: 3840, physical_height_px: 2160,
+///     scale: NativeOutputScale::integer(2),
+///     transform: NativeOutputTransform::Normal, catalog_generation: 7,
+/// };
+/// assert_eq!(output.physical_width_px, 3840);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeOutputDescriptor {
+    /// Deterministic hash of the native output metadata in this catalogue.
     pub fingerprint: String,
+    /// Stable connector/name when the compositor exposes one.
     pub output_name: Option<String>,
+    /// Exact compositor logical desktop rectangle.
     pub logical_rect: NativeOverlayRect,
+    /// Native output width in physical pixels.
     pub physical_width_px: u32,
+    /// Native output height in physical pixels.
     pub physical_height_px: u32,
+    /// Reduced physical-to-logical scale ratio.
     pub scale: NativeOutputScale,
+    /// Rotation/reflection applied by the compositor.
     pub transform: NativeOutputTransform,
+    /// Monotonic service generation for detecting stale descriptors.
     pub catalog_generation: u64,
 }
 
+/// Deterministic marker identity used to correlate a native output with a capture.
+///
+/// A nonce distinguishes calibration attempts and `candidate_ordinal`
+/// distinguishes outputs within one attempt. Both values feed the asymmetric
+/// perimeter signature; they are identifiers, not cryptographic secrets.
+///
+/// # Examples
+///
+/// ```
+/// let spec = ailloli_ui_winit::NativeCalibrationMarkerSpec::new(42, 3);
+/// assert_eq!((spec.nonce, spec.candidate_ordinal), (42, 3));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeCalibrationMarkerSpec {
+    /// Attempt-specific signature seed.
     pub nonce: u64,
+    /// Zero-based candidate index mixed into the signature.
     pub candidate_ordinal: u32,
 }
 
+/// Marker construction and expected-pixel classification.
 impl NativeCalibrationMarkerSpec {
+    /// Opaque red RGBA8 color for ordinary perimeter pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui_winit::NativeCalibrationMarkerSpec::BORDER_RGBA, [239, 24, 24, 255]);
+    /// ```
     pub const BORDER_RGBA: [u8; 4] = [239, 24, 24, 255];
+    /// Opaque cyan RGBA8 color for nonce/candidate signature pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui_winit::NativeCalibrationMarkerSpec::SIGNATURE_RGBA, [0, 221, 255, 255]);
+    /// ```
     pub const SIGNATURE_RGBA: [u8; 4] = [0, 221, 255, 255];
+    /// Fully transparent black RGBA8 used outside the perimeter.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui_winit::NativeCalibrationMarkerSpec::TRANSPARENT_RGBA, [0, 0, 0, 0]);
+    /// ```
     pub const TRANSPARENT_RGBA: [u8; 4] = [0, 0, 0, 0];
 
+    /// Creates a deterministic marker specification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let spec = ailloli_ui_winit::NativeCalibrationMarkerSpec::new(9, 2);
+    /// assert_eq!(spec.candidate_ordinal, 2);
+    /// ```
     pub const fn new(nonce: u64, candidate_ordinal: u32) -> Self {
         Self {
             nonce,
@@ -82,6 +209,21 @@ impl NativeCalibrationMarkerSpec {
         }
     }
 
+    /// Classifies one logical marker coordinate.
+    ///
+    /// Coordinates outside the supplied extent and interior pixels are
+    /// transparent. A five-logical-pixel perimeter is split deterministically
+    /// between red border and cyan signature pixels. Saturating arithmetic keeps
+    /// dimensions smaller than twice the border well-defined.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_winit::{NativeCalibrationMarkerPixel, NativeCalibrationMarkerSpec};
+    /// let spec = NativeCalibrationMarkerSpec::new(1, 0);
+    /// assert_eq!(spec.pixel_role(100, 100, 50, 50), NativeCalibrationMarkerPixel::Transparent);
+    /// assert_eq!(spec.pixel_role(100, 100, 100, 0), NativeCalibrationMarkerPixel::Transparent);
+    /// ```
     pub fn pixel_role(
         self,
         logical_width: u32,
@@ -121,6 +263,15 @@ impl NativeCalibrationMarkerSpec {
         }
     }
 
+    /// Returns the exact RGBA8 value expected at one logical marker coordinate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_winit::NativeCalibrationMarkerSpec;
+    /// let spec = NativeCalibrationMarkerSpec::new(1, 0);
+    /// assert_eq!(spec.expected_rgba(100, 100, 50, 50), NativeCalibrationMarkerSpec::TRANSPARENT_RGBA);
+    /// ```
     pub fn expected_rgba(self, logical_width: u32, logical_height: u32, x: u32, y: u32) -> [u8; 4] {
         match self.pixel_role(logical_width, logical_height, x, y) {
             NativeCalibrationMarkerPixel::Transparent => Self::TRANSPARENT_RGBA,
@@ -130,6 +281,7 @@ impl NativeCalibrationMarkerSpec {
     }
 }
 
+/// Selects one of sixteen signature cells along an edge using saturating math.
 fn signature_bit(seed: u64, position: u32, extent: u32, bit_offset: u32) -> bool {
     if extent == 0 {
         return false;
@@ -139,33 +291,66 @@ fn signature_bit(seed: u64, position: u32, extent: u32, bit_offset: u32) -> bool
     ((seed >> bit) & 1) != 0
 }
 
+/// Semantic class of a logical marker pixel.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::NativeCalibrationMarkerPixel;
+/// assert_ne!(NativeCalibrationMarkerPixel::Border, NativeCalibrationMarkerPixel::Signature);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeCalibrationMarkerPixel {
+    /// Fully transparent interior or out-of-bounds pixel.
     Transparent,
+    /// Ordinary opaque red perimeter pixel.
     Border,
+    /// Opaque cyan perimeter pixel encoding the marker identity.
     Signature,
 }
 
 #[cfg(target_os = "linux")]
+/// Unbounded worker commands; synchronous operations pair commands with reply channels.
 enum Command {
+    /// Request a generation-stamped output catalogue.
     Snapshot(mpsc::Sender<Result<Vec<NativeOutputDescriptor>, NativeOverlayError>>),
+    /// Display one marker and acknowledge presentation or failure.
     Show {
         descriptor: NativeOutputDescriptor,
         spec: NativeCalibrationMarkerSpec,
         response: mpsc::Sender<Result<(), NativeOverlayError>>,
     },
+    /// Remove the marker, optionally acknowledging an explicit caller.
     Hide(Option<mpsc::Sender<Result<(), NativeOverlayError>>>),
+    /// Stop the worker and remove any active marker.
     Shutdown,
 }
 
+/// Dedicated native-output probe and calibration-marker worker.
+///
+/// On Linux, connection starts one named thread and each synchronous command
+/// waits at most six seconds. Other platforms return [`NativeOverlayError::Unsupported`].
+/// Dropping or consuming the service sends shutdown and joins the worker.
+///
+/// # Examples
+///
+/// ```no_run
+/// let service: ailloli_ui_winit::NativeOutputProbeService =
+///     ailloli_ui_winit::NativeOutputProbeService::connect().unwrap();
+/// service.shutdown();
+/// ```
 pub struct NativeOutputProbeService {
     #[cfg(target_os = "linux")]
+    /// Unbounded command sender owned by API callers and marker guards.
     commands: mpsc::Sender<Command>,
     #[cfg(target_os = "linux")]
+    /// Join handle consumed exactly once by shutdown or drop.
     worker: Option<JoinHandle<()>>,
 }
 
+/// Hides platform channel details from debug output.
 impl std::fmt::Debug for NativeOutputProbeService {
+    /// Omits worker-channel internals while identifying the service type.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NativeOutputProbeService")
@@ -173,7 +358,22 @@ impl std::fmt::Debug for NativeOutputProbeService {
     }
 }
 
+/// Probe lifecycle and synchronous command interface.
 impl NativeOutputProbeService {
+    /// Connects to the native output protocol and starts the worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` off Linux, or a backend/timeout error if the worker
+    /// cannot start and initialize within six seconds.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let service = ailloli_ui_winit::NativeOutputProbeService::connect()?;
+    /// service.shutdown();
+    /// # Ok::<(), ailloli_ui_winit::NativeOverlayError>(())
+    /// ```
     pub fn connect() -> Result<Self, NativeOverlayError> {
         #[cfg(target_os = "linux")]
         {
@@ -195,6 +395,20 @@ impl NativeOutputProbeService {
         Err(NativeOverlayError::Unsupported)
     }
 
+    /// Returns the current generation-stamped output catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` off Linux, `Closed` if the worker ended, or a
+    /// backend timeout/error if no reply arrives within six seconds.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let service = ailloli_ui_winit::NativeOutputProbeService::connect()?;
+    /// let outputs: Vec<ailloli_ui_winit::NativeOutputDescriptor> = service.snapshot_outputs()?;
+    /// # Ok::<(), ailloli_ui_winit::NativeOverlayError>(())
+    /// ```
     pub fn snapshot_outputs(&self) -> Result<Vec<NativeOutputDescriptor>, NativeOverlayError> {
         #[cfg(target_os = "linux")]
         {
@@ -210,6 +424,28 @@ impl NativeOutputProbeService {
         Err(NativeOverlayError::Unsupported)
     }
 
+    /// Shows a temporary marker for one descriptor and returns its RAII guard.
+    ///
+    /// The worker rejects a descriptor from a stale catalogue generation.
+    /// Success means the compositor acknowledged and the marker buffer was
+    /// presented. Only one marker is active; showing another replaces it.
+    ///
+    /// # Errors
+    ///
+    /// Returns platform, stale-descriptor, channel, timeout, or backend failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let service = ailloli_ui_winit::NativeOutputProbeService::connect()?;
+    /// let output = service.snapshot_outputs()?.remove(0);
+    /// let guard: ailloli_ui_winit::NativeCalibrationMarkerGuard = service.show_marker(
+    ///     &output,
+    ///     ailloli_ui_winit::NativeCalibrationMarkerSpec::new(123, 0),
+    /// )?;
+    /// guard.hide()?;
+    /// # Ok::<(), ailloli_ui_winit::NativeOverlayError>(())
+    /// ```
     pub fn show_marker(
         &self,
         descriptor: &NativeOutputDescriptor,
@@ -240,6 +476,20 @@ impl NativeOutputProbeService {
         }
     }
 
+    /// Explicitly removes the active marker, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns platform, closed-worker, timeout, or backend errors. Hiding when
+    /// no marker is active is successful.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let service = ailloli_ui_winit::NativeOutputProbeService::connect()?;
+    /// service.hide_marker()?;
+    /// # Ok::<(), ailloli_ui_winit::NativeOverlayError>(())
+    /// ```
     pub fn hide_marker(&self) -> Result<(), NativeOverlayError> {
         #[cfg(target_os = "linux")]
         {
@@ -255,10 +505,22 @@ impl NativeOutputProbeService {
         Err(NativeOverlayError::Unsupported)
     }
 
+    /// Sends shutdown and joins the worker before returning.
+    ///
+    /// Command-send and worker-panic failures are deliberately ignored during teardown.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let service = ailloli_ui_winit::NativeOutputProbeService::connect()?;
+    /// service.shutdown();
+    /// # Ok::<(), ailloli_ui_winit::NativeOverlayError>(())
+    /// ```
     pub fn shutdown(mut self) {
         self.shutdown_inner();
     }
 
+    /// Idempotent teardown shared by explicit shutdown and drop.
     fn shutdown_inner(&mut self) {
         #[cfg(target_os = "linux")]
         {
@@ -270,19 +532,37 @@ impl NativeOutputProbeService {
     }
 }
 
+/// Ensures a live probe worker is stopped and joined on scope exit.
 impl Drop for NativeOutputProbeService {
+    /// Requests shutdown and joins the worker at most once.
     fn drop(&mut self) {
         self.shutdown_inner();
     }
 }
 
+/// RAII ownership of one visible native calibration marker.
+///
+/// [`Self::hide`] reports removal failures. Dropping a still-visible guard sends
+/// a best-effort asynchronous hide command and cannot report failure.
+///
+/// # Examples
+///
+/// ```no_run
+/// fn remove(guard: ailloli_ui_winit::NativeCalibrationMarkerGuard) {
+///     guard.hide().unwrap();
+/// }
+/// ```
 pub struct NativeCalibrationMarkerGuard {
     #[cfg(target_os = "linux")]
+    /// Worker command sender used for explicit or best-effort removal.
     commands: mpsc::Sender<Command>,
+    /// Prevents duplicate hide commands after successful explicit removal.
     visible: bool,
 }
 
+/// Reports only whether the marker guard remains visible.
 impl std::fmt::Debug for NativeCalibrationMarkerGuard {
+    /// Exposes only whether the guard still owns a visible marker.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NativeCalibrationMarkerGuard")
@@ -291,7 +571,22 @@ impl std::fmt::Debug for NativeCalibrationMarkerGuard {
     }
 }
 
+/// Explicit marker removal.
 impl NativeCalibrationMarkerGuard {
+    /// Removes the marker and consumes the guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns platform, worker-closure, timeout, or backend failures. An
+    /// already-hidden internal guard is successful.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// fn hide(guard: ailloli_ui_winit::NativeCalibrationMarkerGuard) {
+    ///     guard.hide().unwrap();
+    /// }
+    /// ```
     pub fn hide(mut self) -> Result<(), NativeOverlayError> {
         if !self.visible {
             return Ok(());
@@ -313,7 +608,9 @@ impl NativeCalibrationMarkerGuard {
     }
 }
 
+/// Sends a nonblocking best-effort hide when explicit removal was not requested.
 impl Drop for NativeCalibrationMarkerGuard {
+    /// Sends a nonblocking best-effort hide for a still-visible marker.
     fn drop(&mut self) {
         if !self.visible {
             return;
@@ -325,6 +622,7 @@ impl Drop for NativeCalibrationMarkerGuard {
 }
 
 #[cfg(target_os = "linux")]
+/// Wayland catalogue and temporary layer-shell marker worker implementation.
 mod linux {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -354,6 +652,19 @@ mod linux {
     };
     use crate::{NativeOverlayError, NativeOverlayRect};
 
+    /// Owns the Wayland connection until shutdown, polling protocol events every 20 ms.
+    ///
+    /// Initialization is reported through the capacity-one `ready` channel;
+    /// dropped command/reply receivers are treated as teardown, not panics.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // `connect` starts this worker and waits for its readiness reply.
+    /// let service = ailloli_ui_winit::NativeOutputProbeService::connect()?;
+    /// service.shutdown();
+    /// # Ok::<(), ailloli_ui_winit::NativeOverlayError>(())
+    /// ```
     pub(super) fn run(
         commands: mpsc::Receiver<Command>,
         ready: mpsc::SyncSender<Result<(), NativeOverlayError>>,
@@ -399,30 +710,51 @@ mod linux {
         runtime.hide();
     }
 
+    /// Wayland objects and acknowledgement state for the sole active marker.
     struct ActiveMarker {
+        /// Layer-shell surface spanning the selected output.
         layer: LayerSurface,
+        /// Empty region retained so the marker never intercepts pointer input.
         _input_region: Region,
+        /// Generation-stamped output identity used for stale-catalogue detection.
         descriptor: NativeOutputDescriptor,
+        /// Pixel signature specification.
         spec: NativeCalibrationMarkerSpec,
+        /// Whether layer-shell delivered the expected configure.
         configured: bool,
+        /// Whether a frame callback confirmed presentation.
         presented: bool,
+        /// Deferred configure/draw failure returned to the command caller.
         failure: Option<String>,
     }
 
+    /// Worker-owned Wayland globals, output catalogue, shared-memory pool, and marker.
     struct Runtime {
+        /// Registry state required by toolkit delegation.
         registry_state: RegistryState,
+        /// Live compositor output metadata.
         output_state: OutputState,
+        /// Surface factory.
         compositor: CompositorState,
+        /// Layer-shell global used for overlay surfaces.
         layer_shell: LayerShell,
+        /// Shared-memory global paired with `pool`.
         shm: Shm,
+        /// Reusable shared-memory allocation pool, initially four bytes.
         pool: SlotPool,
+        /// Saturating catalogue revision; zero precedes the first snapshot.
         generation: u64,
+        /// Sorted semantic output signature from the previous refresh.
         catalog_signature: Vec<String>,
+        /// Whether output callbacks require rebuilding the signature.
         catalog_dirty: bool,
+        /// Sole active marker; `None` means no native calibration surface.
         active: Option<ActiveMarker>,
     }
 
+    /// Wayland setup, command dispatch, catalogue maintenance, and marker rendering.
     impl Runtime {
+        /// Connects required globals, performs two metadata round trips, and snapshots outputs.
         fn connect() -> Result<(wayland_client::EventQueue<Self>, Self), NativeOverlayError> {
             let connection = Connection::connect_to_env()
                 .map_err(|error| NativeOverlayError::Backend(error.to_string()))?;
@@ -459,6 +791,7 @@ mod linux {
             Ok((event_queue, runtime))
         }
 
+        /// Executes one worker command; returns `false` only for shutdown.
         fn handle(
             &mut self,
             command: Command,
@@ -488,6 +821,7 @@ mod linux {
             true
         }
 
+        /// Materializes descriptors for outputs with complete valid metadata.
         fn descriptors(&self) -> Vec<NativeOutputDescriptor> {
             self.output_state
                 .outputs()
@@ -495,6 +829,7 @@ mod linux {
                 .collect()
         }
 
+        /// Recomputes a sorted signature and saturating generation after output changes.
         fn refresh_catalogue(&mut self) {
             if !self.catalog_dirty && !self.catalog_signature.is_empty() {
                 return;
@@ -525,6 +860,10 @@ mod linux {
             self.catalog_dirty = false;
         }
 
+        /// Converts complete positive Wayland metadata into one descriptor.
+        ///
+        /// Rotated logical axes are swapped before scale calculation. Unequal
+        /// horizontal/vertical ratios fall back to the compositor's integer scale.
         fn descriptor_for(&self, output: &wl_output::WlOutput) -> Option<NativeOutputDescriptor> {
             let info = self.output_state.info(output)?;
             let (x, y) = info.logical_position?;
@@ -584,6 +923,9 @@ mod linux {
             })
         }
 
+        /// Replaces the active marker and waits up to eight protocol round trips for presentation.
+        ///
+        /// The descriptor must still exactly match one output in the current generation.
         fn show(
             &mut self,
             descriptor: NativeOutputDescriptor,
@@ -666,6 +1008,7 @@ mod linux {
             ))
         }
 
+        /// Detaches the active buffer and commits removal, if a marker exists.
         fn hide(&mut self) {
             if let Some(active) = self.active.take() {
                 active.layer.wl_surface().attach(None, 0, 0);
@@ -673,6 +1016,9 @@ mod linux {
             }
         }
 
+        /// Rasterizes the logical marker into scaled BGRA shared memory and commits it.
+        ///
+        /// Checked arithmetic reports dimension/stride overflow before allocation.
         fn draw_active(&mut self, qh: &QueueHandle<Self>) -> Result<(), NativeOverlayError> {
             let active = self.active.as_mut().ok_or(NativeOverlayError::Closed)?;
             let logical_width = active.descriptor.logical_rect.width as u32;
@@ -724,7 +1070,9 @@ mod linux {
         }
     }
 
+    /// Tracks marker presentation through compositor frame callbacks.
     impl CompositorHandler for Runtime {
+        /// Ignores surface scale changes because the selected descriptor owns calibration scale.
         fn scale_factor_changed(
             &mut self,
             _connection: &Connection,
@@ -734,6 +1082,7 @@ mod linux {
         ) {
         }
 
+        /// Ignores live transform changes; output callbacks invalidate the catalogue instead.
         fn transform_changed(
             &mut self,
             _connection: &Connection,
@@ -743,6 +1092,7 @@ mod linux {
         ) {
         }
 
+        /// Marks the active marker presented when its requested frame callback arrives.
         fn frame(
             &mut self,
             _connection: &Connection,
@@ -757,6 +1107,7 @@ mod linux {
             }
         }
 
+        /// Ignores surface entry because the layer surface is pinned to one selected output.
         fn surface_enter(
             &mut self,
             _connection: &Connection,
@@ -766,6 +1117,7 @@ mod linux {
         ) {
         }
 
+        /// Ignores surface leave; closure and output callbacks handle invalidation.
         fn surface_leave(
             &mut self,
             _connection: &Connection,
@@ -776,11 +1128,14 @@ mod linux {
         }
     }
 
+    /// Marks the catalogue dirty on every output lifecycle or metadata change.
     impl OutputHandler for Runtime {
+        /// Returns mutable toolkit output state for delegated dispatch.
         fn output_state(&mut self) -> &mut OutputState {
             &mut self.output_state
         }
 
+        /// Invalidates the catalogue when an output appears.
         fn new_output(
             &mut self,
             _connection: &Connection,
@@ -790,6 +1145,7 @@ mod linux {
             self.catalog_dirty = true;
         }
 
+        /// Invalidates the catalogue when output metadata changes.
         fn update_output(
             &mut self,
             _connection: &Connection,
@@ -799,6 +1155,7 @@ mod linux {
             self.catalog_dirty = true;
         }
 
+        /// Invalidates the catalogue when an output disappears.
         fn output_destroyed(
             &mut self,
             _connection: &Connection,
@@ -809,7 +1166,9 @@ mod linux {
         }
     }
 
+    /// Validates layer configure size, initiates drawing, and observes closure.
     impl LayerShellHandler for Runtime {
+        /// Clears the active marker when the compositor closes its layer surface.
         fn closed(
             &mut self,
             _connection: &Connection,
@@ -825,6 +1184,7 @@ mod linux {
             }
         }
 
+        /// Accepts only the expected logical output size, then draws exactly once.
         fn configure(
             &mut self,
             _connection: &Connection,
@@ -859,7 +1219,9 @@ mod linux {
         }
     }
 
+    /// Exposes the bound shared-memory global to delegated toolkit handlers.
     impl ShmHandler for Runtime {
+        /// Returns mutable shared-memory state.
         fn shm_state(&mut self) -> &mut Shm {
             &mut self.shm
         }
@@ -871,7 +1233,9 @@ mod linux {
     delegate_shm!(Runtime);
     delegate_registry!(Runtime);
 
+    /// Exposes registry state and subscribes delegated output handlers.
     impl ProvidesRegistryState for Runtime {
+        /// Returns mutable registry state.
         fn registry(&mut self) -> &mut RegistryState {
             &mut self.registry_state
         }
@@ -879,6 +1243,7 @@ mod linux {
         registry_handlers![OutputState];
     }
 
+    /// Maps every known Wayland transform and preserves future values as `Unknown`.
     fn transform(value: wl_output::Transform) -> NativeOutputTransform {
         match value {
             wl_output::Transform::Normal => NativeOutputTransform::Normal,
@@ -895,6 +1260,7 @@ mod linux {
 }
 
 #[cfg(test)]
+/// Marker border width, asymmetry, and nonce/candidate binding scenarios.
 mod tests {
     use super::*;
 

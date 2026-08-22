@@ -1,3 +1,5 @@
+//! Standalone radio buttons and typed single-selection radio groups.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized, LayoutExt};
@@ -16,39 +18,98 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawText};
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in radio geometry sizes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::RadioSize;
+/// let sizes = [RadioSize::Compact, RadioSize::Default];
+/// assert_eq!(sizes.len(), 2);
+/// assert_eq!(RadioSize::default(), RadioSize::Default);
+/// ```
 pub enum RadioSize {
+    /// 14-pixel outer circle in a 24-pixel option row.
     Compact,
+    /// 16-pixel outer circle in a 28-pixel option row; the default.
     #[default]
     Default,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Layout direction for a [`RadioGroup`].
+///
+/// Keyboard arrows are direction-independent: Down/Right move forward and
+/// Up/Left move backward.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::RadioDirection;
+/// let directions = [RadioDirection::Vertical, RadioDirection::Horizontal];
+/// assert_eq!(directions.len(), 2);
+/// assert_eq!(RadioDirection::default(), RadioDirection::Vertical);
+/// ```
 pub enum RadioDirection {
+    /// Stack full-width option rows top-to-bottom; the default.
     #[default]
     Vertical,
+    /// Place content-width option rows left-to-right.
     Horizontal,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved radio colors, typography, and logical-pixel geometry.
+///
+/// Custom geometry is not validated; non-finite values can propagate into
+/// layout/paint calculations.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{RadioSize, RadioStyle};
+/// let style = RadioStyle::from_theme(Theme::dark(), RadioSize::Compact);
+/// assert_eq!((style.outer_size, style.dot_size, style.option_height), (14.0, 7.0, 24.0));
+/// ```
 pub struct RadioStyle {
+    /// Resting unchecked outer-circle fill.
     pub outer_fill: Color,
+    /// Hovered unchecked outer-circle fill.
     pub outer_fill_hovered: Color,
+    /// Pressed unchecked outer-circle fill.
     pub outer_fill_pressed: Color,
+    /// Checked outer-circle fill.
     pub selected_fill: Color,
+    /// Checked inner-dot fill.
     pub dot_fill: Color,
+    /// Disabled outer-circle fill.
     pub disabled_fill: Color,
+    /// Unchecked outer-circle border.
     pub border: Border,
+    /// Checked outer-circle border.
     pub selected_border: Border,
+    /// Focus border around the outer circle.
     pub focus_ring: Border,
+    /// Enabled label style.
     pub text: TextStyle,
+    /// Disabled label style.
     pub disabled_text: TextStyle,
+    /// Outer-circle diameter in logical pixels.
     pub outer_size: f32,
+    /// Inner-dot diameter in logical pixels.
     pub dot_size: f32,
+    /// Per-option row height in logical pixels.
     pub option_height: f32,
+    /// Space between circle and label in logical pixels.
     pub label_gap: f32,
+    /// Space between group options in logical pixels.
     pub option_gap: f32,
+    /// Horizontal inset before circle and after label in logical pixels.
     pub option_padding_x: f32,
+    /// Focus-ring inflation beyond the outer circle in logical pixels.
     pub focus_ring_offset: f32,
+    /// Alpha multiplier applied to disabled visuals.
     pub disabled_opacity: f32,
 }
 
@@ -59,6 +120,17 @@ impl Default for RadioStyle {
 }
 
 impl RadioStyle {
+    /// Resolves radio styling from a theme and built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{RadioSize, RadioStyle};
+    /// let style = RadioStyle::from_theme(Theme::default(), RadioSize::Default);
+    /// assert_eq!((style.outer_size, style.dot_size), (16.0, 8.0));
+    /// assert_eq!((style.label_gap, style.option_gap), (8.0, 6.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: RadioSize) -> Self {
         let palette = theme.palette();
         let (outer_size, dot_size, option_height, text_size) = match size {
@@ -92,6 +164,7 @@ impl RadioStyle {
         }
     }
 
+    /// Inflates layout visual bounds for a visible focus ring.
     fn visual_bounds(&self, rect: Rect) -> Rect {
         if self.focus_ring.is_visible() {
             let inflate = self.focus_ring_offset + max_border_width(self.focus_ring);
@@ -103,13 +176,37 @@ impl RadioStyle {
 }
 
 #[derive(Clone)]
+/// One typed value, label, and live disabled state in a radio group.
+///
+/// Duplicate equal values are ambiguous: every equal option paints checked,
+/// while selection lookup/navigation uses the first equal option.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::RadioOption;
+/// let option = RadioOption::new("daily", "Daily");
+/// let _ = option;
+/// ```
 pub struct RadioOption<T> {
+    /// Selection identity and emitted value.
     value: T,
+    /// Unwrapped visible label.
     label: String,
+    /// Live per-option disabled state.
     disabled: Binding<bool>,
 }
 
 impl<T> RadioOption<T> {
+    /// Creates an enabled typed option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioOption;
+    /// let option = RadioOption::new(1, "One");
+    /// let _ = option;
+    /// ```
     pub fn new(value: T, label: impl Into<String>) -> Self {
         Self {
             value,
@@ -118,30 +215,82 @@ impl<T> RadioOption<T> {
         }
     }
 
+    /// Sets static or reactive per-option disabled state.
+    ///
+    /// Disabled options remain visible and may paint checked but are skipped by
+    /// navigation and cannot activate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioOption;
+    /// let option = RadioOption::new(1, "One").disabled(true);
+    /// let _ = option;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets per-option disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::RadioOption;
+    /// let option = RadioOption::new(1, "One").disabled_signal(Memo::new(|| false));
+    /// let _ = option;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 }
 
+/// A standalone boolean radio button.
+///
+/// `checked` is controlled and `bind` is two-way. Activating an unchecked button
+/// writes `true` when bound and/or runs the action; activating a checked button
+/// is a no-op, so this widget never writes `false`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::RadioButton;
+/// let radio: RadioButton<()> = RadioButton::new("Enable feature").checked(true);
+/// let _ = radio;
+/// ```
 pub struct RadioButton<A = ()> {
+    /// Layout configuration applied to intrinsic row geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Unwrapped visible label.
     label: String,
+    /// Static or reactive controlled checked state.
     checked: Binding<bool>,
+    /// Writable checked signal in bound mode.
     bound: Option<Signal<bool>>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Optional action run when selecting an unchecked button.
     on_select: Option<ClickAction<A>>,
+    /// Resolved paint and geometry.
     style: RadioStyle,
 }
 
 crate::impl_layout_builders!(RadioButton);
 
 impl<A: 'static> RadioButton<A> {
+    /// Creates an enabled unchecked button with no action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioButton;
+    /// let radio: RadioButton<()> = RadioButton::new("Choice");
+    /// let _ = radio;
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -155,12 +304,37 @@ impl<A: 'static> RadioButton<A> {
         }
     }
 
+    /// Sets controlled static/reactive checked state and clears bound mode.
+    ///
+    /// The widget cannot mutate this source; use an action to notify the owner.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioButton;
+    /// let radio: RadioButton<()> = RadioButton::new("Choice").checked(true);
+    /// let _ = radio;
+    /// ```
     pub fn checked(mut self, checked: impl Into<Binding<bool>>) -> Self {
         self.checked = checked.into();
         self.bound = None;
         self
     }
 
+    /// Installs a writable boolean signal for two-way selection.
+    ///
+    /// Activation only writes `true`; it never toggles off.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::RadioButton;
+    /// let checked = Signal::new(Rc::new(RefCell::new(false)), Rc::new(|| {}));
+    /// let radio: RadioButton<()> = RadioButton::new("Choice").bind(checked);
+    /// let _ = radio;
+    /// ```
     pub fn bind(mut self, checked: impl Into<Signal<bool>>) -> Self {
         let signal = checked.into();
         self.checked = Binding::Signal(signal.clone());
@@ -168,30 +342,91 @@ impl<A: 'static> RadioButton<A> {
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled buttons are not focusable and ignore activation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioButton;
+    /// let radio: RadioButton<()> = RadioButton::new("Unavailable").disabled(true);
+    /// let _ = radio;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::RadioButton;
+    /// let radio: RadioButton<()> = RadioButton::new("Choice").disabled_signal(Memo::new(|| false));
+    /// let _ = radio;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Replaces complete colors and intrinsic geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RadioButton, RadioStyle};
+    /// let radio: RadioButton<()> = RadioButton::new("Choice").radio_style(RadioStyle::default());
+    /// let _ = radio;
+    /// ```
     pub fn radio_style(mut self, style: RadioStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RadioButton, RadioSize};
+    /// let radio: RadioButton<()> = RadioButton::new("Choice").radio_size(RadioSize::Compact);
+    /// let _ = radio;
+    /// ```
     pub fn radio_size(mut self, size: RadioSize) -> Self {
         self.style = RadioStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Installs the action run when an unchecked button is selected.
+    ///
+    /// A later call replaces it. Checked activation remains a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioButton;
+    /// #[derive(Clone)]
+    /// enum Action { Select }
+    /// let radio = RadioButton::new("Choice").on_select(Action::Select);
+    /// let _ = radio;
+    /// ```
     pub fn on_select(mut self, action: impl IntoClickAction<A>) -> Self {
         self.on_select = Some(action.into_click_action());
         self
     }
 
+    /// Installs a context-aware selection handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioButton;
+    /// let radio = RadioButton::<()>::new("Choice").on_select_ctx(|_ctx| {});
+    /// let _ = radio;
+    /// ```
     pub fn on_select_ctx(mut self, f: impl Fn(&mut EventCtx<A>) + 'static) -> Self {
         self.on_select = Some(ClickAction::handler(f));
         self
@@ -204,17 +439,44 @@ impl<A: 'static> Default for RadioButton<A> {
     }
 }
 
+/// Shared typed group-selection callback.
 type ChangeHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
 
+/// A typed single-selection set of radio options.
+///
+/// Selection can be controlled or two-way bound. Without a writable signal or
+/// callback the group is read-only. Arrows wrap and skip disabled options;
+/// Home/End select first/last. With no matching value, forward movement and
+/// Enter/Space choose first while backward movement chooses last.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::RadioGroup;
+/// let group: RadioGroup<&str, ()> = RadioGroup::new()
+///     .option("daily", "Daily")
+///     .option("weekly", "Weekly")
+///     .selected("daily");
+/// let _ = group;
+/// ```
 pub struct RadioGroup<T, A = ()> {
+    /// Layout configuration applied to group geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Options in display/navigation order.
     options: Vec<RadioOption<T>>,
+    /// Optional controlled or bound selection.
     selected: Option<Binding<T>>,
+    /// Writable selected-value signal in bound mode.
     bound: Option<Signal<T>>,
+    /// Live global disabled state.
     disabled: Binding<bool>,
+    /// Vertical or horizontal option flow.
     direction: RadioDirection,
+    /// Optional change notification.
     on_change: Option<ChangeHandler<T, A>>,
+    /// Resolved paint and option geometry.
     style: RadioStyle,
 }
 
@@ -231,6 +493,17 @@ impl<T: Clone + PartialEq + 'static, A: 'static> LayoutExt for RadioGroup<T, A> 
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroup<T, A> {
+    /// Creates an enabled empty vertical group with no selection/callback.
+    ///
+    /// Empty groups measure zero by zero and are not focusable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new();
+    /// let _ = group;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -245,22 +518,65 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroup<T, A> {
         }
     }
 
+    /// Appends an enabled typed option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().option(1, "One");
+    /// let _ = group;
+    /// ```
     pub fn option(mut self, value: T, label: impl Into<String>) -> Self {
         self.options.push(RadioOption::new(value, label));
         self
     }
 
+    /// Appends a fully configured option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RadioGroup, RadioOption};
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new()
+    ///     .radio_option(RadioOption::new(1, "One").disabled(true));
+    /// let _ = group;
+    /// ```
     pub fn radio_option(mut self, option: RadioOption<T>) -> Self {
         self.options.push(option);
         self
     }
 
+    /// Sets controlled static/reactive selection and clears bound mode.
+    ///
+    /// A value absent from options paints no selection. Equal duplicate values
+    /// may paint multiple checked options.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().option(1, "One").selected(1);
+    /// let _ = group;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<T>>) -> Self {
         self.selected = Some(selected.into());
         self.bound = None;
         self
     }
 
+    /// Installs a writable signal for two-way group selection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let selected = Signal::new(Rc::new(RefCell::new(1)), Rc::new(|| {}));
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().option(1, "One").bind(selected);
+    /// let _ = group;
+    /// ```
     pub fn bind(mut self, selected: impl Into<Signal<T>>) -> Self {
         let signal = selected.into();
         self.selected = Some(Binding::Signal(signal.clone()));
@@ -268,132 +584,355 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroup<T, A> {
         self
     }
 
+    /// Sets static or reactive global disabled state.
+    ///
+    /// Disabled groups are not focusable and ignore interaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().disabled(true);
+    /// let _ = group;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets global disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().disabled_signal(Memo::new(|| false));
+    /// let _ = group;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets vertical or horizontal option flow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RadioDirection, RadioGroup};
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().direction(RadioDirection::Horizontal);
+    /// let _ = group;
+    /// ```
     pub fn direction(mut self, direction: RadioDirection) -> Self {
         self.direction = direction;
         self
     }
 
+    /// Selects vertical top-to-bottom option flow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().vertical();
+    /// let _ = group;
+    /// ```
     pub fn vertical(mut self) -> Self {
         self.direction = RadioDirection::Vertical;
         self
     }
 
+    /// Selects horizontal left-to-right option flow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().horizontal();
+    /// let _ = group;
+    /// ```
     pub fn horizontal(mut self) -> Self {
         self.direction = RadioDirection::Horizontal;
         self
     }
 
+    /// Replaces complete colors and option geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RadioGroup, RadioStyle};
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().radio_style(RadioStyle::default());
+    /// let _ = group;
+    /// ```
     pub fn radio_style(mut self, style: RadioStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RadioGroup, RadioSize};
+    /// let group: RadioGroup<i32, ()> = RadioGroup::new().radio_size(RadioSize::Compact);
+    /// let _ = group;
+    /// ```
     pub fn radio_size(mut self, size: RadioSize) -> Self {
         self.style = RadioStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Maps each distinct enabled selection to an application action.
+    ///
+    /// The callback does not make a controlled source writable; use [`Self::bind`]
+    /// for two-way state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// #[derive(Clone)]
+    /// enum Action { Selected(i32) }
+    /// let group = RadioGroup::new().option(1, "One").on_change(Action::Selected);
+    /// let _ = group;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(T) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Installs a context-aware selection handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let group = RadioGroup::<i32, ()>::new()
+    ///     .option(1, "One")
+    ///     .on_change_ctx(|_ctx, value| assert_eq!(value, 1));
+    /// let _ = group;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, T) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 
+    /// Sets preferred width from logical pixels or an explicit `Length`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().width(240.0);
+    /// ```
     pub fn width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.width = value.into();
         self
     }
 
+    /// Sets preferred height from logical pixels or an explicit `Length`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().height(120.0);
+    /// ```
     pub fn height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.height = value.into();
         self
     }
 
+    /// Sets the minimum resolved width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().min_width(120.0);
+    /// ```
     pub fn min_width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.min_width = value.into();
         self
     }
 
+    /// Sets the maximum resolved width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().max_width(400.0);
+    /// ```
     pub fn max_width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.max_width = value.into();
         self
     }
 
+    /// Sets the minimum resolved height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().min_height(28.0);
+    /// ```
     pub fn min_height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.min_height = value.into();
         self
     }
 
+    /// Sets the maximum resolved height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().max_height(300.0);
+    /// ```
     pub fn max_height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.max_height = value.into();
         self
     }
 
+    /// Marks both axes as parent-fill.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().fill();
+    /// ```
     pub fn fill(mut self) -> Self {
         self.layout.width = ailloli_ui_core::style::Length::Fill;
         self.layout.height = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Marks width as parent-fill while preserving height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().fill_width();
+    /// ```
     pub fn fill_width(mut self) -> Self {
         self.layout.width = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Marks height as parent-fill while preserving width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().fill_height();
+    /// ```
     pub fn fill_height(mut self) -> Self {
         self.layout.height = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Sets the same logical-pixel margin on every side.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().margin(8.0);
+    /// ```
     pub fn margin(mut self, value: f32) -> Self {
         self.layout = self.layout.margin(value);
         self
     }
 
+    /// Sets the same logical-pixel layout padding on every side.
+    ///
+    /// This is separate from `RadioStyle::option_padding_x`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().padding(4.0);
+    /// ```
     pub fn padding(mut self, value: f32) -> Self {
         self.layout = self.layout.padding(value);
         self
     }
 
+    /// Sets the dimensionless parent flex-grow weight to one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().flex_grow();
+    /// ```
     pub fn flex_grow(mut self) -> Self {
         self.flex_item = self.flex_item.flex_grow(1.0);
         self
     }
 
+    /// Sets the dimensionless parent flex-grow weight.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().flex_grow_by(2.0);
+    /// ```
     pub fn flex_grow_by(mut self, value: f32) -> Self {
         self.flex_item = self.flex_item.flex_grow(value);
         self
     }
 
+    /// Sets the dimensionless parent flex-shrink weight.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().flex_shrink(0.5);
+    /// ```
     pub fn flex_shrink(mut self, value: f32) -> Self {
         self.flex_item = self.flex_item.flex_shrink(value);
         self
     }
 
+    /// Sets the preferred parent main-axis flex basis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().flex_basis(160.0);
+    /// ```
     pub fn flex_basis(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.flex_item = self.flex_item.flex_basis(value);
         self
     }
 
+    /// Overrides this item's parent cross-axis alignment.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::AlignItems;
+    /// use ailloli_ui_widgets::controls::RadioGroup;
+    /// let _ = RadioGroup::<i32, ()>::new().align_self(AlignItems::End);
+    /// ```
     pub fn align_self(mut self, value: ailloli_ui_core::style::AlignItems) -> Self {
         self.flex_item = self.flex_item.align_self(value);
         self
     }
 }
 
+/// Retained standalone radio widget.
 struct RadioButtonWidget<A> {
     layout: LayoutStyle,
     label: String,
@@ -404,6 +943,7 @@ struct RadioButtonWidget<A> {
     style: RadioStyle,
 }
 
+/// Retained typed group widget implementing navigation and painting.
 struct RadioGroupWidget<T, A> {
     layout: LayoutStyle,
     options: Vec<RadioOption<T>>,
@@ -416,11 +956,17 @@ struct RadioGroupWidget<T, A> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Complete interaction flags for painting one radio option.
 struct RadioPaintState {
+    /// Whether its value is selected.
     checked: bool,
+    /// Whether the button/group option is disabled.
     disabled: bool,
+    /// Whether to paint focus around its circle.
     focused: bool,
+    /// Whether the standalone button is hovered.
     hovered: bool,
+    /// Whether the standalone button is pressed.
     pressed: bool,
 }
 
@@ -512,6 +1058,7 @@ impl<A: 'static> Widget<A> for RadioButtonWidget<A> {
 }
 
 impl<A: 'static> RadioButtonWidget<A> {
+    /// Writes `true`/runs the action for a writable unchecked button.
     fn select(&self, ctx: &mut EventCtx<A>) {
         if self.checked.read() || (self.bound.is_none() && self.on_select.is_none()) {
             return;
@@ -640,10 +1187,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RadioGroupWidget<
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
+    /// Reads optional controlled or bound selection.
     fn selected_value(&self) -> Option<T> {
         self.selected.as_ref().map(Binding::read)
     }
 
+    /// Finds the first option equal to a selected value.
     fn selected_index(&self, selected: Option<&T>) -> Option<usize> {
         let selected = selected?;
         self.options
@@ -651,6 +1200,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
             .position(|option| &option.value == selected)
     }
 
+    /// Chooses the enabled selection or first enabled option for focus painting.
     fn focus_index(&self, selected: Option<&T>, disabled: bool) -> Option<usize> {
         if disabled {
             None
@@ -659,12 +1209,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
         }
     }
 
+    /// Hit-tests current direction-specific option rectangles.
     fn option_at(&self, bounds: Rect, x: f32, y: f32) -> Option<usize> {
         option_rects(bounds, &self.options, &self.style, self.direction)
             .into_iter()
             .position(|rect| rect.contains(x, y))
     }
 
+    /// Writes/notifies a distinct enabled option when an output path exists.
     fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
         let Some(option) = self.options.get(index) else {
             return;
@@ -694,12 +1246,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Activates the enabled selection or falls back to first enabled.
     fn activation_index(&self, selected: Option<&T>) -> Option<usize> {
         self.selected_index(selected)
             .filter(|idx| self.option_enabled(*idx))
             .or_else(|| self.first_enabled_index())
     }
 
+    /// Wraps forward through enabled options.
     fn next_enabled_index(&self, selected: Option<&T>) -> Option<usize> {
         let len = self.options.len();
         if len == 0 {
@@ -711,6 +1265,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
             .find(|idx| self.option_enabled(*idx))
     }
 
+    /// Wraps backward through enabled options.
     fn previous_enabled_index(&self, selected: Option<&T>) -> Option<usize> {
         let len = self.options.len();
         if len == 0 {
@@ -722,6 +1277,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
             .find(|idx| self.option_enabled(*idx))
     }
 
+    /// Returns the first enabled option index.
     fn first_enabled_index(&self) -> Option<usize> {
         self.options
             .iter()
@@ -729,6 +1285,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
             .find_map(|(idx, _)| self.option_enabled(idx).then_some(idx))
     }
 
+    /// Returns the last enabled option index.
     fn last_enabled_index(&self) -> Option<usize> {
         self.options
             .iter()
@@ -737,6 +1294,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroupWidget<T, A> {
             .find_map(|(idx, _)| self.option_enabled(idx).then_some(idx))
     }
 
+    /// Reads whether an indexed option exists and is enabled.
     fn option_enabled(&self, index: usize) -> bool {
         self.options
             .get(index)
@@ -781,6 +1339,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for RadioGroup<T, A
     }
 }
 
+/// Measures vertical max-width/summed-height or horizontal summed-width layout.
 fn group_intrinsic_size<T>(
     options: &[RadioOption<T>],
     style: &RadioStyle,
@@ -811,6 +1370,7 @@ fn group_intrinsic_size<T>(
     }
 }
 
+/// Generates full-width vertical or content-width horizontal option rectangles.
 fn option_rects<T>(
     bounds: Rect,
     options: &[RadioOption<T>],
@@ -838,10 +1398,12 @@ fn option_rects<T>(
     rects
 }
 
+/// Adds horizontal insets, circle, label gap, and measured label width.
 fn option_width(label_width: f32, style: &RadioStyle) -> f32 {
     style.option_padding_x * 2.0 + style.outer_size + style.label_gap + label_width
 }
 
+/// Paints one radio circle, border, dot, focus ring, and label.
 fn paint_radio_option(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -910,6 +1472,7 @@ fn paint_radio_option(
     paint_label(ctx, label, bounds, style, state.disabled, opacity);
 }
 
+/// Centers the outer circle vertically at the leading option inset.
 fn radio_outer_rect(bounds: Rect, style: &RadioStyle) -> Rect {
     Rect::new(
         bounds.x + style.option_padding_x,
@@ -919,6 +1482,7 @@ fn radio_outer_rect(bounds: Rect, style: &RadioStyle) -> Rect {
     )
 }
 
+/// Centers a square of `size` within bounds.
 fn centered_square(bounds: Rect, size: f32) -> Rect {
     Rect::new(
         bounds.x + (bounds.w - size) * 0.5,
@@ -928,6 +1492,7 @@ fn centered_square(bounds: Rect, size: f32) -> Rect {
     )
 }
 
+/// Shapes and vertically centers one unwrapped enabled/disabled label.
 fn paint_label(
     ctx: &mut PaintCtx<'_>,
     label: &str,
@@ -965,6 +1530,7 @@ fn paint_label(
     }));
 }
 
+/// Measures unwrapped text through the text system or fallback estimate.
 fn measure_text(text_system: Option<&mut TextSystem>, text: &str, style: TextStyle) -> Size {
     if let Some(text_system) = text_system {
         let layout = text_system.layout_cached(TextLayoutParams {
@@ -979,15 +1545,18 @@ fn measure_text(text_system: Option<&mut TextSystem>, text: &str, style: TextSty
     }
 }
 
+/// Estimates width as 0.58 em per Unicode scalar value.
 fn estimate_text_width(text: &str, style: TextStyle) -> f32 {
     text.chars().count() as f32 * style.px_size as f32 * 0.58
 }
 
+/// Multiplies alpha by `opacity` and clamps to `[0, 1]`.
 fn apply_opacity(mut color: Color, opacity: f32) -> Color {
     color.a = (color.a * opacity).clamp(0.0, 1.0);
     color
 }
 
+/// Applies opacity independently to each border-edge color.
 fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border.colors.left = apply_opacity(border.colors.left, opacity);
     border.colors.top = apply_opacity(border.colors.top, opacity);
@@ -996,6 +1565,7 @@ fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border
 }
 
+/// Returns the maximum per-edge border width.
 fn max_border_width(border: Border) -> f32 {
     border
         .widths

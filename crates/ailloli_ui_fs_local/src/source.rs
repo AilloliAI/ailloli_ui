@@ -1,3 +1,9 @@
+//! Worker-owned local source, native-watch normalization, and stable identity.
+//!
+//! Native watches are deliberately non-recursive. Raw backend events wait for a
+//! 50-millisecond debounce window, rename halves are paired by tracker, and
+//! duplicate echo events are suppressed before bounded delivery.
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,29 +19,81 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::LocalFileProvider;
 
+/// Minimum age of raw native events before a poll normalizes them.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
+/// Retention window used to suppress self-watch echoes after rename.
 const WATCH_RENAME_ECHO_TTL: Duration = Duration::from_millis(500);
+/// Default maximum number of simultaneously watched local directories: 1,024.
+///
+/// The limit is an item count and each watch is non-recursive. It bounds native
+/// watcher resources independently of the runtime request/response queues.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs_local::DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS;
+/// assert_eq!(DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS, 1_024);
+/// ```
 pub const DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS: usize = 1_024;
 
+/// Timestamped raw event or backend error from `notify`.
 type RawWatchEvent = (Instant, notify::Result<Event>);
 
+/// Thread-safe factory configuring each worker-owned local source.
+///
+/// Clones copy only the numeric watcher limit. Source construction and native
+/// watcher allocation happen later on the filesystem worker.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs_local::LocalFileTreeSourceFactory;
+/// let factory = LocalFileTreeSourceFactory::new().max_watchers(64);
+/// let _: LocalFileTreeSourceFactory = factory;
+/// ```
 #[derive(Debug, Clone)]
 pub struct LocalFileTreeSourceFactory {
+    /// Maximum simultaneous non-recursive directory watches for new sources.
     max_watchers: usize,
 }
 
+/// Builder operations for worker source configuration.
 impl LocalFileTreeSourceFactory {
+    /// Creates a factory with the 1,024-watcher default.
+    ///
+    /// No native watcher is allocated by this constructor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs_local::LocalFileTreeSourceFactory;
+    /// let _: LocalFileTreeSourceFactory = LocalFileTreeSourceFactory::new();
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Replaces the per-source watcher ceiling.
+    ///
+    /// Zero is accepted and prevents every new watch while leaving file I/O
+    /// usable. Existing sources are unaffected because the factory is consumed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs_local::LocalFileTreeSourceFactory;
+    /// let disabled = LocalFileTreeSourceFactory::new().max_watchers(0);
+    /// let _: LocalFileTreeSourceFactory = disabled;
+    /// ```
     pub fn max_watchers(mut self, max_watchers: usize) -> Self {
         self.max_watchers = max_watchers;
         self
     }
 }
 
+/// Selects [`DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS`] for new sources.
 impl Default for LocalFileTreeSourceFactory {
+    /// Constructs the conservative default factory without allocating a watcher.
     fn default() -> Self {
         Self {
             max_watchers: DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS,
@@ -43,7 +101,9 @@ impl Default for LocalFileTreeSourceFactory {
     }
 }
 
+/// Allocates a configured local source on the calling worker thread.
 impl FileTreeSourceFactory for LocalFileTreeSourceFactory {
+    /// Returns a source or maps native watcher initialization to [`FileError`].
     fn create(&self) -> Result<Box<dyn FileTreeSource>, FileError> {
         Ok(Box::new(LocalFileTreeSource::with_max_watchers(
             self.max_watchers,
@@ -52,24 +112,78 @@ impl FileTreeSourceFactory for LocalFileTreeSourceFactory {
 }
 
 /// Worker-owned local source with non-recursive native directory watches.
+///
+/// All methods are synchronous and the type is intended to stay on its single
+/// runtime worker. Event sequences and watch generations start at one and
+/// saturate at `u64::MAX`; a successful watch/unwatch increments generation.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_fs::FileTreeSource;
+/// use ailloli_ui_fs_local::LocalFileTreeSource;
+/// let source = LocalFileTreeSource::new()?;
+/// assert!(source.supports_native_watch());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct LocalFileTreeSource {
+    /// Stateless synchronous local provider used for filesystem calls.
     provider: LocalFileProvider,
+    /// Platform-recommended native watcher.
     watcher: RecommendedWatcher,
+    /// Raw callback channel drained without blocking.
     receiver: Receiver<RawWatchEvent>,
+    /// Raw events waiting to become at least 50 milliseconds old.
     pending: VecDeque<RawWatchEvent>,
+    /// Normalized events retained across bounded polls.
     normalized: VecDeque<WatchEvent>,
+    /// Rename-source paths retained for 500-millisecond echo suppression.
     recent_rename_sources: HashMap<PathBuf, Instant>,
+    /// Successfully watched host paths and their original URIs.
     watched: HashMap<PathBuf, FileUri>,
+    /// Next saturating event sequence, initially one.
     next_sequence: u64,
+    /// Current saturating watch generation, initially one.
     generation: u64,
+    /// Inclusive ceiling checked before adding a new distinct watch.
     max_watchers: usize,
 }
 
+/// Construction and raw-event normalization operations.
 impl LocalFileTreeSource {
+    /// Allocates a source with the default 1,024-watcher ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::Io`] when the platform watcher cannot initialize.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_fs_local::LocalFileTreeSource;
+    /// let _: LocalFileTreeSource = LocalFileTreeSource::new()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn new() -> Result<Self, FileError> {
         Self::with_max_watchers(DEFAULT_LOCAL_FILE_TREE_MAX_WATCHERS)
     }
 
+    /// Allocates a source with an explicit simultaneous-watch ceiling.
+    ///
+    /// Zero disables watch registration. The value is not clamped and does not
+    /// affect filesystem reads or mutations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::Io`] when the platform watcher cannot initialize.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_fs_local::LocalFileTreeSource;
+    /// let _: LocalFileTreeSource = LocalFileTreeSource::with_max_watchers(8)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn with_max_watchers(max_watchers: usize) -> Result<Self, FileError> {
         let (sender, receiver) = mpsc::channel();
         let watcher = notify::recommended_watcher(move |event| {
@@ -90,6 +204,9 @@ impl LocalFileTreeSource {
         })
     }
 
+    /// Allocates one normalized event with the current sequence/generation.
+    ///
+    /// Sequence increments saturatingly, so `u64::MAX` repeats after exhaustion.
     fn next_event(
         &mut self,
         kind: WatchEventKind,
@@ -105,6 +222,11 @@ impl LocalFileTreeSource {
         event
     }
 
+    /// Maps one backend event into zero or more provider-neutral events.
+    ///
+    /// Access and unknown variants are ignored. `Other` becomes `Overflow` when
+    /// a path or watched fallback URI exists. Complete renames use the first two
+    /// paths and classify same-parent changes as rename, otherwise move.
     fn map_event(&mut self, event: Event) -> Result<Vec<WatchEvent>, FileError> {
         let paths = event.paths;
         match event.kind {
@@ -143,6 +265,10 @@ impl LocalFileTreeSource {
         }
     }
 
+    /// Pairs rename halves and suppresses duplicate rename/remove metadata echoes.
+    ///
+    /// Output order follows the raw burst except paired halves emit at the first
+    /// encountered matching half. Conversion failure aborts the full burst.
     fn normalize_events(&mut self, raw: Vec<Event>) -> Result<Vec<WatchEvent>, FileError> {
         let now = Instant::now();
         self.recent_rename_sources
@@ -248,6 +374,7 @@ impl LocalFileTreeSource {
         Ok(normalized)
     }
 
+    /// Maps every supplied path to one event of `kind`, preserving path order.
     fn events_for_paths(
         &mut self,
         kind: WatchEventKind,
@@ -260,27 +387,34 @@ impl LocalFileTreeSource {
     }
 }
 
+/// Adapts local I/O, stable identity, mutations, and native watch to the worker contract.
 impl FileTreeSource for LocalFileTreeSource {
+    /// Delegates one sorted, non-recursive directory read to the local provider.
     fn read_dir(&mut self, uri: &FileUri) -> Result<Vec<FileEntry>, FileError> {
         self.provider.read_dir(uri)
     }
 
+    /// Returns Unix device/inode identity or an unsupported error elsewhere.
     fn identity(&mut self, uri: &FileUri) -> Result<Option<FileIdentity>, FileError> {
         identity_for_path(&uri.to_local_path()?).map(Some)
     }
 
+    /// Creates one directory without recursively creating parents.
     fn create_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.provider.create_dir(uri)
     }
 
+    /// Creates or truncates an empty file.
     fn create_file(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.provider.write_file(uri, &[])
     }
 
+    /// Moves through the provider's rename-only policy; no cross-device fallback exists.
     fn move_entry(&mut self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
         self.provider.move_entry(from, to)
     }
 
+    /// Chooses recursive or single-entry removal exactly from `recursive`.
     fn remove_entry(&mut self, uri: &FileUri, recursive: bool) -> Result<(), FileError> {
         if recursive {
             self.provider.remove_recursive(uri)
@@ -289,6 +423,10 @@ impl FileTreeSource for LocalFileTreeSource {
         }
     }
 
+    /// Adds one idempotent non-recursive native directory watch.
+    ///
+    /// A distinct watch at the configured ceiling returns `FileError::Other`.
+    /// Successful additions saturating-increment the watch generation.
     fn watch_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         let path = uri.to_local_path()?;
         if self.watched.contains_key(&path) {
@@ -308,6 +446,9 @@ impl FileTreeSource for LocalFileTreeSource {
         Ok(())
     }
 
+    /// Removes a known watch idempotently and increments generation on success.
+    ///
+    /// Unknown paths return success without calling the native watcher.
     fn unwatch_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         let path = uri.to_local_path()?;
         if self.watched.remove(&path).is_some() {
@@ -317,6 +458,12 @@ impl FileTreeSource for LocalFileTreeSource {
         Ok(())
     }
 
+    /// Returns up to `limit` normalized events after the 50-millisecond debounce.
+    ///
+    /// Zero returns immediately without draining the raw channel. Later events
+    /// remain pending; normalized overflow remains queued for future calls.
+    /// Exact `(kind, uri, previous_uri)` duplicates are removed within each
+    /// returned batch. A disconnected callback channel is an I/O error.
     fn poll_watch(&mut self, limit: usize) -> Result<Vec<WatchEvent>, FileError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -364,12 +511,14 @@ impl FileTreeSource for LocalFileTreeSource {
         Ok(events)
     }
 
+    /// Always reports native non-recursive watch support.
     fn supports_native_watch(&self) -> bool {
         true
     }
 }
 
 #[cfg(unix)]
+/// Builds a 16-byte little-endian `(device, inode)` identity without following links.
 fn identity_for_path(path: &Path) -> Result<FileIdentity, FileError> {
     use std::os::unix::fs::MetadataExt;
 
@@ -382,20 +531,24 @@ fn identity_for_path(path: &Path) -> Result<FileIdentity, FileError> {
 }
 
 #[cfg(not(unix))]
+/// Reports that this implementation has no stable non-Unix local identity.
 fn identity_for_path(_path: &Path) -> Result<FileIdentity, FileError> {
     Err(FileError::Unsupported(
         "stable local file identity is not available on this target".into(),
     ))
 }
 
+/// Redacts backend structure into the public filesystem-watch I/O context.
 fn notify_error(error: notify::Error) -> FileError {
     FileError::Io(format!("filesystem watch: {error}"))
 }
 
 #[cfg(test)]
+/// Pure raw-event normalization regressions independent of live OS delivery.
 mod tests {
     use super::*;
 
+    /// Constructs a tracked rename event with ordered synthetic paths.
     fn rename_event(mode: RenameMode, tracker: usize, paths: &[&str]) -> Event {
         let mut event = Event::new(EventKind::Modify(ModifyKind::Name(mode))).set_tracker(tracker);
         for path in paths {
@@ -405,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies duplicate halves and a complete rename collapse to one rename.
     fn rename_from_to_and_both_collapse_to_one_semantic_event() {
         let mut source = LocalFileTreeSource::new().unwrap();
         let events = source
@@ -421,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies paired halves become one cross-parent move without `Both`.
     fn paired_halves_are_normalized_when_backend_omits_both() {
         let mut source = LocalFileTreeSource::new().unwrap();
         let events = source
@@ -436,6 +591,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies metadata echo after a complete rename is suppressed.
     fn metadata_echo_for_a_complete_rename_does_not_force_reconciliation() {
         let mut source = LocalFileTreeSource::new().unwrap();
         let metadata = Event::new(EventKind::Modify(ModifyKind::Metadata(
@@ -453,6 +609,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies a watched old-path removal echo does not duplicate rename.
     fn watched_path_remove_echo_for_a_complete_rename_is_suppressed() {
         let from = PathBuf::from("/tmp/foo");
         let to = PathBuf::from("/tmp/bar");

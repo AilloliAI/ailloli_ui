@@ -16,16 +16,22 @@ use ailloli_ui::runtime::{DrawCmd, DrawPolyline, DrawRect};
 use ailloli_ui::{App, Window};
 use ailloli_ui_render_wgpu::CapturedFrame;
 
+/// Fixture width in logical pixels.
 const DEBUG_W: f32 = 420.0;
+/// Fixture height in logical pixels.
 const DEBUG_H: f32 = 260.0;
 
+/// Paint-only widget containing deterministic polylines of several widths.
 struct PolylineDebugWidget;
 
+/// Supplies fixed layout, polyline paint commands, and no input behavior.
 impl<A: 'static> Widget<A> for PolylineDebugWidget {
+    /// Returns a stable runtime diagnostics name.
     fn debug_name(&self) -> &'static str {
         "PolylineDebugWidget"
     }
 
+    /// Constrains the fixture's 420x260 logical size and emits no child layouts.
     fn layout(
         &self,
         _engine: &mut ailloli_ui::runtime::layout::LayoutEngine<'_, A>,
@@ -47,6 +53,7 @@ impl<A: 'static> Widget<A> for PolylineDebugWidget {
         }
     }
 
+    /// Paints the dark background and translates each orange segment into bounds.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         ctx.push(DrawCmd::Rect(DrawRect {
             rect: bounds,
@@ -65,6 +72,7 @@ impl<A: 'static> Widget<A> for PolylineDebugWidget {
         }
     }
 
+    /// Ignores input because the visual fixture is intentionally inert.
     fn event(
         &self,
         _ctx: &mut EventCtx<A>,
@@ -74,17 +82,21 @@ impl<A: 'static> Widget<A> for PolylineDebugWidget {
     ) {
     }
 
+    /// Keeps the paint-only fixture out of keyboard focus traversal.
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::NotFocusable
     }
 }
 
+/// Wraps the fixture widget as a retained leaf view.
 impl<A: 'static> IntoView<A> for PolylineDebugWidget {
+    /// Converts the widget into a leaf without child views.
     fn into_view(self) -> View<A> {
         View::leaf(self)
     }
 }
 
+/// Returns horizontal, diagonal, joined, and steep polylines with 1-5 px widths.
 fn debug_segments() -> Vec<(Vec<Point>, f32)> {
     vec![
         (vec![Point::new(24.0, 36.0), Point::new(396.0, 36.0)], 1.0),
@@ -103,6 +115,7 @@ fn debug_segments() -> Vec<(Vec<Point>, f32)> {
     ]
 }
 
+/// Resolves the repository-local directory used for stroke capture artifacts.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -110,6 +123,7 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Writes a frame's required PNG payload beneath the captures directory.
 fn write_capture(name: &str, frame: &CapturedFrame) {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir).expect("mkdir captures");
@@ -120,10 +134,12 @@ fn write_capture(name: &str, frame: &CapturedFrame) {
     .expect("write capture");
 }
 
+/// Classifies a pixel using broad channel deltas tolerant of antialiasing.
 fn is_orange(px: [u8; 4]) -> bool {
     px[0] > 120 && px[0] > px[1].saturating_add(25) && px[0] > px[2].saturating_add(50)
 }
 
+/// Searches a frame-clipped square neighborhood for an orange stroke pixel.
 fn has_orange_near(frame: &CapturedFrame, x: i32, y: i32, radius: i32) -> bool {
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -146,6 +162,7 @@ fn has_orange_near(frame: &CapturedFrame, x: i32, y: i32, radius: i32) -> bool {
     false
 }
 
+/// Requires orange coverage near at least 80% of sampled interior segment points.
 fn assert_polyline_samples(frame: &CapturedFrame) {
     let mut total = 0u32;
     let mut hits = 0u32;

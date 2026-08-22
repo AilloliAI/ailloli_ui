@@ -1,10 +1,12 @@
+//! Integration scenarios for incremental layout and dirty-subtree recomputation.
+
 use ailloli_ui_core::{Constraints, Scale};
 use ailloli_ui_runtime::app::Invalidation;
-mod support {
-    include!("targeted_invalidation_tests.rs");
-}
+#[path = "targeted_invalidation_tests.rs"]
+mod support;
 
 #[test]
+/// Verifies that clean layout is reused and unchanged bounds are not recommitted.
 fn clean_layout_is_reused_and_unchanged_bounds_are_not_recommitted() {
     let mut fixture = support::fixture();
     let before = (
@@ -56,6 +58,7 @@ fn clean_layout_is_reused_and_unchanged_bounds_are_not_recommitted() {
 }
 
 #[test]
+/// Verifies that text metrics revision invalidates the layout cache key.
 fn text_metrics_revision_invalidates_the_layout_cache_key() {
     let mut fixture = support::fixture();
     let before = (

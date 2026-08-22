@@ -1,3 +1,5 @@
+//! Syntax token clipping, styling, and shaped text paint items.
+
 use ailloli_ui_core::TextStyle;
 use ailloli_ui_text::{StyledTextLayoutParams, StyledTextSpan, TextSystem, WrapMode};
 
@@ -6,6 +8,25 @@ use crate::layout::EditorTextRun;
 use crate::paint::EditorPaintItem;
 use crate::EditorStyle;
 
+/// Builds one text paint item using syntax-styled spans when available.
+///
+/// Tokens are clipped and validated by [`styled_spans_for_run`]. When no
+/// effective span remains, the existing run layout is cloned. Otherwise a
+/// styled no-wrap layout is requested and the returned item retains the base
+/// foreground color for adapter fallback.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_editor::{code::{SyntaxKind, SyntaxToken}, layout::EditorTextRun, paint::syntax_painter::syntax_text_items_for_run, CodeTheme, EditorStyle};
+/// use ailloli_ui_text::{TextLayoutParams, TextSystem};
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("fn", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 0..2, baseline_y: 12.0, layout };
+/// let items = syntax_text_items_for_run(0.0, 0.0, &run, &[SyntaxToken { range: 0..2, kind: SyntaxKind::Keyword }], EditorStyle::default(), CodeTheme::default(), &mut system);
+/// assert_eq!(items.len(), 1);
+/// ```
 pub fn syntax_text_items_for_run(
     content_x: f32,
     content_y: f32,
@@ -38,6 +59,25 @@ pub fn syntax_text_items_for_run(
     }]
 }
 
+/// Converts source syntax tokens into validated run-local styled spans.
+///
+/// Tokens are clipped to the run, but ranges outside the run text or on invalid
+/// UTF-8 boundaries are skipped. Spans whose semantic color equals the base
+/// foreground are omitted. Input order and overlaps are preserved for the text
+/// system to resolve.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_editor::{code::{SyntaxKind, SyntaxToken}, layout::EditorTextRun, paint::syntax_painter::styled_spans_for_run, CodeTheme, EditorStyle};
+/// use ailloli_ui_text::{TextLayoutParams, TextSystem};
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("fn x", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 10..14, baseline_y: 12.0, layout };
+/// let spans = styled_spans_for_run(&run, &[SyntaxToken { range: 10..12, kind: SyntaxKind::Keyword }], EditorStyle::default(), CodeTheme::default());
+/// assert_eq!(spans[0].range, 0..2);
+/// ```
 pub fn styled_spans_for_run(
     run: &EditorTextRun,
     tokens: &[SyntaxToken],
@@ -74,6 +114,7 @@ pub fn styled_spans_for_run(
     spans
 }
 
+/// Maps a syntax category to its theme color.
 fn syntax_color(kind: SyntaxKind, theme: CodeTheme) -> ailloli_ui_core::Color {
     match kind {
         SyntaxKind::Keyword => theme.syntax_keyword,

@@ -13,6 +13,7 @@ use ailloli_ui::prelude::*;
 use ailloli_ui::{App, Window};
 use ailloli_ui_render_wgpu::CapturedFrame;
 
+/// Resolves the repository-local directory used for window-affordance captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -20,12 +21,14 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Counts RGBA8 pixels accepted by `pred`; trailing incomplete bytes are ignored.
 fn count_pixels(rgba: &[u8], pred: impl Fn([u8; 4]) -> bool) -> u64 {
     rgba.chunks_exact(4)
         .filter(|px| pred([px[0], px[1], px[2], px[3]]))
         .count() as u64
 }
 
+/// Verifies affordance colors, contrast, extent, and encoded PNG output.
 fn assert_ui_xr17_frame(frame: &CapturedFrame, name: &str) {
     let png = frame.png_data.as_ref().expect("png data");
     assert!(!png.is_empty(), "{name}: empty png");
@@ -75,6 +78,7 @@ fn assert_ui_xr17_frame(frame: &CapturedFrame, name: &str) {
     assert!(text_pixels > 260, "{name}: text pixels={text_pixels}");
 }
 
+/// Writes a frame's required PNG payload beneath the captures directory.
 fn write_capture(name: &str, frame: &CapturedFrame) {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir).expect("mkdir captures");
@@ -114,6 +118,7 @@ fn ui_xr17_window_affordances_capture() {
     write_capture("ui_xr17_window_affordances_winit.png", &frame);
 }
 
+/// Builds enabled, hovered, and disabled native-window affordance fixtures.
 fn ui_xr17_showcase() -> impl IntoView<()> {
     Container::<()>::new()
         .fill()
@@ -172,6 +177,7 @@ fn ui_xr17_showcase() -> impl IntoView<()> {
         .key("ui-xr17-window")
 }
 
+/// Returns the deterministic window-affordance palette used for pixel assertions.
 fn validation_affordance_style() -> WindowAffordanceStyle {
     WindowAffordanceStyle {
         titlebar_background: Color::rgba(20, 28, 44, 1.0),

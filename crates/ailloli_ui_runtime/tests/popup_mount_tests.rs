@@ -1,3 +1,5 @@
+//! Integration scenarios for popup mounting, replacement, and dismissal.
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -26,12 +28,14 @@ use ailloli_ui_runtime::scene::{DrawCmd, DrawRect, LayerKind, PaintCtx};
 use ailloli_ui_text::TextSystem;
 
 #[derive(Clone)]
+/// Test support type for CounterProps scenarios.
 struct CounterProps {
     paints: Rc<RefCell<Vec<u32>>>,
     routed_pointer: Rc<RefCell<Vec<(u64, Point)>>>,
     routed_file: Rc<RefCell<Vec<Option<Point>>>>,
 }
 
+/// Constructs the counter popup test input.
 fn counter_popup(context: &mut Context<()>, props: CounterProps) -> View<()> {
     let count = context.signal(0_u32);
     View::leaf(CounterWidget {
@@ -42,6 +46,7 @@ fn counter_popup(context: &mut Context<()>, props: CounterProps) -> View<()> {
     })
 }
 
+/// Test support type for CounterWidget scenarios.
 struct CounterWidget {
     count: Signal<u32>,
     paints: Rc<RefCell<Vec<u32>>>,
@@ -49,11 +54,14 @@ struct CounterWidget {
     routed_file: Rc<RefCell<Vec<Option<Point>>>>,
 }
 
+/// Implements the Widget<()> test contract for CounterWidget.
 impl Widget<()> for CounterWidget {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "PopupCounter"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -74,6 +82,7 @@ impl Widget<()> for CounterWidget {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, context: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let count = self.count.read();
         self.paints.borrow_mut().push(count);
@@ -87,6 +96,7 @@ impl Widget<()> for CounterWidget {
         }));
     }
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         context: &mut EventCtx<()>,
@@ -112,11 +122,13 @@ impl Widget<()> for CounterWidget {
         }
     }
 
+    /// Returns this test widget’s focus policy.
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::Focusable
     }
 }
 
+/// Constructs the stable test owner reference.
 fn owner(window: &str, generation: u64, element: u64) -> PopupOwner {
     PopupOwner::new(
         window,
@@ -126,6 +138,7 @@ fn owner(window: &str, generation: u64, element: u64) -> PopupOwner {
     )
 }
 
+/// Constructs the pointer envelope test input.
 fn pointer_envelope(id: u64, pressed: bool, point: Point) -> EventEnvelope {
     pointer_event_envelope(
         id,
@@ -134,6 +147,7 @@ fn pointer_envelope(id: u64, pressed: bool, point: Point) -> EventEnvelope {
     )
 }
 
+/// Constructs the pointer event envelope test input.
 fn pointer_event_envelope(id: u64, point: Point, event: PointerEvent) -> EventEnvelope {
     let pointer = PointerSample::new(PointerId::new(id), PointerSource::Touch, point).unwrap();
     EventEnvelope::new(
@@ -148,6 +162,7 @@ fn pointer_event_envelope(id: u64, point: Point, event: PointerEvent) -> EventEn
     )
 }
 
+/// Constructs the escape envelope test input.
 fn escape_envelope(id: u64) -> EventEnvelope {
     EventEnvelope::new(
         EventMeta::new(
@@ -167,6 +182,7 @@ fn escape_envelope(id: u64) -> EventEnvelope {
     )
 }
 
+/// Constructs the tab envelope test input.
 fn tab_envelope(id: u64, shift: bool) -> EventEnvelope {
     EventEnvelope::new(
         EventMeta::new(
@@ -189,6 +205,7 @@ fn tab_envelope(id: u64, shift: bool) -> EventEnvelope {
     )
 }
 
+/// Constructs the mouse move envelope test input.
 fn mouse_move_envelope(id: u64, point: Point) -> EventEnvelope {
     let pointer = PointerSample::new(PointerId::MOUSE, PointerSource::Mouse, point).unwrap();
     EventEnvelope::new(
@@ -203,6 +220,7 @@ fn mouse_move_envelope(id: u64, point: Point) -> EventEnvelope {
     )
 }
 
+/// Constructs the file envelope test input.
 fn file_envelope(id: u64, point: Option<Point>) -> EventEnvelope {
     EventEnvelope::new(
         EventMeta::new(
@@ -216,6 +234,7 @@ fn file_envelope(id: u64, point: Option<Point>) -> EventEnvelope {
 }
 
 #[test]
+/// Verifies that retained mount paints routes and preserves component state across reopen.
 fn retained_mount_paints_routes_and_preserves_component_state_across_reopen() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -381,6 +400,7 @@ fn retained_mount_paints_routes_and_preserves_component_state_across_reopen() {
 }
 
 #[test]
+/// Verifies that host resolution records the viewport with flipped and clamped bounds.
 fn host_resolution_records_the_viewport_with_flipped_and_clamped_bounds() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -422,6 +442,7 @@ fn host_resolution_records_the_viewport_with_flipped_and_clamped_bounds() {
 }
 
 #[test]
+/// Verifies that trapped popup focus cycles wraps and exposes global ime and cursor state.
 fn trapped_popup_focus_cycles_wraps_and_exposes_global_ime_and_cursor_state() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -517,6 +538,7 @@ fn trapped_popup_focus_cycles_wraps_and_exposes_global_ime_and_cursor_state() {
 }
 
 #[test]
+/// Verifies that focus request retries after content becomes focusable.
 fn focus_request_retries_after_content_becomes_focusable() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -570,6 +592,7 @@ fn focus_request_retries_after_content_becomes_focusable() {
 }
 
 #[test]
+/// Verifies that nested popup restore focus intent is applied to parent mount namespace.
 fn nested_popup_restore_focus_intent_is_applied_to_parent_mount_namespace() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -657,6 +680,7 @@ fn nested_popup_restore_focus_intent_is_applied_to_parent_mount_namespace() {
 }
 
 #[test]
+/// Verifies that mounts are isolated by presentation and follow portal z order.
 fn mounts_are_isolated_by_presentation_and_follow_portal_z_order() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -716,6 +740,7 @@ fn mounts_are_isolated_by_presentation_and_follow_portal_z_order() {
 }
 
 #[test]
+/// Verifies that dropping mount manager releases mounted tree popup registrations.
 fn dropping_mount_manager_releases_mounted_tree_popup_registrations() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -750,6 +775,7 @@ fn dropping_mount_manager_releases_mounted_tree_popup_registrations() {
 }
 
 #[test]
+/// Verifies that procedural fallback requests are not mounted or hit tested.
 fn procedural_fallback_requests_are_not_mounted_or_hit_tested() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -800,6 +826,7 @@ fn procedural_fallback_requests_are_not_mounted_or_hit_tested() {
 }
 
 #[test]
+/// Verifies that topmost policy selects exactly one popup authority.
 fn topmost_policy_selects_exactly_one_popup_authority() {
     let runtime = RuntimeHandle::<()>::new();
     let window = LogicalWindowId::new("main");
@@ -873,11 +900,13 @@ fn topmost_policy_selects_exactly_one_popup_authority() {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Test support type for OwnerAction scenarios.
 enum OwnerAction {
     Activated,
 }
 
 #[test]
+/// Verifies that consumed popup gesture never releases into owner after mount closes.
 fn consumed_popup_gesture_never_releases_into_owner_after_mount_closes() {
     let shared = RuntimeHandle::<OwnerAction>::new();
     let window = LogicalWindowId::new("main");
@@ -995,13 +1024,17 @@ fn consumed_popup_gesture_never_releases_into_owner_after_mount_closes() {
     assert!(shared.take_actions().is_empty());
 }
 
+/// Test support type for ReleaseActivatesOwner scenarios.
 struct ReleaseActivatesOwner;
 
+/// Implements the Widget<OwnerAction> test contract for ReleaseActivatesOwner.
 impl Widget<OwnerAction> for ReleaseActivatesOwner {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "ReleaseActivatesOwner"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, OwnerAction>,
@@ -1022,8 +1055,10 @@ impl Widget<OwnerAction> for ReleaseActivatesOwner {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _context: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         context: &mut EventCtx<OwnerAction>,
@@ -1044,13 +1079,17 @@ impl Widget<OwnerAction> for ReleaseActivatesOwner {
     }
 }
 
+/// Test support type for StaticActionPopup scenarios.
 struct StaticActionPopup;
 
+/// Implements the Widget<OwnerAction> test contract for StaticActionPopup.
 impl Widget<OwnerAction> for StaticActionPopup {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "StaticActionPopup"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, OwnerAction>,
@@ -1071,18 +1110,23 @@ impl Widget<OwnerAction> for StaticActionPopup {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _context: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Test support type for TestColumn scenarios.
 struct TestColumn {
     gap: f32,
 }
 
+/// Implements the Widget<()> test contract for TestColumn.
 impl Widget<()> for TestColumn {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "PopupTestColumn"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, ()>,
@@ -1120,9 +1164,11 @@ impl Widget<()> for TestColumn {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _context: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Test support type for FocusProbe scenarios.
 struct FocusProbe {
     name: &'static str,
     role: InputRole,
@@ -1130,11 +1176,14 @@ struct FocusProbe {
     log: Rc<RefCell<Vec<&'static str>>>,
 }
 
+/// Implements the Widget<()> test contract for FocusProbe.
 impl Widget<()> for FocusProbe {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         self.name
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -1155,8 +1204,10 @@ impl Widget<()> for FocusProbe {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _context: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         _context: &mut EventCtx<()>,
@@ -1182,18 +1233,22 @@ impl Widget<()> for FocusProbe {
         }
     }
 
+    /// Returns this test widget’s focus policy.
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::Focusable
     }
 
+    /// Returns this test widget’s semantic input role.
     fn input_role(&self) -> InputRole {
         self.role
     }
 
+    /// Returns this test widget’s cursor role.
     fn hover_cursor_role(&self) -> HoverCursorRole {
         self.cursor
     }
 
+    /// Returns this test widget’s IME cursor rectangle.
     fn ime_cursor_rect(&self, bounds: Rect, _layout: &LayoutResult) -> Option<Rect> {
         matches!(
             self.role,
@@ -1203,13 +1258,17 @@ impl Widget<()> for FocusProbe {
     }
 }
 
+/// Test support type for StaticWidget scenarios.
 struct StaticWidget;
 
+/// Implements the Widget<()> test contract for StaticWidget.
 impl Widget<()> for StaticWidget {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "StaticPopup"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -1230,5 +1289,6 @@ impl Widget<()> for StaticWidget {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _context: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }

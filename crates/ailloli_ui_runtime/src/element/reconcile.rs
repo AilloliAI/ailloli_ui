@@ -1,3 +1,5 @@
+//! Deterministic reconciliation between a new view tree and retained elements.
+
 use std::collections::HashMap;
 
 use ailloli_ui_core::ElementId;
@@ -9,14 +11,41 @@ use crate::app::RuntimeHandle;
 use crate::component::{Context, View, ViewKind};
 
 #[derive(Debug, Clone)]
+/// Existing direct-child identity supplied to [`reconcile_children`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::ElementId;
+/// use ailloli_ui_runtime::element::ReconcileInputChild;
+/// let child = ReconcileInputChild { id: ElementId(3), key: None };
+/// assert_eq!(child.id, ElementId(3));
+/// ```
 pub struct ReconcileInputChild {
+    /// Existing retained element ID.
     pub id: ElementId,
+    /// Optional stable key; `None` permits positional reuse.
     pub key: Option<Key>,
 }
 
 #[derive(Debug, Clone)]
+/// Reused direct-child identity returned by [`reconcile_children`].
+///
+/// The current algorithm only returns `Some` records with `reused == true`;
+/// creation is represented by a `None` slot.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::ElementId;
+/// use ailloli_ui_runtime::element::ReconcileOutputChild;
+/// let child = ReconcileOutputChild { id: ElementId(3), reused: true };
+/// assert!(child.reused);
+/// ```
 pub struct ReconcileOutputChild {
+    /// Existing retained element ID selected for this new slot.
     pub id: ElementId,
+    /// Always `true` for current `Some` outputs.
     pub reused: bool,
 }
 
@@ -25,6 +54,26 @@ pub struct ReconcileOutputChild {
 /// - If `new_keys[i]` is `Some(k)`, reuse the old child with the same key when present.
 /// - Otherwise try reuse by index when possible.
 /// - Unmatched slots return `None` for the caller to create new elements.
+///
+/// Key lookup is built from the old slice in order, so duplicate old keys use
+/// the last matching ID. Duplicate new keys may select the same old ID more
+/// than once. An unkeyed new slot can positionally reuse an old keyed child.
+/// This helper does not enforce uniqueness or mutate either input.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::ElementId;
+/// use ailloli_ui_runtime::element::{reconcile_children, Key, ReconcileInputChild};
+/// let old = [
+///     ReconcileInputChild { id: ElementId(1), key: Some(Key::Static("a")) },
+///     ReconcileInputChild { id: ElementId(2), key: Some(Key::Static("b")) },
+/// ];
+/// let result = reconcile_children(&old, &[Some(Key::Static("b")), None, None]);
+/// assert_eq!(result[0].as_ref().unwrap().id, ElementId(2));
+/// assert_eq!(result[1].as_ref().unwrap().id, ElementId(2));
+/// assert!(result[2].is_none());
+/// ```
 pub fn reconcile_children(
     old: &[ReconcileInputChild],
     new_keys: &[Option<Key>],
@@ -60,10 +109,12 @@ pub fn reconcile_children(
     out
 }
 
+/// Copies a declarative string key into its retained owned representation.
 fn key_from_view<A>(view: &View<A>) -> Option<Key> {
     view.key_ref().map(|k| Key::String(k.to_string()))
 }
 
+/// Recursively removes descendants, scoped component state, then the node.
 fn remove_subtree<A>(tree: &mut ElementTree<A>, id: ElementId, runtime: &RuntimeHandle<A>) {
     let children = tree.get(id).map(|e| e.children.clone()).unwrap_or_default();
     for c in children {
@@ -77,6 +128,7 @@ fn remove_subtree<A>(tree: &mut ElementTree<A>, id: ElementId, runtime: &Runtime
     let _ = tree.remove_element(id);
 }
 
+/// Creates a retained subtree, building each component exactly once encountered.
 fn create_from_view<A: 'static>(
     tree: &mut ElementTree<A>,
     runtime: &RuntimeHandle<A>,
@@ -118,6 +170,26 @@ fn create_from_view<A: 'static>(
     id
 }
 
+/// Creates or reconciles the tree root and returns its retained ID.
+///
+/// The first call recursively creates the view. Later calls preserve the root
+/// ID and delegate to [`reconcile_element`], irrespective of root kind changes.
+/// Component build callbacks run synchronously and may dispatch state changes
+/// or panic; mutation is not rolled back on panic.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::app::RuntimeHandle;
+/// use ailloli_ui_runtime::component::View;
+/// use ailloli_ui_runtime::element::ElementTree;
+/// use ailloli_ui_runtime::element::reconcile::reconcile_root;
+/// let runtime = RuntimeHandle::<()>::new();
+/// let mut tree = ElementTree::new();
+/// let first = reconcile_root(&mut tree, &runtime, View::empty());
+/// let second = reconcile_root(&mut tree, &runtime, View::empty());
+/// assert_eq!(first, second);
+/// ```
 pub fn reconcile_root<A: 'static>(
     tree: &mut ElementTree<A>,
     runtime: &RuntimeHandle<A>,
@@ -129,6 +201,31 @@ pub fn reconcile_root<A: 'static>(
     }
 }
 
+/// Reconciles `new_view` into an existing element and returns the same ID.
+///
+/// The element's kind, key, and view metadata are replaced. Layout is always
+/// invalidated with a nonzero wrapping revision, even if inputs are equal.
+/// Widgets use their declarative children; components build exactly once and
+/// retain the built view as one child. Reused descendants are selected by
+/// [`reconcile_children`]; removed subtrees also lose tree-scoped state.
+///
+/// If `element_id` is missing, metadata update is a no-op but child creation can
+/// still occur with that missing ID as parent; callers should only pass IDs
+/// owned by `tree`. Component/widget panics propagate without rollback.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::app::RuntimeHandle;
+/// use ailloli_ui_runtime::component::View;
+/// use ailloli_ui_runtime::element::{ElementKind, ElementTree};
+/// use ailloli_ui_runtime::element::reconcile::reconcile_element;
+/// let runtime = RuntimeHandle::<()>::new();
+/// let mut tree = ElementTree::new();
+/// let id = tree.create_element(ElementKind::Empty, None, None);
+/// assert_eq!(reconcile_element(&mut tree, &runtime, id, View::empty()), id);
+/// assert!(tree.get(id).unwrap().dirty.layout);
+/// ```
 pub fn reconcile_element<A: 'static>(
     tree: &mut ElementTree<A>,
     runtime: &RuntimeHandle<A>,
@@ -215,6 +312,24 @@ pub fn reconcile_element<A: 'static>(
     element_id
 }
 
+/// Rebuilds and reconciles one retained component in place.
+///
+/// Returns `false` without mutation for a missing ID or non-component kind.
+/// Otherwise it invalidates layout, records one build, invokes the component,
+/// reconciles its single built child, and returns `true`. Panics propagate after
+/// partial mutation and are not rolled back.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::app::RuntimeHandle;
+/// use ailloli_ui_runtime::element::{ElementKind, ElementTree};
+/// use ailloli_ui_runtime::element::reconcile::reconcile_existing_component;
+/// let runtime = RuntimeHandle::<()>::new();
+/// let mut tree = ElementTree::new();
+/// let id = tree.create_element(ElementKind::Empty, None, None);
+/// assert!(!reconcile_existing_component(&mut tree, &runtime, id));
+/// ```
 pub fn reconcile_existing_component<A: 'static>(
     tree: &mut ElementTree<A>,
     runtime: &RuntimeHandle<A>,
@@ -241,6 +356,7 @@ pub fn reconcile_existing_component<A: 'static>(
     true
 }
 
+/// Reconciles an already-built sequence of direct child views.
 fn reconcile_child_views<A: 'static>(
     tree: &mut ElementTree<A>,
     runtime: &RuntimeHandle<A>,
@@ -292,10 +408,12 @@ fn reconcile_child_views<A: 'static>(
 }
 
 #[cfg(test)]
+/// Tests implementation details.
 mod tests {
     use super::*;
 
     #[test]
+    /// Verifies that reconcile by index without keys.
     fn reconcile_by_index_without_keys() {
         let old = vec![
             ReconcileInputChild {
@@ -316,6 +434,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies that reconcile by key.
     fn reconcile_by_key() {
         let old = vec![
             ReconcileInputChild {

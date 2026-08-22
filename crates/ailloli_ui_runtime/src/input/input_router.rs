@@ -1,3 +1,5 @@
+//! Stateful pointer, keyboard, focus, and activation routing for a retained tree.
+
 use std::collections::BTreeMap;
 
 use ailloli_ui_core::event::pointer::{
@@ -36,6 +38,7 @@ fn widget_paint_pointer_match<A: 'static>(
     false
 }
 
+/// Detects built-in flex containers by their stable diagnostic name.
 fn flex_row_or_column_widget<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> bool {
     tree.get(id).is_some_and(|el| {
         matches!(
@@ -45,22 +48,58 @@ fn flex_row_or_column_widget<A: 'static>(tree: &ElementTree<A>, id: ElementId) -
     })
 }
 
+/// Legacy/provider-facing input action summary.
+///
+/// Runtime event routing primarily dispatches widget events directly; this enum
+/// remains a compact description for pointer target/button and window-chrome
+/// actions. Positions are logical pixels.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{ElementId, Point};
+/// use ailloli_ui_runtime::input::Action;
+/// let action = Action::PointerButton { target: Some(ElementId(1)), pos: Point::new(2.0, 3.0), pressed: true };
+/// assert!(matches!(action, Action::PointerButton { pressed: true, .. }));
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    /// Mouse/pointer hover target changed.
     PointerTargetChanged {
+        /// Previous target, or `None` outside all elements.
         old: Option<ElementId>,
+        /// New target, or `None` outside all elements.
         new: Option<ElementId>,
     },
+    /// Pointer button transition at a logical position.
     PointerButton {
+        /// Hit/captured target, or `None` when no element owns it.
         target: Option<ElementId>,
+        /// Window-space logical-pixel position.
         pos: Point,
+        /// `true` for press and `false` for release.
         pressed: bool,
     },
+    /// Provider-neutral window chrome request.
     Chrome(ChromeAction),
 }
 
+/// Paint-time interaction flags resolved for one widget.
+///
+/// `focused` is strict ownership; `focus_within` additionally includes
+/// ancestors. Hover and press can be inherited through the hit-test chain for
+/// widget painting.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::input::InputInteraction;
+/// let interaction = InputInteraction { focused: true, focus_within: true, hovered: false, pressed: false };
+/// assert!(interaction.focused && interaction.focus_within);
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputInteraction {
+    /// Whether this exact element owns keyboard focus.
     pub focused: bool,
     /// `true` when this element or one of its descendants owns keyboard focus.
     ///
@@ -68,18 +107,52 @@ pub struct InputInteraction {
     /// and leaves `focused` strict, so existing control focus rings keep their
     /// current behavior.
     pub focus_within: bool,
+    /// Whether pointer hit state paints this widget as hovered.
     pub hovered: bool,
+    /// Whether active pointer capture/press paints this widget as pressed.
     pub pressed: bool,
 }
 
+/// Copyable strict focus/hover/press targets for one pointer view.
+///
+/// `hovered` and `pressed` belong to the selected pointer ID; `focused` is
+/// global to the router/window and is identical across pointer snapshots.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::ElementId;
+/// use ailloli_ui_runtime::input::InputSnapshot;
+/// let snapshot = InputSnapshot { focused: Some(ElementId(1)), hovered: None, pressed: None };
+/// assert_eq!(snapshot.interaction_for(ElementId(1)).focused, true);
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputSnapshot {
+    /// Strict keyboard-focus owner.
     pub focused: Option<ElementId>,
+    /// Strict pointer hover target.
     pub hovered: Option<ElementId>,
+    /// Strict pointer press target.
     pub pressed: Option<ElementId>,
 }
 
+/// Resolves snapshot targets into per-element paint interaction.
 impl InputSnapshot {
+    /// Resolves strict interaction flags for `id` without consulting a tree.
+    ///
+    /// `focus_within` equals strict `focused` here. Use
+    /// [`Self::interaction_for_widget_paint`] to include ancestor/child paint
+    /// propagation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ElementId;
+    /// use ailloli_ui_runtime::input::InputSnapshot;
+    /// let snapshot = InputSnapshot { focused: Some(ElementId(1)), hovered: Some(ElementId(2)), pressed: None };
+    /// let interaction = snapshot.interaction_for(ElementId(2));
+    /// assert!(!interaction.focused && interaction.hovered && !interaction.pressed);
+    /// ```
     pub fn interaction_for(self, id: ElementId) -> InputInteraction {
         InputInteraction {
             focused: self.focused == Some(id),
@@ -96,6 +169,22 @@ impl InputSnapshot {
     /// - Hit on empty `Row`/`Column` gaps does not hover all sibling buttons.
     ///
     /// Focus remains strict on the focused element only.
+    /// `focus_within` follows stored parent links. Malformed parent cycles can
+    /// therefore inherit the nontermination behavior of `ElementTree::is_ancestor_of`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ElementId;
+    /// use ailloli_ui_runtime::element::{ElementKind, ElementTree};
+    /// use ailloli_ui_runtime::input::InputSnapshot;
+    /// let mut tree = ElementTree::<()>::new();
+    /// let root = tree.create_element(ElementKind::Empty, None, None);
+    /// let child = tree.create_element(ElementKind::Empty, None, Some(root));
+    /// let interaction = InputSnapshot { focused: Some(child), hovered: None, pressed: None }
+    ///     .interaction_for_widget_paint(&tree, root);
+    /// assert!(!interaction.focused && interaction.focus_within);
+    /// ```
     pub fn interaction_for_widget_paint<A: 'static>(
         self,
         tree: &crate::element::ElementTree<A>,
@@ -115,24 +204,53 @@ impl InputSnapshot {
     }
 }
 
+/// Observable result of routing one provider-neutral event.
+///
+/// Dispatch and visual interaction changes are independent: a keyboard event
+/// can dispatch without requiring redraw, while stale hover cleanup can redraw
+/// without dispatching the incoming event.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::input::RouteOutcome;
+/// let outcome = RouteOutcome { interaction_changed: true, event_dispatched: false };
+/// assert!(outcome.needs_redraw());
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouteOutcome {
+    /// Whether focus/hover/press/role or popup visual state changed.
     pub interaction_changed: bool,
+    /// Whether the event was delivered or consumed by an authority.
     pub event_dispatched: bool,
 }
 
+/// Host redraw interpretation for routed outcomes.
 impl RouteOutcome {
+    /// Returns exactly `interaction_changed`.
+    ///
+    /// Widget-triggered runtime invalidation is tracked separately and may
+    /// require redraw even when this returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::RouteOutcome;
+    /// assert!(!RouteOutcome { interaction_changed: false, event_dispatched: true }.needs_redraw());
+    /// ```
     pub fn needs_redraw(&self) -> bool {
         self.interaction_changed
     }
 }
 
+/// Signature used to detect identity changes behind a reused numeric ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TargetSignature {
     key: Option<Key>,
     kind: TargetKind,
 }
 
+/// Identity-relevant target kind and widget policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TargetKind {
     Empty,
@@ -144,6 +262,7 @@ enum TargetKind {
     },
 }
 
+/// Per-pointer hover, capture, press, activation, and semantic state.
 #[derive(Debug, Default, Clone)]
 struct PointerRouteState {
     hovered: Option<ElementId>,
@@ -161,6 +280,7 @@ struct PointerRouteState {
     popup_consumed_gesture: bool,
 }
 
+/// Compact arguments for a pointer button transition.
 #[derive(Debug, Clone, Copy)]
 struct PointerButtonInput {
     pointer_id: PointerId,
@@ -169,7 +289,9 @@ struct PointerButtonInput {
     pressed: bool,
 }
 
+/// Snapshot and liveness helpers for one pointer state record.
 impl PointerRouteState {
+    /// Copies strict targets and combines them with global focus.
     fn snapshot(&self, focused: Option<ElementId>) -> InputSnapshot {
         InputSnapshot {
             focused,
@@ -178,6 +300,7 @@ impl PointerRouteState {
         }
     }
 
+    /// Returns whether this pointer has no retained routing responsibility.
     fn is_empty(&self) -> bool {
         self.hovered.is_none()
             && self.pressed.is_none()
@@ -187,34 +310,95 @@ impl PointerRouteState {
 }
 
 /// Per-window input state: hit-test, hover, press, focus, and event dispatch.
+///
+/// Pointer states are isolated by [`PointerId`] in deterministic key order.
+/// Mouse convenience methods use [`PointerId::MOUSE`]. The router owns no
+/// platform handles and remains provider-neutral; callbacks execute
+/// synchronously on the UI thread.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::input::InputRouter;
+/// let router = InputRouter::default();
+/// assert!(router.hovered().is_none() && router.focused().is_none());
+/// ```
 #[derive(Debug, Default, Clone)]
 pub struct InputRouter {
+    /// Stateless rectangle hit-test helper.
     pub hit_test: HitTestEngine,
+    /// Low-level strict keyboard-focus store.
     pub focus: FocusManager,
     pointers: BTreeMap<PointerId, PointerRouteState>,
     focused_signature: Option<TargetSignature>,
     focused_input_role: InputRole,
 }
 
+/// Focus, semantic-role, pointer, popup, and event-routing operations.
 impl InputRouter {
+    /// Returns the mouse hover target, or `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert_eq!(InputRouter::default().hovered(), None);
+    /// ```
     pub fn hovered(&self) -> Option<ElementId> {
         self.hovered_for(PointerId::MOUSE)
     }
 
+    /// Returns one pointer's hover target, or `None` for unknown/idle IDs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::event::PointerId;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert_eq!(InputRouter::default().hovered_for(PointerId::MOUSE), None);
+    /// ```
     pub fn hovered_for(&self, pointer_id: PointerId) -> Option<ElementId> {
         self.pointers
             .get(&pointer_id)
             .and_then(|state| state.hovered)
     }
 
+    /// Returns the strict keyboard-focus owner.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert_eq!(InputRouter::default().focused(), None);
+    /// ```
     pub fn focused(&self) -> Option<ElementId> {
         self.focus.focused()
     }
 
+    /// Returns focus plus mouse hover/press strict targets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::{InputRouter, InputSnapshot};
+    /// assert_eq!(InputRouter::default().snapshot(), InputSnapshot::default());
+    /// ```
     pub fn snapshot(&self) -> InputSnapshot {
         self.snapshot_for(PointerId::MOUSE)
     }
 
+    /// Returns focus plus strict targets for one pointer ID.
+    ///
+    /// Unknown pointer IDs still include global focus and use `None` for hover
+    /// and press.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::event::PointerId;
+    /// use ailloli_ui_runtime::input::{InputRouter, InputSnapshot};
+    /// assert_eq!(InputRouter::default().snapshot_for(PointerId::MOUSE), InputSnapshot::default());
+    /// ```
     pub fn snapshot_for(&self, pointer_id: PointerId) -> InputSnapshot {
         self.pointers
             .get(&pointer_id)
@@ -225,16 +409,52 @@ impl InputRouter {
             })
     }
 
+    /// Iterates pointer IDs with retained nonempty state in sorted order.
+    ///
+    /// The iterator borrows the router and allocates nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert_eq!(InputRouter::default().active_pointer_ids().count(), 0);
+    /// ```
     pub fn active_pointer_ids(&self) -> impl Iterator<Item = PointerId> + '_ {
         self.pointers.keys().copied()
     }
 
+    /// Clears every pointer's hover/press/capture/consumed-gesture state.
+    ///
+    /// Returns whether any retained pointer state was nonempty. Focus is not
+    /// changed and no widget events are dispatched.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert!(!InputRouter::default().clear_pointer_state());
+    /// ```
     pub fn clear_pointer_state(&mut self) -> bool {
         let changed = self.pointers.values().any(|state| !state.is_empty());
         self.pointers.clear();
         changed
     }
 
+    /// Clears focus and cached focus metadata without dispatching blur.
+    ///
+    /// Returns whether a focus ID was present. Hosts preserving widget event
+    /// contracts should use [`Self::blur_tree`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ElementId;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// let mut router = InputRouter::default();
+    /// router.focus.set_focused(Some(ElementId(3)));
+    /// assert!(router.clear_focus());
+    /// assert_eq!(router.focused(), None);
+    /// ```
     pub fn clear_focus(&mut self) -> bool {
         let changed = self.focused().is_some();
         self.focus.set_focused(None);
@@ -248,6 +468,20 @@ impl InputRouter {
     /// Unlike [`Self::clear_focus`], this method preserves the widget event
     /// contract. Hosts use it when focus ownership moves between retained
     /// trees, for example between the main tree and a popup overlay.
+    /// Returns `true` only when focus changed. A stale focus ID is cleared but
+    /// receives no blur because it is absent from `tree`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ElementId;
+    /// use ailloli_ui_runtime::app::RuntimeHandle;
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// let mut router = InputRouter::default();
+    /// router.focus.set_focused(Some(ElementId(9)));
+    /// assert!(router.blur_tree(&ElementTree::<()>::new(), RuntimeHandle::new()));
+    /// ```
     pub fn blur_tree<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -262,6 +496,18 @@ impl InputRouter {
     /// selects the opposite end; otherwise focus remains unchanged. The root
     /// participates when it is focusable, which keeps leaf-only popup trees
     /// keyboard reachable.
+    /// Missing/malformed child IDs are skipped by focus-policy lookup, but a
+    /// cyclic child graph can recurse indefinitely.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::app::RuntimeHandle;
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// let mut router = InputRouter::default();
+    /// assert!(!router.cycle_focus_descendant(&ElementTree::<()>::new(), RuntimeHandle::new(), false, true));
+    /// ```
     pub fn cycle_focus_descendant<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -295,6 +541,17 @@ impl InputRouter {
     }
 
     /// Moves focus to the first focusable node in a host-owned subtree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::app::RuntimeHandle;
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// let mut router = InputRouter::default();
+    /// assert!(!router.clear_focus());
+    /// # let _ = (ElementTree::<()>::new(), RuntimeHandle::<()>::new());
+    /// ```
     pub(crate) fn focus_first_descendant<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -307,6 +564,13 @@ impl InputRouter {
     }
 
     /// Clears focus in a host-owned subtree and emits the matching blur event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert!(InputRouter::default().focused().is_none());
+    /// ```
     pub(crate) fn blur_subtree<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -315,22 +579,67 @@ impl InputRouter {
         self.blur_tree(tree, runtime)
     }
 
+    /// Returns the current focused widget's semantic input role.
+    ///
+    /// Missing, empty, component, or unfocused targets return `InputRole::None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::{InputRole, InputRouter};
+    /// assert_eq!(InputRouter::default().focused_input_role(&ElementTree::<()>::new()), InputRole::None);
+    /// ```
     pub fn focused_input_role<A: 'static>(&self, tree: &ElementTree<A>) -> InputRole {
         self.focused()
             .and_then(|id| input_role(tree, id))
             .unwrap_or(InputRole::None)
     }
 
+    /// Returns the mouse-hovered widget's semantic input role.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::{InputRole, InputRouter};
+    /// assert_eq!(InputRouter::default().hovered_input_role(&ElementTree::<()>::new()), InputRole::None);
+    /// ```
     pub fn hovered_input_role<A: 'static>(&self, tree: &ElementTree<A>) -> InputRole {
         self.hovered()
             .and_then(|id| input_role(tree, id))
             .unwrap_or(InputRole::None)
     }
 
+    /// Resolves the mouse-hover cursor role without positional specialization.
+    ///
+    /// `Inherit` walks parents; no hovered target or reaching the root resolves
+    /// to `Default`. A malformed parent cycle can loop indefinitely.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::{HoverCursorRole, InputRouter};
+    /// assert_eq!(InputRouter::default().hovered_cursor_role(&ElementTree::<()>::new()), HoverCursorRole::Default);
+    /// ```
     pub fn hovered_cursor_role<A: 'static>(&self, tree: &ElementTree<A>) -> HoverCursorRole {
         self.hovered_cursor_role_impl(tree, None)
     }
 
+    /// Resolves the mouse-hover cursor role at a window-space logical point.
+    ///
+    /// Widgets can choose contextual resize/text roles from absolute bounds and
+    /// cached layout. Missing layout on a hovered widget behaves as `Inherit`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Point;
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::{HoverCursorRole, InputRouter};
+    /// assert_eq!(InputRouter::default().hovered_cursor_role_at(&ElementTree::<()>::new(), Point::new(1.0, 2.0)), HoverCursorRole::Default);
+    /// ```
     pub fn hovered_cursor_role_at<A: 'static>(
         &self,
         tree: &ElementTree<A>,
@@ -339,6 +648,7 @@ impl InputRouter {
         self.hovered_cursor_role_impl(tree, Some(pos))
     }
 
+    /// Shared ancestor-resolution implementation with optional position.
     fn hovered_cursor_role_impl<A: 'static>(
         &self,
         tree: &ElementTree<A>,
@@ -364,6 +674,18 @@ impl InputRouter {
         }
     }
 
+    /// Returns the focused widget's absolute logical IME cursor rectangle.
+    ///
+    /// Returns `None` without focus, for stale/non-widget targets, without a
+    /// cached layout, or when the widget declines to expose a rectangle.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert_eq!(InputRouter::default().focused_ime_cursor_rect(&ElementTree::<()>::new()), None);
+    /// ```
     pub fn focused_ime_cursor_rect<A: 'static>(&self, tree: &ElementTree<A>) -> Option<Rect> {
         let id = self.focused()?;
         let el = tree.get(id)?;
@@ -375,6 +697,25 @@ impl InputRouter {
         }
     }
 
+    /// Routes a metadata-free legacy event through hit test/focus/popup authority.
+    ///
+    /// Pointer events use the mouse ID, popup work uses the headless presentation
+    /// sentinel, and widget [`super::EventCtx::event_meta`] returns `None`.
+    /// Routing also prunes stale targets and popup owners, applies focus-key and
+    /// popup intents, and may synchronously invoke arbitrary widget code.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::event::{Event, FocusEvent};
+    /// use ailloli_ui_runtime::app::RuntimeHandle;
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::{InputRouter, RouteOutcome};
+    /// let outcome = InputRouter::default().route_event(
+    ///     &ElementTree::<()>::new(), RuntimeHandle::new(), &Event::Focus(FocusEvent::new(true)),
+    /// );
+    /// assert_eq!(outcome, RouteOutcome::default());
+    /// ```
     pub fn route_event<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -386,6 +727,23 @@ impl InputRouter {
 
     /// Routes a provider-neutral event envelope while preserving its metadata
     /// in [`super::EventCtx`] and isolating pointer state by [`PointerId`].
+    ///
+    /// Presentation metadata scopes popup pruning/dismissal and pointer metadata
+    /// selects the independent pointer state. Metadata is not validated against
+    /// the enclosed event variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use ailloli_ui_core::event::{Event, FocusEvent};
+    /// use ailloli_ui_runtime::app::{PresentationGeneration, RuntimeHandle};
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::{EventEnvelope, EventId, EventMeta, EventTimestamp, InputRouter};
+    /// let meta = EventMeta::new(EventId::new(1), EventTimestamp::new(Duration::ZERO), "main", PresentationGeneration::INITIAL);
+    /// let envelope = EventEnvelope::new(meta, Event::Focus(FocusEvent::new(true)));
+    /// assert!(!InputRouter::default().route_envelope(&ElementTree::<()>::new(), RuntimeHandle::new(), &envelope).event_dispatched);
+    /// ```
     pub fn route_envelope<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -400,6 +758,13 @@ impl InputRouter {
     ///
     /// This keeps pointer metadata intact without running the global popup
     /// authority a second time with subtree-local coordinates.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// assert!(InputRouter::default().active_pointer_ids().next().is_none());
+    /// ```
     pub(crate) fn route_subtree_envelope<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -415,6 +780,7 @@ impl InputRouter {
         )
     }
 
+    /// Shared routing pipeline with optional metadata and popup-authority pass.
     fn route_event_impl<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -636,6 +1002,21 @@ impl InputRouter {
     }
 
     /// Applies a programmatic focus-key request after the tree has been laid out.
+    ///
+    /// The request is consumed even when the key is missing/duplicate or resolves
+    /// to no focusable target. Returns whether strict focus changed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::app::RuntimeHandle;
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// let runtime = RuntimeHandle::<()>::new();
+    /// runtime.request_focus_key("missing");
+    /// assert!(!InputRouter::default().apply_pending_focus_request(&ElementTree::new(), runtime.clone()));
+    /// assert!(runtime.take_focus_key_request().is_none());
+    /// ```
     pub fn apply_pending_focus_request<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -654,6 +1035,8 @@ impl InputRouter {
     /// Applies the provider-neutral overlay backend effects emitted by the
     /// popup authority. Presentation and dismissal invalidate the frame;
     /// focus intents resolve against the complete owner namespace.
+    ///
+    /// Metadata-free calls use the headless window and initial generation.
     fn apply_pending_popup_intents<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -675,6 +1058,23 @@ impl InputRouter {
     /// Hosts call this after a retained popup subtree consumes an event, and
     /// once per redraw for programmatic popup changes emitted outside input
     /// dispatch. Intents owned by sibling windows or popup trees remain queued.
+    ///
+    /// Returns `true` for present/dismiss intents, retained-overlay focus
+    /// delegation, or an actual owner-tree focus change. Missing/stale popup
+    /// requests are consumed and skipped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::LogicalWindowId;
+    /// use ailloli_ui_runtime::app::{PresentationGeneration, RuntimeHandle};
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::input::InputRouter;
+    /// let mut router = InputRouter::default();
+    /// assert!(!router.apply_pending_popup_intents_for_presentation(
+    ///     &ElementTree::<()>::new(), RuntimeHandle::new(), &LogicalWindowId::new("main"), PresentationGeneration::INITIAL,
+    /// ));
+    /// ```
     pub fn apply_pending_popup_intents_for_presentation<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -728,6 +1128,7 @@ impl InputRouter {
         changed
     }
 
+    /// Updates one pointer's hover target and dispatches move to capture/hit.
     fn route_pointer_move<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -758,6 +1159,7 @@ impl InputRouter {
         outcome
     }
 
+    /// Applies focus/capture/activation and dispatches one button transition.
     fn route_pointer_button<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -870,6 +1272,7 @@ impl InputRouter {
         outcome
     }
 
+    /// Clears one pointer's press/capture and dispatches cancellation if owned.
     fn route_pointer_cancel<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -924,6 +1327,7 @@ impl InputRouter {
         outcome
     }
 
+    /// Dispatches with/without metadata when a target exists and builds outcome.
     fn dispatch_to_optional_target<A: 'static>(
         &self,
         tree: &ElementTree<A>,
@@ -952,16 +1356,19 @@ impl InputRouter {
         }
     }
 
+    /// Hit-tests overlay-first retained geometry at a logical point.
     fn hit<A>(&self, tree: &ElementTree<A>, pos: Point) -> Option<ElementId> {
         hit_test_target(tree, &self.hit_test, pos, None)
     }
 
+    /// Returns one pointer's current capture target.
     fn pointer_capture_for(&self, pointer_id: PointerId) -> Option<ElementId> {
         self.pointers
             .get(&pointer_id)
             .and_then(|state| state.capture)
     }
 
+    /// Transitions strict focus, dispatching blur before focus synchronously.
     fn set_focus<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -993,6 +1400,7 @@ impl InputRouter {
         true
     }
 
+    /// Drops removed or identity-changed targets and returns whether state changed.
     fn retain_existing_targets<A: 'static>(&mut self, tree: &ElementTree<A>) -> bool {
         let mut changed = false;
         if target_stale(tree, self.focused(), &self.focused_signature) {
@@ -1028,6 +1436,7 @@ impl InputRouter {
         changed
     }
 
+    /// Refreshes cached semantic roles for focus and every active pointer target.
     fn refresh_target_input_roles<A: 'static>(&mut self, tree: &ElementTree<A>) -> bool {
         let focused_changed =
             refresh_target_input_role(tree, self.focused(), &mut self.focused_input_role);
@@ -1044,6 +1453,8 @@ impl InputRouter {
     }
 }
 
+/// Extracts the popup presentation identity, using the stable headless identity
+/// when an event has no platform metadata.
 fn popup_presentation(event_meta: Option<&EventMeta>) -> (LogicalWindowId, PresentationGeneration) {
     event_meta.map_or_else(
         || {
@@ -1061,6 +1472,10 @@ fn popup_presentation(event_meta: Option<&EventMeta>) -> (LogicalWindowId, Prese
     )
 }
 
+/// Reports whether a retained target disappeared or changed semantic identity.
+///
+/// A missing target is not stale. A present target is stale when its element no
+/// longer exists, or when both an old and current signature exist and differ.
 fn target_stale<A: 'static>(
     tree: &ElementTree<A>,
     target: Option<ElementId>,
@@ -1075,6 +1490,7 @@ fn target_stale<A: 'static>(
     signature.as_ref().is_some_and(|old| old != &current)
 }
 
+/// Captures the key and input-relevant kind of an existing retained element.
 fn target_signature<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<TargetSignature> {
     let el = tree.get(id)?;
     let kind = match &el.kind {
@@ -1092,6 +1508,7 @@ fn target_signature<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<
     })
 }
 
+/// Recomputes one cached semantic input role and reports whether it changed.
 fn refresh_target_input_role<A: 'static>(
     tree: &ElementTree<A>,
     target: Option<ElementId>,
@@ -1105,12 +1522,17 @@ fn refresh_target_input_role<A: 'static>(
     true
 }
 
+/// Resolves an optional target's semantic input role, defaulting to `None`.
 fn target_input_role<A: 'static>(tree: &ElementTree<A>, target: Option<ElementId>) -> InputRole {
     target
         .and_then(|id| input_role(tree, id))
         .unwrap_or(InputRole::None)
 }
 
+/// Reads focusability for an existing element.
+///
+/// Empty and component elements are explicitly not focusable; a missing ID
+/// returns `None`.
 fn focus_policy<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<FocusPolicy> {
     let el = tree.get(id)?;
     match &el.kind {
@@ -1119,6 +1541,8 @@ fn focus_policy<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<Focu
     }
 }
 
+/// Reads an element's activation policy, using `Inherit` for non-widgets and
+/// missing IDs.
 fn activation_policy<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> ActivationPolicy {
     let Some(el) = tree.get(id) else {
         return ActivationPolicy::Inherit;
@@ -1129,6 +1553,10 @@ fn activation_policy<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Activa
     }
 }
 
+/// Resolves inherited activation policy through ancestors.
+///
+/// Reaching a root without an explicit policy defaults to suppressing
+/// activation during a focus-only gesture.
 fn resolved_activation_policy<A: 'static>(
     tree: &ElementTree<A>,
     mut target: ElementId,
@@ -1146,6 +1574,10 @@ fn resolved_activation_policy<A: 'static>(
     }
 }
 
+/// Tests whether the target may receive an activation for this gesture kind.
+///
+/// Normal gestures are always allowed. Focus-only gestures require a present
+/// target whose resolved policy is `AllowOnFocusOnly`.
 fn activation_is_allowed<A: 'static>(
     tree: &ElementTree<A>,
     target: Option<ElementId>,
@@ -1159,6 +1591,7 @@ fn activation_is_allowed<A: 'static>(
     })
 }
 
+/// Reads an existing element's input role; non-widgets yield `InputRole::None`.
 fn input_role<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<InputRole> {
     let el = tree.get(id)?;
     match &el.kind {
@@ -1167,6 +1600,10 @@ fn input_role<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<InputR
     }
 }
 
+/// Resolves an existing element's cursor role at an optional logical point.
+///
+/// Point-sensitive widget resolution requires committed layout. Without a
+/// point, the widget's general role is returned; non-widgets inherit.
 fn hover_cursor_role<A: 'static>(
     tree: &ElementTree<A>,
     id: ElementId,
@@ -1186,6 +1623,7 @@ fn hover_cursor_role<A: 'static>(
     }
 }
 
+/// Finds the first focusable element on the inclusive ancestor chain.
 fn nearest_focusable<A: 'static>(tree: &ElementTree<A>, mut id: ElementId) -> Option<ElementId> {
     loop {
         if focus_policy(tree, id) == Some(FocusPolicy::Focusable) {
@@ -1195,6 +1633,8 @@ fn nearest_focusable<A: 'static>(tree: &ElementTree<A>, mut id: ElementId) -> Op
     }
 }
 
+/// Resolves a keyed popup owner to itself, its first focusable descendant, or
+/// its nearest focusable ancestor, in that priority order.
 fn focus_target_for_key<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<ElementId> {
     if focus_policy(tree, id) == Some(FocusPolicy::Focusable) {
         return Some(id);
@@ -1202,6 +1642,7 @@ fn focus_target_for_key<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Opt
     focusable_descendant(tree, id).or_else(|| nearest_focusable(tree, id))
 }
 
+/// Returns the first focusable descendant in child-order depth-first traversal.
 fn focusable_descendant<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Option<ElementId> {
     for child in tree.children_of(id) {
         if focus_policy(tree, *child) == Some(FocusPolicy::Focusable) {
@@ -1214,6 +1655,7 @@ fn focusable_descendant<A: 'static>(tree: &ElementTree<A>, id: ElementId) -> Opt
     None
 }
 
+/// Appends focusable nodes in inclusive child-order depth-first traversal.
 fn collect_focusable_depth_first<A: 'static>(
     tree: &ElementTree<A>,
     id: ElementId,

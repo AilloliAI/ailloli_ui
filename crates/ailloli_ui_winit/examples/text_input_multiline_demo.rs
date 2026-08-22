@@ -1,5 +1,8 @@
+//! Multiline text-input demonstration for wrapping, selection, caret reveal, and local scrolling.
+
 use ailloli_ui::prelude::*;
 
+/// Builds the ten-line value used to exercise wrapping and viewport scrolling.
 fn multiline_seed() -> String {
     [
         "Line 01  A long editable draft starts here and wraps inside the same input surface.",
@@ -16,6 +19,7 @@ fn multiline_seed() -> String {
     .join("\n")
 }
 
+/// Opens the multiline input demonstration and runs it until the user exits.
 fn main() -> ailloli_ui::Result<()> {
     let draft = State::new(multiline_seed());
 

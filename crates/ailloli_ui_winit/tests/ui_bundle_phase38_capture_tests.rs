@@ -14,6 +14,7 @@ use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_widgets::controls::{draw_checkbox, CheckboxStyle};
 
+/// Resolves the repository-local directory used for theme-token captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -22,17 +23,24 @@ fn repo_captures_dir() -> PathBuf {
 }
 
 #[derive(Clone)]
+/// Paint-only checkbox fixture with explicit checked and disabled states.
 struct CheckboxDemo {
+    /// Whether the check mark is visible.
     checked: bool,
+    /// Whether disabled styling is applied.
     disabled: bool,
+    /// Static label painted beside the checkbox.
     label: &'static str,
 }
 
+/// Supplies fixed layout and delegates painting to the checkbox primitive.
 impl Widget<()> for CheckboxDemo {
+    /// Returns a stable diagnostics name for the fixture.
     fn debug_name(&self) -> &'static str {
         "CheckboxDemo"
     }
 
+    /// Returns the fixed 150x24 logical fixture extent.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, ()>,
@@ -53,6 +61,7 @@ impl Widget<()> for CheckboxDemo {
         }
     }
 
+    /// Paints checkbox commands when the frame provides a shared text system.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let Some(text_system) = ctx.text_system.as_deref_mut() else {
             return;
@@ -70,12 +79,15 @@ impl Widget<()> for CheckboxDemo {
     }
 }
 
+/// Wraps the checkbox fixture as a retained leaf view.
 impl IntoView<()> for CheckboxDemo {
+    /// Converts the widget into a leaf without children.
     fn into_view(self) -> View<()> {
         View::leaf(self)
     }
 }
 
+/// Builds a labeled 44x28 logical color swatch.
 fn swatch(name: &'static str, color: Color) -> impl IntoView<()> {
     let theme = Theme::default();
     Row::new()
@@ -90,6 +102,7 @@ fn swatch(name: &'static str, color: Color) -> impl IntoView<()> {
         .child(Text::new(name).style(theme.typography().ui_sm))
 }
 
+/// Wraps fixture content in a 900-pixel-wide themed panel.
 fn panel(title: &'static str, child: impl IntoView<()>) -> impl IntoView<()> {
     let theme = Theme::default();
     Container::panel(theme).width(900.0).padding(16.0).child(
@@ -100,6 +113,7 @@ fn panel(title: &'static str, child: impl IntoView<()>) -> impl IntoView<()> {
     )
 }
 
+/// Builds the scrollable palette, controls, typography, and interaction board.
 fn phase38_board(primary: State<String>, filled: State<String>) -> impl IntoView<()> {
     let theme = Theme::default();
     let palette = theme.palette();
@@ -239,6 +253,7 @@ fn phase38_board(primary: State<String>, filled: State<String>) -> impl IntoView
         )
 }
 
+/// Counts RGBA8 pixels accepted by `pred`; trailing incomplete bytes are ignored.
 fn count_pixels(rgba: &[u8], pred: impl Fn([u8; 4]) -> bool) -> u64 {
     rgba.chunks_exact(4)
         .filter(|px| pred([px[0], px[1], px[2], px[3]]))

@@ -1,3 +1,5 @@
+//! Declarative single-child box model with background, border, shadow, and clip.
+
 use ailloli_ui_core::event::Event;
 use ailloli_ui_core::geometry::{ClipShape, Constraints, Rect, Size};
 use ailloli_ui_core::style::{
@@ -13,6 +15,7 @@ use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawRRect, DrawRect
 
 use super::layout_ext::finish_view_sized;
 
+/// Insets a rectangle and floors resulting dimensions at zero.
 fn deflate_rect(mut rect: Rect, by: EdgeInsets) -> Rect {
     rect.x += by.left;
     rect.y += by.top;
@@ -21,6 +24,7 @@ fn deflate_rect(mut rect: Rect, by: EdgeInsets) -> Rect {
     rect
 }
 
+/// Subtracts insets independently from every constraint bound, floored at zero.
 fn deflate_constraints(c: Constraints, by: EdgeInsets) -> Constraints {
     Constraints {
         min_w: (c.min_w - by.horizontal()).max(0.0),
@@ -30,6 +34,7 @@ fn deflate_constraints(c: Constraints, by: EdgeInsets) -> Constraints {
     }
 }
 
+/// Adds corresponding inset edges without overflow or finiteness checks.
 fn add_insets(a: EdgeInsets, b: EdgeInsets) -> EdgeInsets {
     EdgeInsets::new(
         a.left + b.left,
@@ -39,15 +44,18 @@ fn add_insets(a: EdgeInsets, b: EdgeInsets) -> EdgeInsets {
     )
 }
 
+/// Inflates a size by horizontal and vertical inset totals.
 fn add_insets_to_size(size: Size, insets: EdgeInsets) -> Size {
     Size::new(size.w + insets.horizontal(), size.h + insets.vertical())
 }
 
+/// Multiplies alpha and clamps the result to the normalized color range.
 fn apply_opacity(mut c: Color, opacity: f32) -> Color {
     c.a = (c.a * opacity).clamp(0.0, 1.0);
     c
 }
 
+/// Applies container opacity independently to all four border colors.
 fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border.colors.left = apply_opacity(border.colors.left, opacity);
     border.colors.top = apply_opacity(border.colors.top, opacity);
@@ -56,11 +64,13 @@ fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border
 }
 
+/// Applies container opacity to a shadow color.
 fn apply_shadow_opacity(mut shadow: BoxShadow, opacity: f32) -> BoxShadow {
     shadow.color = apply_opacity(shadow.color, opacity);
     shadow
 }
 
+/// Returns the last shadow, first inserting the medium default when empty.
 fn ensure_shadow(shadows: &mut Vec<BoxShadow>) -> &mut BoxShadow {
     if shadows.is_empty() {
         shadows.push(BoxShadow::md());
@@ -68,6 +78,7 @@ fn ensure_shadow(shadows: &mut Vec<BoxShadow>) -> &mut BoxShadow {
     shadows.last_mut().expect("shadow inserted when empty")
 }
 
+/// Returns the smallest axis-aligned rectangle containing both inputs.
 fn union_rect(a: Rect, b: Rect) -> Rect {
     let x0 = a.x.min(b.x);
     let y0 = a.y.min(b.y);
@@ -76,7 +87,20 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
-/// Declarative box: layout style, background, border, radius, optional clip.
+/// Declarative box with background, border, shadows, and optional child clip.
+///
+/// The default is transparent, borderless, shadowless, unclipped, automatically
+/// sized, and has no child. Margin surrounds the border box; border and padding
+/// surround the content. Only one child is retained.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Color;
+/// use ailloli_ui_widgets::{layout::Container, text::Text};
+/// let card: Container<()> = Container::new().background(Color::BLACK).padding(8.0).child(Text::new("Body"));
+/// let _ = card;
+/// ```
 pub struct Container<A = ()> {
     pub(crate) layout: LayoutStyle,
     pub(crate) flex_item: FlexItemStyle,
@@ -88,6 +112,7 @@ pub struct Container<A = ()> {
 
 crate::impl_layout_builders!(Container);
 
+/// Creates the same empty transparent box as [`Container::new`].
 impl<A: 'static> Default for Container<A> {
     fn default() -> Self {
         Self::new()
@@ -95,6 +120,15 @@ impl<A: 'static> Default for Container<A> {
 }
 
 impl<A: 'static> Container<A> {
+    /// Creates an empty transparent box with automatic layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let container: Container<()> = Container::new();
+    /// let _ = container;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -106,6 +140,16 @@ impl<A: 'static> Container<A> {
         }
     }
 
+    /// Creates a theme surface with a one-pixel border and large radius.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let surface: Container<()> = Container::surface(Theme::dark());
+    /// let _ = surface;
+    /// ```
     pub fn surface(theme: Theme) -> Self {
         let palette = theme.palette();
         Self::new()
@@ -114,6 +158,16 @@ impl<A: 'static> Container<A> {
             .radius(theme.radius().lg)
     }
 
+    /// Creates an elevated themed surface with the medium theme shadow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let panel: Container<()> = Container::panel(Theme::dark());
+    /// let _ = panel;
+    /// ```
     pub fn panel(theme: Theme) -> Self {
         let palette = theme.palette();
         Self::surface(theme)
@@ -121,82 +175,248 @@ impl<A: 'static> Container<A> {
             .shadow(theme.shadows().md)
     }
 
+    /// Replaces the background with one solid color.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().background(Color::BLACK);
+    /// let _ = box_;
+    /// ```
     pub fn background(mut self, color: Color) -> Self {
         self.box_style.background = Background::color(color);
         self
     }
 
+    /// Sets a uniform logical-pixel corner radius without clamping.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().radius(8.0);
+    /// let _ = box_;
+    /// ```
     pub fn radius(mut self, value: f32) -> Self {
         self.box_style.radius = Radius::uniform(value);
         self
     }
 
+    /// Replaces all four border widths and colors.
+    ///
+    /// Width normalization follows [`Border::new`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().border(1.0, Color::WHITE);
+    /// let _ = box_;
+    /// ```
     pub fn border(mut self, width: f32, color: Color) -> Self {
         self.box_style.border = Border::new(width, color);
         self
     }
 
+    /// Replaces all four widths while preserving edge colors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().border_width(2.0);
+    /// let _ = box_;
+    /// ```
     pub fn border_width(mut self, width: f32) -> Self {
         self.box_style.border = self.box_style.border.with_width(width);
         self
     }
 
+    /// Replaces all four colors while preserving edge widths.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().border_color(Color::WHITE);
+    /// let _ = box_;
+    /// ```
     pub fn border_color(mut self, color: Color) -> Self {
         self.box_style.border = self.box_style.border.with_color(color);
         self
     }
 
+    /// Replaces only the left border width and color.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().border_left(2.0, Color::WHITE);
+    /// let _ = box_;
+    /// ```
     pub fn border_left(mut self, width: f32, color: Color) -> Self {
         self.box_style.border = self.box_style.border.with_left(width, color);
         self
     }
 
+    /// Replaces only the top border width and color.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().border_top(2.0, Color::WHITE);
+    /// let _ = box_;
+    /// ```
     pub fn border_top(mut self, width: f32, color: Color) -> Self {
         self.box_style.border = self.box_style.border.with_top(width, color);
         self
     }
 
+    /// Replaces only the right border width and color.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().border_right(2.0, Color::WHITE);
+    /// let _ = box_;
+    /// ```
     pub fn border_right(mut self, width: f32, color: Color) -> Self {
         self.box_style.border = self.box_style.border.with_right(width, color);
         self
     }
 
+    /// Replaces only the bottom border width and color.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().border_bottom(2.0, Color::WHITE);
+    /// let _ = box_;
+    /// ```
     pub fn border_bottom(mut self, width: f32, color: Color) -> Self {
         self.box_style.border = self.box_style.border.with_bottom(width, color);
         self
     }
 
+    /// Appends one shadow; later shadows paint after earlier shadows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::BoxShadow;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().shadow(BoxShadow::md());
+    /// let _ = box_;
+    /// ```
     pub fn shadow(mut self, shadow: BoxShadow) -> Self {
         self.box_style.shadows.push(shadow);
         self
     }
 
+    /// Removes every configured shadow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::BoxShadow;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().shadow(BoxShadow::md()).shadow_none();
+    /// let _ = box_;
+    /// ```
     pub fn shadow_none(mut self) -> Self {
         self.box_style.shadows.clear();
         self
     }
 
+    /// Replaces the last shadow color, inserting a medium shadow if absent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().shadow_color(Color::BLACK);
+    /// let _ = box_;
+    /// ```
     pub fn shadow_color(mut self, color: Color) -> Self {
         ensure_shadow(&mut self.box_style.shadows).color = color;
         self
     }
 
+    /// Replaces the last shadow blur radius in logical pixels.
+    ///
+    /// Negative and `NaN` values resolve to zero; an absent shadow first inserts
+    /// the medium default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().shadow_blur(12.0);
+    /// let _ = box_;
+    /// ```
     pub fn shadow_blur(mut self, value: f32) -> Self {
         ensure_shadow(&mut self.box_style.shadows).blur_radius = value.max(0.0);
         self
     }
 
+    /// Replaces the last shadow offset in logical pixels.
+    ///
+    /// Values are stored without finiteness checks; an absent shadow first
+    /// inserts the medium default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().shadow_offset(0.0, 4.0);
+    /// let _ = box_;
+    /// ```
     pub fn shadow_offset(mut self, x: f32, y: f32) -> Self {
         ensure_shadow(&mut self.box_style.shadows).offset = Offset::new(x, y);
         self
     }
 
+    /// Replaces the last shadow spread in logical pixels.
+    ///
+    /// Negative and `NaN` values resolve to zero; an absent shadow first inserts
+    /// the medium default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().shadow_spread(2.0);
+    /// let _ = box_;
+    /// ```
     pub fn shadow_spread(mut self, value: f32) -> Self {
         ensure_shadow(&mut self.box_style.shadows).spread = value.max(0.0);
         self
     }
 
     /// Clips children to the inner rect (rounded when `radius > 0`).
+    ///
+    /// The clip excludes margin, border, and padding. It is disabled by default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let box_: Container<()> = Container::new().radius(8.0).clip_children(true);
+    /// let _ = box_;
+    /// ```
     pub fn clip_children(mut self, value: bool) -> Self {
         self.clip_children = value;
         self
@@ -204,17 +424,38 @@ impl<A: 'static> Container<A> {
 
     /// Marks this container as the window root clip (`Window::radius`).
     /// Enables window-root stencil heuristics on the GPU path.
+    ///
+    /// This marker is independent of `clip_children`; callers are responsible
+    /// for applying it only to the actual root clip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Container;
+    /// let root: Container<()> = Container::new().clip_children(true).window_root_clip(true);
+    /// let _ = root;
+    /// ```
     pub fn window_root_clip(mut self, value: bool) -> Self {
         self.window_root_clip = value;
         self
     }
 
+    /// Sets the single content child, replacing any previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::Container, text::Text};
+    /// let box_: Container<()> = Container::new().child(Text::new("content"));
+    /// let _ = box_;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Frozen box/layout state installed in the retained tree.
 struct ContainerWidget {
     layout: LayoutStyle,
     style: BoxStyle,
@@ -222,6 +463,7 @@ struct ContainerWidget {
     window_root_clip: bool,
 }
 
+/// Implements box-model layout, clip publication, and layered surface painting.
 impl<A: 'static> Widget<A> for ContainerWidget {
     fn debug_name(&self) -> &'static str {
         "Container"
@@ -367,6 +609,7 @@ impl<A: 'static> Widget<A> for ContainerWidget {
     }
 }
 
+/// Converts the builder into one retained box node and optional child.
 impl<A: 'static> IntoView<A> for Container<A> {
     fn into_view(self) -> View<A> {
         let widget = ContainerWidget {

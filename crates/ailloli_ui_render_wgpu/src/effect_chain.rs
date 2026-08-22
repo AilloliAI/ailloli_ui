@@ -16,15 +16,37 @@ struct BlurParamsGpu {
 }
 
 /// Blur helper pipelines.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::effect_chain::EffectPipelines;
+/// let _: usize = std::mem::size_of::<EffectPipelines>();
+/// ```
 pub struct EffectPipelines {
+    /// Separable blur render pipeline.
     pub blur: wgpu::RenderPipeline,
+    /// Uniform layout for direction, texture size, and radius.
     pub blur_params_layout: wgpu::BindGroupLayout,
+    /// Source texture and sampler layout.
     pub blur_tex_layout: wgpu::BindGroupLayout,
+    /// Linear sampler for blur taps.
     pub sampler: wgpu::Sampler,
+    /// Six-vertex full-screen quad reused by both blur axes.
     pub fullscreen_buf: wgpu::Buffer,
 }
 
 impl EffectPipelines {
+    /// Builds blur resources for one exact render-target format.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::effect_chain::EffectPipelines;
+    /// fn build(device: &wgpu::Device) -> EffectPipelines {
+    ///     EffectPipelines::new(device, wgpu::TextureFormat::Rgba8Unorm)
+    /// }
+    /// ```
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let blur_params_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -147,23 +169,65 @@ impl EffectPipelines {
     }
 }
 
+/// Texture bindings produced by completed isolated passes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::effect_chain::IsolatedCompositeTable;
+/// assert!(IsolatedCompositeTable::empty().bind_groups.is_empty());
+/// ```
 pub struct IsolatedCompositeTable {
+    /// Sample bindings indexed by frame-local pass ID.
     pub bind_groups: std::collections::HashMap<u16, wgpu::BindGroup>,
 }
 
 impl IsolatedCompositeTable {
+    /// Creates an empty binding table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::effect_chain::IsolatedCompositeTable;
+    /// assert!(IsolatedCompositeTable::empty().get(0).is_none());
+    /// ```
     pub fn empty() -> Self {
         Self {
             bind_groups: std::collections::HashMap::new(),
         }
     }
 
+    /// Returns the sample binding for a completed pass.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::effect_chain::IsolatedCompositeTable;
+    /// assert!(IsolatedCompositeTable::empty().get(99).is_none());
+    /// ```
     pub fn get(&self, id: u16) -> Option<&wgpu::BindGroup> {
         self.bind_groups.get(&id)
     }
 }
 
 /// Applies blur (if any) in-place on `src_view` using a transient ping-pong texture.
+///
+/// When several blur effects exist, only the largest strictly positive radius
+/// is used. Opacity effects are handled by compositing. A nonpositive or NaN
+/// maximum is a no-op. Dimensions are physical pixels; allocation clamps each
+/// axis to at least one, while uniforms preserve the supplied values.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_wgpu::{effect_chain::{run_effect_chain, EffectPipelines},
+///     IsolatedEffectChain};
+/// fn run(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder,
+///     pipelines: &EffectPipelines, view: &wgpu::TextureView) {
+///     run_effect_chain(device, encoder, pipelines, wgpu::TextureFormat::Rgba8Unorm,
+///         view, 32, 32, &IsolatedEffectChain::default(), 0);
+/// }
+/// ```
 #[allow(clippy::too_many_arguments)]
 pub fn run_effect_chain(
     device: &wgpu::Device,

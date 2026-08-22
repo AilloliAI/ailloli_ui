@@ -1,12 +1,17 @@
+//! Live native-watch regressions with bounded three-second deadlines.
+
 use std::fs;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ailloli_ui_fs::{FileTreeSource, FileUri, WatchEventKind};
 use ailloli_ui_fs_local::LocalFileTreeSource;
 
+/// Recoverable unique temporary directory for one live watch test.
 struct TempDir(std::path::PathBuf);
 
+/// Creates the temporary watch root.
 impl TempDir {
+    /// Allocates a process/time-qualified directory under the OS temp root.
     fn new() -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -22,13 +27,16 @@ impl TempDir {
     }
 }
 
+/// Recursively removes the temporary root on scope exit.
 impl Drop for TempDir {
+    /// Performs best-effort cleanup without masking a test result.
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
 
 #[test]
+/// Verifies non-recursive delivery and the debounce delay for a direct child.
 fn local_watch_is_non_recursive_and_debounced() {
     let temp = TempDir::new();
     let nested = temp.0.join("nested");
@@ -57,6 +65,7 @@ fn local_watch_is_non_recursive_and_debounced() {
 }
 
 #[test]
+/// Verifies explicit watch ceilings and idempotent duplicate registration.
 fn local_watch_limit_is_explicit_and_existing_watches_are_idempotent() {
     let first = TempDir::new();
     let second = TempDir::new();
@@ -72,6 +81,7 @@ fn local_watch_limit_is_explicit_and_existing_watches_are_idempotent() {
 }
 
 #[test]
+/// Verifies a watched-directory rename suppresses native self-watch echoes.
 fn renaming_a_watched_directory_emits_only_the_semantic_rename() {
     let temp = TempDir::new();
     let from_path = temp.0.join("foo");

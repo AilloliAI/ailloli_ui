@@ -1,3 +1,5 @@
+//! Headless render-plan snapshot scenario for layer and clip accounting.
+
 use ailloli_ui_core::{ClipShape, Color, IconId, Rect};
 use ailloli_ui_render_wgpu::{build_render_plan, LayerPass};
 use ailloli_ui_runtime::{DrawCmd, DrawImage, DrawRect};

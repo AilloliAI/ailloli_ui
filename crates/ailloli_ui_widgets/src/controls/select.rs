@@ -1,3 +1,9 @@
+//! Typed select and action-menu dropdown controls with retained popups.
+//!
+//! Selects expose controlled single selection and optional signal writes;
+//! dropdowns run per-item actions without retaining a selection. Both skip
+//! disabled rows, support cyclic keyboard navigation, and scroll tall popups.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized, LayoutExt};
@@ -30,51 +36,124 @@ use super::popup::{
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Density preset used to derive [`SelectStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SelectSize;
+/// assert_eq!(SelectSize::default(), SelectSize::Default);
+/// assert_ne!(SelectSize::Compact, SelectSize::Default);
+/// ```
 pub enum SelectSize {
+    /// 180-by-30 trigger with 28-pixel rows.
     Compact,
     #[default]
+    /// 220-by-36 trigger with 32-pixel rows.
     Default,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Density preset used to derive [`DropdownStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DropdownSize;
+/// assert_eq!(DropdownSize::default(), DropdownSize::Default);
+/// assert_ne!(DropdownSize::Compact, DropdownSize::Default);
+/// ```
 pub enum DropdownSize {
+    /// 180-by-30 trigger with 28-pixel rows.
     Compact,
     #[default]
+    /// 220-by-36 trigger with 32-pixel rows.
     Default,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Trigger, popup, row, typography, and focus appearance shared by both controls.
+///
+/// Dimensions are logical pixels and opacity is a multiplier. Public fields are
+/// used as supplied without validation. The default is the default theme's
+/// regular select preset.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SelectStyle;
+/// let style = SelectStyle::default();
+/// assert_eq!((style.width, style.height, style.option_height), (220.0, 36.0, 32.0));
+/// assert_eq!(style.popup_max_height, 220.0);
+/// ```
 pub struct SelectStyle {
+    /// Resting trigger fill.
     pub trigger_background: Color,
+    /// Hovered enabled trigger fill.
     pub trigger_background_hovered: Color,
+    /// Pressed enabled trigger fill.
     pub trigger_background_pressed: Color,
+    /// Popup surface fill.
     pub popup_background: Color,
+    /// Reserved hovered row fill token.
     pub option_hovered: Color,
+    /// Keyboard/pointer-active row fill.
     pub option_active: Color,
+    /// Selected row fill.
     pub option_selected: Color,
+    /// Resting trigger border.
     pub border: Border,
+    /// Popup border.
     pub popup_border: Border,
+    /// Focus ring border.
     pub focus_ring: Border,
+    /// Popup shadows painted in order.
     pub shadows: Vec<BoxShadow>,
+    /// Enabled trigger and row text.
     pub text: TextStyle,
+    /// No-selection placeholder text.
     pub placeholder_text: TextStyle,
+    /// Disabled row and trigger text.
     pub disabled_text: TextStyle,
+    /// Enabled leading/trailing icon tint.
     pub icon_tint: Color,
+    /// Selected checkmark tint.
     pub selected_icon_tint: Color,
+    /// Disabled icon tint before opacity multiplication.
     pub disabled_icon_tint: Color,
+    /// Minimum intrinsic trigger/popup width in logical pixels.
     pub width: f32,
+    /// Preferred trigger height in logical pixels.
     pub height: f32,
+    /// Popup row height in logical pixels.
     pub option_height: f32,
+    /// Maximum popup height in logical pixels.
     pub popup_max_height: f32,
+    /// Trigger-to-popup gap in logical pixels.
     pub popup_gap: f32,
+    /// Trigger and popup corner radii.
     pub radius: Radius,
+    /// Horizontal content padding in logical pixels.
     pub padding_x: f32,
+    /// Option and chevron icon size in logical pixels.
     pub icon_size: f32,
+    /// Horizontal icon/text gap in logical pixels.
     pub icon_gap: f32,
+    /// Focus ring distance beyond trigger bounds in logical pixels.
     pub focus_ring_offset: f32,
+    /// Disabled alpha multiplier.
     pub disabled_opacity: f32,
 }
 
+/// Style alias used by [`Dropdown`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{DropdownStyle, SelectStyle};
+/// let style: DropdownStyle = SelectStyle::default();
+/// assert_eq!(style.height, 36.0);
+/// ```
 pub type DropdownStyle = SelectStyle;
 
 impl Default for SelectStyle {
@@ -84,6 +163,19 @@ impl Default for SelectStyle {
 }
 
 impl SelectStyle {
+    /// Derives a select style from `theme` and density.
+    ///
+    /// Compact uses `180 x 30` with 28-pixel rows and 12-pixel text; default
+    /// uses `220 x 36` with 32-pixel rows and 13-pixel text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{SelectSize, SelectStyle};
+    /// let style = SelectStyle::from_theme(Theme::default(), SelectSize::Compact);
+    /// assert_eq!((style.width, style.height, style.option_height), (180.0, 30.0, 28.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: SelectSize) -> Self {
         let palette = theme.palette();
         let (width, height, option_height, padding_x, icon_size, text_size) = match size {
@@ -127,6 +219,16 @@ impl SelectStyle {
         }
     }
 
+    /// Derives dropdown style by mapping dropdown density to select density.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{DropdownSize, DropdownStyle};
+    /// let style = DropdownStyle::from_dropdown_theme(Theme::default(), DropdownSize::Compact);
+    /// assert_eq!((style.width, style.height), (180.0, 30.0));
+    /// ```
     pub fn from_dropdown_theme(theme: Theme, size: DropdownSize) -> Self {
         Self::from_theme(
             theme,
@@ -137,6 +239,18 @@ impl SelectStyle {
         )
     }
 
+    /// Expands `rect` to include a visible focus ring and its offset.
+    ///
+    /// The union preserves the original rectangle; invisible focus rings add
+    /// nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Select, SelectStyle};
+    /// let select: Select<i32> = Select::new().select_style(SelectStyle::default());
+    /// let _ = select;
+    /// ```
     pub(crate) fn visual_bounds(&self, rect: Rect) -> Rect {
         let mut out = rect;
         if self.focus_ring.is_visible() {
@@ -148,14 +262,39 @@ impl SelectStyle {
 }
 
 #[derive(Clone)]
+/// Typed select choice with a label, optional icon, and reactive availability.
+///
+/// Duplicate values and labels are allowed. Selection lookup uses the first
+/// equal value; a disabled option cannot be activated.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SelectOption;
+/// let option = SelectOption::new(1, "One").disabled(false);
+/// let _ = option;
+/// ```
 pub struct SelectOption<T> {
+    /// Typed value written or emitted on activation.
     value: T,
+    /// Visible label.
     label: String,
+    /// Static or reactive disabled state.
     disabled: Binding<bool>,
+    /// Optional leading icon.
     icon: Option<IconId>,
 }
 
 impl<T> SelectOption<T> {
+    /// Creates an enabled, iconless option and stores its label unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SelectOption;
+    /// let option = SelectOption::new("id", "Visible label");
+    /// let _ = option;
+    /// ```
     pub fn new(value: T, label: impl Into<String>) -> Self {
         Self {
             value,
@@ -165,34 +304,88 @@ impl<T> SelectOption<T> {
         }
     }
 
+    /// Replaces the option's static or reactive disabled binding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SelectOption;
+    /// let option = SelectOption::new(1, "One").disabled(true);
+    /// let _ = option;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Uses a memo as the reactive disabled binding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::SelectOption;
+    /// let option = SelectOption::new(1, "One").disabled_signal(Memo::new(|| false));
+    /// let _ = option;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets the leading icon, replacing any previous one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::SelectOption;
+    /// let option = SelectOption::new(1, "History").leading_icon(IconId::History);
+    /// let _ = option;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.icon = Some(icon);
         self
     }
 }
 
+/// Shared context-aware callback for a newly selected typed value.
 type SelectChangeHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
 
+/// Controlled single-selection trigger over typed values.
+///
+/// Selecting an enabled option updates a signal installed by [`Self::bind`] and
+/// invokes the callback only when its value differs from the current one.
+/// [`Self::selected`] is read-only configuration and is not mutated internally.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Select;
+/// let select: Select<i32> = Select::new().option(1, "One").selected(1);
+/// let _ = select;
+/// ```
 pub struct Select<T, A = ()> {
+    /// Trigger layout configured by builder methods.
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation.
     pub(crate) flex_item: FlexItemStyle,
+    /// No-selection trigger label.
     placeholder: Binding<String>,
+    /// Options in popup order.
     options: Vec<SelectOption<T>>,
+    /// Optional static/reactive selected value.
     selected: Option<Binding<T>>,
+    /// Writable selected signal when bound through [`Self::bind`].
     bound: Option<Signal<T>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Changed-selection callback.
     on_change: Option<SelectChangeHandler<T, A>>,
+    /// Trigger and popup appearance.
     style: SelectStyle,
+    /// Preferred vertical popup side.
     popup_placement: PopupPlacement,
+    /// Initial popup visibility.
     default_open: bool,
 }
 
@@ -209,6 +402,18 @@ impl<T: Clone + PartialEq + 'static, A: 'static> LayoutExt for Select<T, A> {
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Select<T, A> {
+    /// Creates an enabled empty select with `Select option` placeholder.
+    ///
+    /// It has no selection or callback, prefers bottom placement, and starts
+    /// closed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<&'static str> = Select::new();
+    /// let _ = select;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -225,27 +430,80 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Select<T, A> {
         }
     }
 
+    /// Replaces the static or reactive no-selection label.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().placeholder("Choose...");
+    /// let _ = select;
+    /// ```
     pub fn placeholder(mut self, placeholder: impl Into<Binding<String>>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
+    /// Appends an enabled, iconless option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().option(1, "One").option(2, "Two");
+    /// let _ = select;
+    /// ```
     pub fn option(mut self, value: T, label: impl Into<String>) -> Self {
         self.options.push(SelectOption::new(value, label));
         self
     }
 
+    /// Appends a fully configured option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Select, SelectOption};
+    /// let select: Select<i32> = Select::new()
+    ///     .select_option(SelectOption::new(1, "One").disabled(true));
+    /// let _ = select;
+    /// ```
     pub fn select_option(mut self, option: SelectOption<T>) -> Self {
         self.options.push(option);
         self
     }
 
+    /// Sets a read-only static or reactive selection and clears writable binding.
+    ///
+    /// Activating another value may emit the callback but cannot mutate this
+    /// selection. Duplicate values resolve to the first equal option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().option(1, "One").selected(1);
+    /// let _ = select;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<T>>) -> Self {
         self.selected = Some(selected.into());
         self.bound = None;
         self
     }
 
+    /// Binds a writable selection signal.
+    ///
+    /// Activating a different enabled option writes the signal before invoking
+    /// the change callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().option(1, "One").bind(State::new(1));
+    /// let _ = select;
+    /// ```
     pub fn bind(mut self, selected: impl Into<Signal<T>>) -> Self {
         let signal = selected.into();
         self.selected = Some(Binding::Signal(signal.clone()));
@@ -253,90 +511,239 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Select<T, A> {
         self
     }
 
+    /// Sets static or reactive whole-control disabled state.
+    ///
+    /// Disabled selects are not focusable, ignore events, and close an open popup
+    /// during layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().disabled(true);
+    /// let _ = select;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Uses a memo as the reactive whole-control disabled binding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().disabled_signal(Memo::new(|| false));
+    /// let _ = select;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets only the retained popup's initial open state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().default_open(true);
+    /// let _ = select;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Sets the preferred [`PopupPlacement::Top`] or [`PopupPlacement::Bottom`] side.
+    ///
+    /// Runtime geometry may clamp the resulting rectangle; this builder does not
+    /// enable automatic side flipping.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{PopupPlacement, Select};
+    /// let select: Select<i32> = Select::new().popup_placement(PopupPlacement::Top);
+    /// let _ = select;
+    /// ```
     pub fn popup_placement(mut self, placement: PopupPlacement) -> Self {
         self.popup_placement = placement;
         self
     }
 
+    /// Replaces trigger and popup style without altering explicit layout values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Select, SelectStyle};
+    /// let select: Select<i32> = Select::new().select_style(SelectStyle::default());
+    /// let _ = select;
+    /// ```
     pub fn select_style(mut self, style: SelectStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Re-derives style from the default theme and requested density.
+    ///
+    /// This overwrites every previous select-style customization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Select, SelectSize};
+    /// let select: Select<i32> = Select::new().select_size(SelectSize::Compact);
+    /// let _ = select;
+    /// ```
     pub fn select_size(mut self, size: SelectSize) -> Self {
         self.style = SelectStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Dispatches the application action returned for a changed selection.
+    ///
+    /// Equal values, disabled rows, and out-of-range indices emit nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32, i32> = Select::new().on_change(|value| value);
+    /// let _ = select;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(T) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Handles a changed selection with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().on_change_ctx(|_ctx, _value| {});
+    /// let _ = select;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, T) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 
+    /// Sets trigger layout width in logical pixels or another [`Length`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().width(240.0);
+    /// let _ = select;
+    /// ```
     pub fn width(mut self, value: impl Into<Length>) -> Self {
         self.layout.width = value.into();
         self
     }
 
+    /// Sets trigger layout height in logical pixels or another [`Length`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().height(40.0);
+    /// let _ = select;
+    /// ```
     pub fn height(mut self, value: impl Into<Length>) -> Self {
         self.layout.height = value.into();
         self
     }
 
+    /// Sets minimum trigger width in logical pixels or another [`Length`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().min_width(120.0);
+    /// let _ = select;
+    /// ```
     pub fn min_width(mut self, value: impl Into<Length>) -> Self {
         self.layout.min_width = value.into();
         self
     }
 
+    /// Sets maximum trigger width in logical pixels or another [`Length`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().max_width(360.0);
+    /// let _ = select;
+    /// ```
     pub fn max_width(mut self, value: impl Into<Length>) -> Self {
         self.layout.max_width = value.into();
         self
     }
 
+    /// Makes the trigger fill available horizontal layout space.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().fill_width();
+    /// let _ = select;
+    /// ```
     pub fn fill_width(mut self) -> Self {
         self.layout.width = Length::Fill;
         self
     }
 
+    /// Sets flex-grow factor to `1.0` without changing layout width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Select;
+    /// let select: Select<i32> = Select::new().flex_grow();
+    /// let _ = select;
+    /// ```
     pub fn flex_grow(mut self) -> Self {
         self.flex_item = self.flex_item.flex_grow(1.0);
         self
     }
 }
 
+/// Component that allocates navigation/scroll state and retained listbox content.
 struct SelectComponent<T, A> {
+    /// Trigger layout snapshot.
     layout: LayoutStyle,
+    /// No-selection label.
     placeholder: Binding<String>,
+    /// Typed options.
     options: Vec<SelectOption<T>>,
+    /// Readable selected value.
     selected: Option<Binding<T>>,
+    /// Optional writable selected value.
     bound: Option<Signal<T>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Changed-selection callback.
     on_change: Option<SelectChangeHandler<T, A>>,
+    /// Shared trigger/popup style.
     style: SelectStyle,
+    /// Preferred popup side.
     popup_placement: PopupPlacement,
+    /// Initial popup visibility.
     default_open: bool,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for SelectComponent<T, A> {
+    /// Allocates active/scroll signals and connects retained popup content.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let active_index = context.signal(None);
         let scroll = context.signal(ScrollState::new());
@@ -377,6 +784,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for SelectComp
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for Select<T, A> {
+    /// Converts configuration into a sized reactive component view.
     fn into_view(self) -> View<A> {
         finish_view_sized(
             View::component(SelectComponent {
@@ -397,25 +805,39 @@ impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for Select<T, A> {
     }
 }
 
+/// Retained select trigger with controlled selection and popup navigation.
 struct SelectWidget<T, A> {
+    /// Runtime trigger layout.
     layout: LayoutStyle,
+    /// No-selection label.
     placeholder: Binding<String>,
+    /// Typed options in display order.
     options: Vec<SelectOption<T>>,
+    /// Readable selected value.
     selected: Option<Binding<T>>,
+    /// Optional writable selected value.
     bound: Option<Signal<T>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Changed-selection callback.
     on_change: Option<SelectChangeHandler<T, A>>,
+    /// Shared style.
     style: SelectStyle,
+    /// Preferred popup side.
     popup_placement: PopupPlacement,
+    /// Active option index.
     active_index: Signal<Option<usize>>,
+    /// Runtime retained-popup bridge.
     popup: PopupPortalBridge<A>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A> {
+    /// Returns the stable diagnostic name.
     fn debug_name(&self) -> &'static str {
         "Select"
     }
 
+    /// Measures intrinsic label width, applies constraints, and closes if disabled.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -445,6 +867,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
         }
     }
 
+    /// Paints trigger state and refreshes open popup geometry.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         paint_trigger(
             ctx,
@@ -460,6 +883,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
         }
     }
 
+    /// Routes blur, pointer release, and keyboard popup navigation.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         if self.disabled.read() {
             return;
@@ -487,6 +911,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
         }
     }
 
+    /// Makes only enabled selects focusable.
     fn focus_policy(&self) -> FocusPolicy {
         if self.disabled.read() {
             FocusPolicy::NotFocusable
@@ -497,10 +922,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SelectWidget<T, A
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
+    /// Clones the configured selected value, if any.
     fn selected_value(&self) -> Option<T> {
         self.selected.as_ref().map(Binding::read)
     }
 
+    /// Finds the first option equal to the controlled value.
     fn selected_index(&self) -> Option<usize> {
         let selected = self.selected_value()?;
         self.options
@@ -508,19 +935,23 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
             .position(|option| option.value == selected)
     }
 
+    /// Clones the first selected option's label.
     fn current_label(&self) -> Option<String> {
         let idx = self.selected_index()?;
         Some(self.options[idx].label.clone())
     }
 
+    /// Measures popup content width with the trigger width as a floor.
     fn popup_width(&self, trigger_width: f32, text_system: Option<&mut TextSystem>) -> f32 {
         popup_content_width(&self.options, &self.style, text_system).max(trigger_width)
     }
 
+    /// Returns row-derived popup height capped by `popup_max_height`.
     fn popup_height(&self) -> f32 {
         (self.options.len() as f32 * self.style.option_height).min(self.style.popup_max_height)
     }
 
+    /// Positions popup on the configured vertical side of the trigger.
     fn popup_rect(&self, bounds: Rect) -> Rect {
         popup_rect_for_bounds(
             bounds,
@@ -531,17 +962,20 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
         )
     }
 
+    /// Activates selected or first enabled option and opens the popup.
     fn open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         self.active_index
             .set(self.selected_index().or_else(|| self.first_enabled_index()));
         self.popup.open(ctx, bounds, self.popup_rect(bounds));
     }
 
+    /// Clears active navigation and dismisses the runtime popup.
     fn close(&self, reason: PopupDismissReason) {
         self.active_index.set(None);
         self.popup.close(reason);
     }
 
+    /// Programmatically closes an open popup or opens a closed one.
     fn toggle_open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         if self.popup.is_open() {
             self.close(PopupDismissReason::Programmatic);
@@ -550,6 +984,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
         }
     }
 
+    /// Commits an enabled option when changed and always closes it.
     fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
         let Some(option) = self.options.get(index) else {
             return;
@@ -577,6 +1012,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Opens on activation/navigation keys or routes open-popup keys.
     fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key, bounds: Rect) {
         if !self.popup.is_open() {
             if matches!(
@@ -616,6 +1052,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
         }
     }
 
+    /// Moves cyclically to another enabled option.
     fn move_active(&self, ctx: &mut EventCtx<A>, direction: Direction) {
         let next = match direction {
             Direction::Next => self.next_enabled_index(self.active_index.read()),
@@ -624,6 +1061,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
         self.set_active(ctx, next);
     }
 
+    /// Updates active index, repaints on change, and consumes the event.
     fn set_active(&self, ctx: &mut EventCtx<A>, next: Option<usize>) {
         if self.active_index.read() != next {
             self.active_index.set(next);
@@ -632,6 +1070,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Finds the first enabled option.
     fn first_enabled_index(&self) -> Option<usize> {
         self.options
             .iter()
@@ -639,6 +1078,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
             .find_map(|(idx, option)| (!option.disabled.read()).then_some(idx))
     }
 
+    /// Finds the last enabled option.
     fn last_enabled_index(&self) -> Option<usize> {
         self.options
             .iter()
@@ -647,6 +1087,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
             .find_map(|(idx, option)| (!option.disabled.read()).then_some(idx))
     }
 
+    /// Finds the cyclic next enabled option.
     fn next_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let len = self.options.len();
         if len == 0 {
@@ -658,6 +1099,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
             .find(|idx| !self.options[*idx].disabled.read())
     }
 
+    /// Finds the cyclic previous enabled option.
     fn previous_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let len = self.options.len();
         if len == 0 {
@@ -670,14 +1112,31 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SelectWidget<T, A> {
     }
 }
 
+/// One action-menu row with optional action, icon, and reactive availability.
+///
+/// Empty and duplicate labels are allowed. Activating an enabled item without an
+/// action still closes the dropdown.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DropdownItem;
+/// let item: DropdownItem<()> = DropdownItem::new("Refresh").on_select(());
+/// let _ = item;
+/// ```
 pub struct DropdownItem<A = ()> {
+    /// Visible row label.
     label: String,
+    /// Optional action run on activation.
     action: Option<Rc<ClickAction<A>>>,
+    /// Static or reactive disabled state.
     disabled: Binding<bool>,
+    /// Optional leading icon.
     icon: Option<IconId>,
 }
 
 impl<A> Clone for DropdownItem<A> {
+    /// Clones label/icon values and shares action and binding handles.
     fn clone(&self) -> Self {
         Self {
             label: self.label.clone(),
@@ -689,6 +1148,15 @@ impl<A> Clone for DropdownItem<A> {
 }
 
 impl<A: 'static> DropdownItem<A> {
+    /// Creates an enabled, iconless item with no action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DropdownItem;
+    /// let item: DropdownItem<()> = DropdownItem::new("Refresh");
+    /// let _ = item;
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -698,33 +1166,94 @@ impl<A: 'static> DropdownItem<A> {
         }
     }
 
+    /// Sets the activation action, replacing any previous action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DropdownItem;
+    /// #[derive(Clone)]
+    /// enum Action { Refresh }
+    /// let item = DropdownItem::new("Refresh").on_select(Action::Refresh);
+    /// let _ = item;
+    /// ```
     pub fn on_select(mut self, action: impl IntoClickAction<A>) -> Self {
         self.action = Some(Rc::new(action.into_click_action()));
         self
     }
 
+    /// Replaces the item's static or reactive disabled binding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DropdownItem;
+    /// let item: DropdownItem<()> = DropdownItem::new("Unavailable").disabled(true);
+    /// let _ = item;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Uses a memo as the reactive disabled binding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::DropdownItem;
+    /// let item: DropdownItem<()> = DropdownItem::new("Refresh")
+    ///     .disabled_signal(Memo::new(|| false));
+    /// let _ = item;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets the leading icon, replacing any previous one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::DropdownItem;
+    /// let item: DropdownItem<()> = DropdownItem::new("History").leading_icon(IconId::History);
+    /// let _ = item;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.icon = Some(icon);
         self
     }
 }
 
+/// Button-like trigger opening a non-focus-trapping action menu.
+///
+/// `A` is the application action type accepted by item actions. The dropdown
+/// itself retains no selected item; activation runs the row action, if present,
+/// and closes the popup.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Dropdown;
+/// let dropdown: Dropdown<()> = Dropdown::new("Actions").item("Refresh", ());
+/// let _ = dropdown;
+/// ```
 pub struct Dropdown<A = ()> {
+    /// Trigger layout configured by generated builders.
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation configured by generated builders.
     pub(crate) flex_item: FlexItemStyle,
+    /// Static or reactive trigger label.
     label: Binding<String>,
+    /// Menu rows in display order.
     items: Vec<DropdownItem<A>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Trigger and popup appearance.
     style: DropdownStyle,
+    /// Initial popup visibility.
     default_open: bool,
 }
 
@@ -737,6 +1266,18 @@ impl<A: 'static> Default for Dropdown<A> {
 }
 
 impl<A: 'static> Dropdown<A> {
+    /// Creates an enabled dropdown with the supplied static or reactive label.
+    ///
+    /// It starts closed with no items and uses the default theme's regular menu
+    /// style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dropdown;
+    /// let dropdown: Dropdown<()> = Dropdown::new("More");
+    /// let _ = dropdown;
+    /// ```
     pub fn new(label: impl Into<Binding<String>>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -749,51 +1290,134 @@ impl<A: 'static> Dropdown<A> {
         }
     }
 
+    /// Appends an enabled, iconless item with an action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dropdown;
+    /// #[derive(Clone)]
+    /// enum Action { Refresh }
+    /// let dropdown = Dropdown::new("Actions").item("Refresh", Action::Refresh);
+    /// let _ = dropdown;
+    /// ```
     pub fn item(mut self, label: impl Into<String>, action: impl IntoClickAction<A>) -> Self {
         self.items.push(DropdownItem::new(label).on_select(action));
         self
     }
 
+    /// Appends a fully configured menu item.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Dropdown, DropdownItem};
+    /// let dropdown: Dropdown<()> = Dropdown::new("Actions")
+    ///     .dropdown_item(DropdownItem::new("Unavailable").disabled(true));
+    /// let _ = dropdown;
+    /// ```
     pub fn dropdown_item(mut self, item: DropdownItem<A>) -> Self {
         self.items.push(item);
         self
     }
 
+    /// Sets static or reactive whole-control disabled state.
+    ///
+    /// Disabled dropdowns are not focusable, ignore events, and close an open
+    /// popup during layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dropdown;
+    /// let dropdown: Dropdown<()> = Dropdown::new("Actions").disabled(true);
+    /// let _ = dropdown;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Uses a memo as the reactive whole-control disabled binding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Dropdown;
+    /// let dropdown: Dropdown<()> = Dropdown::new("Actions")
+    ///     .disabled_signal(Memo::new(|| false));
+    /// let _ = dropdown;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets only the retained menu popup's initial open state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dropdown;
+    /// let dropdown: Dropdown<()> = Dropdown::new("Actions").default_open(true);
+    /// let _ = dropdown;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Replaces trigger and popup style without altering explicit layout values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Dropdown, DropdownStyle};
+    /// let dropdown: Dropdown<()> = Dropdown::new("Actions")
+    ///     .dropdown_style(DropdownStyle::default());
+    /// let _ = dropdown;
+    /// ```
     pub fn dropdown_style(mut self, style: DropdownStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Re-derives style from the default theme and requested density.
+    ///
+    /// This overwrites every previous dropdown-style customization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Dropdown, DropdownSize};
+    /// let dropdown: Dropdown<()> = Dropdown::new("Actions")
+    ///     .dropdown_size(DropdownSize::Compact);
+    /// let _ = dropdown;
+    /// ```
     pub fn dropdown_size(mut self, size: DropdownSize) -> Self {
         self.style = DropdownStyle::from_dropdown_theme(Theme::default(), size);
         self
     }
 }
 
+/// Component that allocates navigation/scroll state and retained menu content.
 struct DropdownComponent<A> {
+    /// Trigger layout snapshot.
     layout: LayoutStyle,
+    /// Trigger label.
     label: Binding<String>,
+    /// Action rows.
     items: Vec<DropdownItem<A>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Shared trigger/popup style.
     style: DropdownStyle,
+    /// Initial popup visibility.
     default_open: bool,
 }
 
 impl<A: 'static> ComponentNode<A> for DropdownComponent<A> {
+    /// Allocates active/scroll signals and connects retained menu content.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let active_index = context.signal(None);
         let scroll = context.signal(ScrollState::new());
@@ -827,6 +1451,7 @@ impl<A: 'static> ComponentNode<A> for DropdownComponent<A> {
 }
 
 impl<A: 'static> IntoView<A> for Dropdown<A> {
+    /// Converts configuration into a sized reactive component view.
     fn into_view(self) -> View<A> {
         finish_view_sized(
             View::component(DropdownComponent {
@@ -843,21 +1468,31 @@ impl<A: 'static> IntoView<A> for Dropdown<A> {
     }
 }
 
+/// Retained dropdown trigger with popup navigation and action dispatch.
 struct DropdownWidget<A> {
+    /// Runtime trigger layout.
     layout: LayoutStyle,
+    /// Trigger label.
     label: Binding<String>,
+    /// Menu rows in display order.
     items: Vec<DropdownItem<A>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Shared style.
     style: DropdownStyle,
+    /// Active menu item index.
     active_index: Signal<Option<usize>>,
+    /// Runtime retained-popup bridge.
     popup: PopupPortalBridge<A>,
 }
 
 impl<A: 'static> Widget<A> for DropdownWidget<A> {
+    /// Returns the stable diagnostic name.
     fn debug_name(&self) -> &'static str {
         "Dropdown"
     }
 
+    /// Measures trigger/item labels, applies constraints, and closes if disabled.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -891,6 +1526,7 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
         }
     }
 
+    /// Paints trigger state and refreshes open menu geometry.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         paint_trigger(
             ctx,
@@ -906,6 +1542,7 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
         }
     }
 
+    /// Routes blur, pointer release, and keyboard menu navigation.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         if self.disabled.read() {
             return;
@@ -933,6 +1570,7 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
         }
     }
 
+    /// Makes only enabled dropdowns focusable.
     fn focus_policy(&self) -> FocusPolicy {
         if self.disabled.read() {
             FocusPolicy::NotFocusable
@@ -943,14 +1581,17 @@ impl<A: 'static> Widget<A> for DropdownWidget<A> {
 }
 
 impl<A: 'static> DropdownWidget<A> {
+    /// Measures popup content width with trigger width as a floor.
     fn popup_width(&self, trigger_width: f32, text_system: Option<&mut TextSystem>) -> f32 {
         dropdown_popup_content_width(&self.items, &self.style, text_system).max(trigger_width)
     }
 
+    /// Returns row-derived popup height capped by `popup_max_height`.
     fn popup_height(&self) -> f32 {
         (self.items.len() as f32 * self.style.option_height).min(self.style.popup_max_height)
     }
 
+    /// Places the menu below the trigger without placement flipping.
     fn popup_rect(&self, bounds: Rect) -> Rect {
         Rect::new(
             bounds.x,
@@ -960,16 +1601,19 @@ impl<A: 'static> DropdownWidget<A> {
         )
     }
 
+    /// Activates the first enabled item and opens the popup.
     fn open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         self.active_index.set(self.first_enabled_index());
         self.popup.open(ctx, bounds, self.popup_rect(bounds));
     }
 
+    /// Clears active navigation and dismisses the runtime popup.
     fn close(&self, reason: PopupDismissReason) {
         self.active_index.set(None);
         self.popup.close(reason);
     }
 
+    /// Programmatically closes an open menu or opens a closed one.
     fn toggle_open(&self, ctx: &EventCtx<A>, bounds: Rect) {
         if self.popup.is_open() {
             self.close(PopupDismissReason::Programmatic);
@@ -978,6 +1622,7 @@ impl<A: 'static> DropdownWidget<A> {
         }
     }
 
+    /// Runs an enabled item's optional action and closes the menu.
     fn activate_item(&self, ctx: &mut EventCtx<A>, index: usize) {
         let Some(item) = self.items.get(index) else {
             return;
@@ -993,6 +1638,7 @@ impl<A: 'static> DropdownWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Opens on activation/navigation keys or routes open-menu keys.
     fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key, bounds: Rect) {
         if !self.popup.is_open() {
             if matches!(
@@ -1032,6 +1678,7 @@ impl<A: 'static> DropdownWidget<A> {
         }
     }
 
+    /// Moves cyclically to another enabled item.
     fn move_active(&self, ctx: &mut EventCtx<A>, direction: Direction) {
         let next = match direction {
             Direction::Next => self.next_enabled_index(self.active_index.read()),
@@ -1040,6 +1687,7 @@ impl<A: 'static> DropdownWidget<A> {
         self.set_active(ctx, next);
     }
 
+    /// Updates active index, repaints on change, and consumes the event.
     fn set_active(&self, ctx: &mut EventCtx<A>, next: Option<usize>) {
         if self.active_index.read() != next {
             self.active_index.set(next);
@@ -1048,6 +1696,7 @@ impl<A: 'static> DropdownWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Finds the first enabled menu item.
     fn first_enabled_index(&self) -> Option<usize> {
         self.items
             .iter()
@@ -1055,6 +1704,7 @@ impl<A: 'static> DropdownWidget<A> {
             .find_map(|(idx, item)| (!item.disabled.read()).then_some(idx))
     }
 
+    /// Finds the last enabled menu item.
     fn last_enabled_index(&self) -> Option<usize> {
         self.items
             .iter()
@@ -1063,6 +1713,7 @@ impl<A: 'static> DropdownWidget<A> {
             .find_map(|(idx, item)| (!item.disabled.read()).then_some(idx))
     }
 
+    /// Finds the cyclic next enabled menu item.
     fn next_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let len = self.items.len();
         if len == 0 {
@@ -1074,6 +1725,7 @@ impl<A: 'static> DropdownWidget<A> {
             .find(|idx| !self.items[*idx].disabled.read())
     }
 
+    /// Finds the cyclic previous enabled menu item.
     fn previous_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let len = self.items.len();
         if len == 0 {
@@ -1086,19 +1738,30 @@ impl<A: 'static> DropdownWidget<A> {
     }
 }
 
+/// Popup-owned select state rendered in the overlay presentation tree.
 struct RetainedSelectPopup<T, A> {
+    /// Typed options.
     options: Vec<SelectOption<T>>,
+    /// Readable selection.
     selected: Option<Binding<T>>,
+    /// Optional writable selection.
     bound: Option<Signal<T>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Changed-selection callback.
     on_change: Option<SelectChangeHandler<T, A>>,
+    /// Shared style.
     style: SelectStyle,
+    /// Active option index.
     active_index: Signal<Option<usize>>,
+    /// Popup-local vertical scroll.
     scroll: Signal<ScrollState>,
+    /// Runtime ID used for dismissal.
     popup_id: Option<PopupId>,
 }
 
 impl<T: Clone, A> Clone for RetainedSelectPopup<T, A> {
+    /// Clones values and shares binding, signal, callback, and popup handles.
     fn clone(&self) -> Self {
         Self {
             options: self.options.clone(),
@@ -1115,10 +1778,12 @@ impl<T: Clone, A> Clone for RetainedSelectPopup<T, A> {
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedSelectPopup<T, A> {
+    /// Returns the stable popup diagnostic name.
     fn debug_name(&self) -> &'static str {
         "SelectPopup"
     }
 
+    /// Sizes by rows and clamps retained vertical scroll.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -1136,6 +1801,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedSelectPop
         retained_popup_layout(size)
     }
 
+    /// Paints visible rows with selection, active state, and scroll offset.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         paint_select_popup(
             ctx,
@@ -1148,6 +1814,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedSelectPop
         );
     }
 
+    /// Routes hover, release selection, wheel scroll, and cancellation.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         if self.disabled.read() {
             self.close(ctx, PopupDismissReason::Programmatic);
@@ -1203,14 +1870,17 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedSelectPop
         }
     }
 
+    /// Keeps overlay rows outside the focus chain.
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::NotFocusable
     }
 
+    /// Suppresses activation synthesized solely from focus changes.
     fn activation_policy(&self) -> ActivationPolicy {
         ActivationPolicy::SuppressOnFocusOnly
     }
 
+    /// Uses a pointer cursor only over enabled rows.
     fn hover_cursor_role_at(
         &self,
         bounds: Rect,
@@ -1230,10 +1900,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedSelectPop
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> RetainedSelectPopup<T, A> {
+    /// Clones the configured selection, if any.
     fn selected_value(&self) -> Option<T> {
         self.selected.as_ref().map(Binding::read)
     }
 
+    /// Finds the first option equal to the selected value.
     fn selected_index(&self) -> Option<usize> {
         let selected = self.selected_value()?;
         self.options
@@ -1241,6 +1913,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RetainedSelectPopup<T, A> {
             .position(|option| option.value == selected)
     }
 
+    /// Commits an enabled changed option and dismisses the popup.
     fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
         let Some(option) = self.options.get(index) else {
             return;
@@ -1264,6 +1937,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RetainedSelectPopup<T, A> {
         self.close(ctx, PopupDismissReason::Programmatic);
     }
 
+    /// Updates active option and repaints only when it changes.
     fn set_active(&self, next: Option<usize>, ctx: &mut EventCtx<A>) {
         if self.active_index.read() != next {
             self.active_index.set(next);
@@ -1271,6 +1945,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RetainedSelectPopup<T, A> {
         }
     }
 
+    /// Clears active state, closes when registered, repaints, and consumes input.
     fn close(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
         self.active_index.set(None);
         if let Some(popup_id) = self.popup_id {
@@ -1281,16 +1956,24 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RetainedSelectPopup<T, A> {
     }
 }
 
+/// Popup-owned dropdown menu state rendered in the overlay presentation tree.
 struct RetainedDropdownPopup<A> {
+    /// Action rows.
     items: Vec<DropdownItem<A>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Shared style.
     style: DropdownStyle,
+    /// Active item index.
     active_index: Signal<Option<usize>>,
+    /// Popup-local vertical scroll.
     scroll: Signal<ScrollState>,
+    /// Runtime ID used for dismissal.
     popup_id: Option<PopupId>,
 }
 
 impl<A> Clone for RetainedDropdownPopup<A> {
+    /// Clones item values and shares binding, signal, action, and popup handles.
     fn clone(&self) -> Self {
         Self {
             items: self.items.clone(),
@@ -1304,10 +1987,12 @@ impl<A> Clone for RetainedDropdownPopup<A> {
 }
 
 impl<A: 'static> Widget<A> for RetainedDropdownPopup<A> {
+    /// Returns the stable popup diagnostic name.
     fn debug_name(&self) -> &'static str {
         "DropdownPopup"
     }
 
+    /// Sizes by rows and clamps retained vertical scroll.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -1321,6 +2006,7 @@ impl<A: 'static> Widget<A> for RetainedDropdownPopup<A> {
         retained_popup_layout(size)
     }
 
+    /// Paints visible rows with active state and scroll offset.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         paint_dropdown_popup(
             ctx,
@@ -1332,6 +2018,7 @@ impl<A: 'static> Widget<A> for RetainedDropdownPopup<A> {
         );
     }
 
+    /// Routes hover, release activation, wheel scroll, and cancellation.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         if self.disabled.read() {
             self.close(ctx, PopupDismissReason::Programmatic);
@@ -1387,14 +2074,17 @@ impl<A: 'static> Widget<A> for RetainedDropdownPopup<A> {
         }
     }
 
+    /// Keeps overlay rows outside the focus chain.
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::NotFocusable
     }
 
+    /// Suppresses activation synthesized solely from focus changes.
     fn activation_policy(&self) -> ActivationPolicy {
         ActivationPolicy::SuppressOnFocusOnly
     }
 
+    /// Uses a pointer cursor only over enabled rows.
     fn hover_cursor_role_at(
         &self,
         bounds: Rect,
@@ -1414,6 +2104,7 @@ impl<A: 'static> Widget<A> for RetainedDropdownPopup<A> {
 }
 
 impl<A: 'static> RetainedDropdownPopup<A> {
+    /// Runs an enabled item's optional action and dismisses the popup.
     fn activate_item(&self, ctx: &mut EventCtx<A>, index: usize) {
         let Some(item) = self.items.get(index) else {
             return;
@@ -1427,6 +2118,7 @@ impl<A: 'static> RetainedDropdownPopup<A> {
         self.close(ctx, PopupDismissReason::Programmatic);
     }
 
+    /// Updates active item and repaints only when it changes.
     fn set_active(&self, next: Option<usize>, ctx: &mut EventCtx<A>) {
         if self.active_index.read() != next {
             self.active_index.set(next);
@@ -1434,6 +2126,7 @@ impl<A: 'static> RetainedDropdownPopup<A> {
         }
     }
 
+    /// Clears active state, closes when registered, repaints, and consumes input.
     fn close(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
         self.active_index.set(None);
         if let Some(popup_id) = self.popup_id {
@@ -1444,16 +2137,19 @@ impl<A: 'static> RetainedDropdownPopup<A> {
     }
 }
 
+/// Wraps clonable select popup state in a retained content factory.
 fn select_popup_content<T: Clone + PartialEq + 'static, A: 'static>(
     popup: RetainedSelectPopup<T, A>,
 ) -> PopupContent<A> {
     PopupContent::new(move || View::leaf(popup.clone()))
 }
 
+/// Wraps clonable dropdown popup state in a retained content factory.
 fn dropdown_popup_content<A: 'static>(popup: RetainedDropdownPopup<A>) -> PopupContent<A> {
     PopupContent::new(move || View::leaf(popup.clone()))
 }
 
+/// Constrains requested width and capped row height to popup constraints.
 fn retained_popup_size(
     constraints: Constraints,
     width: f32,
@@ -1466,6 +2162,7 @@ fn retained_popup_size(
     ))
 }
 
+/// Creates a leaf layout clipped exactly to popup-local bounds.
 fn retained_popup_layout(size: Size) -> LayoutResult {
     let bounds = Rect::new(0.0, 0.0, size.w, size.h);
     LayoutResult {
@@ -1480,6 +2177,9 @@ fn retained_popup_layout(size: Size) -> LayoutResult {
     }
 }
 
+/// Converts a contained point and scroll offset to a row index.
+///
+/// Returns `None` outside bounds, for nonpositive row height, or after `rows`.
 fn retained_popup_index_at(
     bounds: Rect,
     pos: ailloli_ui_core::Point,
@@ -1494,6 +2194,7 @@ fn retained_popup_index_at(
     (index < rows).then_some(index)
 }
 
+/// Clamps vertical scroll to the current row-derived content extent.
 fn clamp_retained_popup_scroll(
     scroll: &Signal<ScrollState>,
     viewport: Size,
@@ -1508,6 +2209,7 @@ fn clamp_retained_popup_scroll(
     }
 }
 
+/// Applies wheel scrolling in row-height line units and consumes the event.
 fn scroll_retained_popup<A: 'static>(
     ctx: &mut EventCtx<A>,
     scroll: &Signal<ScrollState>,
@@ -1533,11 +2235,15 @@ fn scroll_retained_popup<A: 'static>(
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Cyclic keyboard-navigation direction.
 enum Direction {
+    /// Move toward later rows.
     Next,
+    /// Move toward earlier rows.
     Previous,
 }
 
+/// Returns measured option width with configured style width as a floor.
 fn select_intrinsic_width<T>(
     options: &[SelectOption<T>],
     style: &SelectStyle,
@@ -1546,6 +2252,7 @@ fn select_intrinsic_width<T>(
     popup_content_width(options, style, text_system).max(style.width)
 }
 
+/// Returns the maximum of trigger label, item content, and configured width.
 fn dropdown_intrinsic_width<A>(
     label: &str,
     items: &[DropdownItem<A>],
@@ -1561,6 +2268,7 @@ fn dropdown_intrinsic_width<A>(
         .max(style.width)
 }
 
+/// Measures option labels/icons plus padding and reserved checkmark space.
 fn popup_content_width<T>(
     options: &[SelectOption<T>],
     style: &SelectStyle,
@@ -1581,6 +2289,7 @@ fn popup_content_width<T>(
         .ceil()
 }
 
+/// Measures menu item labels/icons plus horizontal padding.
 fn dropdown_popup_content_width<A>(
     items: &[DropdownItem<A>],
     style: &DropdownStyle,
@@ -1601,6 +2310,7 @@ fn dropdown_popup_content_width<A>(
         .ceil()
 }
 
+/// Paints interaction/disabled trigger state, clipped text, chevron, and focus ring.
 fn paint_trigger(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -1693,6 +2403,7 @@ fn paint_trigger(
     }
 }
 
+/// Paints visible select rows, selected checkmark, shell, and final border.
 fn paint_select_popup<T>(
     ctx: &mut PaintCtx<'_>,
     popup: Rect,
@@ -1745,6 +2456,7 @@ fn paint_select_popup<T>(
     paint_popup_border(ctx, popup, style);
 }
 
+/// Paints visible action rows, shell, and final border.
 fn paint_dropdown_popup<A>(
     ctx: &mut PaintCtx<'_>,
     popup: Rect,

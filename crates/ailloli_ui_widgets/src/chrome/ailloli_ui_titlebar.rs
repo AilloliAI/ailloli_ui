@@ -14,6 +14,7 @@ use crate::layout::{Container, Row};
 use crate::primitives::Icon;
 use crate::text::Text;
 
+/// Builds the shared transparent minimize/maximize button style from `theme`.
 fn titlebar_chrome_control_style(theme: &Theme) -> ButtonStyle {
     let radius = Radius::uniform(4.0);
     ButtonStyle {
@@ -50,6 +51,7 @@ fn titlebar_chrome_control_style(theme: &Theme) -> ButtonStyle {
     }
 }
 
+/// Builds the close-button style with destructive hover and pressed colors.
 fn titlebar_close_style(theme: &Theme) -> ButtonStyle {
     let radius = Radius::uniform(4.0);
     ButtonStyle {
@@ -89,6 +91,16 @@ fn titlebar_close_style(theme: &Theme) -> ButtonStyle {
 /// Standard Ailloli UI title bar: `theme.titlebar_bg`, label, min / max / close icons.
 ///
 /// `logical_window_id` must match the `Window::new(...)` id so min/max target the correct window.
+/// The returned view has a fixed height of 36 logical pixels and no application icon.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::component::View;
+/// use ailloli_ui_widgets::chrome::ailloli_ui_default_titlebar;
+/// let titlebar: View<()> = ailloli_ui_default_titlebar("main", "Ailloli");
+/// let _ = titlebar;
+/// ```
 pub fn ailloli_ui_default_titlebar<A: 'static>(
     logical_window_id: impl Into<String>,
     title: impl Into<String>,
@@ -97,6 +109,21 @@ pub fn ailloli_ui_default_titlebar<A: 'static>(
 }
 
 /// Standard Ailloli UI title bar with an optional static application icon.
+///
+/// `None` produces the same view as [`ailloli_ui_default_titlebar`]. The icon
+/// preserves its source colors and is rendered at 20 logical pixels.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::AppIcon;
+/// use ailloli_ui_runtime::component::View;
+/// use ailloli_ui_widgets::chrome::ailloli_ui_default_titlebar_with_icon;
+/// let icon = AppIcon::from_static_svg(b"<svg/>", "icon.svg");
+/// let titlebar: View<()> =
+///     ailloli_ui_default_titlebar_with_icon("main", "Ailloli", Some(icon));
+/// let _ = titlebar;
+/// ```
 pub fn ailloli_ui_default_titlebar_with_icon<A: 'static>(
     logical_window_id: impl Into<String>,
     title: impl Into<String>,
@@ -157,6 +184,20 @@ pub fn ailloli_ui_default_titlebar_with_icon<A: 'static>(
 }
 
 /// Static, color-preserving application icon suitable for custom chrome.
+///
+/// `size` is used directly as the square logical-pixel extent; callers should
+/// pass a finite non-negative value accepted by the normal layout pipeline.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::AppIcon;
+/// use ailloli_ui_runtime::component::View;
+/// use ailloli_ui_widgets::chrome::application_icon;
+/// let icon = AppIcon::from_static_svg(b"<svg/>", "icon.svg");
+/// let view: View<()> = application_icon(icon, 20.0);
+/// let _ = view;
+/// ```
 pub fn application_icon<A: 'static>(icon: AppIcon, size: f32) -> View<A> {
     Icon::new(IconId::Svg(icon.source().clone()))
         .size(size)

@@ -10,9 +10,28 @@ use crate::passes::primitives::text_origin_from_baseline;
 use crate::passes::to_ndc;
 
 /// Padding multiplier for blur kernel (physical pixels).
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::cmd_bounds::BLUR_PADDING_FACTOR;
+/// assert_eq!(BLUR_PADDING_FACTOR, 3.0);
+/// ```
 pub const BLUR_PADDING_FACTOR: f32 = 3.0;
 
 /// Union of axis-aligned bounds for all commands in a layer (physical pixels).
+///
+/// Returns `None` for an empty command slice. Logical geometry is multiplied by
+/// `scale.dpr`; text initially uses layout bounds and decorations, while
+/// polylines include half their nonnegative stroke width plus one logical pixel.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::cmd_bounds::union_cmd_bounds;
+/// assert_eq!(union_cmd_bounds(&[], Scale::new(2.0)), None);
+/// ```
 pub fn union_cmd_bounds(cmds: &[DrawCmd], scale: Scale) -> Option<Rect> {
     let mut acc: Option<Rect> = None;
     for cmd in cmds {
@@ -25,6 +44,20 @@ pub fn union_cmd_bounds(cmds: &[DrawCmd], scale: Scale) -> Option<Rect> {
     acc
 }
 
+/// Computes command bounds using prepared glyph extents when available.
+///
+/// Missing prepared glyphs fall back to the text layout rectangle. Non-text
+/// commands are identical to [`union_cmd_bounds`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::{cmd_bounds::union_cmd_bounds_prepared, PreparedResources};
+/// fn empty(prepared: &PreparedResources) {
+///     assert_eq!(union_cmd_bounds_prepared(&[], Scale::new(1.0), prepared), None);
+/// }
+/// ```
 pub fn union_cmd_bounds_prepared(
     cmds: &[DrawCmd],
     scale: Scale,
@@ -41,6 +74,7 @@ pub fn union_cmd_bounds_prepared(
     acc
 }
 
+/// Returns conservative physical bounds for one unprepared draw command.
 fn cmd_bounds(cmd: &DrawCmd, scale: Scale) -> Rect {
     match cmd {
         DrawCmd::Rect(dr) => scale_rect(dr.rect, scale),
@@ -54,6 +88,7 @@ fn cmd_bounds(cmd: &DrawCmd, scale: Scale) -> Rect {
     }
 }
 
+/// Returns prepared glyph bounds for text and ordinary bounds for other commands.
 fn cmd_bounds_prepared(cmd: &DrawCmd, scale: Scale, prepared: &PreparedResources) -> Rect {
     match cmd {
         DrawCmd::Text(dt) => {
@@ -63,6 +98,7 @@ fn cmd_bounds_prepared(cmd: &DrawCmd, scale: Scale, prepared: &PreparedResources
     }
 }
 
+/// Uses the shaped layout box plus every decoration rectangle as text bounds.
 fn text_bounds(dt: &DrawText, scale: Scale) -> Rect {
     let (ox, oy) = text_origin_from_baseline(dt);
     let w = dt.layout.width();
@@ -74,6 +110,9 @@ fn text_bounds(dt: &DrawText, scale: Scale) -> Rect {
     bounds
 }
 
+/// Unions physical atlas glyph rectangles and decoration rectangles.
+///
+/// Returns `None` only when neither a prepared glyph nor a decoration exists.
 fn text_bounds_prepared(dt: &DrawText, scale: Scale, prepared: &PreparedResources) -> Option<Rect> {
     let scale_100 = (scale.dpr * 100.0).round().clamp(1.0, u16::MAX as f32) as u16;
     let (origin_x, origin_y) = text_origin_from_baseline(dt);
@@ -110,6 +149,9 @@ fn text_bounds_prepared(dt: &DrawText, scale: Scale, prepared: &PreparedResource
     acc
 }
 
+/// Computes conservative stroked bounds, ignoring non-finite points.
+///
+/// A polyline without a finite point maps to the zero rectangle.
 fn polyline_bounds(polyline: &DrawPolyline, scale: Scale) -> Rect {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;
@@ -141,6 +183,7 @@ fn polyline_bounds(polyline: &DrawPolyline, scale: Scale) -> Rect {
     )
 }
 
+/// Multiplies every rectangle component by the device-pixel ratio.
 fn scale_rect(r: Rect, scale: Scale) -> Rect {
     Rect::new(
         r.x * scale.dpr,
@@ -150,6 +193,7 @@ fn scale_rect(r: Rect, scale: Scale) -> Rect {
     )
 }
 
+/// Returns the smallest axis-aligned rectangle containing both inputs.
 fn union_rect(a: Rect, b: Rect) -> Rect {
     let x0 = a.x.min(b.x);
     let y0 = a.y.min(b.y);
@@ -158,6 +202,21 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
+/// Inflates bounds for every blur in an isolated effect chain.
+///
+/// Each blur adds `radius_px * BLUR_PADDING_FACTOR` independently on all sides.
+/// Negative or NaN radii are not sanitized here; budget planning must clamp
+/// inputs before this step.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::{cmd_bounds::inflate_for_effects, IsolatedEffect, IsolatedEffectChain};
+/// let effects = IsolatedEffectChain { effects: vec![IsolatedEffect::Blur { radius_px: 2.0 }] };
+/// assert_eq!(inflate_for_effects(Rect::new(10.0, 10.0, 20.0, 20.0), &effects),
+///     Rect::new(4.0, 4.0, 32.0, 32.0));
+/// ```
 pub fn inflate_for_effects(bounds: Rect, effects: &IsolatedEffectChain) -> Rect {
     let mut r = bounds;
     for e in &effects.effects {
@@ -169,6 +228,24 @@ pub fn inflate_for_effects(bounds: Rect, effects: &IsolatedEffectChain) -> Rect 
     r
 }
 
+/// Snaps physical bounds outward and clamps their far edges to a surface.
+///
+/// The returned tuple is `(snapped_bounds, origin, integer_size)`. Each size is
+/// forced to at least one pixel, even for empty or fully out-of-surface bounds;
+/// callers must reject invalid bounds earlier. Float-to-`u32` casts saturate
+/// negative and excessively large values according to Rust cast semantics.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::cmd_bounds::snap_and_clamp_bounds;
+/// let (bounds, origin, size) = snap_and_clamp_bounds(
+///     Rect::new(1.25, 2.5, 3.0, 4.0), [100.0, 100.0]);
+/// assert_eq!(origin, [1.0, 2.0]);
+/// assert_eq!(size, [4, 5]);
+/// assert_eq!(bounds, Rect::new(1.0, 2.0, 4.0, 5.0));
+/// ```
 pub fn snap_and_clamp_bounds(bounds: Rect, surface: [f32; 2]) -> (Rect, [f32; 2], [u32; 2]) {
     let [sw, sh] = surface;
     let x0 = bounds.x.floor().max(0.0);
@@ -182,6 +259,20 @@ pub fn snap_and_clamp_bounds(bounds: Rect, surface: [f32; 2]) -> (Rect, [f32; 2]
 }
 
 /// Convert global physical scissor to local coordinates inside offscreen pass.
+///
+/// `None` remains `None`. Position is translated by `origin` and clamped to
+/// zero; width and height are capped independently to `local_size`. Empty
+/// results return `None`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::cmd_bounds::scissor_to_local;
+/// let local = scissor_to_local(Some(Rect::new(50.0, 50.0, 20.0, 10.0)),
+///     [40.0, 45.0], [100, 100]);
+/// assert_eq!(local, Some(Rect::new(10.0, 5.0, 20.0, 10.0)));
+/// ```
 pub fn scissor_to_local(
     scissor: Option<Rect>,
     origin: [f32; 2],
@@ -203,6 +294,26 @@ pub fn scissor_to_local(
 }
 
 /// NDC quad for compositing an offscreen texture into destination rect.
+///
+/// Appends six vertices (two triangles) with UVs covering `[0, 1]` and returns
+/// their half-open `u32` range. `dest` and `surface` are physical pixels.
+///
+/// # Panics
+///
+/// Debug builds panic if the arena length cannot fit in `u32` during range
+/// arithmetic; such an arena is already too large for wgpu draw indices.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::cmd_bounds::push_composite_quad;
+/// let mut vertices = Vec::new();
+/// let range = push_composite_quad(&mut vertices, [100.0, 50.0],
+///     Rect::new(0.0, 0.0, 10.0, 10.0), [1.0; 4]);
+/// assert_eq!(range, 0..6);
+/// assert_eq!(vertices.len(), 6);
+/// ```
 pub fn push_composite_quad(
     arena: &mut Vec<crate::vertices::TexVertex>,
     surface: [f32; 2],
@@ -255,6 +366,20 @@ pub fn push_composite_quad(
 }
 
 /// NDC quad in local offscreen space (origin top-left of the pass).
+///
+/// This has the same six-vertex layout as [`push_composite_quad`], but the
+/// supplied surface extent is the local offscreen allocation.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::cmd_bounds::push_composite_quad_local;
+/// let mut vertices = Vec::new();
+/// let range = push_composite_quad_local(&mut vertices, [32.0, 32.0],
+///     Rect::new(4.0, 4.0, 8.0, 8.0), [0.5, 0.5, 0.5, 1.0]);
+/// assert_eq!((range.start, range.end), (0, 6));
+/// ```
 pub fn push_composite_quad_local(
     arena: &mut Vec<crate::vertices::TexVertex>,
     local_surface: [f32; 2],
@@ -307,6 +432,7 @@ pub fn push_composite_quad_local(
 }
 
 #[cfg(test)]
+/// Verifies command bounds, effect inflation, and local scissor translation.
 mod tests {
     use super::*;
     use crate::isolated_plan::{IsolatedEffect, IsolatedEffectChain};

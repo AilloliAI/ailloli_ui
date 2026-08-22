@@ -1,3 +1,5 @@
+//! Retained-tree layout engine and invalidation-aware traversal.
+
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::ids::ElementId;
 use ailloli_ui_core::{Rect, Size};
@@ -6,15 +8,77 @@ use crate::element::element_node::LayoutCacheKey;
 use crate::element::{ElementKind, ElementTree};
 use crate::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 
+/// Recursive retained-tree layout driver with per-element result caching.
+///
+/// The engine exclusively borrows an [`ElementTree`] for the traversal. Cache
+/// identity includes exact floating-point bit patterns for constraints, DPR,
+/// and virtual viewport, plus text, element, widget-dependency, and topology
+/// revisions. Consequently `0.0` and `-0.0` are distinct cache inputs and NaN
+/// payloads are compared by their bits.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::element::ElementTree;
+/// use ailloli_ui_runtime::layout::LayoutEngine;
+///
+/// let mut tree = ElementTree::<()>::new();
+/// let engine = LayoutEngine::new(&mut tree);
+/// assert!(engine.tree.root().is_none());
+/// ```
 pub struct LayoutEngine<'t, A> {
+    /// Retained tree being read and updated by this layout traversal.
     pub tree: &'t mut ElementTree<A>,
 }
 
+/// Provides the operations defined for `LayoutEngine<'t, A>`.
 impl<'t, A: 'static> LayoutEngine<'t, A> {
+    /// Creates an engine borrowing `tree` until the engine is dropped.
+    ///
+    /// This performs no layout and does not clear existing caches.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::layout::LayoutEngine;
+    ///
+    /// let mut tree = ElementTree::<()>::new();
+    /// let engine = LayoutEngine::new(&mut tree);
+    /// assert_eq!(engine.tree.children_of(ailloli_ui_core::ElementId(42)), &[]);
+    /// ```
     pub fn new(tree: &'t mut ElementTree<A>) -> Self {
         Self { tree }
     }
 
+    /// Lays out one element and stores or reuses its cached [`LayoutResult`].
+    ///
+    /// A missing ID returns a zero result without recording a cache miss. A
+    /// clean element with an identical key returns its cloned cached result and
+    /// records a hit. Otherwise the engine records a miss and layout operation,
+    /// recursively delegates widgets and transparent components, then stores a
+    /// cloned result. Components overlay direct children at `(0, 0)` and use the
+    /// maximum child size constrained by the parent.
+    ///
+    /// The text revision is zero when `ctx.text_system` is `None`. Widget code
+    /// runs synchronously and may mutate external state or panic; a panic leaves
+    /// this method before the new cache entry is stored.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Constraints, ElementId, Scale, Size};
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_runtime::layout::{LayoutCtx, LayoutEngine};
+    ///
+    /// let mut tree = ElementTree::<()>::new();
+    /// let mut engine = LayoutEngine::new(&mut tree);
+    /// let mut ctx = LayoutCtx::new(Scale::new(1.0));
+    /// let result = engine.layout_element(
+    ///     &mut ctx, ElementId(404), Constraints::tight(40.0, 20.0),
+    /// );
+    /// assert_eq!(result.size, Size::default());
+    /// ```
     pub fn layout_element(
         &mut self,
         ctx: &mut LayoutCtx<'_>,

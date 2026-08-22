@@ -1,3 +1,5 @@
+//! Integration scenarios for presentation lifecycle reduction and generations.
+
 use ailloli_ui_core::Size;
 use ailloli_ui_runtime::app::{
     reduce_presentation, PendingPresentationIntents, PresentationCursor, PresentationEvent,
@@ -6,6 +8,7 @@ use ailloli_ui_runtime::app::{
 };
 
 #[test]
+/// Verifies that attach increments generation and stale callbacks are rejected.
 fn attach_increments_generation_and_stale_callbacks_are_rejected() {
     let mut lifecycle = PresentationLifecycle::new("main");
     lifecycle.apply(PresentationEvent::AllowCreation).unwrap();
@@ -24,6 +27,7 @@ fn attach_increments_generation_and_stale_callbacks_are_rejected() {
 }
 
 #[test]
+/// Verifies that duplicate resume suspend and destroy are deterministic.
 fn duplicate_resume_suspend_and_destroy_are_deterministic() {
     let declared = PresentationState::Declared;
     let initial = PresentationGeneration::INITIAL;
@@ -76,6 +80,7 @@ fn duplicate_resume_suspend_and_destroy_are_deterministic() {
 }
 
 #[test]
+/// Verifies that unavailable requires retry before reattach.
 fn unavailable_requires_retry_before_reattach() {
     let mut lifecycle = PresentationLifecycle::new("main");
     lifecycle.apply(PresentationEvent::AllowCreation).unwrap();
@@ -95,6 +100,7 @@ fn unavailable_requires_retry_before_reattach() {
 }
 
 #[test]
+/// Verifies that retained intents coalesce state and preserve chrome order.
 fn retained_intents_coalesce_state_and_preserve_chrome_order() {
     let mut pending = PendingPresentationIntents::default();
     pending.push(PresentationIntent::SetTitle("old".into()));

@@ -1,3 +1,5 @@
+//! Verifies linear storage, sRGB conversion, constants, alpha, and every hex form.
+
 use ailloli_ui_core::style::{Color, ColorParseError};
 
 #[test]

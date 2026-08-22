@@ -1,3 +1,5 @@
+//! Integration scenarios for popup portals across logical windows.
+
 use ailloli_ui_core::{ElementId, LogicalWindowId, Point, Rect, Size};
 use ailloli_ui_runtime::app::{PresentationGeneration, RuntimeHandle};
 use ailloli_ui_runtime::component::{View, ViewKind};
@@ -7,6 +9,7 @@ use ailloli_ui_runtime::popup::{
     PopupPortalError, PopupRequest, PopupRole, PopupSemantics,
 };
 
+/// Constructs the stable test owner reference.
 fn owner(window: &str, generation: u64, tree: u64, element: u64) -> PopupOwner {
     PopupOwner::new(
         window,
@@ -16,11 +19,13 @@ fn owner(window: &str, generation: u64, tree: u64, element: u64) -> PopupOwner {
     )
 }
 
+/// Constructs a popup request with the shared test defaults.
 fn request(id: u64, owner: PopupOwner) -> PopupRequest<()> {
     PopupRequest::new(PopupId::new(id), owner, PopupContent::new(View::empty))
 }
 
 #[test]
+/// Verifies that content factory and request metadata are retained.
 fn content_factory_and_request_metadata_are_retained() {
     let popup_owner = owner("main", 3, 7, 11);
     let semantics = PopupSemantics::new()
@@ -47,6 +52,7 @@ fn content_factory_and_request_metadata_are_retained() {
 }
 
 #[test]
+/// Verifies that replacing content preserves open geometry and uses the new factory.
 fn replacing_content_preserves_open_geometry_and_uses_the_new_factory() {
     let popup_id = PopupId::new(6);
     let mut portal: PopupPortal<()> = PopupPortal::new();
@@ -89,6 +95,7 @@ fn replacing_content_preserves_open_geometry_and_uses_the_new_factory() {
 }
 
 #[test]
+/// Verifies that ids register open raise and close without z order duplicates.
 fn ids_register_open_raise_and_close_without_z_order_duplicates() {
     let mut portal = PopupPortal::new();
     assert_eq!(portal.allocate_id().unwrap(), PopupId::new(1));
@@ -139,6 +146,7 @@ fn ids_register_open_raise_and_close_without_z_order_duplicates() {
 }
 
 #[test]
+/// Verifies that mixed mount policies keep fixed strata and raise within each stratum.
 fn mixed_mount_policies_keep_fixed_strata_and_raise_within_each_stratum() {
     let mut portal = PopupPortal::new();
     for (id, mount_policy) in [
@@ -191,6 +199,7 @@ fn mixed_mount_policies_keep_fixed_strata_and_raise_within_each_stratum() {
 }
 
 #[test]
+/// Verifies that retained stratum wins mixed hit outside dismissal and escape.
 fn retained_stratum_wins_mixed_hit_outside_dismissal_and_escape() {
     let window = LogicalWindowId::new("main");
     let generation = PresentationGeneration::new(1);
@@ -249,6 +258,7 @@ fn retained_stratum_wins_mixed_hit_outside_dismissal_and_escape() {
 }
 
 #[test]
+/// Verifies that nested popups require an open parent on the same presentation.
 fn nested_popups_require_an_open_parent_on_the_same_presentation() {
     let mut portal = PopupPortal::new();
     assert_eq!(
@@ -291,6 +301,7 @@ fn nested_popups_require_an_open_parent_on_the_same_presentation() {
 }
 
 #[test]
+/// Constructs the pointer routing consumes inside and dismisses outside test input.
 fn pointer_routing_consumes_inside_and_dismisses_outside() {
     let window = LogicalWindowId::new("main");
     let generation = PresentationGeneration::new(1);
@@ -323,6 +334,7 @@ fn pointer_routing_consumes_inside_and_dismisses_outside() {
 }
 
 #[test]
+/// Verifies that backend hit is authoritative before first bounds commit.
 fn backend_hit_is_authoritative_before_first_bounds_commit() {
     let window = LogicalWindowId::new("main");
     let generation = PresentationGeneration::new(1);
@@ -352,6 +364,7 @@ fn backend_hit_is_authoritative_before_first_bounds_commit() {
 }
 
 #[test]
+/// Verifies that clicking parent closes only the child above it.
 fn clicking_parent_closes_only_the_child_above_it() {
     let window = LogicalWindowId::new("main");
     let generation = PresentationGeneration::new(1);
@@ -388,6 +401,7 @@ fn clicking_parent_closes_only_the_child_above_it() {
 }
 
 #[test]
+/// Constructs the escape respects topmost semantics and requests focus restoration test input.
 fn escape_respects_topmost_semantics_and_requests_focus_restoration() {
     let window = LogicalWindowId::new("main");
     let generation = PresentationGeneration::new(1);
@@ -423,6 +437,7 @@ fn escape_respects_topmost_semantics_and_requests_focus_restoration() {
 }
 
 #[test]
+/// Verifies that stale generation and removed owner cannot leave registered popups.
 fn stale_generation_and_removed_owner_cannot_leave_registered_popups() {
     let mut portal = PopupPortal::new();
     portal.register(request(1, owner("main", 1, 1, 1))).unwrap();
@@ -464,6 +479,7 @@ fn stale_generation_and_removed_owner_cannot_leave_registered_popups() {
 }
 
 #[test]
+/// Verifies that tree scoped owner pruning preserves sibling runtime trees.
 fn tree_scoped_owner_pruning_preserves_sibling_runtime_trees() {
     let mut portal = PopupPortal::new();
     portal
@@ -483,6 +499,7 @@ fn tree_scoped_owner_pruning_preserves_sibling_runtime_trees() {
 }
 
 #[test]
+/// Verifies that tooltip semantics do not capture or restore focus.
 fn tooltip_semantics_do_not_capture_or_restore_focus() {
     let semantics = PopupSemantics::tooltip();
     assert_eq!(semantics.role(), PopupRole::Tooltip);
@@ -517,6 +534,7 @@ fn tooltip_semantics_do_not_capture_or_restore_focus() {
 }
 
 #[test]
+/// Verifies that bounds validation and unregister are typed and deterministic.
 fn bounds_validation_and_unregister_are_typed_and_deterministic() {
     let mut portal = PopupPortal::new();
     portal.register(request(1, owner("main", 1, 1, 1))).unwrap();
@@ -548,6 +566,7 @@ fn bounds_validation_and_unregister_are_typed_and_deterministic() {
 }
 
 #[test]
+/// Verifies that runtime handle owns ids and records portal intents.
 fn runtime_handle_owns_ids_and_records_portal_intents() {
     let runtime = RuntimeHandle::<()>::new();
     let element = ElementId(42);
@@ -588,6 +607,7 @@ fn runtime_handle_owns_ids_and_records_portal_intents() {
 }
 
 #[test]
+/// Verifies that runtime handle opens a popup from provider neutral placement inputs.
 fn runtime_handle_opens_a_popup_from_provider_neutral_placement_inputs() {
     let runtime = RuntimeHandle::<()>::new();
     let popup_id = PopupId::new(12);

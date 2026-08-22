@@ -1,3 +1,10 @@
+//! Interactive snapshot or retained-model tree with selection, editing, drag/drop,
+//! creation/deletion, context menus, shortcuts, and optional row virtualization.
+//!
+//! Snapshot trees can mutate only through a bound node signal. Retained models
+//! own hierarchy/expansion and support intent-only editing workflows; callbacks
+//! carry application actions or receive direct event-context access.
+
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::hash::Hash;
@@ -31,80 +38,188 @@ use super::text_field_core::{
 use super::text_input::TextInputStyle;
 use super::tree_model::{TreeModelHandle, TreeModelSubscription, TreeMutation};
 
+/// Maximum interval between row clicks that can count as activation.
 const TREE_ACTIVATE_MAX_DELAY: Duration = Duration::from_millis(500);
+/// Maximum pointer displacement, in logical pixels, between activation clicks.
 const TREE_ACTIVATE_MAX_DISTANCE: f32 = 4.0;
+/// Extra rows visited above and below a virtual viewport.
 const TREE_VIRTUAL_OVERSCAN_ROWS: usize = 8;
 
 /// Permanent structural counters for a [`TreeView`]. The handle is UI-local
 /// and intentionally cheap to clone into a benchmark or diagnostics panel.
+///
+/// Clones share counters through `Rc<RefCell<_>>`; updates saturate counters.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeViewDiagnostics;
+/// let diagnostics = TreeViewDiagnostics::new();
+/// assert_eq!(diagnostics.snapshot().layout_calls, 0);
+/// ```
 #[derive(Clone, Default)]
 pub struct TreeViewDiagnostics {
+    /// Shared single-threaded counters.
     inner: Rc<RefCell<TreeViewDiagnosticsSnapshot>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Point-in-time copy of tree structural/virtualization counters.
+///
+/// Counters are cumulative except `loaded_rows` and `visible_rows`, which report
+/// the latest measured totals/range.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeViewDiagnosticsSnapshot;
+/// let snapshot = TreeViewDiagnosticsSnapshot::default();
+/// assert_eq!((snapshot.loaded_rows, snapshot.flatten_rebuilds), (0, 0));
+/// ```
 pub struct TreeViewDiagnosticsSnapshot {
+    /// Saturating number of widget layout calls.
     pub layout_calls: u64,
+    /// Saturating number of widget paint calls.
     pub paint_calls: u64,
+    /// Saturating number of row hit-test attempts.
     pub hit_tests: u64,
+    /// Total source rows observed by the latest layout/paint.
     pub loaded_rows: usize,
+    /// Rows visited by the latest layout/paint range.
     pub visible_rows: usize,
+    /// Saturating cumulative rows visited for layout measurement.
     pub layout_rows_visited: u64,
+    /// Saturating cumulative rows visited for paint.
     pub paint_rows_visited: u64,
+    /// Saturating cumulative successful single-row hit-test visits.
     pub hit_test_rows_visited: u64,
+    /// Greatest observed retained rebuild count or snapshot-cache rebuild count.
     pub flatten_rebuilds: u64,
+    /// Saturating cumulative snapshot rows cloned while rebuilding flat caches.
     pub snapshot_rows_cloned: u64,
+    /// Saturating cumulative layout rows submitted for text measurement.
     pub text_measurements: u64,
+    /// Saturating count of virtual layouts falling back to the entire tree.
     pub virtualization_fallbacks: u64,
 }
 
 impl TreeViewDiagnostics {
+    /// Creates zeroed shared diagnostics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeViewDiagnostics;
+    /// assert_eq!(TreeViewDiagnostics::new().snapshot(), Default::default());
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Copies current counters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if diagnostics are mutably borrowed reentrantly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeViewDiagnostics;
+    /// let diagnostics = TreeViewDiagnostics::new();
+    /// assert_eq!(diagnostics.snapshot().paint_calls, 0);
+    /// ```
     pub fn snapshot(&self) -> TreeViewDiagnosticsSnapshot {
         *self.inner.borrow()
     }
 
+    /// Applies one internal counter update under a mutable borrow.
     fn update(&self, update: impl FnOnce(&mut TreeViewDiagnosticsSnapshot)) {
         update(&mut self.inner.borrow_mut());
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Density preset used to derive [`TreeViewStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeViewSize;
+/// assert_eq!(TreeViewSize::default(), TreeViewSize::Default);
+/// assert_ne!(TreeViewSize::Compact, TreeViewSize::Default);
+/// ```
 pub enum TreeViewSize {
+    /// 24-pixel rows, 8/4-pixel x/y padding, and 16-pixel indentation.
     Compact,
     #[default]
+    /// 28-pixel rows, 10/6-pixel x/y padding, and 18-pixel indentation.
     Default,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Tree surfaces, typography, focus, geometry, and disabled treatment.
+///
+/// Dimensions are logical pixels and values are consumed as supplied. The
+/// default is the regular preset derived from the default theme.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeViewStyle;
+/// let style = TreeViewStyle::default();
+/// assert_eq!((style.row_height, style.indent, style.icon_size), (28.0, 18.0, 16.0));
+/// ```
 pub struct TreeViewStyle {
+    /// Optional root surface; transparent by default.
     pub background: Color,
+    /// Selected-row surface.
     pub selected_background: Color,
+    /// Focused keyboard-active row surface.
     pub active_background: Color,
+    /// Reserved hover-row surface token.
     pub hover_background: Color,
+    /// Reserved pressed-row surface token.
     pub pressed_background: Color,
+    /// Before/after drop line and inside-drop border.
     pub drop_indicator: Color,
+    /// Inside-drop row surface.
     pub drop_inside_background: Color,
+    /// Inline editor surface.
     pub editing_background: Color,
+    /// Inline editor border/focus color.
     pub editing_border: Color,
+    /// Normal row text style.
     pub text: TextStyle,
+    /// Selected row text style.
     pub selected_text: TextStyle,
+    /// Disabled tree/node text style.
     pub disabled_text: TextStyle,
+    /// Normal leading-icon tint.
     pub icon_tint: Color,
+    /// Selected leading/trailing-icon tint.
     pub selected_icon_tint: Color,
+    /// Branch chevron tint.
     pub chevron_tint: Color,
+    /// Keyboard-active row border.
     pub focus_ring: Border,
+    /// Row/root/editor corner radii.
     pub radius: Radius,
+    /// Row height in logical pixels.
     pub row_height: f32,
+    /// Outer horizontal content padding in logical pixels.
     pub padding_x: f32,
+    /// Outer vertical content padding in logical pixels.
     pub padding_y: f32,
+    /// Per-depth horizontal indentation in logical pixels.
     pub indent: f32,
+    /// Chevron/icon/text spacing in logical pixels.
     pub gap: f32,
+    /// Leading/trailing icon side length in logical pixels.
     pub icon_size: f32,
+    /// Chevron side length in logical pixels.
     pub chevron_size: f32,
+    /// Whole-tree or per-node disabled alpha multiplier.
     pub disabled_opacity: f32,
 }
 
@@ -115,6 +230,19 @@ impl Default for TreeViewStyle {
 }
 
 impl TreeViewStyle {
+    /// Derives appearance from `theme` and density geometry.
+    ///
+    /// Compact uses row/padding/indent/text size `24, 8/4, 16, 12`; default uses
+    /// `28, 10/6, 18, 13`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{TreeViewSize, TreeViewStyle};
+    /// let style = TreeViewStyle::from_theme(Theme::default(), TreeViewSize::Compact);
+    /// assert_eq!((style.row_height, style.padding_x, style.padding_y), (24.0, 8.0, 4.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: TreeViewSize) -> Self {
         let palette = theme.palette();
         let (row_height, padding_x, padding_y, indent, text_size) = match size {
@@ -156,100 +284,283 @@ impl TreeViewStyle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Drop relation between a dragged source and target row.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeDropPosition;
+/// assert_eq!([TreeDropPosition::Before, TreeDropPosition::After, TreeDropPosition::Inside].len(), 3);
+/// ```
 pub enum TreeDropPosition {
+    /// Insert as the target's previous sibling.
     Before,
+    /// Insert as the target's next sibling.
     After,
+    /// Append as the target's last child.
     Inside,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Drag/drop move intent emitted after a valid drop.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TreeDropPosition, TreeMove};
+/// let event = TreeMove { source: 1, target: 2, position: TreeDropPosition::After };
+/// assert_eq!(event.source, 1);
+/// ```
 pub struct TreeMove<T> {
+    /// Moved subtree ID.
     pub source: T,
+    /// Drop target row ID.
     pub target: T,
+    /// Relationship requested around the target.
     pub position: TreeDropPosition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether editing operations mutate bound snapshot nodes or emit intent only.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeMutationMode;
+/// assert_ne!(TreeMutationMode::ApplyLocal, TreeMutationMode::IntentOnly);
+/// ```
 pub enum TreeMutationMode {
+    /// Mutate a bound snapshot node signal before emitting callbacks.
     ApplyLocal,
+    /// Leave source state unchanged and emit requested operations to the owner.
     IntentOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Supported platform-neutral keyboard command intent.
+///
+/// Paste carries the selected/active target ID or `None` when no target exists.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeShortcut;
+/// let shortcut = TreeShortcut::<u8>::Paste { id: None };
+/// assert!(matches!(shortcut, TreeShortcut::Paste { id: None }));
+/// ```
 pub enum TreeShortcut<T> {
-    Delete { id: T },
-    Copy { id: T },
-    Cut { id: T },
-    Paste { id: Option<T> },
+    /// Delete key with an enabled target.
+    Delete {
+        /// Selected or active item to delete.
+        id: T,
+    },
+    /// Control-C with an enabled target.
+    Copy {
+        /// Selected or active item to copy.
+        id: T,
+    },
+    /// Control-X with an enabled target.
+    Cut {
+        /// Selected or active item to cut.
+        id: T,
+    },
+    /// Control-V with an optional enabled target.
+    Paste {
+        /// Destination item, or `None` when the tree has no active target.
+        id: Option<T>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Committed rename intent with trimmed replacement label.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeRename;
+/// let rename = TreeRename { id: 1, old_label: "old".into(), new_label: "new".into() };
+/// assert_eq!(rename.new_label, "new");
+/// ```
 pub struct TreeRename<T> {
+    /// Renamed node ID.
     pub id: T,
+    /// Label before local mutation.
     pub old_label: String,
+    /// Trimmed committed label.
     pub new_label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Placement requested by tree creation commands.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeCreateKind;
+/// assert_ne!(TreeCreateKind::SiblingAfter, TreeCreateKind::Child);
+/// ```
 pub enum TreeCreateKind {
+    /// Insert after a sibling, or append a root when `after` is absent.
     SiblingAfter,
+    /// Append below the requested parent.
     Child,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Input to a user-provided new-node factory.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TreeCreateKind, TreeCreateRequest};
+/// let request = TreeCreateRequest { parent: Some(1), after: None, kind: TreeCreateKind::Child, default_label: "New item".into() };
+/// assert_eq!(request.parent, Some(1));
+/// ```
 pub struct TreeCreateRequest<T> {
+    /// Parent ID, or `None` for a root-level sibling.
     pub parent: Option<T>,
+    /// Previous sibling ID for sibling insertion, if any.
     pub after: Option<T>,
+    /// Sibling or child placement.
     pub kind: TreeCreateKind,
+    /// Suggested initial editor label.
     pub default_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Successfully committed create intent.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TreeCreate, TreeCreateKind};
+/// let event = TreeCreate { id: 2, parent: Some(1), after: None, kind: TreeCreateKind::Child, label: "file".into() };
+/// assert_eq!(event.label, "file");
+/// ```
 pub struct TreeCreate<T> {
+    /// Factory-provided new node ID.
     pub id: T,
+    /// Requested parent ID.
     pub parent: Option<T>,
+    /// Requested previous sibling ID.
     pub after: Option<T>,
+    /// Requested placement kind.
     pub kind: TreeCreateKind,
+    /// Trimmed committed label.
     pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Cancellation of an in-progress create editor.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TreeCreateCancel, TreeCreateKind, TreeCreateRequest};
+/// let request = TreeCreateRequest { parent: None, after: None, kind: TreeCreateKind::SiblingAfter, default_label: "New item".into() };
+/// let event = TreeCreateCancel { id: 9, request };
+/// assert_eq!(event.id, 9);
+/// ```
 pub struct TreeCreateCancel<T> {
+    /// Factory-provided draft ID.
     pub id: T,
+    /// Original creation request.
     pub request: TreeCreateRequest<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Delete intent for one node/subtree.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeDelete;
+/// let event = TreeDelete { id: 2, parent: Some(1) };
+/// assert_eq!(event.parent, Some(1));
+/// ```
 pub struct TreeDelete<T> {
+    /// Deleted subtree root ID.
     pub id: T,
+    /// Parent ID before deletion, or `None` for a root.
     pub parent: Option<T>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Right-click context carrying pointer geometry for a row or blank area.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Point;
+/// use ailloli_ui_widgets::controls::TreeContextMenu;
+/// let event = TreeContextMenu::<u8>::Blank { pointer_position: Point::new(2.0, 3.0) };
+/// assert!(matches!(event, TreeContextMenu::Blank { .. }));
+/// ```
 pub enum TreeContextMenu<T> {
+    /// Enabled row context; the row is selected first when necessary.
     Row {
+        /// Context row ID.
         row_id: T,
+        /// Pointer location in window coordinates.
         pointer_position: Point,
+        /// Hit row rectangle in window coordinates.
         row_rect: Rect,
     },
+    /// Context request inside tree bounds but outside a row.
     Blank {
+        /// Pointer location in window coordinates.
         pointer_position: Point,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One-shot externally bound editor command.
+///
+/// The widget consumes a present command by resetting its signal to `None`
+/// during layout or the next routed event.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeViewCommand;
+/// let command = TreeViewCommand::BeginRename(4_u8);
+/// assert!(matches!(command, TreeViewCommand::BeginRename(4)));
+/// ```
 pub enum TreeViewCommand<T> {
+    /// Begin editing the visible enabled node with this ID when allowed.
     BeginRename(T),
+    /// Run the create factory and begin editing the resulting node when allowed.
     BeginCreate(TreeCreateRequest<T>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Icon and optional tooltip metadata for a selected row's trailing action.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::IconId;
+/// use ailloli_ui_widgets::controls::TreeNodeTrailingAction;
+/// let action = TreeNodeTrailingAction::new(IconId::Close).tooltip("Remove");
+/// assert_eq!(action.tooltip.as_deref(), Some("Remove"));
+/// ```
 pub struct TreeNodeTrailingAction {
+    /// Painted action icon.
     pub icon: IconId,
+    /// Optional presentation tooltip; the tree itself does not display it.
     pub tooltip: Option<String>,
 }
 
 impl TreeNodeTrailingAction {
+    /// Creates action metadata without a tooltip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::TreeNodeTrailingAction;
+    /// assert!(TreeNodeTrailingAction::new(IconId::Close).tooltip.is_none());
+    /// ```
     pub fn new(icon: IconId) -> Self {
         Self {
             icon,
@@ -257,6 +568,16 @@ impl TreeNodeTrailingAction {
         }
     }
 
+    /// Sets tooltip metadata, replacing any previous value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::TreeNodeTrailingAction;
+    /// let action = TreeNodeTrailingAction::new(IconId::Close).tooltip("Delete");
+    /// assert_eq!(action.tooltip.as_deref(), Some("Delete"));
+    /// ```
     pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
         self.tooltip = Some(tooltip.into());
         self
@@ -264,19 +585,49 @@ impl TreeNodeTrailingAction {
 }
 
 #[derive(Clone)]
+/// Recursive snapshot-tree node with static/reactive disabled state.
+///
+/// IDs should be unique for deterministic lookup, but snapshot construction does
+/// not validate uniqueness. Adding any child promotes a leaf to a branch.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TreeNode;
+/// let node = TreeNode::branch(1, "src").child(TreeNode::leaf(2, "lib.rs"));
+/// assert_eq!(node.child_nodes().len(), 1);
+/// ```
 pub struct TreeNode<T> {
+    /// Application-defined node ID.
     id: T,
+    /// Display label stored unchanged.
     label: String,
+    /// Explicit branch flag; children also imply branch behavior.
     branch: bool,
+    /// Child nodes in display order.
     children: Vec<TreeNode<T>>,
+    /// Static or reactive unavailable state.
     disabled: Binding<bool>,
+    /// Optional leading icon.
     leading_icon: Option<IconId>,
+    /// Optional leading-icon tint override.
     leading_icon_tint: Option<Color>,
+    /// Optional selected-row trailing action metadata.
     trailing_action: Option<TreeNodeTrailingAction>,
+    /// Whether this node represents provisional UI state.
     transient: bool,
 }
 
 impl<T> TreeNode<T> {
+    /// Creates an enabled empty branch with no icons/action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::branch("root", "Root");
+    /// assert!(node.child_nodes().is_empty());
+    /// ```
     pub fn branch(id: T, label: impl Into<String>) -> Self {
         Self {
             id,
@@ -291,6 +642,15 @@ impl<T> TreeNode<T> {
         }
     }
 
+    /// Creates an enabled childless leaf with no icons/action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::leaf(1, "README");
+    /// assert_eq!(node.label(), "README");
+    /// ```
     pub fn leaf(id: T, label: impl Into<String>) -> Self {
         Self {
             id,
@@ -305,12 +665,33 @@ impl<T> TreeNode<T> {
         }
     }
 
+    /// Appends one child and promotes this node to a branch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::leaf(1, "parent").child(TreeNode::leaf(2, "child"));
+    /// assert_eq!(node.child_nodes()[0].id(), &2);
+    /// ```
     pub fn child(mut self, child: TreeNode<T>) -> Self {
         self.branch = true;
         self.children.push(child);
         self
     }
 
+    /// Extends children in iterator order without clearing existing children.
+    ///
+    /// A nonempty input promotes this node to a branch; empty input preserves its
+    /// current branch flag.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::branch(1, "root").children([TreeNode::leaf(2, "a"), TreeNode::leaf(3, "b")]);
+    /// assert_eq!(node.child_nodes().len(), 2);
+    /// ```
     pub fn children(mut self, children: impl IntoIterator<Item = TreeNode<T>>) -> Self {
         let children = children.into_iter().collect::<Vec<_>>();
         if !children.is_empty() {
@@ -320,31 +701,96 @@ impl<T> TreeNode<T> {
         self
     }
 
+    /// Sets static or reactive unavailable state.
+    ///
+    /// Disabled nodes are skipped by selection/navigation/editing/drop targets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::leaf(1, "locked").disabled(true);
+    /// let _ = node;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets the leading icon, replacing any previous icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::leaf(1, "file").leading_icon(IconId::History);
+    /// let _ = node;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.leading_icon = Some(icon);
         self
     }
 
+    /// Sets a leading-icon tint override.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::leaf(1, "file").leading_icon_tint(Color::WHITE);
+    /// let _ = node;
+    /// ```
     pub fn leading_icon_tint(mut self, color: Color) -> Self {
         self.leading_icon_tint = Some(color);
         self
     }
 
+    /// Marks or unmarks provisional presentation state.
+    ///
+    /// The tree retains this metadata but otherwise treats the node normally.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// assert!(TreeNode::leaf(1, "draft").transient(true).is_transient());
+    /// ```
     pub fn transient(mut self, transient: bool) -> Self {
         self.transient = transient;
         self
     }
 
+    /// Sets a tooltip-free trailing action.
+    ///
+    /// It is painted and hit-testable only while this row is selected.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::leaf(1, "file").trailing_action(IconId::Close);
+    /// assert!(node.trailing_action_ref().is_some());
+    /// ```
     pub fn trailing_action(mut self, icon: IconId) -> Self {
         self.trailing_action = Some(TreeNodeTrailingAction::new(icon));
         self
     }
 
+    /// Sets a trailing action with retained tooltip metadata.
+    ///
+    /// The tree does not itself render the tooltip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// let node = TreeNode::leaf(1, "file").trailing_action_with_tooltip(IconId::Close, "Remove");
+    /// assert_eq!(node.trailing_action_ref().unwrap().tooltip.as_deref(), Some("Remove"));
+    /// ```
     pub fn trailing_action_with_tooltip(
         mut self,
         icon: IconId,
@@ -354,48 +800,109 @@ impl<T> TreeNode<T> {
         self
     }
 
+    /// Borrows the application-defined ID.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// assert_eq!(TreeNode::leaf(7, "file").id(), &7);
+    /// ```
     pub fn id(&self) -> &T {
         &self.id
     }
 
+    /// Borrows the stored display label.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// assert_eq!(TreeNode::leaf(1, "file").label(), "file");
+    /// ```
     pub fn label(&self) -> &str {
         &self.label
     }
 
+    /// Borrows children in display order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// assert!(TreeNode::leaf(1, "file").child_nodes().is_empty());
+    /// ```
     pub fn child_nodes(&self) -> &[TreeNode<T>] {
         &self.children
     }
 
+    /// Reports provisional presentation metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// assert!(!TreeNode::leaf(1, "file").is_transient());
+    /// ```
     pub fn is_transient(&self) -> bool {
         self.transient
     }
 
+    /// Borrows optional trailing action metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeNode;
+    /// assert!(TreeNode::leaf(1, "file").trailing_action_ref().is_none());
+    /// ```
     pub fn trailing_action_ref(&self) -> Option<&TreeNodeTrailingAction> {
         self.trailing_action.as_ref()
     }
 }
 
+/// Shared context-aware changed-selection callback.
 type TreeSelectHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
+/// Shared context-aware explicit-activation callback.
 type TreeActivateHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
+/// Shared context-aware branch-toggle callback carrying next state.
 type TreeToggleHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T, bool)>;
+/// Shared context-aware selected-row trailing-action callback.
 type TreeTrailingActionHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
+/// Shared context-aware drag/drop intent callback.
 type TreeMoveHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeMove<T>)>;
+/// Shared context-aware committed-rename callback.
 type TreeRenameHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeRename<T>)>;
+/// Shared context-aware committed-create callback.
 type TreeCreateHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeCreate<T>)>;
+/// Shared context-aware cancelled-create callback.
 type TreeCreateCancelHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeCreateCancel<T>)>;
+/// Shared context-aware delete intent callback.
 type TreeDeleteHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeDelete<T>)>;
+/// Shared context-aware right-click callback.
 type TreeContextMenuHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeContextMenu<T>)>;
+/// Shared context-aware keyboard shortcut callback.
 type TreeShortcutHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, TreeShortcut<T>)>;
+/// Factory that may reject a create request by returning `None`.
 type TreeCreateFactory<T> = Rc<dyn Fn(TreeCreateRequest<T>) -> Option<TreeNode<T>>>;
 
+/// Type-erased visible-row/expansion adapter for retained models.
 trait RetainedTreeSource<T> {
+    /// Returns persistent visible row count.
     fn visible_len(&self) -> usize;
+    /// Clones one visible presentation row by index.
     fn flat_node_at(&self, index: usize) -> Option<FlatNode<T>>;
+    /// Looks up visible row index by stable ID.
     fn row_of(&self, id: &T) -> Option<usize>;
+    /// Returns first visible enabled row.
     fn first_enabled_row(&self) -> Option<usize>;
+    /// Reads branch expansion state.
     fn is_expanded(&self, id: &T) -> bool;
+    /// Attempts to change retained expansion state.
     fn set_expanded(&self, id: T, expanded: bool) -> bool;
+    /// Registers a weak model-revision listener.
     fn subscribe(&self, callback: &Rc<dyn Fn(u64)>) -> TreeModelSubscription;
+    /// Returns persistent flat-index rebuild count.
     fn flatten_rebuilds(&self) -> u64;
 }
 
@@ -403,10 +910,12 @@ impl<T> RetainedTreeSource<T> for TreeModelHandle<T>
 where
     T: Clone + Eq + Hash + fmt::Debug + 'static,
 {
+    /// Reads persistent visible row count from the model.
     fn visible_len(&self) -> usize {
         self.read(|model| model.visible_len())
     }
 
+    /// Projects one retained row/item into paint-ready metadata.
     fn flat_node_at(&self, index: usize) -> Option<FlatNode<T>> {
         self.read(|model| {
             let row = model.flat_index().rows().get(index)?;
@@ -425,64 +934,116 @@ where
         })
     }
 
+    /// Reads constant-time visible ID lookup.
     fn row_of(&self, id: &T) -> Option<usize> {
         self.read(|model| model.flat_index().row_of(id))
     }
 
+    /// Reads the cached first enabled visible row.
     fn first_enabled_row(&self) -> Option<usize> {
         self.read(|model| model.flat_index().first_enabled_row())
     }
 
+    /// Reads retained branch expansion.
     fn is_expanded(&self, id: &T) -> bool {
         self.read(|model| model.is_expanded(id))
     }
 
+    /// Applies retained expansion and collapses any model error to `false`.
     fn set_expanded(&self, id: T, expanded: bool) -> bool {
         self.apply(TreeMutation::SetExpanded { id, expanded })
             .is_ok()
     }
 
+    /// Forwards weak revision subscription to the retained handle.
     fn subscribe(&self, callback: &Rc<dyn Fn(u64)>) -> TreeModelSubscription {
         TreeModelHandle::subscribe(self, callback)
     }
 
+    /// Reads retained flat-index full rebuild count.
     fn flatten_rebuilds(&self) -> u64 {
         self.read(|model| model.flat_index().rebuilds())
     }
 }
 
+/// Interactive hierarchical view backed by snapshot nodes or a retained model.
+///
+/// A retained model takes precedence over bound/static snapshot nodes; a bound
+/// snapshot takes precedence over static nodes. Structural snapshot mutations
+/// require [`Self::bind_nodes`]. Retained structural edits use
+/// [`TreeMutationMode::IntentOnly`], leaving ownership to callbacks.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TreeNode, TreeView};
+/// let tree: TreeView<u64> = TreeView::new().node(TreeNode::leaf(1, "README"));
+/// let _ = tree;
+/// ```
 pub struct TreeView<T, A = ()> {
+    /// Root layout declarations.
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation.
     pub(crate) flex_item: FlexItemStyle,
+    /// Static snapshot roots.
     nodes: Vec<TreeNode<T>>,
+    /// Writable snapshot roots, taking precedence over static roots.
     bound_nodes: Option<Signal<Vec<TreeNode<T>>>>,
+    /// Retained source, taking precedence over snapshot roots.
     model: Option<Rc<dyn RetainedTreeSource<T>>>,
+    /// Optional readable selected ID.
     selected: Option<Binding<T>>,
+    /// Optional writable selected ID.
     bound_selected: Option<Signal<T>>,
+    /// Optional readable expanded IDs for snapshot trees.
     expanded: Option<Binding<Vec<T>>>,
+    /// Optional writable expanded IDs for snapshot trees.
     bound_expanded: Option<Signal<Vec<T>>>,
+    /// Optional one-shot editor command signal.
     command: Option<Signal<Option<TreeViewCommand<T>>>>,
+    /// Deduplicated fallback expanded IDs when no expanded binding exists.
     default_expanded: Vec<T>,
+    /// Whole-tree disabled state.
     disabled: Binding<bool>,
+    /// Whether drag gestures may begin.
     draggable: Binding<bool>,
+    /// Local-versus-intent mutation policy.
     mutation_mode: Binding<TreeMutationMode>,
+    /// Whether rename editors may begin.
     editable: Binding<bool>,
+    /// Whether Delete may request removal.
     deletable: Binding<bool>,
+    /// Whether Insert/create commands may request nodes.
     creatable: Binding<bool>,
+    /// Optional factory for provisional created nodes.
     create_node: Option<TreeCreateFactory<T>>,
+    /// Changed-selection callback.
     on_select: Option<TreeSelectHandler<T, A>>,
+    /// Explicit activation callback.
     on_activate: Option<TreeActivateHandler<T, A>>,
+    /// Branch toggle callback.
     on_toggle: Option<TreeToggleHandler<T, A>>,
+    /// Selected-row trailing-action callback.
     on_trailing_action: Option<TreeTrailingActionHandler<T, A>>,
+    /// Drag/drop callback.
     on_move: Option<TreeMoveHandler<T, A>>,
+    /// Rename callback and local-rename enablement.
     on_rename: Option<TreeRenameHandler<T, A>>,
+    /// Create callback.
     on_create: Option<TreeCreateHandler<T, A>>,
+    /// Cancelled-create callback.
     on_create_cancel: Option<TreeCreateCancelHandler<T, A>>,
+    /// Delete callback.
     on_delete: Option<TreeDeleteHandler<T, A>>,
+    /// Context-menu callback.
     on_context_menu: Option<TreeContextMenuHandler<T, A>>,
+    /// Shortcut callback, which intercepts supported keys.
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
+    /// Appearance and geometry tokens.
     style: TreeViewStyle,
+    /// Whether layout/paint visit viewport row ranges plus overscan.
     virtualized: bool,
+    /// Optional shared structural counters.
     diagnostics: Option<TreeViewDiagnostics>,
 }
 
@@ -493,12 +1054,25 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Default for TreeView<T, A> {
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> LayoutExt for TreeView<T, A> {
+    /// Returns mutable access to root layout declarations.
     fn layout_mut(&mut self) -> &mut LayoutStyle {
         &mut self.layout
     }
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
+    /// Creates an enabled empty snapshot tree with default style.
+    ///
+    /// Selection/expansion are uncontrolled, structural features and
+    /// virtualization are off, and mutation mode defaults to `ApplyLocal`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new();
+    /// let _ = tree;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -536,23 +1110,69 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         }
     }
 
+    /// Appends one static snapshot root.
+    ///
+    /// Retained or bound node sources take precedence when configured.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeNode, TreeView};
+    /// let tree: TreeView<u8> = TreeView::new().node(TreeNode::leaf(1, "file"));
+    /// let _ = tree;
+    /// ```
     pub fn node(mut self, node: TreeNode<T>) -> Self {
         self.nodes.push(node);
         self
     }
 
+    /// Extends static snapshot roots in iterator order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeNode, TreeView};
+    /// let tree: TreeView<u8> = TreeView::new().nodes([TreeNode::leaf(1, "a"), TreeNode::leaf(2, "b")]);
+    /// let _ = tree;
+    /// ```
     pub fn nodes(mut self, nodes: impl IntoIterator<Item = TreeNode<T>>) -> Self {
         self.nodes.extend(nodes);
         self
     }
 
+    /// Installs writable snapshot roots, taking precedence over static roots.
+    ///
+    /// This enables local structural drag/edit/create/delete operations. A
+    /// retained model still takes precedence for rendering.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::{TreeNode, TreeView};
+    /// let roots = State::new(vec![TreeNode::leaf(1_u8, "file")]);
+    /// let tree: TreeView<u8> = TreeView::new().bind_nodes(roots);
+    /// let _ = tree;
+    /// ```
     pub fn bind_nodes(mut self, nodes: impl Into<Signal<Vec<TreeNode<T>>>>) -> Self {
         self.bound_nodes = Some(nodes.into());
         self
     }
 
-    /// Uses a retained, revisioned model. This is the recommended path for
-    /// large or incrementally updated trees.
+    /// Uses a retained, revisioned model.
+    ///
+    /// This is recommended for large/incremental trees and takes precedence over
+    /// snapshot roots. Expansion comes from the model. Structural editing must
+    /// use `IntentOnly`; the owner then applies model mutations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle, TreeView};
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let tree: TreeView<u64> = TreeView::new().model(model);
+    /// let _ = tree;
+    /// ```
     pub fn model(mut self, model: TreeModelHandle<T>) -> Self
     where
         T: Eq + Hash + fmt::Debug,
@@ -561,11 +1181,36 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Sets readable static or reactive selection.
+    ///
+    /// Selection is not writable unless [`Self::bind_selected`] was also called.
+    /// If called after `bind_selected`, the prior writable signal is retained for
+    /// interaction while this value controls painting/comparison.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().selected(1);
+    /// let _ = tree;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<T>>) -> Self {
         self.selected = Some(selected.into());
         self
     }
 
+    /// Installs readable/writable controlled selection.
+    ///
+    /// Selection callbacks run only when activation targets a different ID.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().bind_selected(State::new(1));
+    /// let _ = tree;
+    /// ```
     pub fn bind_selected(mut self, selected: impl Into<Signal<T>>) -> Self {
         let signal = selected.into();
         self.selected = Some(Binding::Signal(signal.clone()));
@@ -573,11 +1218,35 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Sets readable expanded IDs for snapshot trees.
+    ///
+    /// Duplicates are ignored when read. It is not writable unless
+    /// `bind_expanded` was also called; retained models ignore this value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().expanded(vec![1, 2]);
+    /// let _ = tree;
+    /// ```
     pub fn expanded(mut self, expanded: impl Into<Binding<Vec<T>>>) -> Self {
         self.expanded = Some(expanded.into());
         self
     }
 
+    /// Installs readable/writable expanded IDs for snapshot trees.
+    ///
+    /// Retained models use their own expansion state instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().bind_expanded(State::new(vec![1]));
+    /// let _ = tree;
+    /// ```
     pub fn bind_expanded(mut self, expanded: impl Into<Signal<Vec<T>>>) -> Self {
         let signal = expanded.into();
         self.expanded = Some(Binding::Signal(signal.clone()));
@@ -585,11 +1254,36 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Installs a writable one-shot editor-command signal.
+    ///
+    /// Present commands are consumed by setting the signal to `None` during
+    /// layout or the next routed event, even when the target cannot begin editing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::{TreeView, TreeViewCommand};
+    /// let command = State::new(Some(TreeViewCommand::BeginRename(1_u8)));
+    /// let tree: TreeView<u8> = TreeView::new().bind_command(command);
+    /// let _ = tree;
+    /// ```
     pub fn bind_command(mut self, command: impl Into<Signal<Option<TreeViewCommand<T>>>>) -> Self {
         self.command = Some(command.into());
         self
     }
 
+    /// Adds one unique uncontrolled initial expansion ID.
+    ///
+    /// It is used only when no explicit expanded binding is configured.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().default_expanded(1).default_expanded(1);
+    /// let _ = tree;
+    /// ```
     pub fn default_expanded(mut self, id: T) -> Self {
         if !self.default_expanded.iter().any(|open| open == &id) {
             self.default_expanded.push(id);
@@ -597,6 +1291,15 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Replaces uncontrolled initial expansion IDs with unique iterator values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().default_expanded_many([1, 2, 1]);
+    /// let _ = tree;
+    /// ```
     pub fn default_expanded_many(mut self, ids: impl IntoIterator<Item = T>) -> Self {
         self.default_expanded.clear();
         for id in ids {
@@ -607,36 +1310,114 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Sets static or reactive whole-tree disabled state.
+    ///
+    /// Disabled trees are not focusable, ignore input, and paint disabled rows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().disabled(true);
+    /// let _ = tree;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Enables drag gestures when structural mutation capability also exists.
+    ///
+    /// A drag activates after moving more than four logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().draggable(true);
+    /// let _ = tree;
+    /// ```
     pub fn draggable(mut self, draggable: impl Into<Binding<bool>>) -> Self {
         self.draggable = draggable.into();
         self
     }
 
+    /// Sets reactive local-versus-intent structural mutation policy.
+    ///
+    /// `ApplyLocal` requires bound snapshot nodes. Retained structural operations
+    /// require `IntentOnly`; retained branch toggles apply locally only in
+    /// `ApplyLocal`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeMutationMode, TreeView};
+    /// let tree: TreeView<u8> = TreeView::new().mutation_mode(TreeMutationMode::IntentOnly);
+    /// let _ = tree;
+    /// ```
     pub fn mutation_mode(mut self, mode: impl Into<Binding<TreeMutationMode>>) -> Self {
         self.mutation_mode = mode.into();
         self
     }
 
+    /// Enables inline rename/create editors when mutation capability exists.
+    ///
+    /// Rename commits additionally require an `on_rename` callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().editable(true);
+    /// let _ = tree;
+    /// ```
     pub fn editable(mut self, editable: impl Into<Binding<bool>>) -> Self {
         self.editable = editable.into();
         self
     }
 
+    /// Enables built-in Delete behavior when mutation capability exists.
+    ///
+    /// Installing `on_shortcut` intercepts Delete as a shortcut before built-in
+    /// deletion.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().deletable(true);
+    /// let _ = tree;
+    /// ```
     pub fn deletable(mut self, deletable: impl Into<Binding<bool>>) -> Self {
         self.deletable = deletable.into();
         self
     }
 
+    /// Enables Insert/create commands when mutation capability and a factory exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().creatable(true);
+    /// let _ = tree;
+    /// ```
     pub fn creatable(mut self, creatable: impl Into<Binding<bool>>) -> Self {
         self.creatable = creatable.into();
         self
     }
 
+    /// Sets the factory used to construct provisional nodes for create requests.
+    ///
+    /// Returning `None` rejects the request without editing or callbacks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeNode, TreeView};
+    /// let tree: TreeView<u8> = TreeView::new().create_node_with(|request| Some(TreeNode::leaf(9, request.default_label)));
+    /// let _ = tree;
+    /// ```
     pub fn create_node_with(
         mut self,
         factory: impl Fn(TreeCreateRequest<T>) -> Option<TreeNode<T>> + 'static,
@@ -645,147 +1426,437 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Replaces tree appearance without altering explicit layout declarations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeView, TreeViewStyle};
+    /// let tree: TreeView<u8> = TreeView::new().tree_style(TreeViewStyle::default());
+    /// let _ = tree;
+    /// ```
     pub fn tree_style(mut self, style: TreeViewStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Re-derives every style field from the default theme and density.
+    ///
+    /// Explicit layout declarations remain unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeView, TreeViewSize};
+    /// let tree: TreeView<u8> = TreeView::new().tree_size(TreeViewSize::Compact);
+    /// let _ = tree;
+    /// ```
     pub fn tree_size(mut self, size: TreeViewSize) -> Self {
         self.style = TreeViewStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Enables viewport row-range layout/paint with eight-row overscan.
+    ///
+    /// A virtual layout without viewport and without finite maximum height falls
+    /// back to all rows and increments `virtualization_fallbacks`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().virtualized(true);
+    /// let _ = tree;
+    /// ```
     pub fn virtualized(mut self, virtualized: bool) -> Self {
         self.virtualized = virtualized;
         self
     }
 
+    /// Attaches shared structural counters, replacing any previous handle.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeView, TreeViewDiagnostics};
+    /// let diagnostics = TreeViewDiagnostics::new();
+    /// let tree: TreeView<u8> = TreeView::new().diagnostics(diagnostics.clone());
+    /// assert_eq!(diagnostics.snapshot().layout_calls, 0);
+    /// let _ = tree;
+    /// ```
     pub fn diagnostics(mut self, diagnostics: TreeViewDiagnostics) -> Self {
         self.diagnostics = Some(diagnostics);
         self
     }
 
+    /// Replaces preferred width; numeric inputs are logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().width(320.0);
+    /// let _ = tree;
+    /// ```
     pub fn width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.width = value.into();
         self
     }
 
+    /// Replaces preferred height; numeric inputs are logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().height(480.0);
+    /// let _ = tree;
+    /// ```
     pub fn height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.height = value.into();
         self
     }
 
+    /// Replaces the minimum-width declaration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().min_width(160.0);
+    /// let _ = tree;
+    /// ```
     pub fn min_width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.min_width = value.into();
         self
     }
 
+    /// Replaces the maximum-width declaration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().max_width(640.0);
+    /// let _ = tree;
+    /// ```
     pub fn max_width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.max_width = value.into();
         self
     }
 
+    /// Replaces the minimum-height declaration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().min_height(120.0);
+    /// let _ = tree;
+    /// ```
     pub fn min_height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.min_height = value.into();
         self
     }
 
+    /// Replaces the maximum-height declaration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().max_height(720.0);
+    /// let _ = tree;
+    /// ```
     pub fn max_height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.max_height = value.into();
         self
     }
 
+    /// Requests parent-fill sizing on both axes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().fill();
+    /// let _ = tree;
+    /// ```
     pub fn fill(mut self) -> Self {
         self.layout.width = ailloli_ui_core::style::Length::Fill;
         self.layout.height = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Requests parent-fill width while preserving height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().fill_width();
+    /// let _ = tree;
+    /// ```
     pub fn fill_width(mut self) -> Self {
         self.layout.width = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Requests parent-fill height while preserving width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().fill_height();
+    /// let _ = tree;
+    /// ```
     pub fn fill_height(mut self) -> Self {
         self.layout.height = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Sets this tree's flex-grow weight to one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().flex_grow();
+    /// let _ = tree;
+    /// ```
     pub fn flex_grow(mut self) -> Self {
         self.flex_item = self.flex_item.flex_grow(1.0);
         self
     }
 
+    /// Dispatches the action returned when enabled selection changes.
+    ///
+    /// Equal IDs do not emit. Without writable selection, a different row can
+    /// emit even though controlled painting remains unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8, u8> = TreeView::new().on_select(|id| id);
+    /// let _ = tree;
+    /// ```
     pub fn on_select(mut self, f: impl Fn(T) -> A + 'static) -> Self {
         self.on_select = Some(Rc::new(move |ctx, id| ctx.dispatch(f(id))));
         self
     }
 
+    /// Handles changed selection with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_select_ctx(|_ctx, _id| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_select_ctx(mut self, f: impl Fn(&mut EventCtx<A>, T) + 'static) -> Self {
         self.on_select = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the action returned on explicit enabled-row activation.
+    ///
+    /// Activation comes from a qualifying second click or Enter. With this
+    /// handler installed, Enter activates instead of selecting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8, u8> = TreeView::new().on_activate(|id| id);
+    /// let _ = tree;
+    /// ```
     pub fn on_activate(mut self, f: impl Fn(T) -> A + 'static) -> Self {
         self.on_activate = Some(Rc::new(move |ctx, id| ctx.dispatch(f(id))));
         self
     }
 
+    /// Handles explicit activation with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_activate_ctx(|_ctx, _id| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_activate_ctx(mut self, f: impl Fn(&mut EventCtx<A>, T) + 'static) -> Self {
         self.on_activate = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the action returned after a valid branch toggle intent.
+    ///
+    /// The boolean is the requested next expansion state. In retained
+    /// `IntentOnly` mode the model remains unchanged until its owner applies it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8, bool> = TreeView::new().on_toggle(|_id, open| open);
+    /// let _ = tree;
+    /// ```
     pub fn on_toggle(mut self, f: impl Fn(T, bool) -> A + 'static) -> Self {
         self.on_toggle = Some(Rc::new(move |ctx, id, open| ctx.dispatch(f(id, open))));
         self
     }
 
+    /// Handles branch toggle intent with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_toggle_ctx(|_ctx, _id, _open| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_toggle_ctx(mut self, f: impl Fn(&mut EventCtx<A>, T, bool) + 'static) -> Self {
         self.on_toggle = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the action returned by an enabled selected row's trailing icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8, u8> = TreeView::new().on_trailing_action(|id| id);
+    /// let _ = tree;
+    /// ```
     pub fn on_trailing_action(mut self, f: impl Fn(T) -> A + 'static) -> Self {
         self.on_trailing_action = Some(Rc::new(move |ctx, id| ctx.dispatch(f(id))));
         self
     }
 
+    /// Handles a trailing action with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_trailing_action_ctx(|_ctx, _id| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_trailing_action_ctx(mut self, f: impl Fn(&mut EventCtx<A>, T) + 'static) -> Self {
         self.on_trailing_action = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the action returned after a valid drag/drop move intent.
+    ///
+    /// `ApplyLocal` mutates bound snapshot nodes before emitting; `IntentOnly`
+    /// emits without source mutation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeMove, TreeView};
+    /// let tree: TreeView<u8, TreeMove<u8>> = TreeView::new().on_move(|event| event);
+    /// let _ = tree;
+    /// ```
     pub fn on_move(mut self, f: impl Fn(TreeMove<T>) -> A + 'static) -> Self {
         self.on_move = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles drag/drop move intent with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_move_ctx(|_ctx, _event| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_move_ctx(mut self, f: impl Fn(&mut EventCtx<A>, TreeMove<T>) + 'static) -> Self {
         self.on_move = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the action returned for a nonempty committed rename.
+    ///
+    /// Installing a rename handler is required for ordinary rename commits. In
+    /// local mode bound snapshot labels are changed before emission; intent mode
+    /// leaves the source unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeRename, TreeView};
+    /// let tree: TreeView<u8, TreeRename<u8>> = TreeView::new().on_rename(|event| event);
+    /// let _ = tree;
+    /// ```
     pub fn on_rename(mut self, f: impl Fn(TreeRename<T>) -> A + 'static) -> Self {
         self.on_rename = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles a committed rename with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_rename_ctx(|_ctx, _event| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_rename_ctx(mut self, f: impl Fn(&mut EventCtx<A>, TreeRename<T>) + 'static) -> Self {
         self.on_rename = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the action returned for a committed create intent.
+    ///
+    /// Creation also requires `creatable`, structural mutation capability, and a
+    /// factory. External create commands emit the trimmed final editor label.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeCreate, TreeView};
+    /// let tree: TreeView<u8, TreeCreate<u8>> = TreeView::new().on_create(|event| event);
+    /// let _ = tree;
+    /// ```
     pub fn on_create(mut self, f: impl Fn(TreeCreate<T>) -> A + 'static) -> Self {
         self.on_create = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles committed creation with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_create_ctx(|_ctx, _event| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_create_ctx(mut self, f: impl Fn(&mut EventCtx<A>, TreeCreate<T>) + 'static) -> Self {
         self.on_create = Some(Rc::new(f));
         self
     }
 
+    /// Handles cancellation of a create editor with direct context access.
+    ///
+    /// Cancellation removes a locally inserted provisional snapshot/draft and
+    /// carries the original request.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_create_cancel_ctx(|_ctx, _event| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_create_cancel_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, TreeCreateCancel<T>) + 'static,
@@ -794,21 +1865,62 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Dispatches the action returned for deletion of an enabled subtree.
+    ///
+    /// Local mode removes bound snapshot nodes first; intent mode emits only.
+    /// A configured shortcut handler intercepts Delete before this behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeDelete, TreeView};
+    /// let tree: TreeView<u8, TreeDelete<u8>> = TreeView::new().on_delete(|event| event);
+    /// let _ = tree;
+    /// ```
     pub fn on_delete(mut self, f: impl Fn(TreeDelete<T>) -> A + 'static) -> Self {
         self.on_delete = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles deletion intent with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_delete_ctx(|_ctx, _event| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_delete_ctx(mut self, f: impl Fn(&mut EventCtx<A>, TreeDelete<T>) + 'static) -> Self {
         self.on_delete = Some(Rc::new(f));
         self
     }
 
+    /// Dispatches the action returned for right-click row/blank context.
+    ///
+    /// An enabled row is made active and selected before its callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_context_menu(|_event| ());
+    /// let _ = tree;
+    /// ```
     pub fn on_context_menu(mut self, f: impl Fn(TreeContextMenu<T>) -> A + 'static) -> Self {
         self.on_context_menu = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles right-click context with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_context_menu_ctx(|_ctx, _event| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_context_menu_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, TreeContextMenu<T>) + 'static,
@@ -817,11 +1929,32 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
         self
     }
 
+    /// Dispatches supported Delete/Control-C/X/V shortcut intent.
+    ///
+    /// Installing this handler consumes matching shortcuts before built-in
+    /// Delete. Alt/Meta-modified keys are ignored; Paste may carry no target.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_shortcut(|_event| ());
+    /// let _ = tree;
+    /// ```
     pub fn on_shortcut(mut self, f: impl Fn(TreeShortcut<T>) -> A + 'static) -> Self {
         self.on_shortcut = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles supported shortcut intent with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TreeView;
+    /// let tree: TreeView<u8> = TreeView::new().on_shortcut_ctx(|_ctx, _event| {});
+    /// let _ = tree;
+    /// ```
     pub fn on_shortcut_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, TreeShortcut<T>) + 'static,
@@ -831,41 +1964,74 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeView<T, A> {
     }
 }
 
+/// Component-stage configuration copied into the retained tree widget.
 struct TreeViewComponent<T, A> {
+    /// Root layout declarations.
     layout: LayoutStyle,
+    /// Static snapshot roots.
     nodes: Vec<TreeNode<T>>,
+    /// Optional writable snapshot roots.
     bound_nodes: Option<Signal<Vec<TreeNode<T>>>>,
+    /// Optional retained source.
     model: Option<Rc<dyn RetainedTreeSource<T>>>,
+    /// Optional readable selection.
     selected: Option<Binding<T>>,
+    /// Optional writable selection.
     bound_selected: Option<Signal<T>>,
+    /// Optional readable snapshot expansion IDs.
     expanded: Option<Binding<Vec<T>>>,
+    /// Optional writable snapshot expansion IDs.
     bound_expanded: Option<Signal<Vec<T>>>,
+    /// Optional one-shot editor command signal.
     command: Option<Signal<Option<TreeViewCommand<T>>>>,
+    /// Fallback uncontrolled expansion IDs.
     default_expanded: Vec<T>,
+    /// Whole-tree disabled state.
     disabled: Binding<bool>,
+    /// Drag enablement.
     draggable: Binding<bool>,
+    /// Structural mutation policy.
     mutation_mode: Binding<TreeMutationMode>,
+    /// Rename editor enablement.
     editable: Binding<bool>,
+    /// Delete enablement.
     deletable: Binding<bool>,
+    /// Create enablement.
     creatable: Binding<bool>,
+    /// Optional create factory.
     create_node: Option<TreeCreateFactory<T>>,
+    /// Changed-selection callback.
     on_select: Option<TreeSelectHandler<T, A>>,
+    /// Explicit activation callback.
     on_activate: Option<TreeActivateHandler<T, A>>,
+    /// Toggle callback.
     on_toggle: Option<TreeToggleHandler<T, A>>,
+    /// Trailing action callback.
     on_trailing_action: Option<TreeTrailingActionHandler<T, A>>,
+    /// Move callback.
     on_move: Option<TreeMoveHandler<T, A>>,
+    /// Rename callback.
     on_rename: Option<TreeRenameHandler<T, A>>,
+    /// Create callback.
     on_create: Option<TreeCreateHandler<T, A>>,
+    /// Create cancellation callback.
     on_create_cancel: Option<TreeCreateCancelHandler<T, A>>,
+    /// Delete callback.
     on_delete: Option<TreeDeleteHandler<T, A>>,
+    /// Context-menu callback.
     on_context_menu: Option<TreeContextMenuHandler<T, A>>,
+    /// Keyboard shortcut callback.
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
+    /// Appearance and geometry tokens.
     style: TreeViewStyle,
+    /// Row-range virtualization flag.
     virtualized: bool,
+    /// Optional structural diagnostics.
     diagnostics: Option<TreeViewDiagnostics>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewComponent<T, A> {
+    /// Allocates uncontrolled expansion, model invalidation, editor, and cache state.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let internal_expanded = context.signal(unique_vec(self.default_expanded.clone()));
         let expanded = self
@@ -933,6 +2099,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for TreeView<T, A> {
+    /// Builds the retained component and preserves flex/size metadata.
     fn into_view(self) -> View<A> {
         finish_view_sized(
             View::component(TreeViewComponent {
@@ -975,47 +2142,74 @@ impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for TreeView<T, A> 
 }
 
 #[derive(Clone)]
+/// Paint-ready visible node projected from snapshot or retained sources.
 struct FlatNode<T> {
+    /// Application/retained stable ID.
     id: T,
+    /// Display label.
     label: String,
+    /// Zero-based visible hierarchy depth.
     depth: usize,
+    /// Whether to paint/toggle a branch chevron.
     branch: bool,
+    /// Snapshot of disabled state.
     disabled: bool,
+    /// Optional leading icon.
     leading_icon: Option<IconId>,
+    /// Optional leading-icon tint override.
     leading_icon_tint: Option<Color>,
+    /// Optional selected-row trailing action.
     trailing_action: Option<TreeNodeTrailingAction>,
+    /// Parent ID, or `None` for a root.
     parent: Option<T>,
 }
 
 #[derive(Clone)]
+/// Validated drag/drop target row and relation.
 struct TreeDropTarget<T> {
+    /// Target row ID.
     target: T,
+    /// Before/after/inside relation.
     position: TreeDropPosition,
 }
 
 #[derive(Clone)]
+/// Pointer drag candidate/active state.
 struct TreeDragState<T> {
+    /// Dragged source ID.
     source: T,
+    /// Pointer-down location.
     start: Point,
+    /// Whether movement passed the activation threshold.
     active: bool,
+    /// Current enabled non-self drop target.
     target: Option<TreeDropTarget<T>>,
 }
 
 #[derive(Clone)]
+/// Last row click used to detect double-click activation.
 struct TreeClickState<T> {
+    /// Event or legacy monotonic timestamp.
     at: TreeClickTimestamp,
+    /// Pointer location used for distance threshold.
     pos: Point,
+    /// Clicked row ID.
     id: T,
+    /// Saturating click sequence count capped at three.
     count: u8,
 }
 
 #[derive(Clone, Copy)]
+/// Comparable click timestamp within one timing source.
 enum TreeClickTimestamp {
+    /// Runtime event timestamp.
     Event(Duration),
+    /// Monotonic fallback when event metadata is absent.
     Legacy(Instant),
 }
 
 impl TreeClickTimestamp {
+    /// Returns checked elapsed time only for matching timestamp sources.
     fn elapsed_since(self, earlier: Self) -> Option<Duration> {
         match (self, earlier) {
             (Self::Event(now), Self::Event(earlier)) => now.checked_sub(earlier),
@@ -1026,23 +2220,36 @@ impl TreeClickTimestamp {
 }
 
 #[derive(Clone)]
+/// Active inline editor identity, original label, and optional create request.
 struct TreeEditing<T> {
+    /// Edited node/draft ID.
     id: T,
+    /// Label before editing began.
     original: String,
+    /// Present for external/retained create-editor flows.
     create: Option<TreeCreateRequest<T>>,
 }
 
 #[derive(Clone)]
+/// Retained intent-only provisional row not yet present in its model.
 struct TreeDraft<T> {
+    /// Paint-ready provisional node.
     node: FlatNode<T>,
+    /// Visible row insertion index.
     insert_index: usize,
 }
 
+/// Persistent flattened cache for recursive snapshot trees.
 struct SnapshotFlatCache<T> {
+    /// Bound root-signal revision represented by the cache.
     nodes_revision: u64,
+    /// Whether an initial flatten has occurred.
     initialized: bool,
+    /// Deduplicated expansion IDs represented by the cache.
     expanded: Vec<T>,
+    /// Visible paint-ready rows.
     rows: Vec<FlatNode<T>>,
+    /// Saturating full-cache rebuild count.
     rebuilds: u64,
 }
 
@@ -1058,66 +2265,122 @@ impl<T> Default for SnapshotFlatCache<T> {
     }
 }
 
+/// Per-row state passed to the node painter.
 struct TreeNodePaint<'a, T> {
+    /// Row rectangle.
     row: Rect,
+    /// Paint-ready node.
     node: &'a FlatNode<T>,
+    /// Whether controlled selection matches the node ID.
     selected: bool,
+    /// Disabled/drag alpha multiplier.
     opacity: f32,
+    /// Current widget layout used by inline text editing.
     layout: &'a LayoutResult,
+    /// Whether tree keyboard focus is active.
     focused: bool,
+    /// Matching inline editor, if any.
     editing: Option<&'a TreeEditing<T>>,
 }
 
+/// Retained interactive tree widget and all reactive/cache state.
 struct TreeViewWidget<T, A> {
+    /// Root layout declarations.
     layout: LayoutStyle,
+    /// Static snapshot roots.
     nodes: Vec<TreeNode<T>>,
+    /// Optional writable snapshot roots.
     bound_nodes: Option<Signal<Vec<TreeNode<T>>>>,
+    /// Optional retained source.
     model: Option<Rc<dyn RetainedTreeSource<T>>>,
+    /// Strong callback kept alive for weak model subscription.
     _model_callback: Option<Rc<dyn Fn(u64)>>,
+    /// RAII model revision subscription.
     _model_subscription: Option<TreeModelSubscription>,
+    /// Optional readable selection.
     selected: Option<Binding<T>>,
+    /// Optional writable selection.
     bound_selected: Option<Signal<T>>,
+    /// Snapshot expanded-ID binding or internal uncontrolled binding.
     expanded: Binding<Vec<T>>,
+    /// Optional writable snapshot expansion signal.
     mutable_expanded: Option<Signal<Vec<T>>>,
+    /// Optional one-shot external command signal.
     command: Option<Signal<Option<TreeViewCommand<T>>>>,
+    /// Whole-tree disabled state.
     disabled: Binding<bool>,
+    /// Drag enablement.
     draggable: Binding<bool>,
+    /// Structural mutation policy.
     mutation_mode: Binding<TreeMutationMode>,
+    /// Rename editor enablement.
     editable: Binding<bool>,
+    /// Delete enablement.
     deletable: Binding<bool>,
+    /// Create enablement.
     creatable: Binding<bool>,
+    /// Optional create-node factory.
     create_node: Option<TreeCreateFactory<T>>,
+    /// Changed-selection callback.
     on_select: Option<TreeSelectHandler<T, A>>,
+    /// Explicit activation callback.
     on_activate: Option<TreeActivateHandler<T, A>>,
+    /// Branch-toggle callback.
     on_toggle: Option<TreeToggleHandler<T, A>>,
+    /// Selected-row trailing-action callback.
     on_trailing_action: Option<TreeTrailingActionHandler<T, A>>,
+    /// Drag/drop callback.
     on_move: Option<TreeMoveHandler<T, A>>,
+    /// Rename callback.
     on_rename: Option<TreeRenameHandler<T, A>>,
+    /// Create callback.
     on_create: Option<TreeCreateHandler<T, A>>,
+    /// Create cancellation callback.
     on_create_cancel: Option<TreeCreateCancelHandler<T, A>>,
+    /// Delete callback.
     on_delete: Option<TreeDeleteHandler<T, A>>,
+    /// Context-menu callback.
     on_context_menu: Option<TreeContextMenuHandler<T, A>>,
+    /// Keyboard shortcut callback.
     on_shortcut: Option<TreeShortcutHandler<T, A>>,
+    /// Appearance and geometry tokens.
     style: TreeViewStyle,
+    /// Whether layout/paint use visible row ranges.
     virtualized: bool,
+    /// Current explicit keyboard-active row.
     active_index: Signal<Option<usize>>,
+    /// Current drag candidate/state.
     drag: Signal<Option<TreeDragState<T>>>,
+    /// Current inline editor.
     editing: Signal<Option<TreeEditing<T>>>,
+    /// Retained intent-only provisional create row.
     draft: Signal<Option<TreeDraft<T>>>,
+    /// Editor's reactive string value.
     edit_value: Signal<String>,
+    /// Editor's text buffer.
     edit_buffer: Signal<TextBuffer>,
+    /// Editor caret/selection state.
     edit_state: Signal<TextEditState>,
+    /// Last click used for activation counting.
     last_click: Signal<Option<TreeClickState<T>>>,
+    /// Monotonic intrinsic-width observation, floored at 160 pixels.
     observed_max_width: Rc<Cell<f32>>,
+    /// Persistent flattened snapshot cache.
     snapshot_flat_cache: Rc<RefCell<SnapshotFlatCache<T>>>,
+    /// Optional shared diagnostics counters.
     diagnostics: Option<TreeViewDiagnostics>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T, A> {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "TreeView"
     }
 
+    /// Consumes commands, visits the selected row range, and resolves intrinsic size.
+    ///
+    /// Intrinsic width never shrinks below the greatest previously observed width
+    /// or 160 logical pixels; intrinsic height covers every source row.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -1195,6 +2458,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         }
     }
 
+    /// Paints the current row range, selection/active/drop/editor state, and focus.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
         let disabled = self.disabled.read();
         if self.style.background.a > 0.0 {
@@ -1284,6 +2548,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         }
     }
 
+    /// Consumes commands and routes enabled input to editor, pointer, or keyboard logic.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
         // A command may come from an externally-owned `State`, which has no
         // runtime invalidator of its own. Incremental layout can therefore
@@ -1333,6 +2598,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         }
     }
 
+    /// Is focusable only when the whole tree and at least one visible row are enabled.
     fn focus_policy(&self) -> FocusPolicy {
         let has_enabled = self.draft.read().is_some_and(|draft| !draft.node.disabled)
             || self.model.as_ref().map_or_else(
@@ -1346,6 +2612,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         }
     }
 
+    /// Exposes single-line text input only while an inline editor is active.
     fn input_role(&self) -> InputRole {
         if self.editing.read().is_some() {
             InputRole::TextSingleLine
@@ -1354,6 +2621,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         }
     }
 
+    /// Returns inline editor IME caret geometry, or `None` outside editing.
     fn ime_cursor_rect(&self, bounds: Rect, layout: &LayoutResult) -> Option<Rect> {
         let editing = self.editing.read()?;
         let nodes = self.visible_nodes();
@@ -1372,6 +2640,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
+    /// Takes one pending command before attempting rename/create behavior.
+    ///
+    /// Commands are cleared even when feature gates, target lookup, or factories
+    /// reject the requested operation.
     fn consume_pending_command(&self) {
         let Some(command_signal) = &self.command else {
             return;
@@ -1398,6 +2670,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Clones bound snapshot roots when present, otherwise static roots.
     fn current_nodes(&self) -> Vec<TreeNode<T>> {
         self.bound_nodes
             .as_ref()
@@ -1405,6 +2678,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             .unwrap_or_else(|| self.nodes.clone())
     }
 
+    /// Returns retained row count or synchronizes/reads snapshot cache length.
     fn source_visible_len(&self) -> usize {
         self.model.as_ref().map_or_else(
             || {
@@ -1415,10 +2689,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Returns source row count plus an optional provisional draft row.
     fn visible_len(&self) -> usize {
         self.source_visible_len() + usize::from(self.draft.read().is_some())
     }
 
+    /// Clones one visible row, inserting a retained draft at its virtual position.
     fn visible_node_at(&self, index: usize) -> Option<FlatNode<T>> {
         let draft = self.draft.read();
         if let Some(draft) = &draft {
@@ -1443,12 +2719,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Clones existing visible rows in the requested half-open range.
     fn visible_nodes_range(&self, range: std::ops::Range<usize>) -> Vec<FlatNode<T>> {
         range
             .filter_map(|index| self.visible_node_at(index))
             .collect()
     }
 
+    /// Replaces bound snapshot roots and reports whether a binding existed.
     fn set_current_nodes(&self, nodes: Vec<TreeNode<T>>) -> bool {
         let Some(bound) = &self.bound_nodes else {
             return false;
@@ -1457,17 +2735,20 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         true
     }
 
+    /// Reports structural capability: bound snapshot or retained intent-only mode.
     fn can_mutate_nodes(&self) -> bool {
         self.bound_nodes.is_some()
             || (self.model.is_some() && self.mutation_mode.read() == TreeMutationMode::IntentOnly)
     }
 
+    /// Adjusts a source row index for an inserted provisional draft.
     fn source_index_to_visible(&self, source_index: usize) -> usize {
         self.draft.read().map_or(source_index, |draft| {
             source_index + usize::from(source_index >= draft.insert_index)
         })
     }
 
+    /// Resolves a retained draft's visible insertion row and depth.
     fn retained_create_position(&self, request: &TreeCreateRequest<T>) -> Option<(usize, usize)> {
         let rows = (0..self.source_visible_len())
             .filter_map(|index| {
@@ -1494,6 +2775,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Installs one intent-only retained draft and begins its create editor.
+    ///
+    /// Rejects concurrent draft/editing and unresolved insertion positions.
     fn begin_retained_create(&self, node: TreeNode<T>, request: TreeCreateRequest<T>) -> bool {
         if self.draft.read().is_some() || self.editing.read().is_some() {
             return false;
@@ -1524,25 +2808,33 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         self.begin_create_rename(&flat, request)
     }
 
+    /// Reads snapshot expansion IDs and removes later duplicates stably.
     fn expanded_values(&self) -> Vec<T> {
         unique_vec(self.expanded.read())
     }
 
+    /// Clones readable controlled selection when configured.
     fn selected_value(&self) -> Option<T> {
         self.selected.as_ref().map(Binding::read)
     }
 
+    /// Clones every visible source/draft row.
     fn visible_nodes(&self) -> Vec<FlatNode<T>> {
         (0..self.visible_len())
             .filter_map(|index| self.visible_node_at(index))
             .collect()
     }
 
+    /// Synchronizes then clones snapshot-tree cached rows.
     fn visible_nodes_snapshot(&self) -> Vec<FlatNode<T>> {
         self.sync_snapshot_flat_cache();
         self.snapshot_flat_cache.borrow().rows.clone()
     }
 
+    /// Rebuilds snapshot rows when bound-node revision or expansion IDs change.
+    ///
+    /// Static unbound nodes use revision zero and rebuild only on first access or
+    /// expansion change.
     fn sync_snapshot_flat_cache(&self) {
         let expanded = self.expanded_values();
         let nodes_revision = self.bound_nodes.as_ref().map_or(0, Signal::revision);
@@ -1575,6 +2867,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Selects all rows or a viewport/finite-height range plus eight-row overscan.
     fn layout_row_range(
         &self,
         ctx: &LayoutCtx<'_>,
@@ -1607,6 +2900,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         0..len
     }
 
+    /// Normalizes active row against draft, retained, or snapshot sources.
     fn normalized_active_index_for_source(&self) -> Option<usize> {
         if self.draft.read().is_some() {
             let nodes = self.visible_nodes();
@@ -1631,6 +2925,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         self.normalized_active_index(&nodes)
     }
 
+    /// Computes one padded logical-pixel row rectangle.
     fn row_rect(&self, bounds: Rect, index: usize) -> Rect {
         Rect::new(
             bounds.x + self.style.padding_x,
@@ -1640,6 +2935,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Maps a y coordinate to one row and records bounded hit-test diagnostics.
     fn row_index_at(&self, bounds: Rect, y: f32, len: usize) -> Option<usize> {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.update(|snapshot| {
@@ -1663,6 +2959,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         result
     }
 
+    /// Selects all rows or current clip range plus eight-row overscan for paint.
     fn paint_row_range(
         &self,
         ctx: &PaintCtx<'_>,
@@ -1683,6 +2980,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Computes depth-indented branch-chevron geometry.
     fn chevron_rect(&self, row: Rect, node: &FlatNode<T>) -> Rect {
         let x = row.x + node.depth as f32 * self.style.indent;
         Rect::new(
@@ -1693,6 +2991,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Computes text origin after chevron and optional leading icon.
     fn label_x(&self, row: Rect, node: &FlatNode<T>) -> f32 {
         let chevron = self.chevron_rect(row, node);
         let mut x = chevron.right() + self.style.gap;
@@ -1702,6 +3001,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         x
     }
 
+    /// Computes inline editor bounds with 32x18-pixel minimums.
     fn edit_rect(&self, row: Rect, node: &FlatNode<T>) -> Rect {
         let x = self.label_x(row, node);
         Rect::new(
@@ -1712,6 +3012,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Resolves action hit size from row/icon metrics, capped at 28 pixels.
     fn trailing_action_size(&self) -> f32 {
         self.style
             .row_height
@@ -1719,11 +3020,13 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             .max(self.style.icon_size + 6.0)
     }
 
+    /// Places the selected-row trailing action at the row's right edge.
     fn trailing_action_rect(&self, row: Rect) -> Rect {
         let size = self.trailing_action_size();
         Rect::new(row.right() - size, row.y + (row.h - size) * 0.5, size, size)
     }
 
+    /// Centers the configured icon size inside an action hit rectangle.
     fn trailing_action_icon_rect(&self, action: Rect) -> Rect {
         Rect::new(
             action.x + (action.w - self.style.icon_size) * 0.5,
@@ -1733,6 +3036,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Derives single-line editor style from tree tokens and default theme.
     fn edit_text_style(&self) -> TextInputStyle {
         let theme = Theme::default();
         let palette = theme.palette();
@@ -1752,6 +3056,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Paints a two-pixel sibling line or inside surface/border.
     fn paint_drop_target(&self, ctx: &mut PaintCtx<'_>, row: Rect, drop: &TreeDropTarget<T>) {
         match drop.position {
             TreeDropPosition::Before | TreeDropPosition::After => {
@@ -1780,6 +3085,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Paints chevron, leading icon, label/editor, and selected trailing action.
     fn paint_node(&self, ctx: &mut PaintCtx<'_>, paint: TreeNodePaint<'_, T>) {
         let TreeNodePaint {
             row,
@@ -1895,6 +3201,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Chooses disabled, selected, or normal text style in precedence order.
     fn text_style(&self, node: &FlatNode<T>) -> TextStyle {
         if node.disabled || self.disabled.read() {
             self.style.disabled_text
@@ -1909,6 +3216,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Returns valid enabled active row, selected match, or first enabled row.
     fn normalized_active_index(&self, nodes: &[FlatNode<T>]) -> Option<usize> {
         let active = self.active_index.read();
         if let Some(idx) = active {
@@ -1927,6 +3235,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         nodes.iter().position(|node| !node.disabled)
     }
 
+    /// Handles enabled row release: chevron toggle or selection/double activation.
     fn handle_pointer(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let Some(idx) = self.row_index_at(bounds, pos.y, self.visible_len()) else {
             return;
@@ -1950,6 +3259,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Emits row/blank context, selecting an enabled row first when needed.
     fn handle_context_menu(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let Some(on_context_menu) = &self.on_context_menu else {
             return;
@@ -1992,6 +3302,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Arms trailing-action release or a structurally capable drag candidate.
     fn handle_pointer_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let Some(idx) = self.row_index_at(bounds, pos.y, self.visible_len()) else {
             return;
@@ -2023,6 +3334,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Activates drag after four pixels and updates current drop target.
     fn handle_pointer_move(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let Some(mut drag) = self.drag.read() else {
             return;
@@ -2042,6 +3354,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Commits active drag, emits selected trailing action, or handles row click.
     fn handle_pointer_release(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         if let Some(drag) = self.drag.read() {
             self.drag.set(None);
@@ -2071,6 +3384,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Tests an enabled selected row's configured trailing-action rectangle.
     fn trailing_action_hit(&self, row: Rect, node: &FlatNode<T>, pos: Point) -> bool {
         if node.disabled || node.trailing_action.is_none() {
             return false;
@@ -2084,6 +3398,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         self.trailing_action_rect(row).contains(pos.x, pos.y)
     }
 
+    /// Invokes configured trailing action and consumes the event when eligible.
     fn emit_trailing_action(&self, ctx: &mut EventCtx<A>, node: &FlatNode<T>) {
         if node.disabled || node.trailing_action.is_none() {
             return;
@@ -2095,6 +3410,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Resolves an enabled non-self target using vertical thirds of its row.
     fn drop_target_at(&self, bounds: Rect, pos: Point, source: &T) -> Option<TreeDropTarget<T>> {
         let nodes = self.visible_nodes();
         let idx = self.row_index_at(bounds, pos.y, nodes.len())?;
@@ -2117,6 +3433,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         })
     }
 
+    /// Routes navigation, expansion, activation, edit/create/delete, and shortcuts.
     fn handle_keyboard(&self, ctx: &mut EventCtx<A>, key: &KeyEvent) {
         let nodes = self.visible_nodes();
         if nodes.is_empty() || self.editing.read().is_some() {
@@ -2203,6 +3520,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Emits configured Delete or Control-C/X/V shortcut before built-ins.
+    ///
+    /// Returns whether a shortcut was emitted and consumed.
     fn handle_keyboard_shortcut(
         &self,
         ctx: &mut EventCtx<A>,
@@ -2247,6 +3567,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         true
     }
 
+    /// Prefers enabled controlled selection, then enabled active row as target.
     fn shortcut_target_node<'a>(
         &self,
         nodes: &'a [FlatNode<T>],
@@ -2263,6 +3584,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         active.and_then(|idx| nodes.get(idx).filter(|node| !node.disabled))
     }
 
+    /// Stores a changed active row and consumes the navigation event.
     fn move_active(&self, ctx: &mut EventCtx<A>, next: Option<usize>) {
         if next != self.active_index.read() {
             self.active_index.set(next);
@@ -2271,6 +3593,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Writes/emits only a changed enabled selection.
     fn select_node(&self, ctx: &mut EventCtx<A>, node: &FlatNode<T>) {
         if node.disabled {
             return;
@@ -2291,6 +3614,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Emits explicit activation only for enabled nodes with a handler.
     fn activate_node(&self, ctx: &mut EventCtx<A>, node: &FlatNode<T>) {
         if node.disabled {
             return;
@@ -2302,6 +3626,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Registers a click and returns a 1..=3 count under time/distance/ID rules.
     fn register_row_click(&self, ctx: &EventCtx<A>, node: &FlatNode<T>, pos: Point) -> u8 {
         let now = ctx
             .event_meta()
@@ -2329,6 +3654,11 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         next
     }
 
+    /// Applies/emits a valid branch's requested next expansion state.
+    ///
+    /// Retained `ApplyLocal` must successfully mutate the model; retained
+    /// `IntentOnly` emits without mutation. Snapshot mutation uses a writable
+    /// expansion signal when available.
     fn toggle_node(&self, ctx: &mut EventCtx<A>, node: &FlatNode<T>) {
         if node.disabled || !node.branch {
             return;
@@ -2372,6 +3702,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Reads expansion from retained model or deduplicated snapshot IDs.
     fn is_expanded(&self, id: &T) -> bool {
         self.model.as_ref().map_or_else(
             || self.expanded_values().iter().any(|expanded| expanded == id),
@@ -2379,6 +3710,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         )
     }
 
+    /// Handles focus loss, Escape/Enter, outside click, or single-line editing.
+    ///
+    /// Returns whether an active editor consumed/routed the event.
     fn handle_editing_event(
         &self,
         ctx: &mut EventCtx<A>,
@@ -2443,6 +3777,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Begins an ordinary rename and consumes input on success.
     fn start_rename(&self, ctx: &mut EventCtx<A>, node: &FlatNode<T>) {
         if self.begin_rename(node) {
             ctx.request_repaint();
@@ -2450,6 +3785,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Initializes full-label selection for an eligible ordinary rename.
     fn begin_rename(&self, node: &FlatNode<T>) -> bool {
         if !self.editable.read() || !self.can_mutate_nodes() || node.disabled {
             return false;
@@ -2472,6 +3808,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         true
     }
 
+    /// Runs the factory and begins external-command create editing when eligible.
     fn begin_create_from_request(&self, request: TreeCreateRequest<T>) -> bool {
         if !self.creatable.read() || !self.can_mutate_nodes() {
             return false;
@@ -2511,6 +3848,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         true
     }
 
+    /// Initializes full-label selection and retains create cancellation metadata.
     fn begin_create_rename(&self, node: &FlatNode<T>, request: TreeCreateRequest<T>) -> bool {
         if !self.editable.read() || !self.can_mutate_nodes() || node.disabled {
             return false;
@@ -2533,6 +3871,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         true
     }
 
+    /// Clears editor/draft state and removes/callbacks a cancelled create draft.
     fn cancel_rename(&self, ctx: &mut EventCtx<A>) {
         if let Some(editing) = self.editing.read() {
             if let Some(request) = editing.create.clone() {
@@ -2562,6 +3901,11 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         ctx.request_repaint();
     }
 
+    /// Trims and commits a nonempty editor value according to create/mutation mode.
+    ///
+    /// Empty input returns `false` and keeps editing. An unchanged ordinary rename
+    /// closes successfully without callback. Ordinary changed rename requires a
+    /// handler; external create emits final label and removes provisional state.
     fn commit_rename(&self, ctx: &mut EventCtx<A>) -> bool {
         let Some(editing) = self.editing.read() else {
             return false;
@@ -2653,6 +3997,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         true
     }
 
+    /// Applies local snapshot move or emits intent-only move, then reselects source.
     fn apply_drop(&self, ctx: &mut EventCtx<A>, source: T, drop: TreeDropTarget<T>) {
         if !self.draggable.read() || !self.can_mutate_nodes() {
             return;
@@ -2687,6 +4032,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Handles keyboard create request, local insertion/intent, callback, and edit.
     fn create_node(
         &self,
         ctx: &mut EventCtx<A>,
@@ -2771,6 +4117,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Deletes locally or emits intent, then chooses the next enabled selection.
     fn delete_node(&self, ctx: &mut EventCtx<A>, visible: &[FlatNode<T>], idx: usize) {
         if !self.deletable.read() || !self.can_mutate_nodes() {
             return;
@@ -2820,6 +4167,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Adds an ID to writable snapshot expansion when absent.
     fn ensure_expanded(&self, id: T) {
         let Some(bound) = &self.mutable_expanded else {
             return;
@@ -2831,6 +4179,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
         }
     }
 
+    /// Removes deleted IDs from writable snapshot expansion.
     fn remove_expanded_ids(&self, ids: &[T]) {
         let Some(bound) = &self.mutable_expanded else {
             return;
@@ -2841,6 +4190,10 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
     }
 }
 
+/// Converts viewport geometry to a clamped row range with symmetric overscan.
+///
+/// Empty sources, nonpositive row height, or nonpositive viewport height return
+/// `0..0`; arithmetic uses saturating integer bounds.
 fn row_range_with_overscan(
     viewport_y: f32,
     viewport_height: f32,
@@ -2864,6 +4217,7 @@ fn row_range_with_overscan(
     start..end.max(start)
 }
 
+/// Recursively appends a snapshot node and expanded descendants in display order.
 fn flatten_node<T: Clone + PartialEq>(
     node: &TreeNode<T>,
     depth: usize,
@@ -2891,6 +4245,7 @@ fn flatten_node<T: Clone + PartialEq>(
     }
 }
 
+/// Finds the first depth-first matching snapshot ID as child indices.
 fn find_path<T: PartialEq>(nodes: &[TreeNode<T>], id: &T) -> Option<Vec<usize>> {
     for (idx, node) in nodes.iter().enumerate() {
         if &node.id == id {
@@ -2904,10 +4259,12 @@ fn find_path<T: PartialEq>(nodes: &[TreeNode<T>], id: &T) -> Option<Vec<usize>> 
     None
 }
 
+/// Reports whether `path` starts at `ancestor`, including equality.
 fn path_is_descendant_or_self(path: &[usize], ancestor: &[usize]) -> bool {
     path.len() >= ancestor.len() && path.starts_with(ancestor)
 }
 
+/// Resolves an immutable snapshot node from a nonempty index path.
 fn node_at_path<'a, T>(nodes: &'a [TreeNode<T>], path: &[usize]) -> Option<&'a TreeNode<T>> {
     let (first, rest) = path.split_first()?;
     let node = nodes.get(*first)?;
@@ -2918,6 +4275,7 @@ fn node_at_path<'a, T>(nodes: &'a [TreeNode<T>], path: &[usize]) -> Option<&'a T
     }
 }
 
+/// Resolves a mutable snapshot node from a nonempty index path.
 fn node_mut_at_path<'a, T>(
     nodes: &'a mut [TreeNode<T>],
     path: &[usize],
@@ -2931,6 +4289,7 @@ fn node_mut_at_path<'a, T>(
     }
 }
 
+/// Removes and returns a snapshot node at a valid nonempty index path.
 fn remove_node_at_path<T>(nodes: &mut Vec<TreeNode<T>>, path: &[usize]) -> Option<TreeNode<T>> {
     if path.len() == 1 {
         return (path[0] < nodes.len()).then(|| nodes.remove(path[0]));
@@ -2941,6 +4300,7 @@ fn remove_node_at_path<T>(nodes: &mut Vec<TreeNode<T>>, path: &[usize]) -> Optio
     (child_idx < parent.children.len()).then(|| parent.children.remove(child_idx))
 }
 
+/// Inserts before/after a target sibling or appends inside the target.
 fn insert_node_relative<T: Clone + PartialEq>(
     nodes: &mut Vec<TreeNode<T>>,
     target: &T,
@@ -2984,6 +4344,9 @@ fn insert_node_relative<T: Clone + PartialEq>(
     }
 }
 
+/// Moves one enabled snapshot subtree while rejecting missing/disabled/cyclic drops.
+///
+/// The original roots are restored when insertion unexpectedly fails.
 fn move_node<T: Clone + PartialEq>(
     nodes: &mut Vec<TreeNode<T>>,
     source: &T,
@@ -3020,6 +4383,7 @@ fn move_node<T: Clone + PartialEq>(
     }
 }
 
+/// Replaces the first enabled matching snapshot label and returns its old value.
 fn rename_node_label<T: PartialEq>(
     nodes: &mut [TreeNode<T>],
     id: &T,
@@ -3040,6 +4404,7 @@ fn rename_node_label<T: PartialEq>(
     None
 }
 
+/// Inserts a factory node according to a validated create request relation.
 fn insert_created_node<T: Clone + PartialEq>(
     nodes: &mut Vec<TreeNode<T>>,
     request: &TreeCreateRequest<T>,
@@ -3063,6 +4428,7 @@ fn insert_created_node<T: Clone + PartialEq>(
     }
 }
 
+/// Returns the first visible row after the indexed subtree.
 fn visible_subtree_end<T>(rows: &[FlatNode<T>], row: usize) -> usize {
     let depth = rows[row].depth;
     rows.iter()
@@ -3072,6 +4438,7 @@ fn visible_subtree_end<T>(rows: &[FlatNode<T>], row: usize) -> usize {
         .unwrap_or(rows.len())
 }
 
+/// Removes the first enabled matching snapshot subtree and returns its parent ID.
 fn delete_node_by_id<T: Clone + PartialEq>(
     nodes: &mut Vec<TreeNode<T>>,
     id: &T,
@@ -3089,6 +4456,7 @@ fn delete_node_by_id<T: Clone + PartialEq>(
     remove_node_at_path(nodes, &path).map(|node| (node, parent))
 }
 
+/// Collects a snapshot subtree's IDs in depth-first pre-order.
 fn collect_node_ids<T: Clone>(node: &TreeNode<T>) -> Vec<T> {
     let mut out = vec![node.id.clone()];
     for child in &node.children {
@@ -3097,6 +4465,7 @@ fn collect_node_ids<T: Clone>(node: &TreeNode<T>) -> Vec<T> {
     out
 }
 
+/// Finds next enabled surviving row, falling back to the preceding range.
 fn next_enabled_after_delete<T: PartialEq>(
     visible: &[FlatNode<T>],
     deleted_idx: usize,
@@ -3119,6 +4488,7 @@ fn next_enabled_after_delete<T: PartialEq>(
         })
 }
 
+/// Removes later duplicates while preserving first-occurrence order.
 fn unique_vec<T: PartialEq>(values: Vec<T>) -> Vec<T> {
     let mut out = Vec::new();
     for value in values {
@@ -3129,6 +4499,7 @@ fn unique_vec<T: PartialEq>(values: Vec<T>) -> Vec<T> {
     out
 }
 
+/// Finds the next enabled row with wraparound, or `None` when none exists.
 fn next_enabled<T>(
     nodes: &[FlatNode<T>],
     active: Option<usize>,
@@ -3151,6 +4522,7 @@ fn next_enabled<T>(
     None
 }
 
+/// Finds the first enabled visible direct child after a parent row.
 fn first_visible_child_index<T>(nodes: &[FlatNode<T>], index: usize) -> Option<usize> {
     let parent_depth = nodes.get(index)?.depth;
     nodes
@@ -3161,12 +4533,14 @@ fn first_visible_child_index<T>(nodes: &[FlatNode<T>], index: usize) -> Option<u
         .map(|(idx, _)| idx)
 }
 
+/// Returns squared logical-pixel Euclidean distance without a square root.
 fn point_distance_sq(a: Point, b: Point) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     dx * dx + dy * dy
 }
 
+/// ASCII-uppercases a character key for shortcut comparison.
 fn key_character_upper(key: &KeyEvent) -> Option<String> {
     match &key.key {
         Key::Character(ch) => Some(ch.to_ascii_uppercase()),
@@ -3174,6 +4548,7 @@ fn key_character_upper(key: &KeyEvent) -> Option<String> {
     }
 }
 
+/// Measures unwrapped text when layout text services are available.
 fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option<f32> {
     ctx.text_system.as_deref_mut().map(|text_system| {
         text_system
@@ -3188,6 +4563,7 @@ fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option
     })
 }
 
+/// Obtains a cached unwrapped layout when paint text services are available.
 fn layout_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -3203,6 +4579,7 @@ fn layout_text(
     })
 }
 
+/// Paints one unwrapped label vertically centered at a fixed x origin.
 fn paint_text_centered(
     ctx: &mut PaintCtx<'_>,
     text: &str,

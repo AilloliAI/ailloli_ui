@@ -1,3 +1,5 @@
+//! Combo-box and autocomplete filtering, popup, scrolling, and selection scenarios.
+
 use std::time::Duration;
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};

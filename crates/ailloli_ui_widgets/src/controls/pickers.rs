@@ -1,3 +1,9 @@
+//! Overlay date, time, and RGB color picker controls.
+//!
+//! Each picker supports read-only values or writable signal binding. Picker
+//! actions update a writable binding before calling `on_change`, and equal values
+//! are not emitted again. Popup geometry is expressed in logical pixels.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -32,82 +38,194 @@ use lucide_icons::Icon as LucideIcon;
 use super::text_field_core::{handle_single_line_text_event, TextFieldEventOptions};
 use super::text_input::TextInputStyle;
 
+/// Shared context-aware callback for a changed date.
 type DateChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, DateValue)>;
+/// Shared context-aware callback for a changed time.
 type TimeChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, TimeValue)>;
+/// Shared context-aware callback for a changed RGB color.
 type ColorChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Color)>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Density preset for [`DatePickerStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DatePickerSize;
+/// assert_eq!(DatePickerSize::default(), DatePickerSize::Default);
+/// assert_ne!(DatePickerSize::Compact, DatePickerSize::Default);
+/// ```
 pub enum DatePickerSize {
+    /// 180-by-30 trigger with denser calendar cells.
     Compact,
     #[default]
+    /// 220-by-36 trigger with regular calendar cells.
     Default,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Density preset for [`TimePickerStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TimePickerSize;
+/// assert_eq!(TimePickerSize::default(), TimePickerSize::Default);
+/// assert_ne!(TimePickerSize::Compact, TimePickerSize::Default);
+/// ```
 pub enum TimePickerSize {
+    /// 180-by-30 trigger and 26-pixel popup rows.
     Compact,
     #[default]
+    /// 220-by-36 trigger and 30-pixel popup rows.
     Default,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Density preset for [`ColorPickerStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ColorPickerSize;
+/// assert_eq!(ColorPickerSize::default(), ColorPickerSize::Default);
+/// assert_ne!(ColorPickerSize::Compact, ColorPickerSize::Default);
+/// ```
 pub enum ColorPickerSize {
+    /// 180-by-30 trigger and a 250-by-284 popup.
     Compact,
     #[default]
+    /// 220-by-36 trigger and a 282-by-318 popup.
     Default,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Common trigger, popup, typography, and geometry tokens for all pickers.
+///
+/// Dimensions are logical pixels and opacity is a multiplier. Fields are used as
+/// supplied without validation.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DatePickerStyle;
+/// let base = DatePickerStyle::default().base;
+/// assert_eq!((base.width, base.height), (220.0, 36.0));
+/// assert_eq!(base.disabled_opacity, 0.45);
+/// ```
 pub struct PickerBaseStyle {
+    /// Resting trigger fill.
     pub trigger_background: Color,
+    /// Hovered enabled trigger fill.
     pub trigger_hovered: Color,
+    /// Popup surface fill.
     pub popup_background: Color,
+    /// Keyboard-active cell or row fill.
     pub active: Color,
+    /// Selected cell or row fill.
     pub selected: Color,
+    /// Reserved disabled fill token.
     pub disabled_fill: Color,
+    /// Resting trigger border.
     pub border: Border,
+    /// Popup border.
     pub popup_border: Border,
+    /// Focused trigger border.
     pub focus_ring: Border,
+    /// Popup shadows, painted in order.
     pub shadows: Vec<BoxShadow>,
+    /// Primary text style.
     pub text: TextStyle,
+    /// Placeholder and secondary text style.
     pub muted_text: TextStyle,
+    /// Disabled trigger/cell text style.
     pub disabled_text: TextStyle,
+    /// Accent text style for selected dates.
     pub accent_text: TextStyle,
+    /// Preferred trigger width in logical pixels.
     pub width: f32,
+    /// Preferred trigger height in logical pixels.
     pub height: f32,
+    /// Gap below the trigger before the popup, in logical pixels.
     pub popup_gap: f32,
+    /// Trigger and popup corner radii.
     pub radius: Radius,
+    /// Trigger horizontal padding in logical pixels.
     pub padding_x: f32,
+    /// Trigger icon size in logical pixels.
     pub icon_size: f32,
+    /// Disabled trigger fill alpha multiplier.
     pub disabled_opacity: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Calendar popup geometry layered on [`PickerBaseStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DatePickerStyle;
+/// let style = DatePickerStyle::default();
+/// assert_eq!((style.popup_width, style.header_height, style.week_height, style.cell_height),
+///            (306.0, 36.0, 24.0, 34.0));
+/// ```
 pub struct DatePickerStyle {
+    /// Shared trigger and popup tokens.
     pub base: PickerBaseStyle,
+    /// Calendar popup width in logical pixels.
     pub popup_width: f32,
+    /// Month header height in logical pixels.
     pub header_height: f32,
+    /// Weekday header height in logical pixels.
     pub week_height: f32,
+    /// Six-row calendar cell height in logical pixels.
     pub cell_height: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Two-column time popup geometry layered on [`PickerBaseStyle`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TimePickerStyle;
+/// let style = TimePickerStyle::default();
+/// assert_eq!((style.popup_width, style.popup_height, style.row_height), (240.0, 220.0, 30.0));
+/// ```
 pub struct TimePickerStyle {
+    /// Shared trigger and popup tokens.
     pub base: PickerBaseStyle,
+    /// Popup width in logical pixels.
     pub popup_width: f32,
+    /// Popup height in logical pixels.
     pub popup_height: f32,
+    /// Hour/minute row height in logical pixels.
     pub row_height: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// HSV plane, hue rail, swatch, and hex popup geometry.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ColorPickerStyle;
+/// let style = ColorPickerStyle::default();
+/// assert_eq!((style.popup_width, style.popup_height, style.swatch_size), (282.0, 318.0, 18.0));
+/// ```
 pub struct ColorPickerStyle {
+    /// Shared trigger and popup tokens.
     pub base: PickerBaseStyle,
+    /// Popup width in logical pixels.
     pub popup_width: f32,
+    /// Popup height in logical pixels.
     pub popup_height: f32,
+    /// Palette swatch side length in logical pixels.
     pub swatch_size: f32,
 }
 
 impl PickerBaseStyle {
+    /// Derives shared tokens from `theme` and the internal compact flag.
     fn from_theme(theme: Theme, compact: bool) -> Self {
         let palette = theme.palette();
         let text_size = if compact { 12 } else { 13 };
@@ -148,6 +266,19 @@ impl Default for DatePickerStyle {
 }
 
 impl DatePickerStyle {
+    /// Derives calendar style and geometry from `theme` and density.
+    ///
+    /// Compact uses popup width/cell height `270/30`; default uses `306/34`.
+    /// Header and weekday heights remain `36/24` logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{DatePickerSize, DatePickerStyle};
+    /// let style = DatePickerStyle::from_theme(Theme::default(), DatePickerSize::Compact);
+    /// assert_eq!((style.base.width, style.base.height, style.popup_width), (180.0, 30.0, 270.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: DatePickerSize) -> Self {
         let compact = size == DatePickerSize::Compact;
         Self {
@@ -167,6 +298,19 @@ impl Default for TimePickerStyle {
 }
 
 impl TimePickerStyle {
+    /// Derives time-list style and geometry from `theme` and density.
+    ///
+    /// Compact uses popup `210 x 188` and 26-pixel rows; default uses
+    /// `240 x 220` and 30-pixel rows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{TimePickerSize, TimePickerStyle};
+    /// let style = TimePickerStyle::from_theme(Theme::default(), TimePickerSize::Compact);
+    /// assert_eq!((style.popup_width, style.popup_height, style.row_height), (210.0, 188.0, 26.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: TimePickerSize) -> Self {
         let compact = size == TimePickerSize::Compact;
         Self {
@@ -185,6 +329,19 @@ impl Default for ColorPickerStyle {
 }
 
 impl ColorPickerStyle {
+    /// Derives color-picker style and geometry from `theme` and density.
+    ///
+    /// Compact uses popup `250 x 284` and 16-pixel swatches; default uses
+    /// `282 x 318` and 18-pixel swatches.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ColorPickerSize, ColorPickerStyle};
+    /// let style = ColorPickerStyle::from_theme(Theme::default(), ColorPickerSize::Compact);
+    /// assert_eq!((style.popup_width, style.popup_height, style.swatch_size), (250.0, 284.0, 16.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: ColorPickerSize) -> Self {
         let compact = size == ColorPickerSize::Compact;
         Self {
@@ -196,18 +353,44 @@ impl ColorPickerStyle {
     }
 }
 
+/// Controlled optional-date field with a six-week Monday-first calendar popup.
+///
+/// `A` is the application action returned by the non-context callback. Use
+/// [`Self::bind`] for internal writes; [`Self::value`] is read-only. Optional
+/// minimum and maximum dates are inclusive.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::DateValue;
+/// use ailloli_ui_widgets::controls::DatePicker;
+/// let picker: DatePicker<()> = DatePicker::new().value(Some(DateValue::new(2026, 5, 1)));
+/// let _ = picker;
+/// ```
 pub struct DatePicker<A = ()> {
+    /// Trigger layout configured by generated builders.
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation configured by generated builders.
     pub(crate) flex_item: FlexItemStyle,
+    /// Optional readable selected date.
     value: Option<Binding<Option<DateValue>>>,
+    /// Optional writable selected-date signal.
     bound: Option<Signal<Option<DateValue>>>,
+    /// Inclusive lower selection bound.
     min: Option<DateValue>,
+    /// Inclusive upper selection bound.
     max: Option<DateValue>,
+    /// Label shown when no date is selected.
     placeholder: Binding<String>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Initial calendar month override.
     default_month: Option<MonthValue>,
+    /// Initial popup visibility.
     default_open: bool,
+    /// Trigger and calendar appearance.
     style: DatePickerStyle,
+    /// Changed-date callback.
     on_change: Option<DateChangeHandler<A>>,
 }
 
@@ -220,6 +403,19 @@ impl<A: 'static> Default for DatePicker<A> {
 }
 
 impl<A: 'static> DatePicker<A> {
+    /// Creates an enabled, unselected date picker with a closed popup.
+    ///
+    /// The placeholder is `Pick a date`. Without a default month or selected
+    /// value, the calendar starts at May 2026; this is a deterministic sentinel,
+    /// not the current system date.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new();
+    /// let _ = picker;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -237,12 +433,40 @@ impl<A: 'static> DatePicker<A> {
         }
     }
 
+    /// Sets a read-only static or reactive optional date and clears writable binding.
+    ///
+    /// Selecting a different date may invoke the callback, but cannot update this
+    /// configured value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::DateValue;
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().value(Some(DateValue::new(2026, 5, 9)));
+    /// let _ = picker;
+    /// ```
     pub fn value(mut self, value: impl Into<Binding<Option<DateValue>>>) -> Self {
         self.value = Some(value.into());
         self.bound = None;
         self
     }
 
+    /// Binds a writable optional-date signal.
+    ///
+    /// Selecting a changed date writes `Some(date)` before invoking the callback;
+    /// the picker never emits or writes `None` itself.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::DateValue;
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let selected = State::new(None::<DateValue>);
+    /// let picker: DatePicker<()> = DatePicker::new().bind(selected);
+    /// let _ = picker;
+    /// ```
     pub fn bind(mut self, value: impl Into<Signal<Option<DateValue>>>) -> Self {
         let signal = value.into();
         self.value = Some(Binding::Signal(signal.clone()));
@@ -250,62 +474,172 @@ impl<A: 'static> DatePicker<A> {
         self
     }
 
+    /// Sets the inclusive earliest selectable date.
+    ///
+    /// If it exceeds `max`, no date satisfies both bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::DateValue;
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().min(DateValue::new(2026, 1, 1));
+    /// let _ = picker;
+    /// ```
     pub fn min(mut self, value: DateValue) -> Self {
         self.min = Some(value);
         self
     }
 
+    /// Sets the inclusive latest selectable date.
+    ///
+    /// If it precedes `min`, no date satisfies both bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::DateValue;
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().max(DateValue::new(2026, 12, 31));
+    /// let _ = picker;
+    /// ```
     pub fn max(mut self, value: DateValue) -> Self {
         self.max = Some(value);
         self
     }
 
+    /// Replaces the static or reactive no-selection label.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().placeholder("Departure");
+    /// let _ = picker;
+    /// ```
     pub fn placeholder(mut self, value: impl Into<Binding<String>>) -> Self {
         self.placeholder = value.into();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled pickers are not focusable, ignore input, and do not paint or
+    /// expose popup hit bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().disabled(true);
+    /// let _ = picker;
+    /// ```
     pub fn disabled(mut self, value: impl Into<Binding<bool>>) -> Self {
         self.disabled = value.into();
         self
     }
 
+    /// Sets the initial displayed month, taking precedence over selected value.
+    ///
+    /// Month values created with `MonthValue::new` clamp month to `1..=12`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::MonthValue;
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().default_month(MonthValue::new(2026, 5));
+    /// let _ = picker;
+    /// ```
     pub fn default_month(mut self, value: MonthValue) -> Self {
         self.default_month = Some(value);
         self
     }
 
+    /// Sets only the calendar popup's initial open state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().default_open(true);
+    /// let _ = picker;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Replaces trigger and calendar style without altering explicit layout size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{DatePicker, DatePickerStyle};
+    /// let picker: DatePicker<()> = DatePicker::new().date_style(DatePickerStyle::default());
+    /// let _ = picker;
+    /// ```
     pub fn date_style(mut self, style: DatePickerStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Re-derives style from the default theme and requested density.
+    ///
+    /// This overwrites every previous date-style customization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{DatePicker, DatePickerSize};
+    /// let picker: DatePicker<()> = DatePicker::new().date_size(DatePickerSize::Compact);
+    /// let _ = picker;
+    /// ```
     pub fn date_size(mut self, size: DatePickerSize) -> Self {
         self.style = DatePickerStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Dispatches the application action returned for a newly selected date.
+    ///
+    /// Equal selections and dates outside inclusive bounds emit nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::DateValue;
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<DateValue> = DatePicker::new().on_change(|date| date);
+    /// let _ = picker;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(DateValue) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Handles a newly selected date with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DatePicker;
+    /// let picker: DatePicker<()> = DatePicker::new().on_change_ctx(|_ctx, _date| {});
+    /// let _ = picker;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, DateValue) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 }
 
+/// Component that derives deterministic initial calendar navigation state.
 struct DatePickerComponent<A> {
+    /// Complete public picker configuration.
     props: DatePicker<A>,
 }
 
 impl<A: 'static> ComponentNode<A> for DatePickerComponent<A> {
+    /// Allocates popup, visible-month, and active-date signals.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let selected = self.props.value.as_ref().and_then(Binding::read);
         let month = self
@@ -332,6 +666,7 @@ impl<A: 'static> ComponentNode<A> for DatePickerComponent<A> {
 }
 
 impl<A: 'static> IntoView<A> for DatePicker<A> {
+    /// Converts configuration into a sized reactive component view.
     fn into_view(self) -> View<A> {
         let flex_item = self.flex_item;
         let hint = LayoutSizeHint::from_layout(self.layout);
@@ -343,26 +678,41 @@ impl<A: 'static> IntoView<A> for DatePicker<A> {
     }
 }
 
+/// Retained date trigger and calendar overlay state machine.
 struct DatePickerWidget<A> {
+    /// Runtime trigger layout.
     layout: LayoutStyle,
+    /// Readable optional date.
     value: Option<Binding<Option<DateValue>>>,
+    /// Optional writable date signal.
     bound: Option<Signal<Option<DateValue>>>,
+    /// Inclusive lower date bound.
     min: Option<DateValue>,
+    /// Inclusive upper date bound.
     max: Option<DateValue>,
+    /// No-selection label.
     placeholder: Binding<String>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Trigger and calendar style.
     style: DatePickerStyle,
+    /// Changed-date callback.
     on_change: Option<DateChangeHandler<A>>,
+    /// Popup visibility.
     open: Signal<bool>,
+    /// Currently displayed calendar month.
     month: Signal<MonthValue>,
+    /// Keyboard-active calendar date.
     active: Signal<DateValue>,
 }
 
 impl<A: 'static> Widget<A> for DatePickerWidget<A> {
+    /// Returns the stable diagnostic name.
     fn debug_name(&self) -> &'static str {
         "DatePicker"
     }
 
+    /// Applies trigger constraints and publishes open popup hit bounds.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -389,6 +739,7 @@ impl<A: 'static> Widget<A> for DatePickerWidget<A> {
         }
     }
 
+    /// Paints the formatted date or configured placeholder trigger.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let label = self.current_value().map(DateValue::format_yyyy_mm_dd);
         paint_picker_trigger(
@@ -402,12 +753,14 @@ impl<A: 'static> Widget<A> for DatePickerWidget<A> {
         );
     }
 
+    /// Paints the calendar overlay only while open and enabled.
     fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         if self.open.read() && !self.disabled.read() {
             self.paint_popup(ctx, bounds);
         }
     }
 
+    /// Routes blur, trigger/calendar pointer releases, and keyboard navigation.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         if self.disabled.read() {
             return;
@@ -442,6 +795,7 @@ impl<A: 'static> Widget<A> for DatePickerWidget<A> {
         }
     }
 
+    /// Makes only enabled pickers focusable.
     fn focus_policy(&self) -> FocusPolicy {
         if self.disabled.read() {
             FocusPolicy::NotFocusable
@@ -452,10 +806,12 @@ impl<A: 'static> Widget<A> for DatePickerWidget<A> {
 }
 
 impl<A: 'static> DatePickerWidget<A> {
+    /// Reads the configured optional date or returns `None` when unconfigured.
     fn current_value(&self) -> Option<DateValue> {
         self.value.as_ref().and_then(Binding::read)
     }
 
+    /// Computes calendar popup geometry immediately below the trigger.
     fn popup_rect_for(&self, bounds: Rect) -> Rect {
         Rect::new(
             bounds.x,
@@ -465,6 +821,7 @@ impl<A: 'static> DatePickerWidget<A> {
         )
     }
 
+    /// Commits an enabled date, closes, and synchronizes active month/date.
     fn select(&self, ctx: &mut EventCtx<A>, value: DateValue) {
         if !is_date_enabled(value, self.min, self.max) {
             ctx.stop_propagation();
@@ -486,6 +843,7 @@ impl<A: 'static> DatePickerWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Opens on Enter/Space or routes calendar navigation and selection keys.
     fn handle_key(&self, ctx: &mut EventCtx<A>, key: &Key) {
         if !self.open.read() {
             if matches!(
@@ -530,10 +888,12 @@ impl<A: 'static> DatePickerWidget<A> {
         }
     }
 
+    /// Moves the active date by signed calendar days.
     fn move_active(&self, ctx: &mut EventCtx<A>, delta: i32) {
         self.set_active(ctx, next_day(self.active.read(), delta));
     }
 
+    /// Sets active date, switches its displayed month, and consumes the event.
     fn set_active(&self, ctx: &mut EventCtx<A>, value: DateValue) {
         self.active.set(value);
         self.month.set(value.month_value());
@@ -541,6 +901,7 @@ impl<A: 'static> DatePickerWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Handles previous/next month controls or a calendar cell release.
     fn handle_popup_click(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let popup = self.popup_rect_for(bounds);
         let prev = Rect::new(popup.x + 10.0, popup.y + 8.0, 28.0, 24.0);
@@ -564,6 +925,7 @@ impl<A: 'static> DatePickerWidget<A> {
         }
     }
 
+    /// Maps a point in the six-by-seven grid to its calendar date.
     fn date_at(&self, popup: Rect, pos: Point) -> Option<DateValue> {
         let top = popup.y + self.style.header_height + self.style.week_height;
         if pos.y < top {
@@ -578,6 +940,7 @@ impl<A: 'static> DatePickerWidget<A> {
         Some(month_grid(self.month.read(), WeekStart::Monday)[row * 7 + col].date)
     }
 
+    /// Paints month controls, weekdays, and the fixed 42-cell calendar grid.
     fn paint_popup(&self, ctx: &mut PaintCtx<'_>, bounds: Rect) {
         let popup = self.popup_rect_for(bounds);
         paint_popup_shell(ctx, popup, &self.style.base);
@@ -668,17 +1031,42 @@ impl<A: 'static> DatePickerWidget<A> {
     }
 }
 
+/// Controlled optional-time field with hour and stepped-minute popup columns.
+///
+/// `A` is the application action returned by the non-context callback. Use
+/// [`Self::bind`] for internal writes; [`Self::value`] is read-only. Committed
+/// times are rounded to the nearest configured step and clamped within the day.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::TimeValue;
+/// use ailloli_ui_widgets::controls::TimePicker;
+/// let picker: TimePicker<()> = TimePicker::new().value(Some(TimeValue::new(14, 30)));
+/// let _ = picker;
+/// ```
 pub struct TimePicker<A = ()> {
+    /// Trigger layout configured by generated builders.
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation configured by generated builders.
     pub(crate) flex_item: FlexItemStyle,
+    /// Optional readable selected time.
     value: Option<Binding<Option<TimeValue>>>,
+    /// Optional writable selected-time signal.
     bound: Option<Signal<Option<TimeValue>>>,
+    /// Label shown when no time is selected.
     placeholder: Binding<String>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Sanitized minute increment in `1..=60`.
     step_minutes: u8,
+    /// Trigger text format.
     format: TimeFormat,
+    /// Initial popup visibility.
     default_open: bool,
+    /// Trigger and time-list appearance.
     style: TimePickerStyle,
+    /// Changed-time callback.
     on_change: Option<TimeChangeHandler<A>>,
 }
 
@@ -691,6 +1079,18 @@ impl<A: 'static> Default for TimePicker<A> {
 }
 
 impl<A: 'static> TimePicker<A> {
+    /// Creates an enabled, unselected time picker with a closed popup.
+    ///
+    /// Defaults are placeholder `Pick a time`, five-minute increments, 24-hour
+    /// formatting, and noon as the initial keyboard-active sentinel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new();
+    /// let _ = picker;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -707,12 +1107,40 @@ impl<A: 'static> TimePicker<A> {
         }
     }
 
+    /// Sets a read-only static or reactive optional time and clears writable binding.
+    ///
+    /// Selecting a different time may invoke the callback but cannot mutate this
+    /// configured value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::TimeValue;
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new().value(Some(TimeValue::new(9, 30)));
+    /// let _ = picker;
+    /// ```
     pub fn value(mut self, value: impl Into<Binding<Option<TimeValue>>>) -> Self {
         self.value = Some(value.into());
         self.bound = None;
         self
     }
 
+    /// Binds a writable optional-time signal.
+    ///
+    /// Committing a changed time writes `Some(time)` before invoking the callback;
+    /// the picker never emits or writes `None` itself.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::TimeValue;
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let selected = State::new(None::<TimeValue>);
+    /// let picker: TimePicker<()> = TimePicker::new().bind(selected);
+    /// let _ = picker;
+    /// ```
     pub fn bind(mut self, value: impl Into<Signal<Option<TimeValue>>>) -> Self {
         let signal = value.into();
         self.value = Some(Binding::Signal(signal.clone()));
@@ -720,57 +1148,156 @@ impl<A: 'static> TimePicker<A> {
         self
     }
 
+    /// Replaces the static or reactive no-selection label.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new().placeholder("Start time");
+    /// let _ = picker;
+    /// ```
     pub fn placeholder(mut self, value: impl Into<Binding<String>>) -> Self {
         self.placeholder = value.into();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled pickers are not focusable, ignore input, and do not paint or
+    /// expose popup hit bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new().disabled(true);
+    /// let _ = picker;
+    /// ```
     pub fn disabled(mut self, value: impl Into<Binding<bool>>) -> Self {
         self.disabled = value.into();
         self
     }
 
+    /// Sets the minute increment after clamping it to `1..=60`.
+    ///
+    /// Committing rounds to the nearest step with half-step ties upward and
+    /// clamps at `23:59` rather than wrapping to the next day.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new().step_minutes(15);
+    /// let clamped: TimePicker<()> = TimePicker::new().step_minutes(0);
+    /// let _ = (picker, clamped);
+    /// ```
     pub fn step_minutes(mut self, value: u8) -> Self {
         self.step_minutes = sanitize_step_minutes(value);
         self
     }
 
+    /// Sets the selected value's trigger text format.
+    ///
+    /// This does not change the popup's numeric 24-hour column values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::TimeFormat;
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new().format(TimeFormat::Hour12);
+    /// let _ = picker;
+    /// ```
     pub fn format(mut self, value: TimeFormat) -> Self {
         self.format = value;
         self
     }
 
+    /// Sets only the time popup's initial open state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new().default_open(true);
+    /// let _ = picker;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Replaces trigger and popup style without altering explicit layout size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TimePicker, TimePickerStyle};
+    /// let picker: TimePicker<()> = TimePicker::new().time_style(TimePickerStyle::default());
+    /// let _ = picker;
+    /// ```
     pub fn time_style(mut self, style: TimePickerStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Re-derives style from the default theme and requested density.
+    ///
+    /// This overwrites every previous time-style customization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TimePicker, TimePickerSize};
+    /// let picker: TimePicker<()> = TimePicker::new().time_size(TimePickerSize::Compact);
+    /// let _ = picker;
+    /// ```
     pub fn time_size(mut self, size: TimePickerSize) -> Self {
         self.style = TimePickerStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Dispatches the application action returned for a newly committed time.
+    ///
+    /// Reselecting an equal snapped value emits nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::TimeValue;
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<TimeValue> = TimePicker::new().on_change(|time| time);
+    /// let _ = picker;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(TimeValue) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Handles a newly committed time with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TimePicker;
+    /// let picker: TimePicker<()> = TimePicker::new().on_change_ctx(|_ctx, _time| {});
+    /// let _ = picker;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, TimeValue) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 }
 
+/// Component that derives deterministic initial time navigation state.
 struct TimePickerComponent<A> {
+    /// Complete public picker configuration.
     props: TimePicker<A>,
 }
 
 impl<A: 'static> ComponentNode<A> for TimePickerComponent<A> {
+    /// Allocates popup, active-time, and active-column signals.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let current = self
             .props
@@ -796,6 +1323,7 @@ impl<A: 'static> ComponentNode<A> for TimePickerComponent<A> {
 }
 
 impl<A: 'static> IntoView<A> for TimePicker<A> {
+    /// Converts configuration into a sized reactive component view.
     fn into_view(self) -> View<A> {
         let flex_item = self.flex_item;
         let hint = LayoutSizeHint::from_layout(self.layout);
@@ -808,31 +1336,49 @@ impl<A: 'static> IntoView<A> for TimePicker<A> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Keyboard-active half of the two-column time list.
 enum TimeColumn {
+    /// Hour values `0..=23`.
     Hour,
+    /// Sanitized stepped minute values below 60.
     Minute,
 }
 
+/// Retained time trigger and two-column overlay state machine.
 struct TimePickerWidget<A> {
+    /// Runtime trigger layout.
     layout: LayoutStyle,
+    /// Readable optional time.
     value: Option<Binding<Option<TimeValue>>>,
+    /// Optional writable time signal.
     bound: Option<Signal<Option<TimeValue>>>,
+    /// No-selection label.
     placeholder: Binding<String>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Sanitized minute increment.
     step_minutes: u8,
+    /// Trigger display format.
     format: TimeFormat,
+    /// Trigger and time-list style.
     style: TimePickerStyle,
+    /// Changed-time callback.
     on_change: Option<TimeChangeHandler<A>>,
+    /// Popup visibility.
     open: Signal<bool>,
+    /// Keyboard-active time.
     active: Signal<TimeValue>,
+    /// Keyboard-active hour or minute column.
     active_column: Signal<TimeColumn>,
 }
 
 impl<A: 'static> Widget<A> for TimePickerWidget<A> {
+    /// Returns the stable diagnostic name.
     fn debug_name(&self) -> &'static str {
         "TimePicker"
     }
 
+    /// Applies trigger constraints and publishes open popup hit bounds.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -863,6 +1409,7 @@ impl<A: 'static> Widget<A> for TimePickerWidget<A> {
         }
     }
 
+    /// Paints the formatted time or configured placeholder trigger.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let label = self.current_value().map(|time| time.format(self.format));
         paint_picker_trigger(
@@ -876,12 +1423,14 @@ impl<A: 'static> Widget<A> for TimePickerWidget<A> {
         );
     }
 
+    /// Paints the time overlay only while open and enabled.
     fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         if self.open.read() && !self.disabled.read() {
             self.paint_popup(ctx, bounds);
         }
     }
 
+    /// Routes blur, trigger/list pointer releases, and keyboard navigation.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         if self.disabled.read() {
             return;
@@ -916,6 +1465,7 @@ impl<A: 'static> Widget<A> for TimePickerWidget<A> {
         }
     }
 
+    /// Makes only enabled pickers focusable.
     fn focus_policy(&self) -> FocusPolicy {
         if self.disabled.read() {
             FocusPolicy::NotFocusable
@@ -926,10 +1476,12 @@ impl<A: 'static> Widget<A> for TimePickerWidget<A> {
 }
 
 impl<A: 'static> TimePickerWidget<A> {
+    /// Reads the configured optional time or returns `None` when unconfigured.
     fn current_value(&self) -> Option<TimeValue> {
         self.value.as_ref().and_then(Binding::read)
     }
 
+    /// Computes time popup geometry immediately below the trigger.
     fn popup_rect_for(&self, bounds: Rect) -> Rect {
         Rect::new(
             bounds.x,
@@ -939,6 +1491,7 @@ impl<A: 'static> TimePickerWidget<A> {
         )
     }
 
+    /// Snaps and commits a changed time, then closes the popup.
     fn commit(&self, ctx: &mut EventCtx<A>, value: TimeValue) {
         let value = snap_time(value, self.step_minutes);
         if self.current_value() != Some(value) {
@@ -955,6 +1508,7 @@ impl<A: 'static> TimePickerWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Opens on Enter/Space or routes column, value, and commit keys.
     fn handle_key(&self, ctx: &mut EventCtx<A>, key: &Key) {
         if !self.open.read() {
             if matches!(
@@ -1001,6 +1555,7 @@ impl<A: 'static> TimePickerWidget<A> {
         }
     }
 
+    /// Nudges one hour or one configured minute step without day wrapping.
     fn nudge_active(&self, ctx: &mut EventCtx<A>, delta: i16) {
         let current = self.active.read();
         let next = if self.active_column.read() == TimeColumn::Hour {
@@ -1013,6 +1568,7 @@ impl<A: 'static> TimePickerWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Sets and clamps the active column component, snapping minutes.
     fn set_active_part(&self, ctx: &mut EventCtx<A>, value: u8) {
         let current = self.active.read();
         let next = if self.active_column.read() == TimeColumn::Hour {
@@ -1028,6 +1584,7 @@ impl<A: 'static> TimePickerWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Maps a visible row in either column to a time and commits it.
     fn handle_popup_click(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let popup = self.popup_rect_for(bounds);
         let col_w = popup.w / 2.0;
@@ -1057,6 +1614,7 @@ impl<A: 'static> TimePickerWidget<A> {
         self.commit(ctx, self.active.read());
     }
 
+    /// Paints centered windows of hour and stepped-minute rows.
     fn paint_popup(&self, ctx: &mut PaintCtx<'_>, bounds: Rect) {
         let popup = self.popup_rect_for(bounds);
         paint_popup_shell(ctx, popup, &self.style.base);
@@ -1102,6 +1660,7 @@ impl<A: 'static> TimePickerWidget<A> {
         }
     }
 
+    /// Paints one selected, active, or resting time row.
     fn paint_time_row(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1136,16 +1695,40 @@ impl<A: 'static> TimePickerWidget<A> {
     }
 }
 
+/// Controlled RGB color field with HSV controls, palette swatches, and hex input.
+///
+/// `A` is the application action returned by the non-context callback. Use
+/// [`Self::bind`] for internal writes; [`Self::value`] is read-only. HSV and
+/// parsed hex commits are opaque, while a supplied swatch is committed unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Color;
+/// use ailloli_ui_widgets::controls::ColorPicker;
+/// let picker: ColorPicker<()> = ColorPicker::new().value(Color::hex_rgb(0xFF5A00));
+/// let _ = picker;
+/// ```
 pub struct ColorPicker<A = ()> {
+    /// Trigger layout configured by generated builders.
     pub(crate) layout: LayoutStyle,
+    /// Flex-parent participation configured by generated builders.
     pub(crate) flex_item: FlexItemStyle,
+    /// Readable current color.
     value: Binding<Color>,
+    /// Optional writable color signal.
     bound: Option<Signal<Color>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Whether the popup exposes editable hexadecimal RGB text.
     hex_input: bool,
+    /// Initial popup visibility.
     default_open: bool,
+    /// Trigger and popup appearance.
     style: ColorPickerStyle,
+    /// Palette swatches in display order.
     swatches: Vec<Color>,
+    /// Changed-color callback.
     on_change: Option<ColorChangeHandler<A>>,
 }
 
@@ -1158,6 +1741,18 @@ impl<A: 'static> Default for ColorPicker<A> {
 }
 
 impl<A: 'static> ColorPicker<A> {
+    /// Creates an enabled color picker initialized from the default accent color.
+    ///
+    /// Hex input is enabled, the popup starts closed, and no palette swatches or
+    /// callback are installed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new();
+    /// let _ = picker;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -1173,12 +1768,38 @@ impl<A: 'static> ColorPicker<A> {
         }
     }
 
+    /// Sets a read-only static or reactive color and clears writable binding.
+    ///
+    /// User interaction may invoke the callback but cannot mutate this configured
+    /// value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new().value(Color::rgb(255, 0, 0));
+    /// let _ = picker;
+    /// ```
     pub fn value(mut self, value: impl Into<Binding<Color>>) -> Self {
         self.value = value.into();
         self.bound = None;
         self
     }
 
+    /// Binds a writable color signal.
+    ///
+    /// A changed commit writes the signal before invoking the callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new().bind(State::new(Color::BLACK));
+    /// let _ = picker;
+    /// ```
     pub fn bind(mut self, value: impl Into<Signal<Color>>) -> Self {
         let signal = value.into();
         self.value = Binding::Signal(signal.clone());
@@ -1186,52 +1807,142 @@ impl<A: 'static> ColorPicker<A> {
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled pickers are not focusable, ignore input, and do not paint or
+    /// expose popup hit bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new().disabled(true);
+    /// let _ = picker;
+    /// ```
     pub fn disabled(mut self, value: impl Into<Binding<bool>>) -> Self {
         self.disabled = value.into();
         self
     }
 
+    /// Appends a palette swatch in display order.
+    ///
+    /// Duplicates and translucent colors are accepted; selecting one commits the
+    /// exact stored [`Color`], although the hex field displays RGB only.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new().swatch(Color::hex_rgb(0x22C55E));
+    /// let _ = picker;
+    /// ```
     pub fn swatch(mut self, value: Color) -> Self {
         self.swatches.push(value);
         self
     }
 
+    /// Shows or hides editable RGB hexadecimal input.
+    ///
+    /// When shown and the popup is open, the widget advertises single-line text
+    /// input. Invalid text is ignored on Enter or focus loss and remains visible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new().hex_input(false);
+    /// let _ = picker;
+    /// ```
     pub fn hex_input(mut self, value: bool) -> Self {
         self.hex_input = value;
         self
     }
 
+    /// Sets only the color popup's initial open state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new().default_open(true);
+    /// let _ = picker;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Replaces trigger and popup style without altering explicit layout size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ColorPicker, ColorPickerStyle};
+    /// let picker: ColorPicker<()> = ColorPicker::new().color_style(ColorPickerStyle::default());
+    /// let _ = picker;
+    /// ```
     pub fn color_style(mut self, style: ColorPickerStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Re-derives style from the default theme and requested density.
+    ///
+    /// This overwrites every previous color-style customization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ColorPicker, ColorPickerSize};
+    /// let picker: ColorPicker<()> = ColorPicker::new().color_size(ColorPickerSize::Compact);
+    /// let _ = picker;
+    /// ```
     pub fn color_size(mut self, size: ColorPickerSize) -> Self {
         self.style = ColorPickerStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Dispatches the application action returned for a changed committed color.
+    ///
+    /// Recommitting an exactly equal [`Color`] emits nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<Color> = ColorPicker::new().on_change(|color| color);
+    /// let _ = picker;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(Color) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Handles a changed committed color with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ColorPicker;
+    /// let picker: ColorPicker<()> = ColorPicker::new().on_change_ctx(|_ctx, _color| {});
+    /// let _ = picker;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, Color) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 }
 
+/// Component that seeds hex editing from the configured color.
 struct ColorPickerComponent<A> {
+    /// Complete public picker configuration.
     props: ColorPicker<A>,
 }
 
 impl<A: 'static> ComponentNode<A> for ColorPickerComponent<A> {
+    /// Allocates popup, drag, and synchronized hex-edit signals.
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let color = self.props.value.read();
         View::leaf(ColorPickerWidget {
@@ -1253,6 +1964,7 @@ impl<A: 'static> ComponentNode<A> for ColorPickerComponent<A> {
 }
 
 impl<A: 'static> IntoView<A> for ColorPicker<A> {
+    /// Converts configuration into a sized reactive component view.
     fn into_view(self) -> View<A> {
         let flex_item = self.flex_item;
         let hint = LayoutSizeHint::from_layout(self.layout);
@@ -1265,32 +1977,51 @@ impl<A: 'static> IntoView<A> for ColorPicker<A> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Active pointer-drag region within the color popup.
 enum ColorDragPart {
+    /// Saturation/value square.
     Sv,
+    /// Vertical hue rail.
     Hue,
 }
 
+/// Retained color trigger and HSV/hex overlay state machine.
 struct ColorPickerWidget<A> {
+    /// Runtime trigger layout.
     layout: LayoutStyle,
+    /// Readable current color.
     value: Binding<Color>,
+    /// Optional writable color signal.
     bound: Option<Signal<Color>>,
+    /// Whole-control disabled binding.
     disabled: Binding<bool>,
+    /// Whether hex editing is shown and receives text input.
     hex_input: bool,
+    /// Trigger and popup style.
     style: ColorPickerStyle,
+    /// Palette swatches in display order.
     swatches: Vec<Color>,
+    /// Changed-color callback.
     on_change: Option<ColorChangeHandler<A>>,
+    /// Popup visibility.
     open: Signal<bool>,
+    /// Active HSV pointer-drag part.
     drag: Signal<Option<ColorDragPart>>,
+    /// Editable hex text.
     hex_value: Signal<String>,
+    /// Text-engine buffer synchronized after committed colors.
     hex_buffer: Signal<TextBuffer>,
+    /// Hex caret and selection state.
     hex_edit: Signal<TextEditState>,
 }
 
 impl<A: 'static> Widget<A> for ColorPickerWidget<A> {
+    /// Returns the stable diagnostic name.
     fn debug_name(&self) -> &'static str {
         "ColorPicker"
     }
 
+    /// Applies trigger constraints and publishes open popup hit bounds.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -1321,6 +2052,7 @@ impl<A: 'static> Widget<A> for ColorPickerWidget<A> {
         }
     }
 
+    /// Paints the RGB label, palette icon, and current-color swatch trigger.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let color = self.value.read();
         paint_picker_trigger(
@@ -1350,12 +2082,14 @@ impl<A: 'static> Widget<A> for ColorPickerWidget<A> {
         }));
     }
 
+    /// Paints color controls only while the popup is open and enabled.
     fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         if self.open.read() && !self.disabled.read() {
             self.paint_popup(ctx, bounds);
         }
     }
 
+    /// Routes popup toggling, HSV dragging, hex editing, commits, and dismissal.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
         if self.disabled.read() {
             return;
@@ -1427,6 +2161,7 @@ impl<A: 'static> Widget<A> for ColorPickerWidget<A> {
         }
     }
 
+    /// Makes only enabled pickers focusable.
     fn focus_policy(&self) -> FocusPolicy {
         if self.disabled.read() {
             FocusPolicy::NotFocusable
@@ -1435,6 +2170,7 @@ impl<A: 'static> Widget<A> for ColorPickerWidget<A> {
         }
     }
 
+    /// Advertises single-line text only for an open, visible hex editor.
     fn input_role(&self) -> InputRole {
         if self.open.read() && self.hex_input {
             InputRole::TextSingleLine
@@ -1445,6 +2181,7 @@ impl<A: 'static> Widget<A> for ColorPickerWidget<A> {
 }
 
 impl<A: 'static> ColorPickerWidget<A> {
+    /// Computes color popup geometry immediately below the trigger.
     fn popup_rect_for(&self, bounds: Rect) -> Rect {
         Rect::new(
             bounds.x,
@@ -1454,20 +2191,24 @@ impl<A: 'static> ColorPickerWidget<A> {
         )
     }
 
+    /// Computes the square saturation/value region with a 96-pixel floor.
     fn sv_rect(&self, popup: Rect) -> Rect {
         let side = (popup.w - 42.0).min((popup.h - 142.0).max(96.0));
         Rect::new(popup.x + 14.0, popup.y + 14.0, side, side)
     }
 
+    /// Places a 12-pixel-wide hue rail beside the saturation/value square.
     fn hue_rect(&self, popup: Rect) -> Rect {
         let sv = self.sv_rect(popup);
         Rect::new(sv.right() + 8.0, sv.y, 12.0, sv.h)
     }
 
+    /// Places the 104-by-32 hex field near the popup bottom.
     fn hex_rect(&self, popup: Rect) -> Rect {
         Rect::new(popup.x + 14.0, popup.bottom() - 48.0, 104.0, 32.0)
     }
 
+    /// Writes/emits a changed color and always normalizes hex display to RGB.
     fn commit_color(&self, ctx: &mut EventCtx<A>, color: Color) {
         if self.value.read() != color {
             if let Some(bound) = &self.bound {
@@ -1484,12 +2225,14 @@ impl<A: 'static> ColorPickerWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Parses and commits accepted RGB hex; invalid text is left unchanged.
     fn commit_hex_if_valid(&self, ctx: &mut EventCtx<A>) {
         if let Ok(color) = parse_hex_rgb(&self.hex_value.read()) {
             self.commit_color(ctx, color);
         }
     }
 
+    /// Starts HSV dragging or commits a palette swatch at the pressed point.
     fn handle_popup_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let popup = self.popup_rect_for(bounds);
         if self.sv_rect(popup).contains(pos.x, pos.y) {
@@ -1505,6 +2248,7 @@ impl<A: 'static> ColorPickerWidget<A> {
         }
     }
 
+    /// Maps pointer position to clamped HSV components and commits opaque RGB.
     fn update_drag(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let popup = self.popup_rect_for(bounds);
         let mut hsv = color_to_hsv(self.value.read());
@@ -1524,6 +2268,7 @@ impl<A: 'static> ColorPickerWidget<A> {
         }
     }
 
+    /// Hit-tests a point against sequential palette swatch rectangles.
     fn swatch_at(&self, popup: Rect, pos: Point) -> Option<Color> {
         let y = popup.bottom() - 84.0;
         self.swatches.iter().enumerate().find_map(|(idx, color)| {
@@ -1537,6 +2282,7 @@ impl<A: 'static> ColorPickerWidget<A> {
         })
     }
 
+    /// Derives hex editor style from common picker tokens.
     fn hex_text_style(&self) -> TextInputStyle {
         let base = &self.style.base;
         TextInputStyle {
@@ -1555,6 +2301,7 @@ impl<A: 'static> ColorPickerWidget<A> {
         }
     }
 
+    /// Paints sampled HSV controls, swatches, optional hex field, and preview.
     fn paint_popup(&self, ctx: &mut PaintCtx<'_>, bounds: Rect) {
         let popup = self.popup_rect_for(bounds);
         paint_popup_shell(ctx, popup, &self.style.base);
@@ -1668,6 +2415,7 @@ impl<A: 'static> ColorPickerWidget<A> {
     }
 }
 
+/// Paints a common picker trigger with label/placeholder and trailing icon.
 fn paint_picker_trigger(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -1734,6 +2482,7 @@ fn paint_picker_trigger(
     );
 }
 
+/// Paints configured shadows, popup fill, and popup border in overlay layers.
 fn paint_popup_shell(ctx: &mut PaintCtx<'_>, popup: Rect, style: &PickerBaseStyle) {
     for shadow in &style.shadows {
         ctx.push_overlay(DrawCmd::BoxShadow(DrawBoxShadow {
@@ -1754,6 +2503,7 @@ fn paint_popup_shell(ctx: &mut PaintCtx<'_>, popup: Rect, style: &PickerBaseStyl
     }));
 }
 
+/// Paints a fixed-inset overlay icon button using the active fill.
 fn paint_icon_button(ctx: &mut PaintCtx<'_>, rect: Rect, icon: IconId, style: &PickerBaseStyle) {
     ctx.push_overlay(DrawCmd::RRect(DrawRRect {
         rect,
@@ -1768,6 +2518,7 @@ fn paint_icon_button(ctx: &mut PaintCtx<'_>, rect: Rect, icon: IconId, style: &P
     }));
 }
 
+/// Lays out unwrapped text and emits a regular draw command when text is available.
 fn push_text(ctx: &mut PaintCtx<'_>, text: &str, x: f32, baseline_y: f32, style: TextStyle) {
     let layout = ctx.text_system.as_deref_mut().map(|ts| {
         ts.layout_cached(TextLayoutParams {
@@ -1787,6 +2538,7 @@ fn push_text(ctx: &mut PaintCtx<'_>, text: &str, x: f32, baseline_y: f32, style:
     }
 }
 
+/// Lays out unwrapped text and emits an overlay draw command when text is available.
 fn push_overlay_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -1812,6 +2564,10 @@ fn push_overlay_text(
     }
 }
 
+/// Centers `active` in a bounded visible window when possible.
+///
+/// Callers provide a nonzero `visible`; if `visible == 0` and `len > 0`, the
+/// subtraction `len - visible` remains safe but produces an empty intended window.
 fn visible_start(active: usize, len: usize, visible: usize) -> usize {
     if len <= visible {
         0
@@ -1820,11 +2576,13 @@ fn visible_start(active: usize, len: usize, visible: usize) -> usize {
     }
 }
 
+/// Returns minute values below 60 separated by a step sanitized to `1..=60`.
 fn minute_values(step_minutes: u8) -> Vec<u8> {
     let step = sanitize_step_minutes(step_minutes);
     (0..60).step_by(step as usize).map(|m| m as u8).collect()
 }
 
+/// Returns an English month name; every value outside `1..=11` maps to December.
 fn month_name(month: u8) -> &'static str {
     match month {
         1 => "January",

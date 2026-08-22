@@ -10,17 +10,49 @@ use core::ops::Range;
 use ropey::Rope;
 
 /// Metadata for one paragraph: UTF-8 byte range and revision counter.
+///
+/// Paragraph ranges are half-open. A terminating newline belongs to the
+/// paragraph before it. A nonempty buffer ending in `\n` has no extra empty
+/// paragraph, while an entirely empty buffer has one `0..0` paragraph.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::ParagraphMeta;
+/// let meta = ParagraphMeta { byte_range: 2..8, revision: 3 };
+/// assert_eq!(meta.byte_range, 2..8);
+/// assert_eq!(meta.revision, 3);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParagraphMeta {
+    /// Half-open UTF-8 byte range in the complete buffer.
     pub byte_range: Range<usize>,
+    /// Wrapping revision assigned when this indexed paragraph was rebuilt.
     pub revision: u64,
 }
 
 /// Mutable text storage with a paragraph index (logical line = `\n`-separated).
+///
+/// Text is stored in a [`Rope`], while paragraph metadata is rebuilt after each
+/// edit. Public offsets are UTF-8 bytes, not character or grapheme indices.
+/// Cloning copies the current rope handle and metadata as independent mutable
+/// values.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::TextBuffer;
+/// let buffer = TextBuffer::from_string("first\nsecond");
+/// assert_eq!(buffer.len_bytes(), 12);
+/// assert_eq!(buffer.paragraphs().len(), 2);
+/// ```
 #[derive(Debug, Clone)]
 pub struct TextBuffer {
+    /// Ropey storage indexed by UTF-8 byte and Unicode scalar positions.
     rope: Rope,
+    /// Global wrapping edit counter.
     revision: u64,
+    /// Current newline-delimited paragraph index.
     paragraphs: Vec<ParagraphMeta>,
 }
 
@@ -31,10 +63,36 @@ impl Default for TextBuffer {
 }
 
 impl TextBuffer {
+    /// Creates an empty buffer at revision zero.
+    ///
+    /// The paragraph index contains one empty `0..0` entry so methods such as
+    /// [`Self::paragraph_at`] always have a paragraph to return.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let buffer = TextBuffer::new();
+    /// assert_eq!(buffer.revision(), 0);
+    /// assert_eq!(buffer.paragraphs()[0].byte_range, 0..0);
+    /// ```
     pub fn new() -> Self {
         Self::from_string(String::new())
     }
 
+    /// Creates a revision-zero buffer from owned or borrowed UTF-8 text.
+    ///
+    /// Newline bytes terminate and belong to their preceding paragraph. A
+    /// trailing newline does not create an additional empty paragraph.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let buffer = TextBuffer::from_string("a\nb\n");
+    /// assert_eq!(buffer.paragraphs().len(), 2);
+    /// assert_eq!(buffer.paragraph_text(0).as_deref(), Some("a\n"));
+    /// ```
     pub fn from_string(s: impl Into<String>) -> Self {
         let s = s.into();
         let rope = Rope::from_str(&s);
@@ -47,33 +105,122 @@ impl TextBuffer {
         me
     }
 
+    /// Returns the global wrapping edit counter.
+    ///
+    /// Every call to [`Self::edit`] increments the counter, including edits that
+    /// leave text unchanged. It starts at zero and wraps from `u64::MAX` to zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let mut buffer = TextBuffer::new();
+    /// buffer.edit(0..0, "");
+    /// assert_eq!(buffer.revision(), 1);
+    /// ```
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
+    /// Returns the current UTF-8 byte length.
+    ///
+    /// This differs from Unicode scalar and grapheme counts for non-ASCII text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// assert_eq!(TextBuffer::from_string("é").len_bytes(), 2);
+    /// ```
     pub fn len_bytes(&self) -> usize {
         self.rope.len_bytes()
     }
 
+    /// Copies the entire rope into a contiguous [`String`].
+    ///
+    /// Despite the method name, the result is owned because a Rope is not
+    /// necessarily contiguous. This operation is O(N) in the text length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let text: String = TextBuffer::from_string("hello").as_str();
+    /// assert_eq!(text, "hello");
+    /// ```
     pub fn as_str(&self) -> String {
         self.rope.to_string()
     }
 
+    /// Borrows current paragraph metadata in document order.
+    ///
+    /// The slice is never empty for buffers built through public constructors.
+    /// It is invalidated by the next mutable edit.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let buffer = TextBuffer::from_string("a\nb");
+    /// assert_eq!(buffer.paragraphs()[0].byte_range, 0..2);
+    /// assert_eq!(buffer.paragraphs()[1].byte_range, 2..3);
+    /// ```
     pub fn paragraphs(&self) -> &[ParagraphMeta] {
         &self.paragraphs
     }
 
+    /// Copies one indexed paragraph into a [`String`].
+    ///
+    /// The returned text includes its terminating newline when present.
+    /// `None` means `idx` is outside [`Self::paragraphs`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let buffer = TextBuffer::from_string("a\nb");
+    /// assert_eq!(buffer.paragraph_text(0).as_deref(), Some("a\n"));
+    /// assert_eq!(buffer.paragraph_text(2), None);
+    /// ```
     pub fn paragraph_text(&self, idx: usize) -> Option<String> {
         let p = self.paragraphs.get(idx)?;
         let slice = self.rope.byte_slice(p.byte_range.start..p.byte_range.end);
         Some(slice.to_string())
     }
 
+    /// Returns one paragraph's revision, or `None` for an invalid index.
+    ///
+    /// Paragraph revisions initially equal zero. After an edit they identify
+    /// index entries considered touched or whose byte range changed; they are
+    /// not guaranteed to advance for a global no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let buffer = TextBuffer::from_string("a\nb");
+    /// assert_eq!(buffer.revision_of_paragraph(0), Some(0));
+    /// assert_eq!(buffer.revision_of_paragraph(9), None);
+    /// ```
     pub fn revision_of_paragraph(&self, idx: usize) -> Option<u64> {
         self.paragraphs.get(idx).map(|p| p.revision)
     }
 
     /// Index of the paragraph containing byte `b` (clamped to the last paragraph).
+    ///
+    /// Newline bytes belong to the paragraph they terminate. An index at or
+    /// beyond `len_bytes()` maps to the last paragraph. An empty buffer returns
+    /// zero for every input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let buffer = TextBuffer::from_string("a\nb");
+    /// assert_eq!(buffer.paragraph_at(1), 0); // newline
+    /// assert_eq!(buffer.paragraph_at(2), 1);
+    /// assert_eq!(buffer.paragraph_at(usize::MAX), 1);
+    /// ```
     pub fn paragraph_at(&self, b: usize) -> usize {
         match self.paragraphs.binary_search_by(|p| {
             if p.byte_range.contains(&b) {
@@ -90,6 +237,27 @@ impl TextBuffer {
     }
 
     /// Replaces `range` (UTF-8 bytes) with `new_text`. Bumps global and touched paragraph revisions.
+    ///
+    /// Each endpoint is first clamped to `len_bytes()`. If the range is
+    /// reversed, its start is lowered to the clamped end, producing an insertion
+    /// rather than swapping endpoints. Ropey maps an endpoint inside a multibyte
+    /// scalar to that scalar's character index; callers should therefore pass
+    /// valid UTF-8 boundaries when exact replacement is required. The global
+    /// revision wraps on overflow and advances even for a no-op.
+    ///
+    /// Paragraph metadata is rebuilt in O(N) text time. Entries intersecting the
+    /// old nonempty range or whose same-index byte range changed receive the new
+    /// revision; index shifts can consequently invalidate later paragraphs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let mut buffer = TextBuffer::from_string("abc");
+    /// buffer.edit(1..2, "X");
+    /// assert_eq!(buffer.as_str(), "aXc");
+    /// assert_eq!(buffer.revision(), 1);
+    /// ```
     pub fn edit(&mut self, range: Range<usize>, new_text: &str) {
         let start = range.start.min(self.rope.len_bytes());
         let end = range.end.min(self.rope.len_bytes());
@@ -110,7 +278,20 @@ impl TextBuffer {
         self.rebuild_paragraphs_after_edit(touched);
     }
 
-    /// Renvoie les indices de paragraphes intersectant `byte_range`.
+    /// Returns paragraph indices whose half-open byte ranges intersect `byte_range`.
+    ///
+    /// The input is not clamped or reordered. Empty or reversed ranges return an
+    /// empty vector. Because a newline belongs to its preceding paragraph, a
+    /// range containing only that newline intersects that preceding paragraph.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextBuffer;
+    /// let buffer = TextBuffer::from_string("aa\nbb\ncc");
+    /// assert_eq!(buffer.paragraphs_in_byte_range(2..6), [0, 1]);
+    /// assert!(buffer.paragraphs_in_byte_range(3..3).is_empty());
+    /// ```
     pub fn paragraphs_in_byte_range(&self, byte_range: Range<usize>) -> Vec<usize> {
         if self.paragraphs.is_empty() {
             return Vec::new();
@@ -128,6 +309,7 @@ impl TextBuffer {
         out
     }
 
+    /// Rebuilds all paragraph ranges at the current global revision.
     fn rebuild_paragraphs(&mut self) {
         let revision = self.revision;
         self.paragraphs.clear();
@@ -159,6 +341,7 @@ impl TextBuffer {
         }
     }
 
+    /// Rebuilds metadata and preserves revisions for same-index untouched ranges.
     fn rebuild_paragraphs_after_edit(&mut self, touched_before: Vec<usize>) {
         let before = std::mem::take(&mut self.paragraphs);
         self.rebuild_paragraphs();

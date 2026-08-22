@@ -1,3 +1,5 @@
+//! Syntax-aware selection ranges and visual selection rectangles.
+
 use std::ops::Range;
 
 use ailloli_ui_core::Rect;
@@ -6,14 +8,51 @@ use crate::code::{EditorLanguage, SyntaxKind, SyntaxToken};
 use crate::layout::{first_layout_baseline, EditorTextRun};
 use crate::EditorStyle;
 
+/// Unit chosen for a pointer-driven selection gesture.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::SelectionGranularity;
+///
+/// assert_ne!(SelectionGranularity::Character, SelectionGranularity::Word);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionGranularity {
+    /// Extend to an exact UTF-8 caret position.
     Character,
+    /// Select a syntax token or lexical word around the pointer.
     Word,
+    /// Select one logical line without its newline delimiter.
     Line,
+    /// Select a syntax token when one is available.
     Token,
 }
 
+/// Builds viewport-space rectangles for a run-local byte selection.
+///
+/// `lo_local..hi_local` is clamped to the run layout's UTF-8 byte length. One
+/// rectangle is returned per intersected visual line, with rounded `x`/`y`, a
+/// minimum width of one logical pixel, and at least `px_size + 2` logical pixels
+/// of height. Empty or reversed selections return an empty vector.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_editor::{input::selection::selection_rects_for_run, layout::EditorTextRun, EditorStyle};
+/// use ailloli_ui_text::{TextLayoutParams, TextSystem};
+///
+/// let mut text_system = TextSystem::new();
+/// let layout = text_system.layout_cached(TextLayoutParams::new(
+///     "abc",
+///     TextStyle::new(FontId::Mono, 13, Color::WHITE),
+/// ));
+/// let run = EditorTextRun { index: 0, byte_range: 0..3, baseline_y: 10.0, layout };
+/// let rects = selection_rects_for_run(4.0, 6.0, &run, 0, 2, EditorStyle::default());
+/// assert_eq!(rects.len(), 1);
+/// assert!(rects[0].x >= 4.0 && rects[0].w >= 1.0);
+/// ```
 pub fn selection_rects_for_run(
     content_x: f32,
     content_y: f32,
@@ -65,6 +104,22 @@ pub fn selection_rects_for_run(
     out
 }
 
+/// Selects a syntax token or ASCII lexical word around a UTF-8 byte offset.
+///
+/// A selectable token wins when supplied. The fallback recognizes ASCII Rust
+/// raw identifiers and lifetimes, ASCII identifiers in every language, and a
+/// fixed set of one-byte punctuation. At or beyond EOF, it examines the final
+/// character; empty text and unsupported characters return `None`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{input::selection::select_word_at, EditorLanguage};
+///
+/// assert_eq!(select_word_at("let r#type = 1;", 7, None, EditorLanguage::Rust), Some(4..10));
+/// assert_eq!(select_word_at("abc", usize::MAX, None, EditorLanguage::PlainText), Some(0..3));
+/// assert_eq!(select_word_at(" ", 0, None, EditorLanguage::PlainText), None);
+/// ```
 pub fn select_word_at(
     text: &str,
     byte: usize,
@@ -77,6 +132,25 @@ pub fn select_word_at(
     lexical_word_range_at(text, byte, language)
 }
 
+/// Returns the first selectable syntax-token range containing `byte`.
+///
+/// Containment is half-open. Keyword, type, function, number, operator,
+/// punctuation, and identifier tokens are selectable; string and comment
+/// tokens are skipped. Token ranges are returned as supplied without clamping
+/// or overlap resolution.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{input::selection::select_token_at, code::{SyntaxKind, SyntaxToken}};
+///
+/// let tokens = [
+///     SyntaxToken { range: 0..3, kind: SyntaxKind::Comment },
+///     SyntaxToken { range: 4..7, kind: SyntaxKind::Identifier },
+/// ];
+/// assert_eq!(select_token_at(5, &tokens), Some(4..7));
+/// assert_eq!(select_token_at(3, &tokens), None);
+/// ```
 pub fn select_token_at(byte: usize, syntax_tokens: &[SyntaxToken]) -> Option<Range<usize>> {
     syntax_tokens
         .iter()
@@ -85,6 +159,20 @@ pub fn select_token_at(byte: usize, syntax_tokens: &[SyntaxToken]) -> Option<Ran
         .map(|token| token.range.clone())
 }
 
+/// Returns the logical line containing a UTF-8 byte offset, excluding `\n`.
+///
+/// Out-of-range offsets clamp to EOF and offsets inside a multi-byte character
+/// clamp backward to its start. For a trailing newline, EOF selects the empty
+/// final line.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::input::selection::select_line_at;
+///
+/// assert_eq!(select_line_at("first\nsecond\n", 8), 6..12);
+/// assert_eq!(select_line_at("first\nsecond\n", usize::MAX), 13..13);
+/// ```
 pub fn select_line_at(text: &str, byte: usize) -> Range<usize> {
     let byte = clamp_boundary(text, byte.min(text.len()));
     let start = text[..byte].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
@@ -95,6 +183,7 @@ pub fn select_line_at(text: &str, byte: usize) -> Range<usize> {
     start..end
 }
 
+/// Reports whether syntax selection accepts a token category.
 fn selectable_syntax_kind(kind: SyntaxKind) -> bool {
     matches!(
         kind,
@@ -108,10 +197,12 @@ fn selectable_syntax_kind(kind: SyntaxKind) -> bool {
     )
 }
 
+/// Tests non-empty half-open byte-range containment.
 fn byte_in_range(byte: usize, range: &Range<usize>) -> bool {
     range.start < range.end && range.start <= byte && byte < range.end
 }
 
+/// Finds the language-aware ASCII lexical unit around a byte position.
 fn lexical_word_range_at(
     text: &str,
     byte: usize,
@@ -148,6 +239,7 @@ fn lexical_word_range_at(
     None
 }
 
+/// Finds a Rust `r#identifier` containing a byte position.
 fn rust_raw_identifier_range_at(text: &str, at: usize) -> Option<Range<usize>> {
     let bytes = text.as_bytes();
     let mut start = at;
@@ -171,6 +263,7 @@ fn rust_raw_identifier_range_at(text: &str, at: usize) -> Option<Range<usize>> {
     (start <= at && at < end).then_some(start..end)
 }
 
+/// Finds a Rust lifetime containing a byte position, excluding char literals.
 fn rust_lifetime_range_at(text: &str, at: usize) -> Option<Range<usize>> {
     let bytes = text.as_bytes();
     let start = if bytes.get(at) == Some(&b'\'') {
@@ -194,6 +287,7 @@ fn rust_lifetime_range_at(text: &str, at: usize) -> Option<Range<usize>> {
     Some(start..end)
 }
 
+/// Expands an ASCII identifier byte to its complete range.
 fn identifier_range_at(text: &str, at: usize) -> Range<usize> {
     let bytes = text.as_bytes();
     let mut start = at;
@@ -207,14 +301,17 @@ fn identifier_range_at(text: &str, at: usize) -> Range<usize> {
     start..end
 }
 
+/// Reports whether a byte starts an ASCII identifier.
 fn is_ident_start(byte: u8) -> bool {
     byte == b'_' || byte.is_ascii_alphabetic()
 }
 
+/// Reports whether a byte continues an ASCII identifier.
 fn is_ident_byte(byte: u8) -> bool {
     is_ident_start(byte) || byte.is_ascii_digit()
 }
 
+/// Reports whether a byte is one of the selectable punctuation characters.
 fn is_selectable_punctuation(byte: u8) -> bool {
     matches!(
         byte,
@@ -243,6 +340,7 @@ fn is_selectable_punctuation(byte: u8) -> bool {
     )
 }
 
+/// Clamps an offset to EOF and then backward to a UTF-8 boundary.
 fn clamp_boundary(text: &str, mut byte: usize) -> usize {
     byte = byte.min(text.len());
     while byte > 0 && !text.is_char_boundary(byte) {
@@ -251,6 +349,7 @@ fn clamp_boundary(text: &str, mut byte: usize) -> usize {
     byte
 }
 
+/// Returns the UTF-8 boundary immediately before an offset, or zero.
 fn previous_boundary(text: &str, byte: usize) -> usize {
     let mut byte = clamp_boundary(text, byte);
     if byte == 0 {

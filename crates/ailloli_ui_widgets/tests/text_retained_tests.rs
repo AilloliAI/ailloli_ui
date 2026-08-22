@@ -1,3 +1,5 @@
+//! Retained text layout reuse, wrapping, binding, interaction, and composition scenarios.
+
 use std::sync::Arc;
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};

@@ -1,3 +1,5 @@
+//! Interactive terminal-grid renderer backed by `ailloli_ui_terminal_core` state.
+
 use std::mem;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -26,19 +28,47 @@ use ailloli_ui_text::{
 
 use super::terminal::{TerminalPosition, TerminalSelection};
 
+/// Shared callback receiving bytes encoded for the terminal peer.
 type InputHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Vec<u8>)>;
+/// Poll callback that can replace the complete terminal state.
 type StateSync = Rc<dyn Fn() -> Option<TerminalState>>;
+/// Resize callback receiving grid size and saturated 16-bit pixel extents.
 type ResizeSync = Rc<dyn Fn(TerminalViewportSize) -> Option<TerminalState>>;
+/// Geometry callback receiving measured cell metrics and 32-bit pixel extents.
 type GeometrySync = Rc<dyn Fn(TerminalGeometry) -> Option<TerminalState>>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Measured monospace cell geometry in logical pixels.
+///
+/// Values are not validated by [`Self::new`]. Runtime measurement clamps cell
+/// width/height and baseline fallbacks to at least `1.0`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TerminalCellMetrics;
+/// let metrics = TerminalCellMetrics::new(8.0, 19.0, 14.0);
+/// assert_eq!((metrics.cell_width, metrics.cell_height, metrics.baseline), (8.0, 19.0, 14.0));
+/// ```
 pub struct TerminalCellMetrics {
+    /// Width of one terminal column in logical pixels.
     pub cell_width: f32,
+    /// Height of one terminal row in logical pixels.
     pub cell_height: f32,
+    /// Baseline offset from the row top in logical pixels.
     pub baseline: f32,
 }
 
 impl TerminalCellMetrics {
+    /// Stores cell metrics unchanged, including zero or non-finite values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::TerminalCellMetrics;
+    /// let metrics = TerminalCellMetrics::new(7.5, 18.0, 13.0);
+    /// assert_eq!(metrics.cell_width, 7.5);
+    /// ```
     pub const fn new(cell_width: f32, cell_height: f32, baseline: f32) -> Self {
         Self {
             cell_width,
@@ -49,15 +79,48 @@ impl TerminalCellMetrics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Committed terminal viewport geometry.
+///
+/// `pixel_width`/`pixel_height` are rounded non-negative content extents in the
+/// runtime coordinate space. Grid dimensions are whole cells and normally stay
+/// within `1..=u16::MAX`. [`Self::new`] itself stores all inputs unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TerminalCellMetrics, TerminalGeometry};
+/// let geometry = TerminalGeometry::new(
+///     640,
+///     380,
+///     TerminalCellMetrics::new(8.0, 19.0, 14.0),
+///     80,
+///     20,
+/// );
+/// assert_eq!(geometry.terminal_size().cols, 80);
+/// ```
 pub struct TerminalGeometry {
+    /// Rounded content width, saturated at [`u32::MAX`] by runtime measurement.
     pub pixel_width: u32,
+    /// Rounded content height, saturated at [`u32::MAX`] by runtime measurement.
     pub pixel_height: u32,
+    /// Cell width, height, and baseline used to derive the grid.
     pub metrics: TerminalCellMetrics,
+    /// Visible column count in cells.
     pub cols: u16,
+    /// Visible row count in cells.
     pub rows: u16,
 }
 
 impl TerminalGeometry {
+    /// Stores viewport geometry unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalCellMetrics, TerminalGeometry};
+    /// let geometry = TerminalGeometry::new(800, 600, TerminalCellMetrics::new(8.0, 20.0, 14.0), 100, 30);
+    /// assert_eq!((geometry.pixel_width, geometry.rows), (800, 30));
+    /// ```
     pub const fn new(
         pixel_width: u32,
         pixel_height: u32,
@@ -74,10 +137,35 @@ impl TerminalGeometry {
         }
     }
 
+    /// Converts `(rows, cols)` to a core [`TerminalSize`].
+    ///
+    /// `TerminalSize::new` replaces a zero row or column with one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalCellMetrics, TerminalGeometry};
+    /// let geometry = TerminalGeometry::new(0, 0, TerminalCellMetrics::new(1.0, 1.0, 1.0), 0, 0);
+    /// assert_eq!((geometry.terminal_size().rows, geometry.terminal_size().cols), (1, 1));
+    /// ```
     pub fn terminal_size(self) -> TerminalSize {
         TerminalSize::new(self.rows as usize, self.cols as usize)
     }
 
+    /// Converts to the resize callback payload.
+    ///
+    /// Pixel extents above [`u16::MAX`] saturate independently; grid dimensions
+    /// pass through [`Self::terminal_size`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TerminalCellMetrics, TerminalGeometry};
+    /// let geometry = TerminalGeometry::new(100_000, 480, TerminalCellMetrics::new(8.0, 20.0, 14.0), 80, 24);
+    /// let viewport = geometry.viewport_size();
+    /// assert_eq!(viewport.pixel_width, u16::MAX);
+    /// assert_eq!(viewport.pixel_height, 480);
+    /// ```
     pub fn viewport_size(self) -> TerminalViewportSize {
         TerminalViewportSize::new(
             self.terminal_size(),
@@ -88,13 +176,36 @@ impl TerminalGeometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Compact resize payload for terminal/PTY integrations.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalSize;
+/// use ailloli_ui_widgets::controls::TerminalViewportSize;
+/// let viewport = TerminalViewportSize::new(TerminalSize::new(24, 80), 640, 480);
+/// assert_eq!((viewport.terminal.rows, viewport.pixel_width), (24, 640));
+/// ```
 pub struct TerminalViewportSize {
+    /// Terminal grid size in rows and columns.
     pub terminal: TerminalSize,
+    /// Rounded content width in the 16-bit PTY protocol range.
     pub pixel_width: u16,
+    /// Rounded content height in the 16-bit PTY protocol range.
     pub pixel_height: u16,
 }
 
 impl TerminalViewportSize {
+    /// Stores the resize payload unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_core::TerminalSize;
+    /// use ailloli_ui_widgets::controls::TerminalViewportSize;
+    /// let viewport = TerminalViewportSize::new(TerminalSize::new(30, 100), 800, 600);
+    /// assert_eq!(viewport.terminal.cols, 100);
+    /// ```
     pub const fn new(terminal: TerminalSize, pixel_width: u16, pixel_height: u16) -> Self {
         Self {
             terminal,
@@ -105,35 +216,92 @@ impl TerminalViewportSize {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Selection granularity recorded by the terminal widget.
+///
+/// Single, repeated double, and repeated triple clicks select character, word,
+/// and line granularity respectively. A configured initial mode is retained as
+/// metadata until the next click, which derives its mode from click count.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TerminalSelectionMode;
+/// let modes = [
+///     TerminalSelectionMode::Character,
+///     TerminalSelectionMode::Word,
+///     TerminalSelectionMode::Line,
+/// ];
+/// assert_eq!(modes.len(), 3);
+/// assert_eq!(TerminalSelectionMode::default(), TerminalSelectionMode::Character);
+/// ```
 pub enum TerminalSelectionMode {
+    /// Select one cell/range endpoint; the default.
     #[default]
     Character,
+    /// Expand across alphanumeric and `_ - . / :` word cells.
     Word,
+    /// Select complete visual lines.
     Line,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved terminal colors, typography, and logical-pixel geometry.
+///
+/// Runtime measurement clamps fallback `char_width` and `line_height` to at
+/// least `1.0`. Padding can collapse content to zero; other custom non-finite
+/// geometry may propagate into layout or painting.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::TerminalWidgetStyle;
+/// let style = TerminalWidgetStyle::from_theme(Theme::dark());
+/// assert_eq!((style.width, style.height), (760.0, 280.0));
+/// assert_eq!((style.line_height, style.char_width), (19.0, 7.8));
+/// ```
 pub struct TerminalWidgetStyle {
+    /// Rounded terminal surface fill.
     pub background: Color,
+    /// Unfocused outer border.
     pub border: Border,
+    /// Border repainted over the outer border while focused.
     pub focus_ring: Border,
+    /// Base monospace terminal text style.
     pub text: TextStyle,
+    /// Selection highlight fill.
     pub selection_background: Color,
+    /// Cursor fill.
     pub cursor: Color,
+    /// Scrollbar track fill.
     pub scrollbar_track: Color,
+    /// Scrollbar thumb fill.
     pub scrollbar_thumb: Color,
+    /// Error diagnostic accent.
     pub diagnostic_error: Color,
+    /// Warning diagnostic accent.
     pub diagnostic_warning: Color,
+    /// Informational diagnostic accent.
     pub diagnostic_info: Color,
+    /// Hint diagnostic accent.
     pub diagnostic_hint: Color,
+    /// Terminal surface corner radii.
     pub radius: Radius,
+    /// Horizontal content padding in logical pixels.
     pub padding_x: f32,
+    /// Vertical content padding in logical pixels.
     pub padding_y: f32,
+    /// Intrinsic widget width in logical pixels.
     pub width: f32,
+    /// Intrinsic widget height in logical pixels.
     pub height: f32,
+    /// Terminal row height and scroll-line amount in logical pixels.
     pub line_height: f32,
+    /// Fallback cell width without a text system, in logical pixels.
     pub char_width: f32,
+    /// Scrollbar track/thumb width in logical pixels.
     pub scrollbar_width: f32,
+    /// Scrollbar distance from widget edges and reserved content gap.
     pub scrollbar_inset: f32,
 }
 
@@ -144,6 +312,17 @@ impl Default for TerminalWidgetStyle {
 }
 
 impl TerminalWidgetStyle {
+    /// Resolves the dark terminal presentation from a UI theme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::TerminalWidgetStyle;
+    /// let style = TerminalWidgetStyle::from_theme(Theme::default());
+    /// assert_eq!((style.padding_x, style.padding_y), (12.0, 10.0));
+    /// assert_eq!((style.scrollbar_width, style.scrollbar_inset), (6.0, 4.0));
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         Self {
@@ -172,26 +351,72 @@ impl TerminalWidgetStyle {
     }
 }
 
+/// Interactive view of a live [`TerminalState`].
+///
+/// The state signal is both read and updated for local/external resize results.
+/// Without an input callback the widget is read-only and unhandled navigation
+/// keys scroll it. With a callback, keyboard, paste, and enabled terminal mouse
+/// tracking produce protocol bytes. Ctrl+Shift+C/V are reserved for clipboard;
+/// Shift+Page/Home/End always scrolls locally.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::component::State;
+/// use ailloli_ui_terminal_core::TerminalState;
+/// use ailloli_ui_widgets::controls::Terminal;
+/// let state = State::new(TerminalState::new());
+/// let terminal: Terminal<()> = Terminal::new(state).follow_output(true);
+/// let _ = terminal;
+/// ```
 pub struct Terminal<A = ()> {
+    /// Layout configuration initialized from style width/height.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Live terminal emulator snapshot.
     state: Signal<TerminalState>,
+    /// Resolved paint and cell-fallback geometry.
     style: TerminalWidgetStyle,
+    /// Initial non-negative vertical scroll offset in logical pixels.
     initial_scroll_y: f32,
+    /// Optional initial visual-line selection.
     selection: Option<TerminalSelection>,
+    /// Initial retained selection-mode metadata.
     selection_mode: TerminalSelectionMode,
+    /// Whether new output initially keeps the viewport at the bottom.
     follow_output: bool,
+    /// Whether to resize local state without an external resize callback.
     auto_resize: bool,
+    /// Whether to reserve and paint the vertical scrollbar.
     scrollbars: bool,
+    /// Optional protocol-byte consumer.
     on_input: Option<InputHandler<A>>,
+    /// Optional complete-state polling callback.
     state_sync: Option<StateSync>,
+    /// Optional compact resize callback.
     resize_sync: Option<ResizeSync>,
+    /// Optional measured geometry callback; takes priority over resize sync.
     geometry_sync: Option<GeometrySync>,
 }
 
 crate::impl_layout_builders!(Terminal);
 
 impl<A: 'static> Terminal<A> {
+    /// Creates a focused-capable terminal from a writable state signal.
+    ///
+    /// It defaults to 760 by 280 logical pixels, follows output, auto-resizes
+    /// local state, shows scrollbars, and has no input/synchronization callbacks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new()));
+    /// let _ = terminal;
+    /// ```
     pub fn new(state: impl Into<Signal<TerminalState>>) -> Self {
         let style = TerminalWidgetStyle::default();
         Self {
@@ -214,63 +439,241 @@ impl<A: 'static> Terminal<A> {
         }
     }
 
+    /// Replaces visual style and resets layout width/height to its intrinsic size.
+    ///
+    /// Call layout builders after this method to override those dimensions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::{Terminal, TerminalWidgetStyle};
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new()))
+    ///     .terminal_style(TerminalWidgetStyle::default())
+    ///     .width(900.0);
+    /// let _ = terminal;
+    /// ```
     pub fn terminal_style(mut self, style: TerminalWidgetStyle) -> Self {
         self.layout = self.layout.width(style.width).height(style.height);
         self.style = style;
         self
     }
 
+    /// Sets initial vertical scroll offset in logical pixels.
+    ///
+    /// Negative values and NaN become zero. Positive infinity is retained and
+    /// subsequently clamps to the bottom during viewport synchronization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new()))
+    ///     .initial_scroll_y(120.0);
+    /// let _ = terminal;
+    /// ```
     pub fn initial_scroll_y(mut self, scroll_y: f32) -> Self {
         self.initial_scroll_y = scroll_y.max(0.0);
         self
     }
 
+    /// Sets the initial selection in visual-line/cell coordinates.
+    ///
+    /// Line indices are clamped to available visual lines during paint; column
+    /// endpoints are clamped independently for each extracted/highlighted line.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::{Terminal, TerminalPosition, TerminalSelection};
+    /// let selection = TerminalSelection::new(
+    ///     TerminalPosition::new(0, 0),
+    ///     TerminalPosition::new(0, 4),
+    /// );
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new())).selection(selection);
+    /// let _ = terminal;
+    /// ```
     pub fn selection(mut self, selection: TerminalSelection) -> Self {
         self.selection = Some(selection);
         self
     }
 
+    /// Sets initial retained selection-mode metadata.
+    ///
+    /// Pointer clicks subsequently replace it according to click count.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::{Terminal, TerminalSelectionMode};
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new()))
+    ///     .selection_mode(TerminalSelectionMode::Word);
+    /// let _ = terminal;
+    /// ```
     pub fn selection_mode(mut self, mode: TerminalSelectionMode) -> Self {
         self.selection_mode = mode;
         self
     }
 
+    /// Sets whether line-count changes keep the viewport at the bottom.
+    ///
+    /// User scrolling turns follow mode off when farther than one cell height
+    /// from the bottom and on again within that threshold.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new())).follow_output(false);
+    /// let _ = terminal;
+    /// ```
     pub fn follow_output(mut self, follow_output: bool) -> Self {
         self.follow_output = follow_output;
         self
     }
 
+    /// Requests an initial bottom scroll and enables output following.
+    ///
+    /// This uses [`f32::MAX`] as a sentinel that is clamped to the actual maximum.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new())).jump_bottom();
+    /// let _ = terminal;
+    /// ```
     pub fn jump_bottom(mut self) -> Self {
         self.initial_scroll_y = f32::MAX;
         self.follow_output = true;
         self
     }
 
+    /// Enables or disables local terminal-grid resizing.
+    ///
+    /// Geometry/resize callbacks take precedence regardless of this flag. The
+    /// default is `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new())).auto_resize(false);
+    /// let _ = terminal;
+    /// ```
     pub fn auto_resize(mut self, auto_resize: bool) -> Self {
         self.auto_resize = auto_resize;
         self
     }
 
+    /// Shows/reserves or hides/releases the vertical scrollbar.
+    ///
+    /// Scrolling remains available when hidden. The default is `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new())).scrollbars(false);
+    /// let _ = terminal;
+    /// ```
     pub fn scrollbars(mut self, scrollbars: bool) -> Self {
         self.scrollbars = scrollbars;
         self
     }
 
+    /// Maps each encoded terminal input byte vector to an application action.
+    ///
+    /// Keyboard input, bracketed paste, and enabled mouse-tracking reports share
+    /// this callback. A later input builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// #[derive(Clone)]
+    /// enum Action { Input(Vec<u8>) }
+    /// let terminal = Terminal::new(State::new(TerminalState::new())).on_input(Action::Input);
+    /// let _ = terminal;
+    /// ```
     pub fn on_input(mut self, f: impl Fn(Vec<u8>) -> A + 'static) -> Self {
         self.on_input = Some(Rc::new(move |ctx, bytes| ctx.dispatch(f(bytes))));
         self
     }
 
+    /// Installs a context-aware encoded-input handler.
+    ///
+    /// A later input builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal = Terminal::<()>::new(State::new(TerminalState::new()))
+    ///     .on_input_ctx(|_ctx, bytes| assert!(!bytes.is_empty()));
+    /// let _ = terminal;
+    /// ```
     pub fn on_input_ctx(mut self, f: impl Fn(&mut EventCtx<A>, Vec<u8>) + 'static) -> Self {
         self.on_input = Some(Rc::new(f));
         self
     }
 
+    /// Installs a state poll invoked during layout, paint, and event handling.
+    ///
+    /// `Some(state)` replaces the signal only when different; `None` leaves it
+    /// unchanged. The callback should be fast and non-blocking because it may run
+    /// several times per frame.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new()))
+    ///     .sync_state_from(|| None);
+    /// let _ = terminal;
+    /// ```
     pub fn sync_state_from(mut self, f: impl Fn() -> Option<TerminalState> + 'static) -> Self {
         self.state_sync = Some(Rc::new(f));
         self
     }
 
+    /// Installs a compact resize callback.
+    ///
+    /// It runs after committed geometry or state-grid changes when no geometry
+    /// callback is installed. Returning `Some` replaces differing state;
+    /// returning `None` supports side-effect-only PTY resize requests.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new()))
+    ///     .sync_resize_to(|viewport| { assert!(viewport.terminal.cols >= 1); None });
+    /// let _ = terminal;
+    /// ```
     pub fn sync_resize_to(
         mut self,
         f: impl Fn(TerminalViewportSize) -> Option<TerminalState> + 'static,
@@ -279,6 +682,22 @@ impl<A: 'static> Terminal<A> {
         self
     }
 
+    /// Installs the highest-priority measured-geometry callback.
+    ///
+    /// It receives 32-bit rounded content extents, cell metrics, and grid size
+    /// after committed geometry or state-grid changes. `Some` replaces differing
+    /// state; `None` supports side-effect-only synchronization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_terminal_core::TerminalState;
+    /// use ailloli_ui_widgets::controls::Terminal;
+    /// let terminal: Terminal<()> = Terminal::new(State::new(TerminalState::new()))
+    ///     .sync_geometry_to(|geometry| { assert!(geometry.cols >= 1); None });
+    /// let _ = terminal;
+    /// ```
     pub fn sync_geometry_to(
         mut self,
         f: impl Fn(TerminalGeometry) -> Option<TerminalState> + 'static,
@@ -288,6 +707,7 @@ impl<A: 'static> Terminal<A> {
     }
 }
 
+/// Component properties used to allocate scroll, geometry, and selection state.
 struct TerminalComponent<A> {
     layout: LayoutStyle,
     state: Signal<TerminalState>,
@@ -360,6 +780,7 @@ impl<A: 'static> IntoView<A> for Terminal<A> {
     }
 }
 
+/// Retained terminal widget implementing synchronization, input, and painting.
 struct TerminalWidget<A> {
     layout: LayoutStyle,
     state: Signal<TerminalState>,
@@ -633,6 +1054,7 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
 }
 
 impl<A: 'static> TerminalWidget<A> {
+    /// Polls external state and replaces the signal only when changed.
     fn sync_external_state(&self) -> bool {
         let Some(sync) = self.state_sync.as_ref() else {
             return false;
@@ -647,6 +1069,7 @@ impl<A: 'static> TerminalWidget<A> {
         true
     }
 
+    /// Publishes changed geometry through geometry, resize, or local-resize priority.
     fn sync_committed_geometry(&self, geometry: TerminalGeometry) -> bool {
         let geometry_changed = self.last_geometry.read() != Some(geometry);
         let state_size = self.state.read().active_screen().size();
@@ -700,11 +1123,13 @@ impl<A: 'static> TerminalWidget<A> {
         false
     }
 
+    /// Computes fallback geometry for a size and resizes local state.
     fn resize_local_state_for(&self, size: Size) -> bool {
         let bounds = Rect::new(0.0, 0.0, size.w, size.h);
         self.resize_local_state_to(self.geometry_for_bounds(None, bounds).terminal_size())
     }
 
+    /// Resizes local state only when its active-screen grid differs.
     fn resize_local_state_to(&self, next: TerminalSize) -> bool {
         let current = self.state.read().active_screen().size();
         if current == next {
@@ -715,6 +1140,7 @@ impl<A: 'static> TerminalWidget<A> {
         true
     }
 
+    /// Insets widget bounds and reserves scrollbar width when enabled.
     fn content_rect(&self, bounds: Rect) -> Rect {
         let reserve = if self.scrollbars {
             self.style.scrollbar_width + self.style.scrollbar_inset * 2.0
@@ -729,6 +1155,7 @@ impl<A: 'static> TerminalWidget<A> {
         )
     }
 
+    /// Measures cell metrics and derives complete geometry for content bounds.
     fn geometry_for_bounds(
         &self,
         text_system: Option<&mut TextSystem>,
@@ -739,6 +1166,7 @@ impl<A: 'static> TerminalWidget<A> {
         terminal_geometry_for_content(content, metrics)
     }
 
+    /// Reads committed cell metrics or the style-based fallback.
     fn committed_metrics(&self) -> TerminalCellMetrics {
         self.last_geometry
             .read()
@@ -746,19 +1174,23 @@ impl<A: 'static> TerminalWidget<A> {
             .unwrap_or_else(|| terminal_cell_metrics(None, &self.style))
     }
 
+    /// Counts scrollback plus screen lines, or alternate-screen lines alone.
     fn visual_line_count(&self) -> usize {
         terminal_visual_line_count(&self.state.read())
     }
 
+    /// Builds vertical scroll metrics using the committed cell height.
     fn scroll_metrics(&self, content: Rect, line_count: usize) -> ScrollMetrics {
         self.scroll_metrics_with_cell_metrics(content, self.committed_metrics(), line_count)
     }
 
+    /// Synchronizes follow/clamp behavior using committed cell metrics.
     fn update_viewport_for_lines(&self, size: Size, line_count: usize) {
         let metrics = self.committed_metrics();
         self.update_viewport_for_lines_with_metrics(size, metrics, line_count);
     }
 
+    /// Follows changed output to bottom and clamps scroll to current metrics.
     fn update_viewport_for_lines_with_metrics(
         &self,
         size: Size,
@@ -784,6 +1216,7 @@ impl<A: 'static> TerminalWidget<A> {
         }
     }
 
+    /// Builds viewport/content extents for a visual-line count.
     fn scroll_metrics_with_cell_metrics(
         &self,
         content: Rect,
@@ -796,12 +1229,14 @@ impl<A: 'static> TerminalWidget<A> {
         )
     }
 
+    /// Enables follow mode when the viewport is within one row of bottom.
     fn sync_follow_from_scroll(&self, scroll: ScrollState, metrics: ScrollMetrics) {
         let max_y = metrics.max_offset().y;
         self.follow_output
             .set((max_y - scroll.offset.y).abs() <= self.committed_metrics().cell_height);
     }
 
+    /// Converts repeated clicks at one cell into character/word/line modes.
     fn click_selection_mode(&self, pos: TerminalPosition) -> TerminalSelectionMode {
         let count = if self.last_click.read() == Some(pos) {
             self.click_count.read().saturating_add(1)
@@ -817,6 +1252,7 @@ impl<A: 'static> TerminalWidget<A> {
         }
     }
 
+    /// Maps a content-space pointer to a clamped visual line and cell column.
     fn position_at(
         &self,
         bounds: Rect,
@@ -840,6 +1276,7 @@ impl<A: 'static> TerminalWidget<A> {
         Some(TerminalPosition::new(line.min(line_count - 1), column))
     }
 
+    /// Handles Shift+Page/Home/End as local scrolling before terminal input.
     fn handle_keyboard_scroll(
         &self,
         ctx: &mut EventCtx<A>,
@@ -862,6 +1299,7 @@ impl<A: 'static> TerminalWidget<A> {
         }
     }
 
+    /// Scrolls navigation keys when no terminal byte handler consumed them.
     fn handle_readonly_keyboard_scroll(
         &self,
         ctx: &mut EventCtx<A>,
@@ -882,6 +1320,7 @@ impl<A: 'static> TerminalWidget<A> {
         }
     }
 
+    /// Applies one-row, 86%-page, top, or bottom keyboard scrolling.
     fn scroll_for_key(&self, ctx: &mut EventCtx<A>, key: &Key, bounds: Rect, line_count: usize) {
         let content = self.content_rect(bounds);
         let cell_metrics = self.committed_metrics();
@@ -928,6 +1367,7 @@ impl<A: 'static> TerminalWidget<A> {
         }
     }
 
+    /// Handles Ctrl+Shift+C/V selection copy and bracketed terminal paste.
     fn handle_clipboard_shortcut(
         &self,
         ctx: &mut EventCtx<A>,
@@ -962,6 +1402,7 @@ impl<A: 'static> TerminalWidget<A> {
         }
     }
 
+    /// Encodes and dispatches mouse events when terminal tracking is active.
     fn handle_terminal_mouse_event(
         &self,
         ctx: &mut EventCtx<A>,
@@ -1005,6 +1446,7 @@ impl<A: 'static> TerminalWidget<A> {
     }
 }
 
+/// Rounds a positive finite pixel extent and saturates it to `u32`.
 fn viewport_pixel_extent_u32(value: f32) -> u32 {
     if !value.is_finite() || value <= 0.0 {
         return 0;
@@ -1012,6 +1454,7 @@ fn viewport_pixel_extent_u32(value: f32) -> u32 {
     value.round().min(u32::MAX as f32) as u32
 }
 
+/// Measures an `M` cell width while retaining configured row height.
 fn terminal_cell_metrics(
     text_system: Option<&mut TextSystem>,
     style: &TerminalWidgetStyle,
@@ -1035,6 +1478,7 @@ fn terminal_cell_metrics(
     TerminalCellMetrics::new(cell_width, fallback.cell_height, baseline)
 }
 
+/// Derives rounded pixel extents and floored grid dimensions from content.
 fn terminal_geometry_for_content(content: Rect, metrics: TerminalCellMetrics) -> TerminalGeometry {
     let rows = terminal_grid_extent(content.h, metrics.cell_height);
     let cols = terminal_grid_extent(content.w, metrics.cell_width);
@@ -1047,6 +1491,7 @@ fn terminal_geometry_for_content(content: Rect, metrics: TerminalCellMetrics) ->
     )
 }
 
+/// Floors positive finite cells into `1..=u16::MAX`, else returns one.
 fn terminal_grid_extent(px: f32, cell: f32) -> u16 {
     if !px.is_finite() || !cell.is_finite() || px <= 0.0 || cell <= 0.0 {
         return 1;
@@ -1054,6 +1499,7 @@ fn terminal_grid_extent(px: f32, cell: f32) -> u16 {
     ((px / cell).floor().max(1.0).min(u16::MAX as f32)) as u16
 }
 
+/// Borrows visual lines for the active normal/alternate screen.
 fn terminal_visual_lines(state: &TerminalState) -> Vec<&CoreTerminalLine> {
     match state.active_screen {
         ActiveScreen::Normal => state
@@ -1065,6 +1511,7 @@ fn terminal_visual_lines(state: &TerminalState) -> Vec<&CoreTerminalLine> {
     }
 }
 
+/// Counts visual lines without allocating their reference vector.
 fn terminal_visual_line_count(state: &TerminalState) -> usize {
     match state.active_screen {
         ActiveScreen::Normal => state.scrollback.len() + state.screen.lines.len(),
@@ -1072,6 +1519,7 @@ fn terminal_visual_line_count(state: &TerminalState) -> usize {
     }
 }
 
+/// Converts the active-screen cursor row to a visual-line index.
 fn terminal_cursor_visual_line(state: &TerminalState) -> usize {
     match state.active_screen {
         ActiveScreen::Normal => state.scrollback.len() + state.cursor.row,
@@ -1079,6 +1527,30 @@ fn terminal_cursor_visual_line(state: &TerminalState) -> usize {
     }
 }
 
+/// Extracts selected terminal text in visual-line order.
+///
+/// Normal-screen visual lines are scrollback followed by the visible screen;
+/// alternate-screen visual lines contain no scrollback. Selection direction is
+/// normalized, line indices clamp to available lines, and the ending column is
+/// exclusive. Wide trailing cells are skipped, trailing ASCII spaces are removed
+/// from each selected line, and lines are joined with `\n`. Empty state or an
+/// empty range returns an empty string.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::TerminalState;
+/// use ailloli_ui_widgets::controls::{
+///     terminal_selection_text, TerminalPosition, TerminalSelection,
+/// };
+/// let mut state = TerminalState::new();
+/// state.write_str("hello");
+/// let selection = TerminalSelection::new(
+///     TerminalPosition::new(0, 0),
+///     TerminalPosition::new(0, 5),
+/// );
+/// assert_eq!(terminal_selection_text(&state, selection), "hello");
+/// ```
 pub fn terminal_selection_text(state: &TerminalState, selection: TerminalSelection) -> String {
     let lines = terminal_visual_lines(state);
     let Some(selection) = selection.clamp(lines.len()) else {
@@ -1103,6 +1575,7 @@ pub fn terminal_selection_text(state: &TerminalState, selection: TerminalSelecti
     selected.join("\n")
 }
 
+/// Extracts an exclusive cell range, skipping wide trailers and trimming spaces.
 fn terminal_line_text_range(line: &CoreTerminalLine, start_col: usize, end_col: usize) -> String {
     if start_col >= end_col {
         return String::new();
@@ -1117,6 +1590,7 @@ fn terminal_line_text_range(line: &CoreTerminalLine, start_col: usize, end_col: 
     text.trim_end_matches(' ').to_string()
 }
 
+/// Creates character, word-expanded, or whole-line selection at a position.
 fn selection_for_mode(
     state: &TerminalState,
     pos: TerminalPosition,
@@ -1129,6 +1603,7 @@ fn selection_for_mode(
     }
 }
 
+/// Expands a position across adjacent terminal word cells on one visual line.
 fn word_selection_at(state: &TerminalState, pos: TerminalPosition) -> TerminalSelection {
     let lines = terminal_visual_lines(state);
     let Some(line) = lines.get(pos.line) else {
@@ -1161,6 +1636,7 @@ fn word_selection_at(state: &TerminalState, pos: TerminalPosition) -> TerminalSe
     )
 }
 
+/// Recognizes alphanumeric or shell/path punctuation in a leading/narrow cell.
 fn terminal_word_cell(line: &CoreTerminalLine, col: usize) -> bool {
     let Some(cell) = line.cell(col) else {
         return false;
@@ -1173,6 +1649,7 @@ fn terminal_word_cell(line: &CoreTerminalLine, col: usize) -> bool {
         .any(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':'))
 }
 
+/// UTF-8 encodes paste text, adding bracketed-paste delimiters when enabled.
 fn terminal_paste_bytes(text: &str, modes: &TerminalModes) -> Vec<u8> {
     if modes.bracketed_paste {
         let mut bytes = Vec::with_capacity(text.len() + 12);
@@ -1185,6 +1662,7 @@ fn terminal_paste_bytes(text: &str, modes: &TerminalModes) -> Vec<u8> {
     }
 }
 
+/// Reads key/text character data and applies ASCII uppercase conversion.
 fn key_character_upper(key: &KeyEvent) -> Option<String> {
     match &key.key {
         Key::Character(ch) => Some(ch.to_ascii_uppercase()),
@@ -1192,6 +1670,7 @@ fn key_character_upper(key: &KeyEvent) -> Option<String> {
     }
 }
 
+/// Borrowed state required to paint the currently visible terminal rows.
 struct TerminalPaintModel<'a> {
     style: &'a TerminalWidgetStyle,
     metrics: TerminalCellMetrics,
@@ -1201,6 +1680,7 @@ struct TerminalPaintModel<'a> {
     selection: Option<TerminalSelection>,
 }
 
+/// Paints virtualized visible rows, diagnostics, selection, text, and cursor.
 fn paint_terminal_state(ctx: &mut PaintCtx<'_>, content: Rect, model: TerminalPaintModel<'_>) {
     let TerminalPaintModel {
         style,
@@ -1270,6 +1750,7 @@ fn paint_terminal_state(ctx: &mut PaintCtx<'_>, content: Rect, model: TerminalPa
     }
 }
 
+/// Finds the first diagnostic whose inclusive source range covers a visual line.
 fn terminal_diagnostic_for_visual_line<'a>(
     state: &'a TerminalState,
     global_lines: &[Option<u64>],
@@ -1281,6 +1762,7 @@ fn terminal_diagnostic_for_visual_line<'a>(
     })
 }
 
+/// Paints a translucent diagnostic row and leading severity stripe.
 fn paint_terminal_diagnostic_row(
     ctx: &mut PaintCtx<'_>,
     content: Rect,
@@ -1306,6 +1788,7 @@ fn paint_terminal_diagnostic_row(
     }));
 }
 
+/// Paints a fixed-width severity badge at the row's trailing edge.
 fn paint_terminal_diagnostic_badge(
     ctx: &mut PaintCtx<'_>,
     content: Rect,
@@ -1335,6 +1818,7 @@ fn paint_terminal_diagnostic_badge(
     paint_terminal_text(ctx, badge.x + 6.0, badge.y - 1.0, label, &spans, style);
 }
 
+/// Returns the compact uppercase label for every diagnostic severity.
 fn terminal_diagnostic_label(severity: TerminalDiagnosticSeverity) -> &'static str {
     match severity {
         TerminalDiagnosticSeverity::Error => "ERR",
@@ -1344,6 +1828,7 @@ fn terminal_diagnostic_label(severity: TerminalDiagnosticSeverity) -> &'static s
     }
 }
 
+/// Resolves every diagnostic severity through terminal style colors.
 fn terminal_diagnostic_color(
     style: &TerminalWidgetStyle,
     severity: TerminalDiagnosticSeverity,
@@ -1356,6 +1841,7 @@ fn terminal_diagnostic_color(
     }
 }
 
+/// Shapes and paints non-empty styled terminal text at a row baseline.
 fn paint_terminal_text(
     ctx: &mut PaintCtx<'_>,
     x: f32,
@@ -1384,6 +1870,7 @@ fn paint_terminal_text(
     }));
 }
 
+/// Produces a cached unwrapped styled layout for one terminal row fragment.
 fn terminal_layout(
     text_system: &mut TextSystem,
     text: &str,
@@ -1400,12 +1887,17 @@ fn terminal_layout(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Non-default background run for one terminal cell or wide-cell pair.
 struct CellBackground {
+    /// Starting terminal column.
     col: usize,
+    /// Covered column count: one or two.
     cols: usize,
+    /// Resolved background color.
     color: Color,
 }
 
+/// Flattens terminal cells into text, foreground spans, and background runs.
 fn terminal_line_render_parts(
     line: &CoreTerminalLine,
     style: &TerminalWidgetStyle,
@@ -1446,6 +1938,7 @@ fn terminal_line_render_parts(
     (text, spans, backgrounds)
 }
 
+/// Resolves default/ANSI colors, inverse mode, and dim foreground alpha.
 fn terminal_cell_colors(cell: TerminalStyle, style: &TerminalWidgetStyle) -> (Color, Color) {
     let mut fg = terminal_color(cell.fg, style.text.color, style.background);
     let mut bg = terminal_color(cell.bg, style.text.color, style.background);
@@ -1458,6 +1951,7 @@ fn terminal_cell_colors(cell: TerminalStyle, style: &TerminalWidgetStyle) -> (Co
     (fg, bg)
 }
 
+/// Resolves every terminal color encoding to a concrete UI color.
 fn terminal_color(color: TerminalColor, default_fg: Color, default_bg: Color) -> Color {
     match color {
         TerminalColor::DefaultFg => default_fg,
@@ -1468,6 +1962,7 @@ fn terminal_color(color: TerminalColor, default_fg: Color, default_bg: Color) ->
     }
 }
 
+/// Resolves an ANSI palette index, clamping indices above 15 to white.
 fn ansi_color(index: u8) -> Color {
     const PALETTE: [u32; 16] = [
         0x1E1E1E, 0xD84A4A, 0x39A853, 0xE3B341, 0x4F86F7, 0xB86AD8, 0x24B8C4, 0xD6D6D6, 0x6B7280,
@@ -1476,6 +1971,7 @@ fn ansi_color(index: u8) -> Color {
     Color::hex_rgb(PALETTE[index.min(15) as usize])
 }
 
+/// Resolves the 256-color xterm palette: ANSI, color cube, then grayscale.
 fn indexed_color(index: u8) -> Color {
     if index < 16 {
         return ansi_color(index);
@@ -1491,6 +1987,7 @@ fn indexed_color(index: u8) -> Color {
     Color::rgb(v, v, v)
 }
 
+/// Converts a color-cube coordinate in `0..=5` to its xterm channel value.
 fn xterm_cube(v: u8) -> u8 {
     if v == 0 {
         0
@@ -1499,6 +1996,7 @@ fn xterm_cube(v: u8) -> u8 {
     }
 }
 
+/// Computes the IME cursor rectangle from widget bounds and scroll state.
 fn cursor_rect(
     bounds: Rect,
     style: &TerminalWidgetStyle,
@@ -1522,6 +2020,7 @@ fn cursor_rect(
     )
 }
 
+/// Computes a visible block, underline, or bar cursor rectangle.
 fn cursor_rect_from_lines(
     content: Rect,
     _style: &TerminalWidgetStyle,
@@ -1568,6 +2067,7 @@ fn cursor_rect_from_lines(
     })
 }
 
+/// Creates a non-empty selection highlight clamped to content width.
 fn highlight_rect(
     content: Rect,
     row_y: f32,
@@ -1588,6 +2088,7 @@ fn highlight_rect(
     )
 }
 
+/// Resolves normalized exclusive selection columns for one visual line.
 fn selection_columns_for_line(
     selection: TerminalSelection,
     line: usize,
@@ -1609,6 +2110,7 @@ fn selection_columns_for_line(
     ))
 }
 
+/// Paints a proportional vertical scrollbar with a 24-pixel minimum thumb.
 fn paint_terminal_scrollbar(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -1655,13 +2157,19 @@ fn paint_terminal_scrollbar(
 }
 
 #[derive(Clone, Copy)]
+/// Geometry and state used to encode a terminal mouse event.
 struct TerminalMouseLayout {
+    /// Pointer-active terminal content rectangle.
     content: Rect,
+    /// Cell dimensions used for one-based row/column mapping.
     metrics: TerminalCellMetrics,
+    /// Current vertical scroll offset.
     scroll: ScrollState,
+    /// Visual-line count; zero disables encoding.
     line_count: usize,
 }
 
+/// Encodes pointer button, motion, or wheel events using SGR/legacy mouse modes.
 fn terminal_mouse_bytes_from_event(
     event: &Event,
     state: &TerminalState,
@@ -1730,6 +2238,7 @@ fn terminal_mouse_bytes_from_event(
     }
 }
 
+/// Maps left/middle/right buttons to XTerm codes and rejects `Other`.
 fn terminal_mouse_button_code(button: MouseButton) -> Option<usize> {
     match button {
         MouseButton::Left => Some(0),
@@ -1739,10 +2248,55 @@ fn terminal_mouse_button_code(button: MouseButton) -> Option<usize> {
     }
 }
 
+/// Encodes a pressed key using default terminal modes.
+///
+/// Supported named keys are Enter, Backspace, Tab, Escape, four arrows,
+/// Home/End, PageUp/PageDown, Delete, Insert, and Space. Character/dead-key text
+/// is UTF-8. Ctrl combinations are limited to C, D, L, and Z. Alt prefixes one
+/// Escape byte unless the base sequence already begins with Escape. Releases and
+/// unsupported keys return `None`; repeat presses are encoded normally.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::event::{Key, KeyEvent, KeyState, Modifiers, NamedKey};
+/// use ailloli_ui_widgets::controls::terminal_key_bytes;
+/// let key = KeyEvent {
+///     state: KeyState::Pressed,
+///     key: Key::Named(NamedKey::Enter),
+///     modifiers: Modifiers::default(),
+///     repeat: false,
+///     pointer_pos: None,
+///     text: None,
+/// };
+/// assert_eq!(terminal_key_bytes(&key), Some(b"\r".to_vec()));
+/// ```
 pub fn terminal_key_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
     terminal_key_bytes_with_modes(key, &TerminalModes::default())
 }
 
+/// Encodes a pressed key while honoring terminal application-cursor mode.
+///
+/// When `application_cursor` is enabled, arrows and Home/End use SS3 sequences;
+/// all other mappings match [`terminal_key_bytes`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::event::{Key, KeyEvent, KeyState, Modifiers, NamedKey};
+/// use ailloli_ui_terminal_core::TerminalModes;
+/// use ailloli_ui_widgets::controls::terminal_key_bytes_with_modes;
+/// let key = KeyEvent {
+///     state: KeyState::Pressed,
+///     key: Key::Named(NamedKey::ArrowUp),
+///     modifiers: Modifiers::default(),
+///     repeat: false,
+///     pointer_pos: None,
+///     text: None,
+/// };
+/// let modes = TerminalModes { application_cursor: true, ..TerminalModes::default() };
+/// assert_eq!(terminal_key_bytes_with_modes(&key, &modes), Some(b"\x1bOA".to_vec()));
+/// ```
 pub fn terminal_key_bytes_with_modes(key: &KeyEvent, modes: &TerminalModes) -> Option<Vec<u8>> {
     if key.state != KeyState::Pressed {
         return None;
@@ -1791,6 +2345,7 @@ pub fn terminal_key_bytes_with_modes(key: &KeyEvent, modes: &TerminalModes) -> O
     Some(bytes)
 }
 
+/// Encodes the supported single-character Ctrl combinations C, D, L, and Z.
 fn ctrl_key_bytes(ch: &str) -> Option<Vec<u8>> {
     let mut chars = ch.chars();
     let c = chars.next()?;
@@ -1807,6 +2362,7 @@ fn ctrl_key_bytes(ch: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
+/// Scenarios for input protocols, geometry synchronization, and text extraction.
 mod tests {
     use super::*;
     use ailloli_ui_core::event::{KeyState, Modifiers};
@@ -1818,6 +2374,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
 
+    /// Builds a pressed non-repeat key event for protocol mapping scenarios.
     fn key(key: Key, modifiers: Modifiers, text: Option<&str>) -> KeyEvent {
         KeyEvent {
             state: KeyState::Pressed,

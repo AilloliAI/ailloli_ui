@@ -1,9 +1,20 @@
+//! Borrowed and shared SVG byte sources keyed by allocation identity.
+
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// SVG bytes for GPU rasterization.
 ///
 /// Equality and hashing use **pointer identity**, not byte content (for cache keys).
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use ailloli_ui_core::SvgSource;
+/// let bytes: Arc<[u8]> = Arc::from(&b"<svg/>"[..]);
+/// assert_eq!(SvgSource::Owned(bytes.clone()), SvgSource::Owned(bytes));
+/// ```
 #[derive(Debug, Clone)]
 pub enum SvgSource {
     /// Compile-time embedded SVG.
@@ -15,6 +26,10 @@ pub enum SvgSource {
 }
 
 impl SvgSource {
+    /// Returns the allocation address used for equality and cache hashing.
+    ///
+    /// Length and byte content are deliberately excluded. Clones of an owned
+    /// source share a key; separately allocated identical bytes do not.
     fn identity_key(&self) -> usize {
         match self {
             SvgSource::Static(bytes) => bytes.as_ptr().addr(),
@@ -23,7 +38,14 @@ impl SvgSource {
         }
     }
 
-    /// Raw bytes for the SVG parser.
+    /// Returns raw, unvalidated bytes for an SVG parser.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::SvgSource;
+    /// assert_eq!(SvgSource::Static(b"<svg/>").as_bytes(), b"<svg/>");
+    /// ```
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             SvgSource::Static(bytes) => bytes,

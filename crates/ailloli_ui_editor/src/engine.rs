@@ -1,3 +1,5 @@
+//! Cached frame construction, hit testing, caret geometry, and scroll metrics.
+
 use ailloli_ui_core::scroll::ScrollMetrics;
 use ailloli_ui_core::{Offset, Point, Rect, Size};
 use ailloli_ui_text::TextSystem;
@@ -29,28 +31,52 @@ use crate::{
     EditorScrollbarStyle, EditorSession, EditorViewport, EditorWrapMode,
 };
 
-/// UI-agnostic editor engine: layout cache, metrics cache, frame production, hit-test.
+/// UI-agnostic editor engine for cached layout, frame production, and hit tests.
+///
+/// One engine retains unbounded per-paragraph layout/metrics maps, the last
+/// complete frame, and a wrapping frame counter. It is not synchronized for
+/// concurrent use and should normally be owned by one editor view.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::EditorEngine;
+/// let mut engine = EditorEngine::new();
+/// engine.clear_caches();
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct EditorEngine {
+    /// Prepared paragraph layouts keyed by geometry-affecting inputs.
     layout_cache: LayoutCache,
+    /// Paragraph dimensions and aggregate revision metadata.
     metrics_cache: ParagraphMetricsCache,
+    /// Most recently returned frame, including a cloned set of layout handles.
     last_frame: Option<EditorFrame>,
+    /// Wrapping counter incremented before each completed frame.
     frame_id: u64,
 }
 
+/// Optional code-editor layers supplied to the shared frame pipeline.
 struct FrameExtras<'a> {
+    /// Code theme and whether line numbers should be painted.
     code_theme: Option<(CodeTheme, bool)>,
+    /// Optional editor-owned scrollbar configuration.
     scrollbars: Option<EditorScrollbarConfig>,
+    /// Search, diagnostic, and active-diagnostic paint inputs.
     code_decorations: Option<(
         &'a crate::code::SearchState,
         &'a [crate::code::Diagnostic],
         Option<usize>,
     )>,
+    /// Optional source-buffer syntax tokens.
     syntax_tokens: Option<&'a [crate::code::SyntaxToken]>,
+    /// Optional fold ranges used for hiding and gutter paint.
     fold_regions: Option<&'a [crate::code::FoldRegion]>,
 }
 
+/// Constructs frame extras for a generic editor.
 impl<'a> FrameExtras<'a> {
+    /// Returns an extras bundle with every code layer disabled.
     fn none() -> Self {
         Self {
             code_theme: None,
@@ -62,16 +88,56 @@ impl<'a> FrameExtras<'a> {
     }
 }
 
+/// Produces frames and queries their retained geometry.
 impl EditorEngine {
+    /// Creates an empty engine with frame counter zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::EditorEngine;
+    /// let engine = EditorEngine::new();
+    /// assert_eq!(format!("{engine:?}").contains("frame_id: 0"), true);
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Clears paragraph layout and metric caches.
+    ///
+    /// The retained last frame, wrapping frame ID, and the caller-owned
+    /// [`TextSystem`] cache are not cleared.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::EditorEngine;
+    /// let mut engine = EditorEngine::new();
+    /// engine.clear_caches();
+    /// ```
     pub fn clear_caches(&mut self) {
         self.layout_cache.clear();
         self.metrics_cache.clear();
     }
 
+    /// Builds a generic editor frame at blink time zero.
+    ///
+    /// A focused caret is therefore in its visible phase. The returned frame is
+    /// cloned into the engine as its only cached frame, and its ID increments
+    /// with wrapping arithmetic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// use ailloli_ui_editor::{EditorEngine, EditorSession};
+    /// use ailloli_ui_text::{TextBuffer, TextSystem};
+    /// let session = EditorSession::new(TextBuffer::from_string("hello"));
+    /// let bounds = Rect::new(0.0, 0.0, 100.0, 50.0);
+    /// let frame = EditorEngine::new().frame(&session, bounds, true, &mut TextSystem::new());
+    /// assert_eq!(frame.viewport.bounds, bounds);
+    /// assert_eq!(frame.debug_metrics.frame_id, 1);
+    /// ```
     pub fn frame(
         &mut self,
         session: &EditorSession,
@@ -82,6 +148,21 @@ impl EditorEngine {
         self.frame_at(session, bounds, focused, 0, text_system)
     }
 
+    /// Builds a generic frame at an explicit millisecond blink time.
+    ///
+    /// `frame_time_ms` controls only caret blink phase. Layout timing is measured
+    /// independently in microseconds and saturates at [`u64::MAX`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// use ailloli_ui_editor::{EditorEngine, EditorPaintItem, EditorSession};
+    /// use ailloli_ui_text::{TextBuffer, TextSystem};
+    /// let session = EditorSession::new(TextBuffer::from_string("x"));
+    /// let frame = EditorEngine::new().frame_at(&session, Rect::new(0.0, 0.0, 80.0, 40.0), true, 500, &mut TextSystem::new());
+    /// assert!(!frame.paint_items.iter().any(|item| matches!(item, EditorPaintItem::Caret { .. })));
+    /// ```
     pub fn frame_at(
         &mut self,
         session: &EditorSession,
@@ -101,6 +182,22 @@ impl EditorEngine {
         )
     }
 
+    /// Builds a code-editor frame at blink time zero.
+    ///
+    /// The engine consumes the session's current tokens, folds, search results,
+    /// and diagnostics without refreshing them. It adds the configured gutter,
+    /// code layers, and enabled scrollbars to the generic paint model.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// use ailloli_ui_editor::{CodeEditorConfig, CodeEditorSession, Document, DocumentId, EditorEngine};
+    /// use ailloli_ui_text::{TextBuffer, TextSystem};
+    /// let session = CodeEditorSession::new(Document::new(DocumentId(1), TextBuffer::from_string("code")), CodeEditorConfig::default());
+    /// let frame = EditorEngine::new().code_frame(&session, Rect::new(0.0, 0.0, 140.0, 60.0), false, &mut TextSystem::new());
+    /// assert!(frame.viewport.gutter_rect.is_some());
+    /// ```
     pub fn code_frame(
         &mut self,
         session: &CodeEditorSession,
@@ -111,6 +208,22 @@ impl EditorEngine {
         self.code_frame_at(session, bounds, focused, 0, text_system)
     }
 
+    /// Builds a code-editor frame at an explicit millisecond blink time.
+    ///
+    /// Gutter fold markers control whether folded lines are filtered at all;
+    /// other [`crate::CodeEditorFeatureFlags`] are descriptive configuration and
+    /// are not consulted by this frame builder.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// use ailloli_ui_editor::{CodeEditorConfig, CodeEditorSession, Document, DocumentId, EditorEngine};
+    /// use ailloli_ui_text::{TextBuffer, TextSystem};
+    /// let session = CodeEditorSession::new(Document::new(DocumentId(1), TextBuffer::from_string("x")), CodeEditorConfig::default());
+    /// let frame = EditorEngine::new().code_frame_at(&session, Rect::new(0.0, 0.0, 140.0, 60.0), true, 0, &mut TextSystem::new());
+    /// assert_eq!(frame.debug_metrics.frame_id, 1);
+    /// ```
     pub fn code_frame_at(
         &mut self,
         session: &CodeEditorSession,
@@ -149,6 +262,13 @@ impl EditorEngine {
         )
     }
 
+    /// Runs the common layout and ordered paint-layer pipeline.
+    ///
+    /// IME preedit text is projected into a temporary display buffer. Collapsed
+    /// folds remove hidden logical lines before hit testing and paint. The frame
+    /// always begins with a background item; subsequent gutter, active line,
+    /// selection, decorations, text, fold labels, carets, and scrollbars follow
+    /// deterministic layer order.
     fn frame_for_viewport(
         &mut self,
         session: &EditorSession,
@@ -361,6 +481,22 @@ impl EditorEngine {
         frame
     }
 
+    /// Builds a fresh unfocused frame and hit-tests a screen point.
+    ///
+    /// The new frame replaces `last_frame`. The returned byte is clamped to the
+    /// source buffer and follows shaped caret geometry; points outside visible
+    /// runs fall back according to [`crate::input::hit_test::byte_at_point`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Point, Rect};
+    /// use ailloli_ui_editor::{EditorEngine, EditorSession};
+    /// use ailloli_ui_text::{TextBuffer, TextSystem};
+    /// let session = EditorSession::new(TextBuffer::from_string("abc"));
+    /// let hit = EditorEngine::new().hit_test(&session, Rect::new(0.0, 0.0, 100.0, 50.0), Point::new(12.0, 12.0), &mut TextSystem::new());
+    /// assert!(hit.byte <= 3);
+    /// ```
     pub fn hit_test(
         &mut self,
         session: &EditorSession,
@@ -378,6 +514,20 @@ impl EditorEngine {
         )
     }
 
+    /// Hit-tests fold markers in the retained frame.
+    ///
+    /// A cached frame is eligible when every bounds component differs by less
+    /// than `0.5` logical pixel. The first marker rectangle containing the point
+    /// returns its fold-region slice index. No frame, mismatched bounds, or no
+    /// marker returns `None`; session identity is not part of the cache key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Point, Rect};
+    /// use ailloli_ui_editor::EditorEngine;
+    /// assert_eq!(EditorEngine::new().fold_region_hit_test_cached(Rect::new(0.0, 0.0, 10.0, 10.0), Point::new(1.0, 1.0)), None);
+    /// ```
     pub fn fold_region_hit_test_cached(&self, bounds: Rect, pos: Point) -> Option<usize> {
         let frame = self.last_frame_for_bounds(bounds)?;
         frame.paint_items.iter().find_map(|item| match item {
@@ -388,6 +538,21 @@ impl EditorEngine {
         })
     }
 
+    /// Hit-tests text using the retained frame when bounds approximately match.
+    ///
+    /// Cache matching ignores session identity and configuration. If no eligible
+    /// frame exists, the fallback byte is exactly `session.buffer.len_bytes()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Point, Rect};
+    /// use ailloli_ui_editor::{EditorEngine, EditorSession};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let session = EditorSession::new(TextBuffer::from_string("abc"));
+    /// let hit = EditorEngine::new().hit_test_cached(&session, Rect::new(0.0, 0.0, 100.0, 50.0), Point::new(0.0, 0.0));
+    /// assert_eq!(hit.byte, 3);
+    /// ```
     pub fn hit_test_cached(
         &self,
         session: &EditorSession,
@@ -408,6 +573,21 @@ impl EditorEngine {
         )
     }
 
+    /// Hit-tests gutter/text/outside zone using an approximately matching frame.
+    ///
+    /// Without one, returns [`crate::EditorHitZone::Outside`] at the source-buffer
+    /// end. Cache matching ignores session identity and configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Point, Rect};
+    /// use ailloli_ui_editor::{EditorEngine, EditorHitZone, EditorSession};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let session = EditorSession::new(TextBuffer::from_string("abc"));
+    /// let hit = EditorEngine::new().hit_test_zone_cached(&session, Rect::new(0.0, 0.0, 100.0, 50.0), Point::new(0.0, 0.0));
+    /// assert_eq!((hit.zone, hit.byte), (EditorHitZone::Outside, 3));
+    /// ```
     pub fn hit_test_zone_cached(
         &self,
         session: &EditorSession,
@@ -429,6 +609,22 @@ impl EditorEngine {
         )
     }
 
+    /// Builds a fresh focused frame and returns display-buffer caret geometry.
+    ///
+    /// IME preedit projection is included. The new frame replaces `last_frame`;
+    /// the returned rectangle is in screen-space logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// use ailloli_ui_editor::{EditorEngine, EditorSession};
+    /// use ailloli_ui_text::{TextBuffer, TextSystem};
+    /// let session = EditorSession::new(TextBuffer::from_string("abc"));
+    /// let caret = EditorEngine::new().caret_rect(&session, Rect::new(0.0, 0.0, 100.0, 50.0), &mut TextSystem::new());
+    /// assert_eq!(caret.w, 1.0);
+    /// assert!(caret.h > 0.0);
+    /// ```
     pub fn caret_rect(
         &mut self,
         session: &EditorSession,
@@ -445,6 +641,22 @@ impl EditorEngine {
         )
     }
 
+    /// Returns generic caret geometry from an approximately matching frame.
+    ///
+    /// Without a frame, returns a one-logical-pixel caret at the text origin with
+    /// height `px_size + 2`. Cache matching ignores session identity/configuration
+    /// beyond the supplied bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// use ailloli_ui_editor::{EditorEngine, EditorSession};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let session = EditorSession::new(TextBuffer::new());
+    /// let caret = EditorEngine::new().caret_rect_cached(&session, Rect::new(0.0, 0.0, 100.0, 50.0));
+    /// assert_eq!((caret.x, caret.y, caret.w, caret.h), (10.0, 10.0, 1.0, 15.0));
+    /// ```
     pub fn caret_rect_cached(&self, session: &EditorSession, bounds: Rect) -> Rect {
         let viewport = crate::EditorViewport::new(bounds, session.config, &session.edit);
         let Some(frame) = self.last_frame_for_bounds(bounds) else {
@@ -464,6 +676,22 @@ impl EditorEngine {
         )
     }
 
+    /// Returns code-editor caret geometry from an approximately matching frame.
+    ///
+    /// The no-frame fallback accounts for the configured gutter and otherwise
+    /// uses the generic one-pixel, `px_size + 2` caret. Cached frame matching uses
+    /// only approximate bounds, not session identity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// use ailloli_ui_editor::{CodeEditorConfig, CodeEditorSession, Document, DocumentId, EditorEngine};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let session = CodeEditorSession::new(Document::new(DocumentId(1), TextBuffer::new()), CodeEditorConfig::default());
+    /// let caret = EditorEngine::new().code_caret_rect_cached(&session, Rect::new(0.0, 0.0, 100.0, 50.0));
+    /// assert_eq!((caret.x, caret.y, caret.w, caret.h), (58.0, 10.0, 1.0, 15.0));
+    /// ```
     pub fn code_caret_rect_cached(&self, session: &CodeEditorSession, bounds: Rect) -> Rect {
         let viewport = crate::EditorViewport::with_gutter(
             bounds,
@@ -488,6 +716,22 @@ impl EditorEngine {
         )
     }
 
+    /// Returns generic text-viewport/content scroll metrics from the cached frame.
+    ///
+    /// With no approximately matching frame, content equals viewport and the
+    /// maximum offset is zero. The viewport excludes editor padding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Offset, Rect, Size};
+    /// use ailloli_ui_editor::{EditorEngine, EditorSession};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let session = EditorSession::new(TextBuffer::new());
+    /// let metrics = EditorEngine::new().scroll_metrics_cached(&session, Rect::new(0.0, 0.0, 100.0, 50.0));
+    /// assert_eq!(metrics.viewport, Size::new(80.0, 30.0));
+    /// assert_eq!(metrics.max_offset(), Offset::new(0.0, 0.0));
+    /// ```
     pub fn scroll_metrics_cached(&self, session: &EditorSession, bounds: Rect) -> ScrollMetrics {
         let viewport = crate::EditorViewport::new(bounds, session.config, &session.edit);
         let viewport_size = Size::new(viewport.text_rect.w, viewport.text_rect.h);
@@ -498,6 +742,22 @@ impl EditorEngine {
         ScrollMetrics::new(viewport_size, content_size)
     }
 
+    /// Returns code text-viewport/content metrics from the cached frame.
+    ///
+    /// The viewport excludes both padding and the configured gutter. With no
+    /// approximately matching frame, content equals viewport.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Rect, Size};
+    /// use ailloli_ui_editor::{CodeEditorConfig, CodeEditorSession, Document, DocumentId, EditorEngine};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let session = CodeEditorSession::new(Document::new(DocumentId(1), TextBuffer::new()), CodeEditorConfig::default());
+    /// let metrics = EditorEngine::new().code_scroll_metrics_cached(&session, Rect::new(0.0, 0.0, 100.0, 50.0));
+    /// assert_eq!(metrics.viewport, Size::new(32.0, 30.0));
+    /// assert_eq!(metrics.content, metrics.viewport);
+    /// ```
     pub fn code_scroll_metrics_cached(
         &self,
         session: &CodeEditorSession,
@@ -517,6 +777,7 @@ impl EditorEngine {
         ScrollMetrics::new(viewport_size, content_size)
     }
 
+    /// Returns the retained frame when bounds components differ by under 0.5.
     fn last_frame_for_bounds(&self, bounds: Rect) -> Option<&EditorFrame> {
         let frame = self.last_frame.as_ref()?;
         if same_rect(frame.viewport.bounds, bounds) {
@@ -527,6 +788,7 @@ impl EditorEngine {
     }
 }
 
+/// Compares rectangle components with a strict half-logical-pixel tolerance.
 fn same_rect(a: Rect, b: Rect) -> bool {
     (a.x - b.x).abs() < 0.5
         && (a.y - b.y).abs() < 0.5
@@ -534,6 +796,7 @@ fn same_rect(a: Rect, b: Rect) -> bool {
         && (a.h - b.h).abs() < 0.5
 }
 
+/// Builds vertical then horizontal scrollbar items for overflowing axes.
 fn scrollbar_items_for_viewport(
     viewport: EditorViewport,
     content_size: Size,
@@ -587,6 +850,7 @@ fn scrollbar_items_for_viewport(
     items
 }
 
+/// Converts resolved scrollbar geometry into a neutral paint item.
 fn scrollbar_item(
     track_rect: Rect,
     thumb_rect: Rect,
@@ -601,6 +865,7 @@ fn scrollbar_item(
     }
 }
 
+/// Resolves a vertical track/thumb or returns `None` for unusable geometry.
 fn vertical_scrollbar_rects(
     bounds: Rect,
     metrics: ScrollMetrics,
@@ -633,6 +898,7 @@ fn vertical_scrollbar_rects(
     Some((track, thumb))
 }
 
+/// Resolves a horizontal track/thumb or returns `None` for unusable geometry.
 fn horizontal_scrollbar_rects(
     bounds: Rect,
     metrics: ScrollMetrics,

@@ -1,3 +1,5 @@
+//! Integration scenarios for pointer, keyboard, focus, and activation routing.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -23,6 +25,7 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_text::TextSystem;
 
 #[test]
+/// Constructs the keyboard routes to focused element not hovered element test input.
 fn keyboard_routes_to_focused_element_not_hovered_element() {
     let (app, root_id, left_log, right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::TextSingleLine),
@@ -56,6 +59,7 @@ fn keyboard_routes_to_focused_element_not_hovered_element() {
 }
 
 #[test]
+/// Verifies that dispatched keyboard event without interaction change does not need redraw.
 fn dispatched_keyboard_event_without_interaction_change_does_not_need_redraw() {
     let (app, _root_id, _left_log, _right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::TextSingleLine),
@@ -78,6 +82,7 @@ fn dispatched_keyboard_event_without_interaction_change_does_not_need_redraw() {
 }
 
 #[test]
+/// Verifies that focus survives dynamic input role change and first keyboard dispatches.
 fn focus_survives_dynamic_input_role_change_and_first_keyboard_dispatches() {
     let role = Rc::new(RefCell::new(InputRole::None));
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
@@ -115,6 +120,7 @@ fn focus_survives_dynamic_input_role_change_and_first_keyboard_dispatches() {
 }
 
 #[test]
+/// Verifies that focus change dispatches blur then focus events.
 fn focus_change_dispatches_blur_then_focus_events() {
     let (app, root_id, left_log, right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::TextSingleLine),
@@ -147,6 +153,7 @@ fn focus_change_dispatches_blur_then_focus_events() {
 }
 
 #[test]
+/// Verifies that host blur tree dispatches blur once and clears focus.
 fn host_blur_tree_dispatches_blur_once_and_clears_focus() {
     let (app, _root_id, left_log, right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::TextSingleLine),
@@ -169,6 +176,7 @@ fn host_blur_tree_dispatches_blur_once_and_clears_focus() {
 }
 
 #[test]
+/// Verifies that focus cycle uses depth first order and wraps for tab directions.
 fn focus_cycle_uses_depth_first_order_and_wraps_for_tab_directions() {
     let first = TestLeaf::focusable("first", InputRole::None);
     let first_log = first.log.clone();
@@ -226,6 +234,7 @@ fn focus_cycle_uses_depth_first_order_and_wraps_for_tab_directions() {
 }
 
 #[test]
+/// Verifies that overlay hit bounds are tested before normal bounds.
 fn overlay_hit_bounds_are_tested_before_normal_bounds() {
     let mut overlay = TestLeaf::focusable("overlay", InputRole::None);
     overlay.overlay_hit_bounds = vec![Rect::new(0.0, 20.0, 40.0, 20.0)];
@@ -250,6 +259,7 @@ fn overlay_hit_bounds_are_tested_before_normal_bounds() {
 }
 
 #[test]
+/// Verifies that retained popup hit cannot dispatch to a procedural fallback below it.
 fn retained_popup_hit_cannot_dispatch_to_a_procedural_fallback_below_it() {
     let mut procedural_leaf = TestLeaf::focusable("procedural", InputRole::None);
     procedural_leaf.overlay_hit_bounds = vec![Rect::new(0.0, 20.0, 40.0, 20.0)];
@@ -314,6 +324,7 @@ fn retained_popup_hit_cannot_dispatch_to_a_procedural_fallback_below_it() {
 }
 
 #[test]
+/// Constructs the file drop routes to element under drop position test input.
 fn file_drop_routes_to_element_under_drop_position() {
     let (app, root_id, left_log, right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::None),
@@ -339,6 +350,7 @@ fn file_drop_routes_to_element_under_drop_position() {
 }
 
 #[test]
+/// Verifies that widget requested repaint is dirty even when route does not need redraw.
 fn widget_requested_repaint_is_dirty_even_when_route_does_not_need_redraw() {
     let repainting = TestLeaf {
         request_repaint: true,
@@ -362,6 +374,7 @@ fn widget_requested_repaint_is_dirty_even_when_route_does_not_need_redraw() {
 }
 
 #[test]
+/// Verifies that envelopes keep pointer state isolated by pointer id.
 fn envelopes_keep_pointer_state_isolated_by_pointer_id() {
     let (app, root_id, _left_log, _right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::None),
@@ -423,6 +436,7 @@ fn envelopes_keep_pointer_state_isolated_by_pointer_id() {
 }
 
 #[test]
+/// Verifies that touch end and cancel remove only the finished pointer state.
 fn touch_end_and_cancel_remove_only_the_finished_pointer_state() {
     let (app, root_id, _left_log, _right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::None),
@@ -493,6 +507,7 @@ fn touch_end_and_cancel_remove_only_the_finished_pointer_state() {
 }
 
 #[test]
+/// Verifies that envelope metadata is visible to the dispatched widget.
 fn envelope_metadata_is_visible_to_the_dispatched_widget() {
     let (app, _root_id, left_log, _right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::None),
@@ -532,6 +547,7 @@ fn envelope_metadata_is_visible_to_the_dispatched_widget() {
 }
 
 #[test]
+/// Constructs the pointer drag uses capture until release test input.
 fn pointer_drag_uses_capture_until_release() {
     let (app, _root_id, left_log, right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::None),
@@ -569,6 +585,7 @@ fn pointer_drag_uses_capture_until_release() {
 }
 
 #[test]
+/// Verifies that click on non focusable element clears existing focus.
 fn click_on_non_focusable_element_clears_existing_focus() {
     let (app, _root_id, _left_log, _right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::TextSingleLine),
@@ -595,6 +612,7 @@ fn click_on_non_focusable_element_clears_existing_focus() {
 }
 
 #[test]
+/// Verifies that hovered cursor role tracks hovered text widgets.
 fn hovered_cursor_role_tracks_hovered_text_widgets() {
     let (app, _root_id, _left_log, _right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::TextSingleLine),
@@ -620,6 +638,7 @@ fn hovered_cursor_role_tracks_hovered_text_widgets() {
 }
 
 #[test]
+/// Verifies that hovered cursor role returns default for plain or empty hover.
 fn hovered_cursor_role_returns_default_for_plain_or_empty_hover() {
     let (app, _root_id, _left_log, _right_log) =
         app_with_two_children(TestLeaf::plain("left"), TestLeaf::plain("right"));
@@ -644,6 +663,7 @@ fn hovered_cursor_role_returns_default_for_plain_or_empty_hover() {
 }
 
 #[test]
+/// Verifies that hovered cursor role inherits from text parent.
 fn hovered_cursor_role_inherits_from_text_parent() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
@@ -664,6 +684,7 @@ fn hovered_cursor_role_inherits_from_text_parent() {
 }
 
 #[test]
+/// Verifies that hovered cursor role inherits pointer from link like parent.
 fn hovered_cursor_role_inherits_pointer_from_link_like_parent() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
@@ -687,6 +708,7 @@ fn hovered_cursor_role_inherits_pointer_from_link_like_parent() {
 }
 
 #[test]
+/// Verifies that hovered cursor role child can refuse text parent.
 fn hovered_cursor_role_child_can_refuse_text_parent() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
@@ -713,6 +735,7 @@ fn hovered_cursor_role_child_can_refuse_text_parent() {
 }
 
 #[test]
+/// Verifies that hovered cursor role at allows position contextual resize parent.
 fn hovered_cursor_role_at_allows_position_contextual_resize_parent() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
@@ -741,6 +764,7 @@ fn hovered_cursor_role_at_allows_position_contextual_resize_parent() {
 }
 
 #[test]
+/// Verifies that removed focused element is cleared before keyboard dispatch.
 fn removed_focused_element_is_cleared_before_keyboard_dispatch() {
     let (mut app, root_id, left_log, _right_log) = app_with_two_children(
         TestLeaf::focusable("left", InputRole::TextSingleLine),
@@ -769,6 +793,7 @@ fn removed_focused_element_is_cleared_before_keyboard_dispatch() {
 }
 
 #[test]
+/// Verifies that dispatch bubbles until widget stops propagation.
 fn dispatch_bubbles_until_widget_stops_propagation() {
     let parent_log = Rc::new(RefCell::new(Vec::new()));
     let child_log = Rc::new(RefCell::new(Vec::new()));
@@ -808,6 +833,7 @@ fn dispatch_bubbles_until_widget_stops_propagation() {
 }
 
 #[test]
+/// Verifies that dispatch passes layout result to widget event.
 fn dispatch_passes_layout_result_to_widget_event() {
     let seen = Rc::new(RefCell::new(None));
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
@@ -826,6 +852,7 @@ fn dispatch_passes_layout_result_to_widget_event() {
 }
 
 #[test]
+/// Verifies that input capture survives dirty component reconcile.
 fn input_capture_survives_dirty_component_reconcile() {
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
     let dirty_signal = Rc::new(RefCell::new(None::<Signal<bool>>));
@@ -869,6 +896,7 @@ fn input_capture_survives_dirty_component_reconcile() {
 }
 
 #[allow(clippy::type_complexity)]
+/// Constructs the app with two children test input.
 fn app_with_two_children(
     left: TestLeaf,
     right: TestLeaf,
@@ -890,6 +918,7 @@ fn app_with_two_children(
     (app, root_id, left_log, right_log)
 }
 
+/// Computes this test widget’s layout result.
 fn layout(app: &mut Runtime<()>) {
     let mut text_system = TextSystem::new();
     app.layout(
@@ -899,6 +928,7 @@ fn layout(app: &mut Runtime<()>) {
     );
 }
 
+/// Constructs the pointer button test input.
 fn pointer_button(pos: Point, pressed: bool) -> Event {
     Event::Pointer(PointerEvent::Button {
         pos,
@@ -908,6 +938,7 @@ fn pointer_button(pos: Point, pressed: bool) -> Event {
     })
 }
 
+/// Constructs the pointer move test input.
 fn pointer_move(pos: Point) -> Event {
     Event::Pointer(PointerEvent::Moved {
         pos,
@@ -915,6 +946,7 @@ fn pointer_move(pos: Point) -> Event {
     })
 }
 
+/// Constructs the pointer cancelled test input.
 fn pointer_cancelled(pos: Point) -> Event {
     Event::Pointer(PointerEvent::Cancelled {
         pos,
@@ -922,6 +954,7 @@ fn pointer_cancelled(pos: Point) -> Event {
     })
 }
 
+/// Constructs the pointer envelope test input.
 fn pointer_envelope(id: u64, pos: Point, event: Event) -> EventEnvelope {
     let pointer = PointerSample::new(PointerId::new(id), PointerSource::Touch, pos).unwrap();
     EventEnvelope::new(
@@ -936,6 +969,7 @@ fn pointer_envelope(id: u64, pos: Point, event: Event) -> EventEnvelope {
     )
 }
 
+/// Constructs the keyboard a test input.
 fn keyboard_a() -> Event {
     Event::Keyboard(KeyEvent {
         state: KeyState::Pressed,
@@ -948,6 +982,7 @@ fn keyboard_a() -> Event {
 }
 
 #[derive(Clone)]
+/// Test support type for TestLeaf scenarios.
 struct TestLeaf {
     name: &'static str,
     size: Size,
@@ -960,7 +995,9 @@ struct TestLeaf {
     log: Rc<RefCell<Vec<String>>>,
 }
 
+/// Provides test-helper operations for TestLeaf.
 impl TestLeaf {
+    /// Verifies that focusable.
     fn focusable(name: &'static str, input_role: InputRole) -> Self {
         Self {
             name,
@@ -978,6 +1015,7 @@ impl TestLeaf {
         }
     }
 
+    /// Verifies that plain.
     fn plain(name: &'static str) -> Self {
         Self {
             name,
@@ -993,11 +1031,14 @@ impl TestLeaf {
     }
 }
 
+/// Implements the Widget<()> test contract for TestLeaf.
 impl Widget<()> for TestLeaf {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         self.name
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -1018,8 +1059,10 @@ impl Widget<()> for TestLeaf {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,
@@ -1064,29 +1107,36 @@ impl Widget<()> for TestLeaf {
         }
     }
 
+    /// Returns this test widget’s focus policy.
     fn focus_policy(&self) -> FocusPolicy {
         self.focus_policy
     }
 
+    /// Returns this test widget’s semantic input role.
     fn input_role(&self) -> InputRole {
         self.input_role
     }
 
+    /// Returns this test widget’s cursor role.
     fn hover_cursor_role(&self) -> HoverCursorRole {
         self.hover_cursor_role
     }
 }
 
+/// Test support type for DynamicRoleLeaf scenarios.
 struct DynamicRoleLeaf {
     role: Rc<RefCell<InputRole>>,
     log: Rc<RefCell<Vec<String>>>,
 }
 
+/// Implements the Widget<()> test contract for DynamicRoleLeaf.
 impl Widget<()> for DynamicRoleLeaf {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "dynamic"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -1107,8 +1157,10 @@ impl Widget<()> for DynamicRoleLeaf {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         _ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,
@@ -1121,26 +1173,32 @@ impl Widget<()> for DynamicRoleLeaf {
         }
     }
 
+    /// Returns this test widget’s focus policy.
     fn focus_policy(&self) -> FocusPolicy {
         FocusPolicy::Focusable
     }
 
+    /// Returns this test widget’s semantic input role.
     fn input_role(&self) -> InputRole {
         *self.role.borrow()
     }
 }
 
+/// Test support type for TestParent scenarios.
 struct TestParent {
     log: Rc<RefCell<Vec<String>>>,
     input_role: InputRole,
     hover_cursor_role: HoverCursorRole,
 }
 
+/// Implements the Widget<()> test contract for TestParent.
 impl Widget<()> for TestParent {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "parent"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, ()>,
@@ -1174,8 +1232,10 @@ impl Widget<()> for TestParent {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         _ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,
@@ -1188,21 +1248,26 @@ impl Widget<()> for TestParent {
         }
     }
 
+    /// Returns this test widget’s semantic input role.
     fn input_role(&self) -> InputRole {
         self.input_role
     }
 
+    /// Returns this test widget’s cursor role.
     fn hover_cursor_role(&self) -> HoverCursorRole {
         self.hover_cursor_role
     }
 }
 
+/// Test support type for DirtyButtonComponent scenarios.
 struct DirtyButtonComponent {
     log: Rc<RefCell<Vec<String>>>,
     dirty_signal: Rc<RefCell<Option<Signal<bool>>>>,
 }
 
+/// Implements the ComponentNode<()> test contract for DirtyButtonComponent.
 impl ComponentNode<()> for DirtyButtonComponent {
+    /// Builds the retained test view.
     fn build(&self, context: &mut Context<()>) -> View<()> {
         let dirty = context.signal(false);
         *self.dirty_signal.borrow_mut() = Some(dirty);
@@ -1221,15 +1286,19 @@ impl ComponentNode<()> for DirtyButtonComponent {
     }
 }
 
+/// Test support type for TestColumn scenarios.
 struct TestColumn {
     gap: f32,
 }
 
+/// Implements the Widget<()> test contract for TestColumn.
 impl Widget<()> for TestColumn {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "column"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, ()>,
@@ -1267,18 +1336,23 @@ impl Widget<()> for TestColumn {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Test support type for LayoutAwareLeaf scenarios.
 struct LayoutAwareLeaf {
     seen: Rc<RefCell<Option<Size>>>,
 }
 
+/// Implements the Widget<()> test contract for LayoutAwareLeaf.
 impl Widget<()> for LayoutAwareLeaf {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "layout-aware"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -1299,8 +1373,10 @@ impl Widget<()> for LayoutAwareLeaf {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         _ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,
@@ -1312,13 +1388,17 @@ impl Widget<()> for LayoutAwareLeaf {
     }
 }
 
+/// Test support type for ContextualCursorParent scenarios.
 struct ContextualCursorParent;
 
+/// Implements the Widget<()> test contract for ContextualCursorParent.
 impl Widget<()> for ContextualCursorParent {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "contextual-cursor-parent"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, ()>,
@@ -1349,8 +1429,10 @@ impl Widget<()> for ContextualCursorParent {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Resolves this test widget’s position-dependent cursor role.
     fn hover_cursor_role_at(
         &self,
         bounds: Rect,

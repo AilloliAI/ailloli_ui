@@ -1,55 +1,125 @@
+//! Axis-aligned rectangles in logical coordinate spaces.
+
 use super::Offset;
 
 /// Axis-aligned rectangle in logical space: origin `(x, y)` and size `(w, h)`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// let rect = Rect::new(10.0, 20.0, 30.0, 40.0);
+/// assert_eq!(rect.max(), (40.0, 60.0));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     /// Left edge.
     pub x: f32,
     /// Top edge.
     pub y: f32,
-    /// Width.
+    /// Width in logical pixels; negative values are stored but usually empty.
     pub w: f32,
-    /// Height.
+    /// Height in logical pixels; negative values are stored but usually empty.
     pub h: f32,
 }
 
 impl Rect {
-    /// Creates a rectangle from origin and size.
+    /// Creates a rectangle from origin and size without normalizing dimensions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// assert_eq!(Rect::new(1.0, 2.0, 3.0, 4.0).w, 3.0);
+    /// ```
     pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
         Self { x, y, w, h }
     }
 
     /// Right edge (`x + w`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// assert_eq!(Rect::new(10.0, 0.0, 30.0, 1.0).right(), 40.0);
+    /// ```
     pub fn right(&self) -> f32 {
         self.x + self.w
     }
 
     /// Bottom edge (`y + h`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// assert_eq!(Rect::new(0.0, 20.0, 1.0, 40.0).bottom(), 60.0);
+    /// ```
     pub fn bottom(&self) -> f32 {
         self.y + self.h
     }
 
     /// Top-left corner `(x, y)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// assert_eq!(Rect::new(1.0, 2.0, 3.0, 4.0).min(), (1.0, 2.0));
+    /// ```
     pub fn min(&self) -> (f32, f32) {
         (self.x, self.y)
     }
 
     /// Bottom-right corner `(right, bottom)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// assert_eq!(Rect::new(1.0, 2.0, 3.0, 4.0).max(), (4.0, 6.0));
+    /// ```
     pub fn max(&self) -> (f32, f32) {
         (self.right(), self.bottom())
     }
 
-    /// Returns `true` if `(px, py)` lies inside the rectangle (inclusive edges).
+    /// Returns `true` if `(px, py)` lies inside the rectangle, including edges.
+    ///
+    /// A negative dimension or non-finite operand normally yields `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// assert!(Rect::new(0.0, 0.0, 10.0, 10.0).contains(5.0, 5.0));
+    /// ```
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px <= self.x + self.w && py >= self.y && py <= self.y + self.h
     }
 
     /// Translates the rectangle by `by` without changing size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Offset, Rect};
+    /// assert_eq!(Rect::new(1.0, 2.0, 3.0, 4.0).translate(Offset::new(5.0, 6.0)), Rect::new(6.0, 8.0, 3.0, 4.0));
+    /// ```
     pub fn translate(&self, by: Offset) -> Rect {
         Rect::new(self.x + by.x, self.y + by.y, self.w, self.h)
     }
 
-    /// Expands the rectangle by `dx`/`dy` on all sides.
+    /// Expands the rectangle by `dx`/`dy` on both matching sides.
+    ///
+    /// Negative deltas deflate the rectangle and may produce negative sizes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// assert_eq!(Rect::new(1.0, 2.0, 3.0, 4.0).inflate(1.0, 2.0), Rect::new(0.0, 0.0, 5.0, 8.0));
+    /// ```
     pub fn inflate(&self, dx: f32, dy: f32) -> Rect {
         Rect::new(
             self.x - dx,
@@ -59,7 +129,15 @@ impl Rect {
         )
     }
 
-    /// Overlap of two rectangles, or `None` if disjoint or zero area.
+    /// Returns the positive-area overlap, or `None` for disjoint/edge contact.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Rect;
+    /// let overlap = Rect::new(0.0, 0.0, 10.0, 10.0).intersection(Rect::new(5.0, 5.0, 10.0, 10.0));
+    /// assert_eq!(overlap, Some(Rect::new(5.0, 5.0, 5.0, 5.0)));
+    /// ```
     pub fn intersection(&self, other: Rect) -> Option<Rect> {
         let x0 = self.x.max(other.x);
         let y0 = self.y.max(other.y);

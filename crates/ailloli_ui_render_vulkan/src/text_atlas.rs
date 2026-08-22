@@ -1,3 +1,10 @@
+//! Bounded, page-evicting Vulkan glyph atlas.
+//!
+//! Glyphs are rasterized as alpha masks into 1024x1024 RGBA8 pages. At most
+//! eight pages are resident (32 MiB of texel data before driver overhead), and
+//! the page containing the least-recently-used glyph is cleared when full.
+//! Uploads use one-time command buffers and synchronously wait for queue idle.
+
 use std::collections::{HashMap, VecDeque};
 
 use ash::vk;
@@ -13,54 +20,139 @@ use crate::gpu::{
     create_buffer_with_data, create_image_2d, create_image_view_2d, GpuImage, GpuImageView,
 };
 
+/// Width and height in physical texels of every square atlas page.
 const ATLAS_SIZE: u32 = 1024;
+/// Hard resident-page ceiling, bounding texel data to 32 MiB.
 const MAX_PAGES: u8 = 8;
 
+/// Cache identity for one rasterized glyph and quantized rendering scale.
+///
+/// `face_id` distinguishes caller-managed font blobs; `font_index` selects a
+/// face within a collection; `px_size` is the rasterizer size; and `scale_100`
+/// prevents reuse across device scales quantized to hundredths.
+///
+/// # Examples
+///
+/// ```
+/// let px_size = 16_u16;
+/// let scale_100 = 150_u16;
+/// assert_eq!((px_size, scale_100), (16, 150));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct GlyphKey {
+    /// Stable identity of the caller-owned font blob.
     pub face_id: u64,
+    /// Zero-based face index within a font collection.
     pub font_index: u32,
+    /// Rasterization size in physical pixels.
     pub px_size: u16,
+    /// Numeric glyph identifier; converted to `u16` for `swash`.
     pub glyph_id: u32,
+    /// Device scale multiplied by 100 and quantized by the caller.
     pub scale_100: u16,
 }
 
+/// Cached atlas placement and rasterizer metrics for one glyph.
+///
+/// # Examples
+///
+/// ```
+/// let uv_min = [0.25_f32, 0.5];
+/// let uv_max = [0.5_f32, 0.75];
+/// assert!(uv_min[0] < uv_max[0]);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AtlasGlyph {
+    /// Zero-based page index, always below eight.
     pub page: u8,
+    /// Inclusive normalized top-left atlas coordinate.
     pub uv_min: [f32; 2],
+    /// Exclusive normalized bottom-right atlas coordinate.
     pub uv_max: [f32; 2],
+    /// Rasterized bitmap width and height in physical pixels.
     pub size_px: [f32; 2],
+    /// Rasterizer left and negative-top placement offset in physical pixels.
     pub offset_px: [f32; 2],
 }
 
+/// Current row in the append-only shelf allocator for one page.
 #[derive(Debug)]
 struct Shelf {
+    /// Next free horizontal texel.
     x: u32,
+    /// Top texel of the current shelf.
     y: u32,
+    /// Height in texels of the current shelf; zero means unused.
     h: u32,
 }
 
+/// GPU resources, descriptor, allocator state, and current layout of one page.
 struct AtlasPage {
+    /// View retained for the descriptor set and destroyed before the image.
     _view: GpuImageView,
+    /// Device-local RGBA8 atlas image.
     image: GpuImage,
+    /// Combined image/sampler descriptor bound by text batches.
     descriptor_set: vk::DescriptorSet,
+    /// Append-only shelf allocation cursor.
     shelf: Shelf,
+    /// Layout last produced by a completed synchronous upload.
     layout: vk::ImageLayout,
 }
 
+/// Fixed-page glyph cache and its Vulkan sampling resources.
+///
+/// The cache begins with one zero-filled page. A miss may synchronously
+/// rasterize, allocate or evict a page, upload through a staging buffer, submit,
+/// and wait for the queue. Glyph hits only update the CPU LRU.
+///
+/// # Examples
+///
+/// ```
+/// let page_texels = 1024_usize * 1024;
+/// let maximum_texel_bytes = page_texels * 4 * 8;
+/// assert_eq!(maximum_texel_bytes, 32 * 1024 * 1024);
+/// ```
 pub(crate) struct TextAtlas {
+    /// Device used to destroy the pool and sampler.
     device: ash::Device,
+    /// Layout supplied by the renderer and used for every page descriptor.
     descriptor_set_layout: vk::DescriptorSetLayout,
+    /// Pool sized for exactly [`MAX_PAGES`] combined image/sampler sets.
     descriptor_pool: vk::DescriptorPool,
+    /// Shared linear, clamp-to-edge sampler.
     sampler: vk::Sampler,
+    /// Resident pages in stable descriptor order.
     pages: Vec<AtlasPage>,
+    /// Placement cache keyed by font/glyph/size/scale identity.
     glyphs: HashMap<GlyphKey, AtlasGlyph>,
+    /// Least-recently-used glyph at the front, newest at the back.
     lru: VecDeque<GlyphKey>,
+    /// Reused `swash` scaling context.
     scale_cx: ScaleContext,
 }
 
+/// Construction, lookup, allocation, rasterization, and upload operations.
 impl TextAtlas {
+    /// Creates sampler/pool state, allocates page zero, and uploads transparent texels.
+    ///
+    /// The call blocks until the initialization upload has reached queue idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed sampler, descriptor-pool, page allocation, command, or
+    /// submission errors. Already-created sampler/pool resources are cleaned up
+    /// on failures before `Self` is fully constructed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_vulkan::{VulkanRenderContext, VulkanRenderer};
+    /// fn build(context: &VulkanRenderContext<'_>) {
+    ///     let renderer = VulkanRenderer::new(context, Default::default());
+    ///     assert!(renderer.is_ok());
+    /// }
+    /// ```
     pub fn new(
         context: &VulkanRenderContext<'_>,
         descriptor_set_layout: vk::DescriptorSetLayout,
@@ -108,12 +200,38 @@ impl TextAtlas {
         Ok(atlas)
     }
 
+    /// Returns the descriptor for a resident page, or `None` when out of range.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let resident_pages = 1_usize;
+    /// assert!(resident_pages.checked_sub(2).is_none());
+    /// ```
     pub fn descriptor_set(&self, page: u8) -> Option<vk::DescriptorSet> {
         self.pages
             .get(page as usize)
             .map(|page| page.descriptor_set)
     }
 
+    /// Returns a cached placement or rasterizes and uploads one glyph.
+    ///
+    /// Invalid font data, a missing face/glyph, or an unsupported outline
+    /// returns `Ok(None)`. Empty glyphs such as spaces are cached as zero-sized
+    /// entries on page zero. Visible glyphs receive a one-texel transparent pad
+    /// on every side to prevent linear-filter bleeding.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed atlas-capacity, allocation, mapping, command, submission,
+    /// or queue-idle errors. A full atlas evicts an entire LRU page.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let font_data: &[u8] = &[];
+    /// assert!(font_data.is_empty()); // Invalid data yields no rasterized glyph.
+    /// ```
     pub fn get_or_rasterize(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -182,6 +300,7 @@ impl TextAtlas {
         Ok(Some(glyph))
     }
 
+    /// Adds and clears one page, failing at the eight-page ceiling.
     fn allocate_page(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -233,6 +352,10 @@ impl TextAtlas {
         Ok(())
     }
 
+    /// Uploads one tightly packed RGBA region and leaves the page shader-readable.
+    ///
+    /// The region must fit the page and `rgba` must contain `width * height * 4`
+    /// bytes; internal callers establish both invariants.
     fn upload_region(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -295,6 +418,10 @@ impl TextAtlas {
         Ok(())
     }
 
+    /// Allocates on the newest page, grows, or clears the LRU page.
+    ///
+    /// Requests larger than one page fail immediately. Returned coordinates are
+    /// the padded allocation origin, not the glyph's visible origin.
     fn alloc_or_grow(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -321,6 +448,7 @@ impl TextAtlas {
         Ok((page, x, y))
     }
 
+    /// Clears one page, resets its shelf, and removes all resident cache keys.
     fn reset_page(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -341,6 +469,10 @@ impl TextAtlas {
         Ok(())
     }
 
+    /// Attempts append-only shelf allocation without moving existing glyphs.
+    ///
+    /// A taller allocation begins a new shelf; horizontal overflow also begins
+    /// a new shelf. `None` means the requested rectangle cannot fit vertically.
     fn try_alloc_in(&mut self, page_idx: usize, w: u32, h: u32) -> Option<(u32, u32)> {
         let page = self.pages.get_mut(page_idx)?;
         if page.shelf.h == 0 {
@@ -365,16 +497,22 @@ impl TextAtlas {
         Some((x, y))
     }
 
+    /// Returns the page containing the least-recently-used cached glyph.
     fn oldest_page(&self) -> Option<u8> {
         let key = self.lru.front()?;
         self.glyphs.get(key).map(|glyph| glyph.page)
     }
 
+    /// Moves `key` to the newest end, maintaining one occurrence per key.
     fn touch_lru(&mut self, key: GlyphKey) {
         self.lru.retain(|item| item != &key);
         self.lru.push_back(key);
     }
 
+    /// Rasterizes an alpha glyph using color outline/bitmap/outline fallbacks.
+    ///
+    /// The glyph ID is narrowed to `u16` because `swash` uses that domain.
+    /// Placement converts top-up metrics into the renderer's negative-top offset.
     fn rasterize(
         &mut self,
         font_data: &[u8],
@@ -400,6 +538,7 @@ impl TextAtlas {
     }
 }
 
+/// Destroys views/images first, then the descriptor pool and shared sampler.
 impl Drop for TextAtlas {
     fn drop(&mut self) {
         self.pages.clear();
@@ -415,6 +554,11 @@ impl Drop for TextAtlas {
     }
 }
 
+/// Records one primary command buffer, submits it, and waits for queue idle.
+///
+/// The command buffer is freed on every result after allocation, including
+/// begin/end/submit/wait errors. A panic in `record` unwinds before explicit
+/// freeing and is therefore outside this helper's recoverable error contract.
 fn submit_one_time_commands<F>(
     context: &VulkanRenderContext<'_>,
     record: F,
@@ -467,6 +611,13 @@ where
     result
 }
 
+/// Records a color-image layout barrier using conservative fallback masks/stages.
+///
+/// # Safety
+///
+/// `device`, `command_buffer`, and `image` must belong to the same live Vulkan
+/// device; recording must be active; and `old_layout` must match actual image
+/// state for the one-mip, one-layer color subresource.
 unsafe fn transition_image(
     device: &ash::Device,
     command_buffer: vk::CommandBuffer,
@@ -500,6 +651,7 @@ unsafe fn transition_image(
     );
 }
 
+/// Maps known atlas layouts to exact access masks and unknown layouts to memory read/write.
 fn access_mask_for_layout(layout: vk::ImageLayout) -> vk::AccessFlags {
     match layout {
         vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
@@ -509,6 +661,7 @@ fn access_mask_for_layout(layout: vk::ImageLayout) -> vk::AccessFlags {
     }
 }
 
+/// Maps known atlas layouts to precise stages and unknown layouts to all commands.
 fn pipeline_stage_for_layout(layout: vk::ImageLayout) -> vk::PipelineStageFlags {
     match layout {
         vk::ImageLayout::UNDEFINED => vk::PipelineStageFlags::TOP_OF_PIPE,

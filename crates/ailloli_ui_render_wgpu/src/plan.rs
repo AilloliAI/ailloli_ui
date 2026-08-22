@@ -6,30 +6,79 @@ use crate::clip::ClipRenderMode;
 use crate::renderer::LayerPass;
 
 /// Command counts and clip mode for one render layer.
+///
+/// All counts are exact `usize` counts from the layer's command slice. Boolean
+/// fields report whether the corresponding clip facility participates.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::{ClipRenderMode, LayerPlan};
+/// let plan = LayerPlan {
+///     rects: 1, rrects: 0, borders: 0, shadows: 0, ring_progresses: 0,
+///     polylines: 0, texts: 0, images: 0, has_clip: false,
+///     has_scissor: false, rounded_masks: 0, has_window_root_clip: false,
+///     clip_mode: ClipRenderMode::Scissor,
+/// };
+/// assert_eq!(plan.rects, 1);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct LayerPlan {
+    /// Rectangle command count.
     pub rects: usize,
+    /// Rounded-rectangle command count.
     pub rrects: usize,
+    /// Rounded-border command count.
     pub borders: usize,
+    /// Box-shadow command count.
     pub shadows: usize,
+    /// Ring-progress command count.
     pub ring_progresses: usize,
+    /// Polyline command count.
     pub polylines: usize,
+    /// Text command count.
     pub texts: usize,
+    /// Image command count.
     pub images: usize,
+    /// Whether the logical clip stack is nonempty.
     pub has_clip: bool,
+    /// Whether the resolved plan has a rectangular scissor.
     pub has_scissor: bool,
+    /// Number of rounded masks in the resolved clip plan.
     pub rounded_masks: usize,
+    /// Whether a clip entry is marked as the window-root clip.
     pub has_window_root_clip: bool,
+    /// Selected GPU clip implementation.
     pub clip_mode: ClipRenderMode,
 }
 
 /// Aggregated plan for all layers in a frame.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::RenderPlan;
+/// let plan = RenderPlan { layers: Vec::new() };
+/// assert!(plan.layers.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RenderPlan {
+    /// Layer summaries in input order.
     pub layers: Vec<LayerPlan>,
 }
 
 /// Builds a [`RenderPlan`] from the layer passes about to be rendered.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::{build_render_plan, LayerPass};
+/// let commands = [];
+/// let layers = [LayerPass::new(&commands)];
+/// let plan = build_render_plan(&layers);
+/// assert_eq!(plan.layers.len(), 1);
+/// assert_eq!(plan.layers[0].rects, 0);
+/// ```
 pub fn build_render_plan(layers: &[LayerPass<'_>]) -> RenderPlan {
     let mut out = Vec::with_capacity(layers.len());
     for l in layers {
@@ -73,6 +122,7 @@ pub fn build_render_plan(layers: &[LayerPass<'_>]) -> RenderPlan {
 }
 
 #[cfg(test)]
+/// Verifies per-layer statistics for renderer-specific primitive commands.
 mod tests {
     use super::*;
     use ailloli_ui_core::{BoxShadow, Color, Point, Radius, Rect, StrokeStyle};

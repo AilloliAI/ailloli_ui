@@ -1,3 +1,5 @@
+//! Built-in interactive OpenXR smoke scene and movable/resizable panel demo.
+
 use std::time::{Duration, Instant};
 
 use ailloli_ui_core::math::Scale;
@@ -29,29 +31,64 @@ use super::panel::{
 use super::ray_overlay::{OpenXrRayHitKind, OpenXrRayOverlayOptions, OpenXrRaySample};
 use super::session_loop::{OpenXrRuntime, OpenXrRuntimeOptions, ReferenceSpacePreference};
 
+/// Default smoke swapchain width in pixels.
 const SMOKE_PIXEL_WIDTH: u32 = 1024;
+/// Default smoke swapchain height in pixels.
 const SMOKE_PIXEL_HEIGHT: u32 = 576;
+/// Default smoke panel width in metres.
 const SMOKE_QUAD_WIDTH_M: f32 = 1.6;
+/// Default smoke panel height in metres.
 const SMOKE_QUAD_HEIGHT_M: f32 = 0.9;
+/// Fallback viewer-to-panel distance in metres.
 const DEFAULT_DISTANCE_M: f32 = 2.0;
+/// Fallback logical-to-physical scale.
 const DEFAULT_SCALE: f32 = 1.0;
+/// Minimum resizable panel width in metres.
 const SMOKE_SLATE_MIN_WIDTH_M: f32 = 0.45;
+/// Minimum resizable panel height in metres.
 const SMOKE_SLATE_MIN_HEIGHT_M: f32 = 0.25;
+/// Maximum resizable panel width in metres.
 const SMOKE_SLATE_MAX_WIDTH_M: f32 = 3.0;
+/// Maximum resizable panel height in metres.
 const SMOKE_SLATE_MAX_HEIGHT_M: f32 = 1.8;
 
 #[derive(Debug, Clone)]
+/// Runtime, input, physical panel, timeout, and demo settings for the smoke app.
+///
+/// Non-positive/non-finite distance and scale fall back to `2.0` metres and DPR
+/// `1.0`. Pixel axes are clamped to at least one. A timeout is active only when
+/// finite and strictly positive; `None` or invalid values mean no timeout.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrSmokeOptions;
+/// let options = OpenXrSmokeOptions::default();
+/// assert_eq!((options.distance_m, options.scale), (2.0, 1.0));
+/// assert_eq!(options.timeout_sec, None);
+/// ```
 pub struct OpenXrSmokeOptions {
+    /// Prefer the left controller when both controller rays are available.
     pub prefer_left: bool,
+    /// Enable tracked-hand fallback when the runtime supports it.
     pub hands: bool,
+    /// Initial panel distance in metres; invalid values fall back to `2.0`.
     pub distance_m: f32,
+    /// Logical-to-physical UI scale; invalid values fall back to `1.0`.
     pub scale: f32,
+    /// Optional positive finite automatic-exit delay in seconds.
     pub timeout_sec: Option<f32>,
+    /// UI swapchain width in pixels; clamped to at least one.
     pub pixel_width: u32,
+    /// UI swapchain height in pixels; clamped to at least one.
     pub pixel_height: u32,
+    /// OpenXR application name, subject to native byte/NUL limits.
     pub application_name: String,
+    /// OpenXR/Vulkan engine name, subject to native byte/NUL limits.
     pub engine_name: String,
+    /// Whether the view exposes move and resize affordances.
     pub affordance_demo: bool,
+    /// Panel-facing policy used by affordance moves.
     pub panel_facing: OpenXrPanelFacingOptions,
 }
 
@@ -74,18 +111,59 @@ impl Default for OpenXrSmokeOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Terminal reason returned by a successful smoke run.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrSmokeExitReason;
+/// assert_ne!(OpenXrSmokeExitReason::Timeout, OpenXrSmokeExitReason::Shutdown);
+/// ```
 pub enum OpenXrSmokeExitReason {
+    /// The smoke UI dispatched its exit button action.
     ExitAction,
+    /// The configured positive timeout elapsed.
     Timeout,
+    /// The caller-provided shutdown predicate became true.
     Shutdown,
+    /// OpenXR requested exit, loss pending, or instance loss.
     XrExit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Successful completion report for the smoke host.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::{OpenXrSmokeExitReason, OpenXrSmokeResult};
+/// let result = OpenXrSmokeResult { exit_reason: OpenXrSmokeExitReason::Shutdown };
+/// assert_eq!(result.exit_reason, OpenXrSmokeExitReason::Shutdown);
+/// ```
 pub struct OpenXrSmokeResult {
+    /// Condition that ended the loop.
     pub exit_reason: OpenXrSmokeExitReason,
 }
 
+/// Initializes and runs the built-in OpenXR smoke application.
+///
+/// `shutdown` is polled once per outer loop iteration. Returning true yields a
+/// successful [`OpenXrSmokeExitReason::Shutdown`]. The function owns runtime/UI
+/// resources until the loop exits.
+///
+/// # Errors
+///
+/// Returns any OpenXR, Vulkan, swapchain, action, rendering, or submission error
+/// encountered during initialization or the loop.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::{run_openxr_smoke, OpenXrSmokeOptions};
+/// let result = run_openxr_smoke(OpenXrSmokeOptions::default(), || false)?;
+/// println!("{:?}", result.exit_reason);
+/// # Ok::<(), ailloli_ui_openxr::OpenXrRuntimeError>(())
+/// ```
 pub fn run_openxr_smoke(
     options: OpenXrSmokeOptions,
     shutdown: impl Fn() -> bool,
@@ -94,6 +172,7 @@ pub fn run_openxr_smoke(
     app.main_loop(shutdown)
 }
 
+/// Owned runtime, external UI host, and diagnostic state for the smoke loop.
 struct OpenXrSmokeApp {
     // Drop the UI host before `OpenXrRuntime`; its swapchains depend on the runtime session/device.
     host: OpenXrExternalUiHost<SmokeAction>,
@@ -107,6 +186,7 @@ struct OpenXrSmokeApp {
 }
 
 impl OpenXrSmokeApp {
+    /// Initializes runtime, panel options, runtime tree, input, and swapchains.
     fn new(options: OpenXrSmokeOptions) -> Result<Self, OpenXrRuntimeError> {
         let runtime = OpenXrRuntime::new(smoke_runtime_options(&options))?;
         log::info!(
@@ -145,6 +225,7 @@ impl OpenXrSmokeApp {
         })
     }
 
+    /// Drives events, timing, input, panel affordances, rendering, and submission.
     fn main_loop(
         &mut self,
         shutdown: impl Fn() -> bool,
@@ -387,14 +468,20 @@ impl OpenXrSmokeApp {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Actions emitted by buttons and window affordances in the smoke tree.
 enum SmokeAction {
+    /// Primary diagnostic button.
     Primary,
+    /// Secondary diagnostic button.
     Secondary,
+    /// Move/resize event from the panel chrome.
     Affordance(WindowAffordanceEvent),
+    /// Request a successful exit from the demo.
     Exit,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// Detailed diagnostics returned after applying one affordance event.
 struct SmokeSlateApplyResult {
     changed: bool,
     hmd_pose_seen: bool,
@@ -410,6 +497,7 @@ struct SmokeSlateApplyResult {
 }
 
 impl SmokeSlateApplyResult {
+    /// Returns a result whose only asserted condition is `changed`.
     fn changed() -> Self {
         Self {
             changed: true,
@@ -419,6 +507,7 @@ impl SmokeSlateApplyResult {
 }
 
 #[derive(Clone, Copy)]
+/// Mutable physical panel geometry and active stable-grab state.
 struct SmokeSlateState {
     layer: OpenXrQuadLayerOptions,
     min_size_m: xr::Extent2Df,
@@ -428,6 +517,7 @@ struct SmokeSlateState {
 }
 
 impl SmokeSlateState {
+    /// Creates bounded panel state and normalizes facing pitch bounds.
     fn new(layer: OpenXrQuadLayerOptions, mut facing: OpenXrPanelFacingOptions) -> Self {
         facing.normalize_pitch_bounds();
         Self {
@@ -445,6 +535,7 @@ impl SmokeSlateState {
         }
     }
 
+    /// Dispatches move/resize phases and ignores non-geometric affordances.
     fn apply_affordance_event(
         &mut self,
         event: WindowAffordanceEvent,
@@ -470,6 +561,7 @@ impl SmokeSlateState {
         }
     }
 
+    /// Applies stable world-ray drag when possible, otherwise logical delta move.
     fn apply_move_affordance(
         &mut self,
         event: WindowAffordanceEvent,
@@ -571,6 +663,7 @@ impl SmokeSlateState {
         }
     }
 
+    /// Captures local grab point, initial rotation, and optional ray-depth axis.
     fn new_grab_state(
         &self,
         event: WindowAffordanceEvent,
@@ -586,12 +679,14 @@ impl SmokeSlateState {
         grab
     }
 
+    /// Converts a logical drag delta to panel-basis translation in metres.
     fn apply_move(&mut self, event: WindowAffordanceEvent, logical_size: Size) {
         let (dx_m, dy_m) = self.logical_delta_to_meters(event, logical_size);
         let translation = layer_right(self.layer) * dx_m + layer_up(self.layer) * -dy_m;
         translate_layer(&mut self.layer, translation);
     }
 
+    /// Resizes from one edge/corner while preserving the opposite edge.
     fn apply_resize(&mut self, edge: ResizeEdge, event: WindowAffordanceEvent, logical_size: Size) {
         let (dx_m, dy_m) = self.logical_delta_to_meters(event, logical_size);
         let old_width = self.layer.size.width.max(self.min_size_m.width);
@@ -637,6 +732,7 @@ impl SmokeSlateState {
         translate_layer(&mut self.layer, right * shift_x + up * shift_y);
     }
 
+    /// Scales a logical delta by the current physical panel extent.
     fn logical_delta_to_meters(
         &self,
         event: WindowAffordanceEvent,
@@ -650,31 +746,37 @@ impl SmokeSlateState {
         )
     }
 
+    /// Clamps width to the smoke panel's inclusive metre bounds.
     fn clamp_width(&self, width: f32) -> f32 {
         width.clamp(self.min_size_m.width, self.max_size_m.width)
     }
 
+    /// Clamps height to the smoke panel's inclusive metre bounds.
     fn clamp_height(&self, height: f32) -> f32 {
         height.clamp(self.min_size_m.height, self.max_size_m.height)
     }
 }
 
+/// Adds a world-space metre translation to the layer position.
 fn translate_layer(layer: &mut OpenXrQuadLayerOptions, translation: Vec3) {
     layer.pose.position.x += translation.x;
     layer.pose.position.y += translation.y;
     layer.pose.position.z += translation.z;
 }
 
+/// Returns the normalized world-space right axis of a layer.
 fn layer_right(layer: OpenXrQuadLayerOptions) -> Vec3 {
     rotate_vec3(layer.pose.orientation, Vec3::new(1.0, 0.0, 0.0))
         .normalize_or(Vec3::new(1.0, 0.0, 0.0))
 }
 
+/// Returns the normalized world-space up axis of a layer.
 fn layer_up(layer: OpenXrQuadLayerOptions) -> Vec3 {
     rotate_vec3(layer.pose.orientation, Vec3::new(0.0, 1.0, 0.0))
         .normalize_or(Vec3::new(0.0, 1.0, 0.0))
 }
 
+/// Reconstructs a UI hit in world space from a valid ray sample.
 fn ray_sample_to_grab_world(sample: Option<OpenXrRaySample>) -> Option<Vec3> {
     let sample = valid_ui_ray_sample(sample)?;
     sample
@@ -683,6 +785,7 @@ fn ray_sample_to_grab_world(sample: Option<OpenXrRaySample>) -> Option<Vec3> {
         .map(|direction| sample.origin + direction * sample.hit_distance)
 }
 
+/// Keeps finite UI-hit samples with a normalizable direction.
 fn valid_ui_ray_sample(sample: Option<OpenXrRaySample>) -> Option<OpenXrRaySample> {
     let sample = sample?;
     if sample.hit_kind == OpenXrRayHitKind::Ui
@@ -695,6 +798,7 @@ fn valid_ui_ray_sample(sample: Option<OpenXrRaySample>) -> Option<OpenXrRaySampl
     }
 }
 
+/// Selects the default or affordance demo view.
 fn smoke_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
     if options.affordance_demo {
         smoke_affordance_view(options)
@@ -703,6 +807,7 @@ fn smoke_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
     }
 }
 
+/// Builds the static diagnostic/card/button smoke UI.
 fn smoke_default_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
     let title = TextStyle::new(FontId::Ui, 34, Color::rgb(245, 248, 255));
     let body = TextStyle::new(FontId::Ui, 17, Color::rgb(218, 226, 238));
@@ -803,6 +908,7 @@ fn smoke_default_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
         .into_view()
 }
 
+/// Builds the movable/resizable window-affordance smoke UI.
 fn smoke_affordance_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
     let title = TextStyle::new(FontId::Ui, 24, Color::rgb(245, 248, 255));
     let body = TextStyle::new(FontId::Ui, 15, Color::rgb(218, 226, 238));
@@ -888,6 +994,7 @@ fn smoke_affordance_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
         .into_view()
 }
 
+/// Converts normalized smoke settings into external-host settings.
 fn smoke_host_options(options: &OpenXrSmokeOptions) -> OpenXrExternalUiHostOptions {
     OpenXrExternalUiHostOptions {
         pixel_width: smoke_pixel_width(options),
@@ -904,6 +1011,7 @@ fn smoke_host_options(options: &OpenXrSmokeOptions) -> OpenXrExternalUiHostOptio
     }
 }
 
+/// Builds the initial identity-facing layer at negative configured Z distance.
 fn smoke_layer_options(options: &OpenXrSmokeOptions) -> OpenXrQuadLayerOptions {
     OpenXrQuadLayerOptions {
         pose: xr::Posef {
@@ -928,6 +1036,7 @@ fn smoke_layer_options(options: &OpenXrSmokeOptions) -> OpenXrQuadLayerOptions {
     }
 }
 
+/// Selects controller priority and hand enablement for smoke input.
 fn smoke_input_options(options: &OpenXrSmokeOptions) -> OpenXrUiInputOptions {
     OpenXrUiInputOptions {
         controllers: true,
@@ -941,6 +1050,7 @@ fn smoke_input_options(options: &OpenXrSmokeOptions) -> OpenXrUiInputOptions {
     }
 }
 
+/// Copies names into local-then-stage runtime initialization settings.
 fn smoke_runtime_options(options: &OpenXrSmokeOptions) -> OpenXrRuntimeOptions {
     OpenXrRuntimeOptions {
         application_name: options.application_name.clone(),
@@ -949,28 +1059,34 @@ fn smoke_runtime_options(options: &OpenXrSmokeOptions) -> OpenXrRuntimeOptions {
     }
 }
 
+/// Returns positive finite panel distance or the 2 metre fallback.
 fn smoke_distance_m(options: &OpenXrSmokeOptions) -> f32 {
     positive_or_default(options.distance_m, DEFAULT_DISTANCE_M).abs()
 }
 
+/// Returns positive finite DPR or the `1.0` fallback.
 fn smoke_scale(options: &OpenXrSmokeOptions) -> f32 {
     positive_or_default(options.scale, DEFAULT_SCALE)
 }
 
+/// Keeps only a positive finite timeout; invalid values become `None`.
 fn smoke_timeout_sec(options: &OpenXrSmokeOptions) -> Option<f32> {
     options
         .timeout_sec
         .filter(|value| value.is_finite() && *value > 0.0)
 }
 
+/// Returns requested pixel width clamped to at least one.
 fn smoke_pixel_width(options: &OpenXrSmokeOptions) -> u32 {
     options.pixel_width.max(1)
 }
 
+/// Returns requested pixel height clamped to at least one.
 fn smoke_pixel_height(options: &OpenXrSmokeOptions) -> u32 {
     options.pixel_height.max(1)
 }
 
+/// Keeps a positive finite value, otherwise returns its documented fallback.
 fn positive_or_default(value: f32, default: f32) -> f32 {
     if value.is_finite() && value > 0.0 {
         value
@@ -980,11 +1096,13 @@ fn positive_or_default(value: f32, default: f32) -> f32 {
 }
 
 #[cfg(test)]
+/// Exercises normalization plus move, depth, facing, and resize behavior.
 mod tests {
     use super::super::panel::panel_local_to_world;
     use super::*;
     use ailloli_ui_core::{Offset, Point};
 
+    /// Builds smoke options with explicit pointer-side and hand toggles.
     fn options(prefer_left: bool, hands: bool) -> OpenXrSmokeOptions {
         OpenXrSmokeOptions {
             prefer_left,
@@ -1057,6 +1175,7 @@ mod tests {
         );
     }
 
+    /// Builds a drag-phase affordance event with matching position/deltas.
     fn drag_event(kind: WindowAffordanceKind, dx: f32, dy: f32) -> WindowAffordanceEvent {
         WindowAffordanceEvent {
             kind,
@@ -1067,6 +1186,7 @@ mod tests {
         }
     }
 
+    /// Builds a centered start-phase affordance fixture.
     fn start_event(kind: WindowAffordanceKind) -> WindowAffordanceEvent {
         WindowAffordanceEvent {
             kind,
@@ -1077,6 +1197,7 @@ mod tests {
         }
     }
 
+    /// Builds a centered end-phase affordance fixture with zero delta.
     fn end_event(kind: WindowAffordanceKind) -> WindowAffordanceEvent {
         WindowAffordanceEvent {
             kind,
@@ -1087,6 +1208,7 @@ mod tests {
         }
     }
 
+    /// Returns a default layer/facing slate fixture.
     fn slate() -> SmokeSlateState {
         SmokeSlateState::new(
             smoke_layer_options(&OpenXrSmokeOptions::default()),
@@ -1094,14 +1216,17 @@ mod tests {
         )
     }
 
+    /// Returns a default layer with caller-selected facing options.
     fn slate_with_facing(facing: OpenXrPanelFacingOptions) -> SmokeSlateState {
         SmokeSlateState::new(smoke_layer_options(&OpenXrSmokeOptions::default()), facing)
     }
 
+    /// Returns the default pixel extent as DPR-one logical size.
     fn logical_size() -> Size {
         Size::new(SMOKE_PIXEL_WIDTH as f32, SMOKE_PIXEL_HEIGHT as f32)
     }
 
+    /// Applies one affordance without ray or HMD inputs.
     fn apply_delta(
         slate: &mut SmokeSlateState,
         event: WindowAffordanceEvent,
@@ -1109,10 +1234,12 @@ mod tests {
         slate.apply_affordance_event(event, logical_size(), None, None)
     }
 
+    /// Builds a UI-hit ray fixture in world metres.
     fn ray_sample(origin: Vec3, direction: Vec3, distance: f32) -> OpenXrRaySample {
         OpenXrRaySample::new(origin, direction, OpenXrRayHitKind::Ui, distance)
     }
 
+    /// Asserts two floats differ by less than `1e-5`.
     fn approx(a: f32, b: f32) {
         assert!(
             (a - b).abs() < 1e-5,
@@ -1120,6 +1247,7 @@ mod tests {
         );
     }
 
+    /// Applies [`approx`] to all three vector components.
     fn approx_vec(a: Vec3, b: Vec3) {
         approx(a.x, b.x);
         approx(a.y, b.y);

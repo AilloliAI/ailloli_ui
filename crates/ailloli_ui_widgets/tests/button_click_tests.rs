@@ -1,3 +1,5 @@
+//! Button static/deferred action and keyboard/pointer activation scenarios.
+
 use std::cell::Cell;
 use std::rc::Rc;
 

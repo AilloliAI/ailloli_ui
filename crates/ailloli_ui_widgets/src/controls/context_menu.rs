@@ -1,3 +1,5 @@
+//! Right-click menus rendered through retained popup portals.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -29,18 +31,45 @@ use super::popup::{
 use super::select::{SelectSize, SelectStyle};
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved colors, typography, and logical-pixel geometry for context menus.
+///
+/// Menus are clipped to `popup.popup_max_height`; this control does not add a
+/// scrollbar, so callers should keep the complete entry stack within that cap.
+/// Custom non-positive or non-finite geometry is not normalized.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::ContextMenuStyle;
+/// let style = ContextMenuStyle::from_theme(Theme::dark());
+/// assert_eq!((style.width, style.row_height), (252.0, 28.0));
+/// assert_eq!(style.popup.popup_max_height, 420.0);
+/// ```
 pub struct ContextMenuStyle {
+    /// Shared popup shell, active-row, item-text, and height-cap style.
     pub popup: SelectStyle,
+    /// Right-aligned shortcut hint typography.
     pub shortcut_text: TextStyle,
+    /// One-pixel separator-line color.
     pub separator: Color,
+    /// Item row height in logical pixels.
     pub row_height: f32,
+    /// Vertical space reserved for a separator in logical pixels.
     pub separator_height: f32,
+    /// Root menu width in logical pixels.
     pub width: f32,
+    /// First-level submenu width in logical pixels.
     pub submenu_width: f32,
+    /// Horizontal distance between root menu and submenu in logical pixels.
     pub submenu_gap: f32,
+    /// Leading and submenu-chevron icon size in logical pixels.
     pub icon_size: f32,
+    /// Gap after icons and around shortcut/chevron regions in logical pixels.
     pub icon_gap: f32,
+    /// Horizontal content inset in logical pixels.
     pub padding_x: f32,
+    /// Alpha multiplier applied to disabled item visuals.
     pub disabled_opacity: f32,
 }
 
@@ -51,6 +80,20 @@ impl Default for ContextMenuStyle {
 }
 
 impl ContextMenuStyle {
+    /// Resolves compact menu styling from a theme.
+    ///
+    /// The root defaults to 252 logical pixels wide, submenus to 228, item
+    /// rows to 28, and the clipped height cap to 420.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::ContextMenuStyle;
+    /// let style = ContextMenuStyle::from_theme(Theme::default());
+    /// assert_eq!((style.submenu_width, style.submenu_gap), (228.0, 4.0));
+    /// assert_eq!((style.icon_size, style.padding_x), (14.0, 10.0));
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         let mut popup = SelectStyle::from_theme(theme, SelectSize::Compact);
@@ -76,8 +119,25 @@ impl ContextMenuStyle {
     }
 }
 
+/// One row in a root menu or first-level submenu.
+///
+/// Separators occupy `separator_height`, are skipped by navigation, and cannot
+/// activate. Items occupy `row_height`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{ContextMenuEntry, ContextMenuItem};
+/// let entries: Vec<ContextMenuEntry<()>> = vec![
+///     ContextMenuEntry::Item(ContextMenuItem::new("Copy")),
+///     ContextMenuEntry::Separator,
+/// ];
+/// assert!(matches!(entries[1], ContextMenuEntry::Separator));
+/// ```
 pub enum ContextMenuEntry<A = ()> {
+    /// Selectable or submenu-bearing row.
     Item(ContextMenuItem<A>),
+    /// Non-interactive horizontal divider.
     Separator,
 }
 
@@ -90,12 +150,34 @@ impl<A> Clone for ContextMenuEntry<A> {
     }
 }
 
+/// A context-menu row with optional metadata, action, or submenu.
+///
+/// A leaf item closes the complete menu after activation even when it has no
+/// action. Disabled items remain visible but cannot be highlighted or activated.
+/// The current controller opens one submenu tier; submenu entries that themselves
+/// contain a submenu are displayed with a chevron but are not opened.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{ContextMenuEntry, ContextMenuItem};
+/// let item: ContextMenuItem<()> = ContextMenuItem::new("More")
+///     .submenu([ContextMenuEntry::Item(ContextMenuItem::new("Details"))]);
+/// assert_eq!(item.label(), "More");
+/// assert_eq!(item.submenu_entries().len(), 1);
+/// ```
 pub struct ContextMenuItem<A = ()> {
+    /// Primary row label.
     label: String,
+    /// Optional non-semantic shortcut hint.
     shortcut: Option<String>,
+    /// Optional leading icon.
     icon: Option<IconId>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Optional leaf action.
     action: Option<Rc<ClickAction<A>>>,
+    /// Owned first-level submenu entries.
     submenu: Vec<ContextMenuEntry<A>>,
 }
 
@@ -113,6 +195,15 @@ impl<A> Clone for ContextMenuItem<A> {
 }
 
 impl<A: 'static> ContextMenuItem<A> {
+    /// Creates an enabled leaf item without icon, shortcut, or action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("Copy");
+    /// assert_eq!(item.label(), "Copy");
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -124,59 +215,180 @@ impl<A: 'static> ContextMenuItem<A> {
         }
     }
 
+    /// Sets the right-aligned display-only shortcut hint.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("Copy").shortcut("Ctrl+C");
+    /// assert_eq!(item.shortcut_label(), Some("Ctrl+C"));
+    /// ```
     pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
         self
     }
 
+    /// Sets the leading icon, replacing any previous icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("History").leading_icon(IconId::History);
+    /// let _ = item;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("Unavailable").disabled(true);
+    /// assert!(item.is_disabled());
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets the leaf action, replacing any previous action.
+    ///
+    /// Items with non-empty submenus open the submenu instead of running this
+    /// action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// #[derive(Clone)]
+    /// enum Action { Copy }
+    /// let item = ContextMenuItem::new("Copy").on_select(Action::Copy);
+    /// let _ = item;
+    /// ```
     pub fn on_select(mut self, action: impl IntoClickAction<A>) -> Self {
         self.action = Some(Rc::new(action.into_click_action()));
         self
     }
 
+    /// Replaces the submenu entries with values collected in iterator order.
+    ///
+    /// An empty iterator restores leaf behavior. Only one interactive submenu
+    /// tier is currently supported.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ContextMenuEntry, ContextMenuItem};
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("More").submenu([
+    ///     ContextMenuEntry::Item(ContextMenuItem::new("Details")),
+    ///     ContextMenuEntry::Separator,
+    /// ]);
+    /// assert_eq!(item.submenu_entries().len(), 2);
+    /// ```
     pub fn submenu(mut self, entries: impl IntoIterator<Item = ContextMenuEntry<A>>) -> Self {
         self.submenu = entries.into_iter().collect();
         self
     }
 
+    /// Reads the current static or reactive disabled value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("Delete").disabled(true);
+    /// assert!(item.is_disabled());
+    /// ```
     pub fn is_disabled(&self) -> bool {
         self.disabled.read()
     }
 
+    /// Returns the label exactly as supplied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("");
+    /// assert_eq!(item.label(), "");
+    /// ```
     pub fn label(&self) -> &str {
         &self.label
     }
 
+    /// Returns the optional shortcut hint; empty text remains `Some("")`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("Copy").shortcut("");
+    /// assert_eq!(item.shortcut_label(), Some(""));
+    /// ```
     pub fn shortcut_label(&self) -> Option<&str> {
         self.shortcut.as_deref()
     }
 
+    /// Borrows submenu entries in their display order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenuItem;
+    /// let item: ContextMenuItem<()> = ContextMenuItem::new("Leaf");
+    /// assert!(item.submenu_entries().is_empty());
+    /// ```
     pub fn submenu_entries(&self) -> &[ContextMenuEntry<A>] {
         &self.submenu
     }
 }
 
+/// A retained right-click menu attached to an optional host child.
+///
+/// Visibility can be controlled, two-way bound, or internal. A right click can
+/// open/re-anchor bound and internal menus; a controlled `false` value prevents
+/// opening, while controlled `true` permits re-anchoring. When no pointer or
+/// explicit anchor exists, the menu starts at the host's bottom-left corner.
+/// Escape/outside dismissal can write only bound or internal state.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{ContextMenu, ContextMenuEntry, ContextMenuItem};
+/// use ailloli_ui_widgets::text::Text;
+/// let menu = ContextMenu::<()>::new(Text::new("File"))
+///     .entries(vec![ContextMenuEntry::Item(ContextMenuItem::new("Open"))]);
+/// let _ = menu;
+/// ```
 pub struct ContextMenu<A = ()> {
+    /// Layout configuration for the host slot.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Optional controlled or bound visibility source.
     open: Option<Binding<bool>>,
+    /// Writable visibility signal in bound mode.
     bound_open: Option<Signal<bool>>,
+    /// Initial internal visibility without an external source.
     default_open: bool,
+    /// Static or reactive programmatic anchor in host coordinates.
     anchor: Binding<Point>,
+    /// Whether the programmatic anchor was explicitly configured.
     anchor_explicit: bool,
+    /// Static or reactive complete entry collection.
     entries: Binding<Vec<ContextMenuEntry<A>>>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Resolved popup and row style.
     style: ContextMenuStyle,
+    /// Optional sole host child painted below the portal.
     child: Option<View<A>>,
 }
 
@@ -189,10 +401,31 @@ impl<A: 'static> Default for ContextMenu<A> {
 }
 
 impl<A: 'static> ContextMenu<A> {
+    /// Creates a closed menu around one host child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let menu: ContextMenu<()> = ContextMenu::new(Text::new("Right-click"));
+    /// let _ = menu;
+    /// ```
     pub fn new(child: impl IntoView<A>) -> Self {
         Self::empty().child(child)
     }
 
+    /// Creates a closed menu without a child or entries.
+    ///
+    /// In an unbounded host it intrinsically measures as zero by zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let menu: ContextMenu<()> = ContextMenu::empty();
+    /// let _ = menu;
+    /// ```
     pub fn empty() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -209,12 +442,36 @@ impl<A: 'static> ContextMenu<A> {
         }
     }
 
+    /// Sets controlled visibility and clears two-way bound mode.
+    ///
+    /// Portal dismissal cannot mutate this binding. A controlled `false` value
+    /// also prevents right-click opening.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let menu: ContextMenu<()> = ContextMenu::empty().open(true);
+    /// let _ = menu;
+    /// ```
     pub fn open(mut self, open: impl Into<Binding<bool>>) -> Self {
         self.open = Some(open.into());
         self.bound_open = None;
         self
     }
 
+    /// Installs a writable visibility signal for opening and dismissal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let open = Signal::new(Rc::new(RefCell::new(false)), Rc::new(|| {}));
+    /// let menu: ContextMenu<()> = ContextMenu::empty().bind_open(open);
+    /// let _ = menu;
+    /// ```
     pub fn bind_open(mut self, open: impl Into<Signal<bool>>) -> Self {
         let signal = open.into();
         self.open = Some(Binding::Signal(signal.clone()));
@@ -222,55 +479,164 @@ impl<A: 'static> ContextMenu<A> {
         self
     }
 
+    /// Sets initial internal visibility when no external source exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let menu: ContextMenu<()> = ContextMenu::empty().default_open(true);
+    /// let _ = menu;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Sets a static or reactive programmatic anchor in host coordinates.
+    ///
+    /// A later right click temporarily takes precedence until the menu closes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Point;
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let menu: ContextMenu<()> = ContextMenu::empty().anchor(Point::new(12.0, 24.0));
+    /// let _ = menu;
+    /// ```
     pub fn anchor(mut self, anchor: impl Into<Binding<Point>>) -> Self {
         self.anchor = anchor.into();
         self.anchor_explicit = true;
         self
     }
 
+    /// Installs a writable anchor signal and marks the anchor explicit.
+    ///
+    /// The menu reads it reactively but does not write it during pointer opens.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_core::Point;
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let anchor = Signal::new(Rc::new(RefCell::new(Point::new(1.0, 2.0))), Rc::new(|| {}));
+    /// let menu: ContextMenu<()> = ContextMenu::empty().bind_anchor(anchor);
+    /// let _ = menu;
+    /// ```
     pub fn bind_anchor(mut self, anchor: impl Into<Signal<Point>>) -> Self {
         self.anchor = Binding::Signal(anchor.into());
         self.anchor_explicit = true;
         self
     }
 
+    /// Sets the static or reactive complete entry collection.
+    ///
+    /// Empty collections keep open state but publish no visible menu content.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ContextMenu, ContextMenuEntry, ContextMenuItem};
+    /// let entries = vec![ContextMenuEntry::Item(ContextMenuItem::new("Open"))];
+    /// let menu: ContextMenu<()> = ContextMenu::empty().entries(entries);
+    /// let _ = menu;
+    /// ```
     pub fn entries(mut self, entries: impl Into<Binding<Vec<ContextMenuEntry<A>>>>) -> Self {
         self.entries = entries.into();
         self
     }
 
+    /// Installs a writable signal as the live complete entry collection.
+    ///
+    /// The menu only reads the signal; it never mutates its entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::{ContextMenu, ContextMenuEntry};
+    /// let entries = Signal::new(
+    ///     Rc::new(RefCell::new(Vec::<ContextMenuEntry<()>>::new())),
+    ///     Rc::new(|| {}),
+    /// );
+    /// let menu: ContextMenu<()> = ContextMenu::empty().bind_entries(entries);
+    /// let _ = menu;
+    /// ```
     pub fn bind_entries(mut self, entries: impl Into<Signal<Vec<ContextMenuEntry<A>>>>) -> Self {
         self.entries = Binding::Signal(entries.into());
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled state prevents right-click opening/focus and closes an existing
+    /// portal programmatically without changing controlled visibility.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let menu: ContextMenu<()> = ContextMenu::empty().disabled(true);
+    /// let _ = menu;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Replaces the complete popup and row style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ContextMenu, ContextMenuStyle};
+    /// let menu: ContextMenu<()> = ContextMenu::empty().context_menu_style(ContextMenuStyle::default());
+    /// let _ = menu;
+    /// ```
     pub fn context_menu_style(mut self, style: ContextMenuStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Sets root-menu width in both the menu and nested popup styles.
+    ///
+    /// This does not change `submenu_width`. The value is in logical pixels and
+    /// is not clamped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// let menu: ContextMenu<()> = ContextMenu::empty().menu_width(300.0);
+    /// let _ = menu;
+    /// ```
     pub fn menu_width(mut self, width: f32) -> Self {
         self.style.width = width;
         self.style.popup.width = width;
         self
     }
 
+    /// Sets the sole host child, replacing any previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ContextMenu;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let menu: ContextMenu<()> = ContextMenu::empty().child(Text::new("Target"));
+    /// let _ = menu;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Component properties used to allocate retained menu and submenu state.
 struct ContextMenuComponent<A> {
     layout: LayoutStyle,
     open: Option<Binding<bool>>,
@@ -358,12 +724,14 @@ impl<A: 'static> IntoView<A> for ContextMenu<A> {
     }
 }
 
+/// Host widget that opens and synchronizes the root popup portal.
 struct ContextMenuWidget<A> {
     layout: LayoutStyle,
     controller: ContextMenuController<A>,
     popup: PopupPortalBridge<A>,
 }
 
+/// Shared state machine used by the host and both retained popup widgets.
 struct ContextMenuController<A> {
     runtime: RuntimeHandle<A>,
     open: Option<Binding<bool>>,
@@ -411,14 +779,20 @@ impl<A> Clone for ContextMenuController<A> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Pointer-pressed row identity used to require same-row release.
 struct ContextMenuPressedEntry {
+    /// `None` for root rows or the root parent index for submenu rows.
     parent: Option<usize>,
+    /// Absolute index within the root or submenu entry slice.
     index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Resolved viewport and root menu rectangles used to place a submenu.
 struct ContextMenuGeometry {
+    /// Complete presentation viewport.
     viewport: Rect,
+    /// Root popup rectangle after host placement resolution.
     menu: Rect,
 }
 
@@ -519,6 +893,7 @@ impl<A: 'static> Widget<A> for ContextMenuWidget<A> {
 }
 
 impl<A: 'static> ContextMenuController<A> {
+    /// Reconciles requested state with host-owned portal state and reports visibility.
     fn is_open(&self) -> bool {
         let requested = self.requested_open();
         let portal_open = self
@@ -548,6 +923,7 @@ impl<A: 'static> ContextMenuController<A> {
         requested && portal_open
     }
 
+    /// Reads controlled/bound visibility or retained internal visibility.
     fn requested_open(&self) -> bool {
         self.open
             .as_ref()
@@ -555,6 +931,7 @@ impl<A: 'static> ContextMenuController<A> {
             .unwrap_or_else(|| self.internal_open.read())
     }
 
+    /// Applies visibility edges to the root portal and mirrors host dismissals.
     fn sync_portal_visibility(&self, popup: &PopupPortalBridge<A>) -> bool {
         let requested = self.requested_open();
         let previously_requested = self.last_requested_open.read();
@@ -597,6 +974,7 @@ impl<A: 'static> ContextMenuController<A> {
         false
     }
 
+    /// Re-anchors and opens a bound/internal menu after a right-button press.
     fn open_at(&self, anchor: Point) -> bool {
         let can_open = self.bound_open.is_some() || self.open.is_none() || self.is_open();
         if !can_open {
@@ -617,6 +995,7 @@ impl<A: 'static> ContextMenuController<A> {
         true
     }
 
+    /// Publishes the root popup placement using event-scoped owner metadata.
     fn sync_portal(&self, popup: &PopupPortalBridge<A>, ctx: &EventCtx<A>, bounds: Rect) {
         let entries = self.entries.read();
         if entries.is_empty() {
@@ -626,6 +1005,7 @@ impl<A: 'static> ContextMenuController<A> {
         popup.open_placed(ctx, self.root_placement(bounds, &entries));
     }
 
+    /// Publishes placement during paint when no event context is available.
     fn publish_root_popup_without_event(
         &self,
         popup: &PopupPortalBridge<A>,
@@ -635,6 +1015,7 @@ impl<A: 'static> ContextMenuController<A> {
         popup.open_placed_without_event(self.root_placement(bounds, entries));
     }
 
+    /// Builds a flip-enabled bottom/start placement request for the root menu.
     fn root_placement(&self, owner: Rect, entries: &[ContextMenuEntry<A>]) -> PopupPlacementSpec {
         let anchor = self.effective_anchor(owner);
         PopupPlacementSpec::new(
@@ -651,6 +1032,7 @@ impl<A: 'static> ContextMenuController<A> {
         .with_flip(true)
     }
 
+    /// Resolves pointer, explicit, or host-bottom-left anchor precedence.
     fn effective_anchor(&self, owner: Rect) -> Point {
         self.pointer_anchor.read().unwrap_or_else(|| {
             if self.anchor_explicit {
@@ -661,12 +1043,14 @@ impl<A: 'static> ContextMenuController<A> {
         })
     }
 
+    /// Stores changed resolved geometry without redundant signal writes.
     fn update_geometry(&self, geometry: ContextMenuGeometry) {
         if self.geometry.read() != Some(geometry) {
             self.geometry.set(Some(geometry));
         }
     }
 
+    /// Refreshes root menu and viewport rectangles from the popup portal.
     fn refresh_resolved_geometry(&self) -> Option<ContextMenuGeometry> {
         let popup_id = self.root_popup_id?;
         let portal = self.runtime.popup_portal();
@@ -680,6 +1064,7 @@ impl<A: 'static> ContextMenuController<A> {
         Some(geometry)
     }
 
+    /// Places a first-level submenu to the right and clamps it to the viewport.
     fn submenu_rect(
         &self,
         bounds: Rect,
@@ -697,10 +1082,12 @@ impl<A: 'static> ContextMenuController<A> {
         super::popup::clamp_rect_to_bounds(desired, bounds)
     }
 
+    /// Sums item and separator heights without applying the popup height cap.
     fn menu_height(&self, entries: &[ContextMenuEntry<A>]) -> f32 {
         entries.iter().map(|entry| self.entry_height(entry)).sum()
     }
 
+    /// Resolves an entry's configured item-row or separator height.
     fn entry_height(&self, entry: &ContextMenuEntry<A>) -> f32 {
         match entry {
             ContextMenuEntry::Item(_) => self.style.row_height,
@@ -708,6 +1095,7 @@ impl<A: 'static> ContextMenuController<A> {
         }
     }
 
+    /// Returns an entry rectangle by accumulating all preceding row heights.
     fn entry_row(&self, menu: Rect, entries: &[ContextMenuEntry<A>], index: usize) -> Option<Rect> {
         if index >= entries.len() {
             return None;
@@ -724,6 +1112,7 @@ impl<A: 'static> ContextMenuController<A> {
         ))
     }
 
+    /// Hit-tests a position and returns item indices while excluding separators.
     fn item_index_at(
         &self,
         menu: Rect,
@@ -745,6 +1134,7 @@ impl<A: 'static> ContextMenuController<A> {
         None
     }
 
+    /// Returns the first enabled item index, skipping separators.
     fn first_enabled_index(&self, entries: &[ContextMenuEntry<A>]) -> Option<usize> {
         entries.iter().enumerate().find_map(|(idx, entry)| {
             let ContextMenuEntry::Item(item) = entry else {
@@ -754,6 +1144,7 @@ impl<A: 'static> ContextMenuController<A> {
         })
     }
 
+    /// Returns the last enabled item index, skipping separators.
     fn last_enabled_index(&self, entries: &[ContextMenuEntry<A>]) -> Option<usize> {
         entries.iter().enumerate().rev().find_map(|(idx, entry)| {
             let ContextMenuEntry::Item(item) = entry else {
@@ -763,6 +1154,7 @@ impl<A: 'static> ContextMenuController<A> {
         })
     }
 
+    /// Advances with wraparound through enabled item indices.
     fn next_enabled_index(
         &self,
         entries: &[ContextMenuEntry<A>],
@@ -787,6 +1179,7 @@ impl<A: 'static> ContextMenuController<A> {
         Some(enabled[next])
     }
 
+    /// Moves backward with wraparound through enabled item indices.
     fn previous_enabled_index(
         &self,
         entries: &[ContextMenuEntry<A>],
@@ -811,6 +1204,7 @@ impl<A: 'static> ContextMenuController<A> {
         Some(enabled[(pos + enabled.len() - 1) % enabled.len()])
     }
 
+    /// Handles root Escape, navigation, submenu, and activation keys.
     fn handle_root_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key) {
         let entries = self.entries.read();
         match key {
@@ -858,6 +1252,7 @@ impl<A: 'static> ContextMenuController<A> {
         }
     }
 
+    /// Highlights the hovered root item and opens or closes its submenu.
     fn handle_root_pointer_move(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let entries = self.entries.read();
         if let Some(index) = self.item_index_at(bounds, &entries, pos) {
@@ -871,6 +1266,7 @@ impl<A: 'static> ContextMenuController<A> {
         }
     }
 
+    /// Records an enabled leaf press or opens a pressed submenu parent.
     fn handle_root_pointer_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let entries = self.entries.read();
         self.pressed_entry.set(None);
@@ -891,6 +1287,7 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.stop_propagation();
     }
 
+    /// Activates only a left-button release matching the recorded root press.
     fn handle_root_pointer_release(
         &self,
         ctx: &mut EventCtx<A>,
@@ -924,6 +1321,7 @@ impl<A: 'static> ContextMenuController<A> {
         }
     }
 
+    /// Runs an enabled leaf action and closes the complete menu.
     fn activate_entry(&self, ctx: &mut EventCtx<A>, entries: &[ContextMenuEntry<A>], index: usize) {
         let Some(ContextMenuEntry::Item(item)) = entries.get(index) else {
             return;
@@ -944,6 +1342,7 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.stop_propagation();
     }
 
+    /// Registers, places, and opens an enabled first-level submenu.
     fn open_submenu(&self, ctx: &mut EventCtx<A>, entries: &[ContextMenuEntry<A>], index: usize) {
         let Some(ContextMenuEntry::Item(item)) = entries.get(index) else {
             return;
@@ -982,10 +1381,12 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.stop_propagation();
     }
 
+    /// Reports whether an indexed root item owns any submenu entries.
     fn has_submenu(&self, entries: &[ContextMenuEntry<A>], index: usize) -> bool {
         matches!(entries.get(index), Some(ContextMenuEntry::Item(item)) if !item.submenu.is_empty())
     }
 
+    /// Changes root keyboard selection and closes the current submenu.
     fn set_active(&self, ctx: &mut EventCtx<A>, next: Option<usize>) {
         self.active_index.set(next);
         self.close_submenu(ctx, PopupDismissReason::Programmatic);
@@ -993,6 +1394,7 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.stop_propagation();
     }
 
+    /// Clones entries for the currently open submenu parent.
     fn submenu_entries(&self) -> Option<Vec<ContextMenuEntry<A>>> {
         let parent = self.submenu_parent_index.read()?;
         let entries = self.entries.read();
@@ -1002,6 +1404,7 @@ impl<A: 'static> ContextMenuController<A> {
         Some(item.submenu.clone())
     }
 
+    /// Ensures the submenu portal has the current owner, parent, and content.
     fn ensure_submenu_registered(&self, ctx: &EventCtx<A>) -> bool {
         let (Some(root_popup_id), Some(submenu_popup_id)) =
             (self.root_popup_id, self.submenu_popup_id.read())
@@ -1036,6 +1439,7 @@ impl<A: 'static> ContextMenuController<A> {
             .is_ok()
     }
 
+    /// Clears submenu interaction state and requests host dismissal.
     fn close_submenu(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
         self.submenu_parent_index.set(None);
         self.submenu_active_index.set(None);
@@ -1046,6 +1450,7 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.request_repaint();
     }
 
+    /// Clears complete menu state, writable visibility, and both portals.
     fn close_with_runtime(&self, ctx: &mut EventCtx<A>, reason: PopupDismissReason) {
         if let Some(bound) = &self.bound_open {
             bound.set(false);
@@ -1066,6 +1471,7 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.stop_propagation();
     }
 
+    /// Handles one-tier submenu Escape, navigation, and leaf activation.
     fn handle_submenu_keyboard(&self, ctx: &mut EventCtx<A>, key: &Key) {
         let Some(entries) = self.submenu_entries() else {
             self.close_submenu(ctx, PopupDismissReason::Programmatic);
@@ -1113,6 +1519,7 @@ impl<A: 'static> ContextMenuController<A> {
         }
     }
 
+    /// Highlights the enabled submenu item under the pointer.
     fn handle_submenu_pointer_move(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         let Some(entries) = self.submenu_entries() else {
             return;
@@ -1126,6 +1533,7 @@ impl<A: 'static> ContextMenuController<A> {
         }
     }
 
+    /// Records an enabled submenu press with its root parent identity.
     fn handle_submenu_pointer_press(&self, ctx: &mut EventCtx<A>, bounds: Rect, pos: Point) {
         self.pressed_entry.set(None);
         let Some(parent) = self.submenu_parent_index.read() else {
@@ -1148,6 +1556,7 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.stop_propagation();
     }
 
+    /// Activates only a left-button release matching the submenu press.
     fn handle_submenu_pointer_release(
         &self,
         ctx: &mut EventCtx<A>,
@@ -1182,6 +1591,7 @@ impl<A: 'static> ContextMenuController<A> {
         ctx.stop_propagation();
     }
 
+    /// Runs an enabled submenu leaf action and closes the complete menu.
     fn activate_submenu_entry(
         &self,
         ctx: &mut EventCtx<A>,
@@ -1201,6 +1611,7 @@ impl<A: 'static> ContextMenuController<A> {
         self.close_with_runtime(ctx, PopupDismissReason::Programmatic);
     }
 
+    /// Paints a clipped popup shell, all rows, and the final border.
     fn paint_entries(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1237,6 +1648,7 @@ impl<A: 'static> ContextMenuController<A> {
         paint_popup_border(ctx, menu, &self.style.popup);
     }
 
+    /// Paints one item row with active, disabled, metadata, and submenu states.
     fn paint_item(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1341,6 +1753,7 @@ impl<A: 'static> ContextMenuController<A> {
     }
 }
 
+/// Root popup component that obtains the child submenu popup identifier.
 struct RetainedContextMenuRootComponent<A> {
     controller: ContextMenuController<A>,
 }
@@ -1359,6 +1772,7 @@ impl<A: 'static> ComponentNode<A> for RetainedContextMenuRootComponent<A> {
     }
 }
 
+/// Retained root popup widget for painting and dispatching menu interaction.
 struct RetainedContextMenuRoot<A> {
     controller: ContextMenuController<A>,
 }
@@ -1462,6 +1876,7 @@ impl<A: 'static> Widget<A> for RetainedContextMenuRoot<A> {
     }
 }
 
+/// Retained first-level submenu widget sharing the root controller.
 struct RetainedContextSubmenu<A> {
     controller: ContextMenuController<A>,
 }
@@ -1568,6 +1983,7 @@ impl<A: 'static> Widget<A> for RetainedContextSubmenu<A> {
     }
 }
 
+/// Wraps the retained root component in reusable popup content.
 fn context_menu_root_content<A: 'static>(controller: ContextMenuController<A>) -> PopupContent<A> {
     PopupContent::new(move || {
         View::component(RetainedContextMenuRootComponent {
@@ -1576,6 +1992,7 @@ fn context_menu_root_content<A: 'static>(controller: ContextMenuController<A>) -
     })
 }
 
+/// Wraps the retained submenu widget in reusable popup content.
 fn context_menu_submenu_content<A: 'static>(
     controller: ContextMenuController<A>,
 ) -> PopupContent<A> {
@@ -1586,6 +2003,7 @@ fn context_menu_submenu_content<A: 'static>(
     })
 }
 
+/// Constrains a popup to requested width and capped content height.
 fn retained_context_menu_layout(
     constraints: Constraints,
     width: f32,
@@ -1606,6 +2024,7 @@ fn retained_context_menu_layout(
     }
 }
 
+/// Resolves popup ownership from event, presentation, or headless context.
 fn popup_owner_for_event<A>(runtime: &RuntimeHandle<A>, ctx: &EventCtx<A>) -> PopupOwner {
     if let Some(meta) = ctx.event_meta() {
         return PopupOwner::new(
@@ -1626,6 +2045,7 @@ fn popup_owner_for_event<A>(runtime: &RuntimeHandle<A>, ctx: &EventCtx<A>) -> Po
     )
 }
 
+/// Extracts a pointer button and falls back to left for non-button events.
 fn event_pointer_button(event: &Event) -> MouseButton {
     match event {
         Event::Pointer(PointerEvent::Button { button, .. }) => *button,
@@ -1633,6 +2053,7 @@ fn event_pointer_button(event: &Event) -> MouseButton {
     }
 }
 
+/// Resolves host size from its child or finite maximum constraints.
 fn host_slot_size<A: 'static>(
     engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
     ctx: &mut LayoutCtx<'_>,
@@ -1651,6 +2072,7 @@ fn host_slot_size<A: 'static>(
     apply_layout_size(intrinsic, layout, constraints)
 }
 
+/// Returns `value` when finite and `fallback` for NaN or either infinity.
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value

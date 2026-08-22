@@ -1,3 +1,5 @@
+//! Single-child alignment within the maximum allocated box.
+
 use ailloli_ui_core::geometry::{Constraints, Rect};
 use ailloli_ui_core::Offset;
 use ailloli_ui_runtime::component::{IntoView, View, Widget};
@@ -5,7 +7,20 @@ use ailloli_ui_runtime::layout::LayoutEngine;
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 
-/// Aligns a child within allocated space; `x` / `y` in `[-1, 1]` (Flutter-like).
+/// Aligns one child within allocated space using Flutter-like factors.
+///
+/// `x` and `y` range from `-1` (start/top) through `0` (center) to `1`
+/// (end/bottom). Finite values are clamped to that interval; `NaN` remains
+/// `NaN` and can propagate into layout offsets. With no child, the widget still
+/// expands to its constrained maximum size.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::{layout::Align, text::Text};
+/// let centered: Align<()> = Align::new(0.0, 0.0).child(Text::new("center"));
+/// let _ = centered;
+/// ```
 pub struct Align<A = ()> {
     x: f32,
     y: f32,
@@ -13,6 +28,15 @@ pub struct Align<A = ()> {
 }
 
 impl<A: 'static> Align<A> {
+    /// Creates an empty alignment box and clamps finite factors to `[-1, 1]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::Align;
+    /// let align: Align<()> = Align::new(-1.0, 1.0);
+    /// let _ = align;
+    /// ```
     pub fn new(x: f32, y: f32) -> Self {
         Self {
             x: x.clamp(-1.0, 1.0),
@@ -21,17 +45,28 @@ impl<A: 'static> Align<A> {
         }
     }
 
+    /// Sets the single aligned child, replacing any previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::Align, text::Text};
+    /// let align: Align<()> = Align::new(0.0, 0.0).child(Text::new("child"));
+    /// let _ = align;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Frozen normalized factors used by retained layout.
 struct AlignWidget {
     x: f32,
     y: f32,
 }
 
+/// Lays out at most one loose child and positions it in the free space.
 impl<A: 'static> Widget<A> for AlignWidget {
     fn debug_name(&self) -> &'static str {
         "Align"
@@ -76,6 +111,7 @@ impl<A: 'static> Widget<A> for AlignWidget {
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Converts the builder into a retained node containing zero or one child.
 impl<A: 'static> IntoView<A> for Align<A> {
     fn into_view(self) -> View<A> {
         let mut children = Vec::new();

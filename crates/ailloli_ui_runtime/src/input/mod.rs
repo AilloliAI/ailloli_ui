@@ -1,13 +1,22 @@
 //! Input routing: hit-test, focus, pointer/keyboard, and text editing helpers.
 
+/// Chrome implementation details.
 pub mod chrome;
+/// Click action implementation details.
 pub mod click_action;
+/// Element event router implementation details.
 pub mod element_event_router;
+/// Event ctx implementation details.
 pub mod event_ctx;
+/// Event envelope implementation details.
 pub mod event_envelope;
+/// Focus implementation details.
 pub mod focus;
+/// Hit test implementation details.
 pub mod hit_test;
+/// Input router implementation details.
 pub mod input_router;
+/// Text edit implementation details.
 pub mod text_edit;
 
 pub use chrome::{ChromeAction, CursorStyle, ResizeEdge};

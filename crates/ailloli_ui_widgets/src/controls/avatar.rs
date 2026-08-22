@@ -1,3 +1,5 @@
+//! Circular avatars derived from names, explicit initials, or icons.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use ailloli_ui_core::event::Event;
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
@@ -11,23 +13,54 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawImage, DrawRRect, DrawText};
 use ailloli_ui_text::{TextLayoutParams, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic color choices for an [`Avatar`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::AvatarTone;
+/// assert_eq!(AvatarTone::default(), AvatarTone::Neutral);
+/// ```
 pub enum AvatarTone {
+    /// Elevated neutral surface with primary text.
     #[default]
     Neutral,
+    /// Accent-tinted background and foreground.
     Accent,
+    /// Danger-tinted background and foreground.
     Danger,
+    /// Success-tinted background and foreground.
     Success,
+    /// Warning-tinted background and foreground.
     Warning,
+    /// Informational-tinted background and foreground.
     Info,
+    /// Standard surface with muted text.
     Muted,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved paint and logical-pixel sizing for an [`Avatar`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{AvatarStyle, AvatarTone};
+/// let style = AvatarStyle::from_theme(Theme::dark(), AvatarTone::Accent);
+/// assert_eq!(style.size, 40.0);
+/// assert_eq!(style.text.px_size, 14);
+/// ```
 pub struct AvatarStyle {
+    /// Circular background fill.
     pub background: Color,
+    /// Initials text style; its font size is rescaled during painting.
     pub text: TextStyle,
+    /// Tint applied to icon content.
     pub icon_tint: Color,
+    /// Border drawn around the avatar when visible.
     pub ring: Border,
+    /// Preferred width and height in logical pixels.
     pub size: f32,
 }
 
@@ -38,6 +71,19 @@ impl Default for AvatarStyle {
 }
 
 impl AvatarStyle {
+    /// Resolves `tone` through `theme` with a `40` logical-pixel default size.
+    ///
+    /// Non-neutral semantic tones use a 20%-alpha tone background. Neutral and
+    /// muted tones instead use theme surface colors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{AvatarStyle, AvatarTone};
+    /// let style = AvatarStyle::from_theme(Theme::dark(), AvatarTone::Muted);
+    /// assert_eq!(style.size, 40.0);
+    /// ```
     pub fn from_theme(theme: Theme, tone: AvatarTone) -> Self {
         let palette = theme.palette();
         let tone_color = avatar_tone_color(theme, tone);
@@ -57,26 +103,73 @@ impl AvatarStyle {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Normalized text or icon payload painted inside an avatar.
 enum AvatarContent {
+    /// Up to three normalized uppercase characters.
     Initials(String),
+    /// Theme-tinted icon identifier.
     Icon(IconId),
 }
 
+/// A circular, non-interactive identity marker.
+///
+/// Name-derived avatars use at most the first character of each of the first
+/// two whitespace-separated words. Explicit initials accept at most three
+/// non-whitespace characters. Both forms uppercase Unicode and use `"?"` when
+/// no character remains.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Avatar;
+/// let avatar = Avatar::new("Ada Lovelace");
+/// let _ = avatar;
+/// ```
 pub struct Avatar {
+    /// Layout configuration used to resolve the intrinsic square.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Semantic tone last selected through the public API.
     tone: AvatarTone,
+    /// Resolved paint and size configuration.
     style: AvatarStyle,
+    /// Normalized initials or icon payload.
     content: AvatarContent,
 }
 
 crate::impl_layout_builders_unit!(Avatar);
 
 impl Avatar {
+    /// Creates an avatar whose initials are derived from `name`.
+    ///
+    /// Two or more words yield the first character of the first two words; one
+    /// word yields its first two characters. Blank input yields `"?"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Avatar;
+    /// let avatar = Avatar::new("Grace Hopper");
+    /// let _ = avatar;
+    /// ```
     pub fn new(name: impl Into<String>) -> Self {
         Self::initials(derive_initials(&name.into()))
     }
 
+    /// Creates an avatar from explicit initials.
+    ///
+    /// Whitespace is removed, at most three input characters are retained, and
+    /// Unicode uppercase expansion may produce more than three output code
+    /// points. Blank input becomes `"?"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Avatar;
+    /// let avatar = Avatar::initials("gh");
+    /// let _ = avatar;
+    /// ```
     pub fn initials(initials: impl Into<String>) -> Self {
         let tone = AvatarTone::Neutral;
         Self {
@@ -88,6 +181,19 @@ impl Avatar {
         }
     }
 
+    /// Creates an avatar whose content is `icon`.
+    ///
+    /// The icon is centered at 48% of the avatar's shortest side and tinted
+    /// with [`AvatarStyle::icon_tint`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::Avatar;
+    /// let avatar = Avatar::icon(IconId::History);
+    /// let _ = avatar;
+    /// ```
     pub fn icon(icon: IconId) -> Self {
         let tone = AvatarTone::Neutral;
         Self {
@@ -99,26 +205,66 @@ impl Avatar {
         }
     }
 
+    /// Re-resolves the complete style for `tone` using the default theme.
+    ///
+    /// This resets any custom style and size previously supplied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Avatar, AvatarTone};
+    /// let avatar = Avatar::new("Ailloli").tone(AvatarTone::Accent);
+    /// let _ = avatar;
+    /// ```
     pub fn tone(mut self, tone: AvatarTone) -> Self {
         self.tone = tone;
         self.style = AvatarStyle::from_theme(Theme::default(), tone);
         self
     }
 
+    /// Replaces all resolved style values without changing the stored tone.
+    ///
+    /// A later [`Self::tone`] call replaces this custom style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{Avatar, AvatarStyle, AvatarTone};
+    /// let style = AvatarStyle::from_theme(Theme::dark(), AvatarTone::Info);
+    /// let avatar = Avatar::new("Ailloli").avatar_style(style);
+    /// let _ = avatar;
+    /// ```
     pub fn avatar_style(mut self, style: AvatarStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Sets the preferred square size in logical pixels, clamped to `0.0`.
+    ///
+    /// `NaN` is treated as zero. Explicit layout width/height builders may
+    /// override this intrinsic size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Avatar;
+    /// let avatar = Avatar::new("Ailloli").size(32.0);
+    /// let _ = avatar;
+    /// ```
     pub fn size(mut self, value: f32) -> Self {
         self.style.size = value.max(0.0);
         self
     }
 }
 
+/// Retained leaf widget holding the normalized content and resolved style.
 struct AvatarWidget {
+    /// Layout copied from the builder.
     layout: LayoutStyle,
+    /// Style copied from the builder.
     style: AvatarStyle,
+    /// Content copied from the builder.
     content: AvatarContent,
 }
 
@@ -205,6 +351,11 @@ impl<A: 'static> IntoView<A> for Avatar {
     }
 }
 
+/// Centers initials using a font size equal to 36% of the shortest side.
+///
+/// Painting is skipped when the paint context has no text system. The computed
+/// font size has a 10-pixel floor and saturates through Rust's float-to-integer
+/// cast if it exceeds `u16`.
 fn paint_initials(ctx: &mut PaintCtx<'_>, bounds: Rect, initials: &str, style: &AvatarStyle) {
     let Some(text_system) = ctx.text_system.as_deref_mut() else {
         return;
@@ -232,6 +383,7 @@ fn paint_initials(ctx: &mut PaintCtx<'_>, bounds: Rect, initials: &str, style: &
     }));
 }
 
+/// Maps an avatar tone to the corresponding theme palette color.
 fn avatar_tone_color(theme: Theme, tone: AvatarTone) -> Color {
     let palette = theme.palette();
     match tone {
@@ -245,6 +397,7 @@ fn avatar_tone_color(theme: Theme, tone: AvatarTone) -> Color {
     }
 }
 
+/// Derives one or two initials from the first two non-empty words in `name`.
 fn derive_initials(name: &str) -> String {
     let mut words = name.split_whitespace().filter(|word| !word.is_empty());
     let first = words.next();
@@ -261,6 +414,7 @@ fn derive_initials(name: &str) -> String {
     normalize_initials(&raw)
 }
 
+/// Removes whitespace, keeps three input characters, uppercases, and defaults to `?`.
 fn normalize_initials(value: &str) -> String {
     let mut out = String::new();
     for ch in value

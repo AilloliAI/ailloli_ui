@@ -1,3 +1,5 @@
+//! Accessible binary switches with controlled or two-way-bound state.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -15,40 +17,91 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawRRect};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in geometry choices for a [`Switch`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SwitchSize;
+/// assert_eq!(SwitchSize::default(), SwitchSize::Default);
+/// ```
 pub enum SwitchSize {
+    /// `36 × 20` track with a 14-pixel thumb.
     Compact,
+    /// `46 × 26` track with a 20-pixel thumb.
     #[default]
     Default,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Main axis along which a switch thumb moves.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SwitchOrientation;
+/// assert_eq!(SwitchOrientation::default(), SwitchOrientation::Horizontal);
+/// ```
 pub enum SwitchOrientation {
+    /// Off is left and on is right.
     #[default]
     Horizontal,
+    /// Off is top and on is bottom.
     Vertical,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved paint and logical-pixel geometry for a [`Switch`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{SwitchSize, SwitchStyle};
+/// let style = SwitchStyle::from_theme(Theme::dark(), SwitchSize::Compact);
+/// assert_eq!((style.width, style.height), (36.0, 20.0));
+/// assert_eq!(style.thumb_size, 14.0);
+/// ```
 pub struct SwitchStyle {
+    /// Idle off-track fill.
     pub track_off: Color,
+    /// Hovered off-track fill.
     pub track_off_hovered: Color,
+    /// Pressed off-track fill; pressed takes precedence over hover.
     pub track_off_pressed: Color,
+    /// Idle on-track fill.
     pub track_on: Color,
+    /// Hovered on-track fill.
     pub track_on_hovered: Color,
+    /// Pressed on-track fill; pressed takes precedence over hover.
     pub track_on_pressed: Color,
+    /// Enabled thumb fill.
     pub thumb: Color,
+    /// Disabled thumb fill before opacity is applied.
     pub thumb_disabled: Color,
+    /// Border used while off.
     pub border_off: Border,
+    /// Border used while on.
     pub border_on: Border,
+    /// Border painted outside a focused, enabled switch.
     pub focus_ring: Border,
+    /// Track shadows painted in vector order.
     pub shadows: Vec<BoxShadow>,
+    /// Horizontal-orientation intrinsic width in logical pixels.
     pub width: f32,
+    /// Horizontal-orientation intrinsic height in logical pixels.
     pub height: f32,
+    /// Requested square thumb size in logical pixels.
     pub thumb_size: f32,
+    /// Thumb inset from the off/on end in logical pixels.
     pub inset: f32,
+    /// Track corner radius in logical pixels.
     pub track_radius: f32,
+    /// Thumb corner radius in logical pixels.
     pub thumb_radius: f32,
+    /// Gap from track bounds to focus ring in logical pixels.
     pub focus_ring_offset: f32,
+    /// Alpha multiplier applied to disabled paint, normally in `0.0..=1.0`.
     pub disabled_opacity: f32,
 }
 
@@ -59,6 +112,19 @@ impl Default for SwitchStyle {
 }
 
 impl SwitchStyle {
+    /// Resolves colors and geometry for `size` from `theme`.
+    ///
+    /// Both built-in sizes use a 3-logical-pixel inset and no shadows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{SwitchSize, SwitchStyle};
+    /// let style = SwitchStyle::from_theme(Theme::dark(), SwitchSize::Default);
+    /// assert_eq!((style.width, style.height), (46.0, 26.0));
+    /// assert_eq!(style.inset, 3.0);
+    /// ```
     pub fn from_theme(theme: Theme, size: SwitchSize) -> Self {
         let palette = theme.palette();
         let (width, height, thumb_size, inset) = match size {
@@ -89,6 +155,7 @@ impl SwitchStyle {
         }
     }
 
+    /// Expands `rect` to contain every shadow and the possible focus ring.
     fn visual_bounds(&self, rect: Rect) -> Rect {
         let mut bounds = rect;
         for shadow in &self.shadows {
@@ -102,16 +169,40 @@ impl SwitchStyle {
     }
 }
 
+/// Shared callback receiving the proposed next checked state.
 type ChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, bool)>;
 
+/// A focusable binary toggle supporting controlled and bound state modes.
+///
+/// Pointer activation occurs on left-button release inside the bounds;
+/// Enter and Space activate on a pressed key event. [`Switch::checked`] is
+/// controlled/read-only state: activation only reports `!checked` through the
+/// callback. [`Switch::bind`] first writes the signal, then calls the callback.
+/// With neither binding nor callback, activation is a no-op.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Switch;
+/// let switch: Switch<()> = Switch::new().checked(true);
+/// let _ = switch;
+/// ```
 pub struct Switch<A = ()> {
+    /// Layout configuration used to resolve intrinsic geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Current static or reactive checked state.
     checked: Binding<bool>,
+    /// Writable signal in bound mode; `None` in controlled mode.
     bound: Option<Signal<bool>>,
+    /// Current static or reactive disabled state.
     disabled: Binding<bool>,
+    /// Optional callback receiving the proposed next value.
     on_change: Option<ChangeHandler<A>>,
+    /// Thumb motion axis.
     orientation: SwitchOrientation,
+    /// Resolved colors and geometry.
     style: SwitchStyle,
 }
 
@@ -124,6 +215,15 @@ impl<A: 'static> Default for Switch<A> {
 }
 
 impl<A: 'static> Switch<A> {
+    /// Creates an off, enabled, horizontal switch with no callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// let switch: Switch<()> = Switch::new();
+    /// let _ = switch;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -137,12 +237,40 @@ impl<A: 'static> Switch<A> {
         }
     }
 
+    /// Sets controlled static or reactive checked state.
+    ///
+    /// This clears any writable signal previously installed by [`Self::bind`].
+    /// Activation does not mutate this binding; use [`Self::on_change`] to send
+    /// the proposed value back to application state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// let switch: Switch<()> = Switch::new().checked(true);
+    /// let _ = switch;
+    /// ```
     pub fn checked(mut self, checked: impl Into<Binding<bool>>) -> Self {
         self.checked = checked.into();
         self.bound = None;
         self
     }
 
+    /// Installs a writable signal for two-way checked state.
+    ///
+    /// Activation writes the negated current value before invoking an optional
+    /// change callback. A later [`Self::checked`] call returns to controlled mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// let checked = Signal::new(Rc::new(RefCell::new(false)), Rc::new(|| {}));
+    /// let switch: Switch<()> = Switch::new().bind(checked);
+    /// let _ = switch;
+    /// ```
     pub fn bind(mut self, checked: impl Into<Signal<bool>>) -> Self {
         let signal = checked.into();
         self.checked = Binding::Signal(signal.clone());
@@ -150,45 +278,136 @@ impl<A: 'static> Switch<A> {
         self
     }
 
+    /// Sets a static or reactive disabled binding.
+    ///
+    /// Disabled switches ignore activation, leave the bound signal unchanged,
+    /// are removed from focus traversal, and apply disabled paint.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// let switch: Switch<()> = Switch::new().disabled(true);
+    /// let _ = switch;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Convenience alias for [`Self::disabled`] with a reactive memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// let switch: Switch<()> = Switch::new().disabled_signal(Memo::new(|| false));
+    /// let _ = switch;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Replaces the complete resolved style without clamping its values.
+    ///
+    /// A later [`Self::switch_size`] call discards this custom style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{Switch, SwitchSize, SwitchStyle};
+    /// let style = SwitchStyle::from_theme(Theme::dark(), SwitchSize::Compact);
+    /// let switch: Switch<()> = Switch::new().switch_style(style);
+    /// let _ = switch;
+    /// ```
     pub fn switch_style(mut self, style: SwitchStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces the complete style with the default-theme built-in `size`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Switch, SwitchSize};
+    /// let switch: Switch<()> = Switch::new().switch_size(SwitchSize::Compact);
+    /// let _ = switch;
+    /// ```
     pub fn switch_size(mut self, size: SwitchSize) -> Self {
         self.style = SwitchStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Sets the thumb motion axis.
+    ///
+    /// Vertical orientation swaps the style's intrinsic width and height.
+    /// Explicit layout builders may override either dimension.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Switch, SwitchOrientation};
+    /// let switch: Switch<()> = Switch::new().orientation(SwitchOrientation::Vertical);
+    /// let _ = switch;
+    /// ```
     pub fn orientation(mut self, orientation: SwitchOrientation) -> Self {
         self.orientation = orientation;
         self
     }
 
+    /// Convenience builder for [`SwitchOrientation::Vertical`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// let switch: Switch<()> = Switch::new().vertical();
+    /// let _ = switch;
+    /// ```
     pub fn vertical(self) -> Self {
         self.orientation(SwitchOrientation::Vertical)
     }
 
+    /// Maps each proposed next value to an application action and dispatches it.
+    ///
+    /// The mapper runs after a bound signal is updated. A later change-handler
+    /// builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// enum Action { Changed(bool) }
+    /// let switch = Switch::new().on_change(Action::Changed);
+    /// let _ = switch;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(bool) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Installs a context-aware callback for each proposed next value.
+    ///
+    /// The callback may dispatch zero or more actions. A later change-handler
+    /// builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Switch;
+    /// let switch = Switch::<()>::new().on_change_ctx(|ctx, _checked| ctx.request_repaint());
+    /// let _ = switch;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, bool) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 }
 
+/// Retained leaf that reads bindings, mutates bound state, and paints the switch.
 struct SwitchWidget<A> {
     layout: LayoutStyle,
     checked: Binding<bool>,
@@ -277,6 +496,7 @@ impl<A: 'static> Widget<A> for SwitchWidget<A> {
 }
 
 impl<A: 'static> SwitchWidget<A> {
+    /// Applies the next value in bound mode, invokes the callback, and consumes input.
     fn toggle(&self, ctx: &mut EventCtx<A>) {
         if self.bound.is_none() && self.on_change.is_none() {
             return;
@@ -312,6 +532,7 @@ impl<A: 'static> IntoView<A> for Switch<A> {
     }
 }
 
+/// Paints shadows, track, border, thumb, then an optional focus ring.
 fn paint_switch(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -388,6 +609,7 @@ fn paint_switch(
     }
 }
 
+/// Resolves track color with pressed state taking precedence over hover.
 fn resolve_track_color(style: &SwitchStyle, checked: bool, hovered: bool, pressed: bool) -> Color {
     match (checked, pressed, hovered) {
         (true, true, _) => style.track_on_pressed,
@@ -399,6 +621,7 @@ fn resolve_track_color(style: &SwitchStyle, checked: bool, hovered: bool, presse
     }
 }
 
+/// Returns style width/height, swapping axes for vertical orientation.
 fn switch_intrinsic_size(style: &SwitchStyle, orientation: SwitchOrientation) -> Size {
     match orientation {
         SwitchOrientation::Horizontal => Size::new(style.width, style.height),
@@ -406,6 +629,7 @@ fn switch_intrinsic_size(style: &SwitchStyle, orientation: SwitchOrientation) ->
     }
 }
 
+/// Fits and positions a square thumb at the off or on end of `bounds`.
 fn thumb_rect(
     bounds: Rect,
     checked: bool,
@@ -438,11 +662,13 @@ fn thumb_rect(
     }
 }
 
+/// Multiplies and clamps a color's alpha to `0.0..=1.0`.
 fn apply_opacity(mut color: Color, opacity: f32) -> Color {
     color.a = (color.a * opacity).clamp(0.0, 1.0);
     color
 }
 
+/// Applies [`apply_opacity`] independently to all four border colors.
 fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border.colors.left = apply_opacity(border.colors.left, opacity);
     border.colors.top = apply_opacity(border.colors.top, opacity);
@@ -451,6 +677,7 @@ fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border
 }
 
+/// Returns the largest of a border's four logical-pixel widths.
 fn max_border_width(border: Border) -> f32 {
     border
         .widths
@@ -460,6 +687,7 @@ fn max_border_width(border: Border) -> f32 {
         .max(border.widths.bottom)
 }
 
+/// Returns the smallest axis-aligned rectangle containing `a` and `b`.
 fn union_rect(a: Rect, b: Rect) -> Rect {
     let x0 = a.x.min(b.x);
     let y0 = a.y.min(b.y);

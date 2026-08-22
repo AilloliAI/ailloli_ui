@@ -9,20 +9,56 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::TextBuffer;
 
 /// Single-line vs multi-line editing behavior.
+///
+/// This mode only changes keyboard translation for Enter. Direct
+/// [`TextEditAction::InsertText`] and [`TextEditAction::Paste`] actions may
+/// still contain newlines in single-line mode; widgets must enforce any
+/// stronger content invariant themselves.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::TextInputMode;
+/// assert_ne!(TextInputMode::SingleLine, TextInputMode::MultiLine);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextInputMode {
+    /// Ignore Enter in [`TextKeymap`] translation.
     SingleLine,
+    /// Translate Enter into newline insertion.
     MultiLine,
 }
 
 /// Platform-specific primary modifier (Ctrl vs Cmd).
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::PlatformKeymap;
+/// assert_ne!(PlatformKeymap::LinuxWindows, PlatformKeymap::MacOs);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlatformKeymap {
+    /// Treat Control as the primary shortcut modifier.
     LinuxWindows,
+    /// Treat Meta/Command as the primary shortcut modifier.
     MacOs,
 }
 
 impl PlatformKeymap {
+    /// Returns the compile-target platform mapping.
+    ///
+    /// macOS targets select [`Self::MacOs`]; every other target, including
+    /// Linux, Windows, and WebAssembly, selects [`Self::LinuxWindows`]. This is
+    /// compile-time selection, not runtime operating-system detection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::PlatformKeymap;
+    /// let current = PlatformKeymap::current();
+    /// assert!(matches!(current, PlatformKeymap::LinuxWindows | PlatformKeymap::MacOs));
+    /// ```
     pub fn current() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOs
@@ -31,6 +67,26 @@ impl PlatformKeymap {
         }
     }
 
+    /// Tests only the platform's primary modifier on a key event.
+    ///
+    /// Other modifiers and the key state do not affect the result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::event::{Key, KeyEvent, KeyState, Modifiers};
+    /// use ailloli_ui_text::PlatformKeymap;
+    /// let event = KeyEvent {
+    ///     state: KeyState::Pressed,
+    ///     key: Key::Character("c".into()),
+    ///     modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+    ///     repeat: false,
+    ///     pointer_pos: None,
+    ///     text: None,
+    /// };
+    /// assert!(PlatformKeymap::LinuxWindows.is_primary(&event));
+    /// assert!(!PlatformKeymap::MacOs.is_primary(&event));
+    /// ```
     pub fn is_primary(self, event: &KeyEvent) -> bool {
         match self {
             Self::LinuxWindows => event.modifiers.ctrl,
@@ -40,13 +96,37 @@ impl PlatformKeymap {
 }
 
 /// Caret and optional selection anchor (UTF-8 byte indices).
+///
+/// This value does not know the associated text and therefore permits out-of-range
+/// and non-boundary indices. [`TextEditState::clamp_to_buffer`] repairs them by
+/// clamping backward to valid UTF-8 boundaries.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::TextSelection;
+/// let selection = TextSelection { anchor: 8, caret: 3 };
+/// assert_eq!(selection.normalized(), (3, 8));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextSelection {
+    /// Fixed end of an extended selection, as a UTF-8 byte index.
     pub anchor: usize,
+    /// Moving end and active caret, as a UTF-8 byte index.
     pub caret: usize,
 }
 
 impl TextSelection {
+    /// Creates a zero-width selection at `caret` without validating it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextSelection;
+    /// let selection = TextSelection::collapsed(5);
+    /// assert_eq!(selection, TextSelection { anchor: 5, caret: 5 });
+    /// assert!(selection.is_collapsed());
+    /// ```
     pub fn collapsed(caret: usize) -> Self {
         Self {
             anchor: caret,
@@ -54,6 +134,16 @@ impl TextSelection {
         }
     }
 
+    /// Returns `(min(anchor, caret), max(anchor, caret))`.
+    ///
+    /// The pair is numerically ordered but is not clamped to any buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextSelection;
+    /// assert_eq!(TextSelection { anchor: 9, caret: 2 }.normalized(), (2, 9));
+    /// ```
     pub fn normalized(self) -> (usize, usize) {
         if self.anchor <= self.caret {
             (self.anchor, self.caret)
@@ -62,29 +152,67 @@ impl TextSelection {
         }
     }
 
+    /// Returns `true` when anchor and caret have the same byte index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextSelection;
+    /// assert!(TextSelection::collapsed(0).is_collapsed());
+    /// assert!(!TextSelection { anchor: 0, caret: 1 }.is_collapsed());
+    /// ```
     pub fn is_collapsed(self) -> bool {
         self.anchor == self.caret
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Whole-buffer state retained for one undo or redo entry.
 struct EditSnapshot {
+    /// Complete UTF-8 document copy.
     text: String,
+    /// Caret byte index at snapshot time.
     caret_byte: usize,
+    /// Optional selection at snapshot time.
     selection: Option<TextSelection>,
 }
 
 /// Mutable edit session: caret, selection, IME preedit, scroll, undo stacks.
+///
+/// Byte positions are public for widget integration but should be kept on UTF-8
+/// boundaries; [`Self::apply`] clamps them before and after every action. Undo
+/// and redo snapshots copy the whole buffer and retain at most 256 undo entries.
+/// Scroll positions are logical pixels and are not clamped or interpreted by
+/// this engine. Cloning duplicates all snapshot strings.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::TextEditState;
+/// let state = TextEditState::new();
+/// assert_eq!(state.caret_byte, 0);
+/// assert_eq!(state.selection, None);
+/// assert_eq!((state.scroll_x, state.scroll_y), (0.0, 0.0));
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextEditState {
+    /// Active caret as a UTF-8 byte index.
     pub caret_byte: usize,
+    /// Optional anchor/caret pair; `Some(collapsed)` remains distinct from `None`.
     pub selection: Option<TextSelection>,
+    /// Active IME composition, kept outside the committed [`TextBuffer`].
     pub preedit: Option<ImePreedit>,
+    /// Reserved horizontal target in logical pixels; current movement clears but does not use it.
     pub desired_x: Option<f32>,
+    /// Widget-managed horizontal scroll offset in logical pixels.
     pub scroll_x: f32,
+    /// Widget-managed vertical scroll offset in logical pixels.
     pub scroll_y: f32,
+    /// Widget-managed pointer-drag anchor byte index.
     pub drag_anchor: Option<usize>,
+    /// Oldest-to-newest whole-document undo snapshots, capped at 256.
     undo: Vec<EditSnapshot>,
+    /// Whole-document redo snapshots, cleared by each new text mutation.
     redo: Vec<EditSnapshot>,
 }
 
@@ -95,6 +223,16 @@ impl Default for TextEditState {
 }
 
 impl TextEditState {
+    /// Creates a session at byte zero with no selection, IME, history, or scroll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::TextEditState;
+    /// let state = TextEditState::new();
+    /// assert_eq!(state, TextEditState::default());
+    /// assert_eq!(state.desired_x, None);
+    /// ```
     pub fn new() -> Self {
         Self {
             caret_byte: 0,
@@ -109,6 +247,25 @@ impl TextEditState {
         }
     }
 
+    /// Clamps caret and selection endpoints backward to buffer UTF-8 boundaries.
+    ///
+    /// Values beyond the end become `buffer.len_bytes()`. Values inside a
+    /// multibyte scalar move to its starting byte. The method does not force the
+    /// state's caret to equal `selection.caret`, remove collapsed selections,
+    /// or modify IME, scroll, drag, and history fields.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::{TextBuffer, TextEditState, TextSelection};
+    /// let buffer = TextBuffer::from_string("é");
+    /// let mut state = TextEditState::new();
+    /// state.caret_byte = 1;
+    /// state.selection = Some(TextSelection { anchor: 1, caret: 99 });
+    /// state.clamp_to_buffer(&buffer);
+    /// assert_eq!(state.caret_byte, 0);
+    /// assert_eq!(state.selection, Some(TextSelection { anchor: 0, caret: 2 }));
+    /// ```
     pub fn clamp_to_buffer(&mut self, buffer: &TextBuffer) {
         let text = buffer.as_str();
         self.caret_byte = clamp_boundary(&text, self.caret_byte);
@@ -118,6 +275,26 @@ impl TextEditState {
         });
     }
 
+    /// Copies the current non-collapsed selection from `buffer`.
+    ///
+    /// Reversed selections are normalized. `None` means no selection or a
+    /// collapsed one. Endpoints beyond the buffer are clamped to its end.
+    ///
+    /// # Panics
+    ///
+    /// This method can panic if publicly mutated selection endpoints lie inside
+    /// a multibyte scalar. Call [`Self::clamp_to_buffer`] first when state did not
+    /// come through [`Self::apply`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::{TextBuffer, TextEditState, TextSelection};
+    /// let buffer = TextBuffer::from_string("hello");
+    /// let mut state = TextEditState::new();
+    /// state.selection = Some(TextSelection { anchor: 5, caret: 1 });
+    /// assert_eq!(state.selected_text(&buffer).as_deref(), Some("ello"));
+    /// ```
     pub fn selected_text(&self, buffer: &TextBuffer) -> Option<String> {
         let selection = self.selection?;
         if selection.is_collapsed() {
@@ -128,6 +305,27 @@ impl TextEditState {
         Some(text[start.min(text.len())..end.min(text.len())].to_string())
     }
 
+    /// Moves the caret, optionally extending the current selection.
+    ///
+    /// `caret_byte` is clamped backward to a UTF-8 boundary. With `extend`, an
+    /// existing anchor is preserved; otherwise the current caret becomes the
+    /// anchor. Without `extend`, selection is cleared. `desired_x` is always
+    /// cleared. The boolean reports whether caret, selection, or `desired_x`
+    /// changed; it does not report a text mutation.
+    ///
+    /// Existing public state is not pre-clamped by this method, so callers with
+    /// externally modified indices should call [`Self::clamp_to_buffer`] first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::{TextBuffer, TextEditState, TextSelection};
+    /// let buffer = TextBuffer::from_string("abc");
+    /// let mut state = TextEditState::new();
+    /// assert!(state.set_caret(&buffer, 2, true));
+    /// assert_eq!(state.selection, Some(TextSelection { anchor: 0, caret: 2 }));
+    /// assert_eq!(state.caret_byte, 2);
+    /// ```
     pub fn set_caret(&mut self, buffer: &TextBuffer, caret_byte: usize, extend: bool) -> bool {
         let previous_caret = self.caret_byte;
         let previous_selection = self.selection;
@@ -147,6 +345,32 @@ impl TextEditState {
             || self.desired_x != previous_desired_x
     }
 
+    /// Applies one editing command and returns requested side effects.
+    ///
+    /// State indices are clamped before and after dispatch. Nonempty committed
+    /// text mutations take a whole-buffer undo snapshot, clear redo, update the
+    /// buffer revision, clear selection/`desired_x`, and cap undo at 256 entries.
+    /// `InsertText` replaces each carriage return with a newline; `Paste` and
+    /// `ImeCommit` preserve their strings exactly. Empty inserts and unavailable
+    /// undo/redo operations are no-ops.
+    ///
+    /// `text_changed` means the action executed a text mutation, not that old and
+    /// new strings were compared for inequality. `state_changed` excludes pure
+    /// clipboard requests: Copy can set `clipboard_write` and RequestPaste sets
+    /// `clipboard_read` while both flags remain false. IME preedit is not part of
+    /// the buffer and is cleared only by commit, end, undo, or redo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::{TextBuffer, TextEditAction, TextEditState};
+    /// let mut buffer = TextBuffer::from_string("ab");
+    /// let mut state = TextEditState::new();
+    /// state.caret_byte = 2;
+    /// let outcome = state.apply(&mut buffer, TextEditAction::InsertText { text: "\rc".into() });
+    /// assert_eq!(buffer.as_str(), "ab\nc");
+    /// assert!(outcome.text_changed && outcome.state_changed);
+    /// ```
     pub fn apply(&mut self, buffer: &mut TextBuffer, action: TextEditAction) -> TextEditOutcome {
         self.clamp_to_buffer(buffer);
         let mut outcome = TextEditOutcome::default();
@@ -272,6 +496,7 @@ impl TextEditState {
         outcome
     }
 
+    /// Pushes a whole-buffer undo snapshot, clears redo, and evicts beyond 256.
     fn push_undo(&mut self, buffer: &TextBuffer) {
         self.undo.push(EditSnapshot {
             text: buffer.as_str(),
@@ -285,6 +510,7 @@ impl TextEditState {
         }
     }
 
+    /// Records undo, deletes a nonempty selection, and inserts at the caret.
     fn replace_selection_or_insert(&mut self, buffer: &mut TextBuffer, inserted: &str) {
         self.push_undo(buffer);
         self.delete_selection_without_undo(buffer);
@@ -295,6 +521,7 @@ impl TextEditState {
         self.desired_x = None;
     }
 
+    /// Deletes a nonempty selection with one undo snapshot.
     fn delete_selection(&mut self, buffer: &mut TextBuffer) -> bool {
         if self.selection.is_none_or(TextSelection::is_collapsed) {
             return false;
@@ -303,6 +530,7 @@ impl TextEditState {
         self.delete_selection_without_undo(buffer)
     }
 
+    /// Deletes a nonempty selection without changing history.
     fn delete_selection_without_undo(&mut self, buffer: &mut TextBuffer) -> bool {
         let Some(selection) = self.selection else {
             return false;
@@ -318,6 +546,7 @@ impl TextEditState {
         true
     }
 
+    /// Deletes the selection or preceding extended grapheme cluster.
     fn delete_backward(&mut self, buffer: &mut TextBuffer) -> bool {
         if self.delete_selection(buffer) {
             return true;
@@ -334,6 +563,7 @@ impl TextEditState {
         true
     }
 
+    /// Deletes the selection or following extended grapheme cluster.
     fn delete_forward(&mut self, buffer: &mut TextBuffer) -> bool {
         if self.delete_selection(buffer) {
             return true;
@@ -349,6 +579,7 @@ impl TextEditState {
         true
     }
 
+    /// Resolves logical movement against newline lines and grapheme boundaries.
     fn move_caret(&mut self, buffer: &TextBuffer, movement: TextMovement, extend: bool) -> bool {
         let text = buffer.as_str();
         let from = self.caret_byte.min(text.len());
@@ -369,6 +600,7 @@ impl TextEditState {
         self.set_caret(buffer, target, extend)
     }
 
+    /// Restores the newest undo snapshot and records current state for redo.
     fn restore_undo(&mut self, buffer: &mut TextBuffer) -> bool {
         let Some(snapshot) = self.undo.pop() else {
             return false;
@@ -385,6 +617,7 @@ impl TextEditState {
         true
     }
 
+    /// Restores the newest redo snapshot and records current state for undo.
     fn restore_redo(&mut self, buffer: &mut TextBuffer) -> bool {
         let Some(snapshot) = self.redo.pop() else {
             return false;
@@ -403,75 +636,184 @@ impl TextEditState {
 }
 
 /// Editing command applied to a buffer through [`TextEditState`].
+///
+/// Actions are backend-neutral: clipboard reads/writes are reported in
+/// [`TextEditOutcome`] for the host widget to perform. Directly constructed
+/// actions are not restricted by [`TextInputMode`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::{TextBuffer, TextEditAction, TextEditState};
+/// let mut buffer = TextBuffer::new();
+/// let mut state = TextEditState::new();
+/// state.apply(&mut buffer, TextEditAction::InsertText { text: "hello".into() });
+/// assert_eq!(buffer.as_str(), "hello");
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextEditAction {
+    /// Replace the selection or insert committed text at the caret.
+    ///
+    /// Carriage returns in `text` are individually normalized to newlines.
     InsertText {
+        /// Owned UTF-8 content to insert; empty content is a no-op.
         text: String,
     },
+    /// Replace the active IME composition state without committing it.
     ImePreedit {
+        /// Composition text and optional byte selection; empty text clears preedit.
         preedit: ImePreedit,
     },
+    /// Clear preedit and commit text at the selection or caret.
     ImeCommit {
+        /// Exact committed UTF-8 content; carriage returns are preserved.
         text: String,
     },
+    /// Clear an active IME preedit without mutating committed text.
     ImeEnd,
+    /// Delete a nonempty selection or the preceding extended grapheme cluster.
     DeleteBackward,
+    /// Delete a nonempty selection or the following extended grapheme cluster.
     DeleteForward,
+    /// Move the caret in logical document space.
     Move {
+        /// Direction and granularity of navigation.
         movement: TextMovement,
+        /// Preserve/create an anchor when true; clear selection when false.
         extend: bool,
     },
+    /// Select bytes `0..len` and place the caret at the end.
     SelectAll,
+    /// Install an explicit selection after clamping both endpoints.
     SetSelection {
+        /// Requested anchor and caret byte indices.
         selection: TextSelection,
     },
+    /// Place a caret from pointer hit testing, optionally extending selection.
     PointerCaret {
+        /// Requested UTF-8 byte index, clamped backward to a valid boundary.
         byte: usize,
+        /// Preserve/create the selection anchor when true.
         extend: bool,
     },
+    /// Request writing the selected text to the host clipboard.
     Copy,
+    /// Request a clipboard write and delete a nonempty selection.
     Cut,
+    /// Insert exact host-provided clipboard content.
     Paste {
+        /// UTF-8 clipboard content; empty content is a no-op.
         text: String,
     },
+    /// Request asynchronous clipboard text from the host.
     RequestPaste,
+    /// Restore the newest whole-buffer undo snapshot if present.
     Undo,
+    /// Restore the newest whole-buffer redo snapshot if present.
     Redo,
 }
 
 /// Caret movement direction for keyboard navigation.
+///
+/// Horizontal character movement follows Unicode extended grapheme clusters.
+/// Words are whitespace-delimited; punctuation remains part of a word. Vertical
+/// movement uses newline-delimited logical lines and preserves a grapheme column,
+/// not shaped X geometry. Page movement is exactly ten logical lines.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::TextMovement;
+/// assert_ne!(TextMovement::Left, TextMovement::WordLeft);
+/// assert_ne!(TextMovement::LineUp, TextMovement::PageUp);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextMovement {
+    /// Move to the previous extended grapheme boundary.
     Left,
+    /// Move to the next extended grapheme boundary.
     Right,
+    /// Move left across whitespace and then to the current word's start.
     WordLeft,
+    /// Move right across whitespace and through the next non-whitespace run.
     WordRight,
+    /// Move after the previous newline, or byte zero on the first line.
     LineStart,
+    /// Move before the next newline, or to document end on the last line.
     LineEnd,
+    /// Move to UTF-8 byte zero.
     DocumentStart,
+    /// Move to the document's UTF-8 byte length.
     DocumentEnd,
+    /// Move one logical line up at the same grapheme column when possible.
     LineUp,
+    /// Move one logical line down at the same grapheme column when possible.
     LineDown,
+    /// Move ten logical lines up at the same grapheme column when possible.
     PageUp,
+    /// Move ten logical lines down at the same grapheme column when possible.
     PageDown,
 }
 
 /// Side effects after applying an edit action.
+///
+/// Clipboard fields are requests for the host integration; this crate performs
+/// no operating-system clipboard I/O. The default represents a complete no-op.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::TextEditOutcome;
+/// let outcome = TextEditOutcome::default();
+/// assert!(!outcome.text_changed);
+/// assert!(!outcome.state_changed);
+/// assert_eq!(outcome.clipboard_write, None);
+/// assert!(!outcome.clipboard_read);
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextEditOutcome {
+    /// Whether the action executed a committed-buffer mutation.
     pub text_changed: bool,
+    /// Whether caret, selection, IME, history-restored state, or text state changed.
     pub state_changed: bool,
+    /// Selected UTF-8 text the host should write, or `None` for no write request.
     pub clipboard_write: Option<String>,
+    /// Whether the host should read text and later dispatch [`TextEditAction::Paste`].
     pub clipboard_read: bool,
 }
 
 /// Maps [`KeyEvent`] to [`TextEditAction`] for a given input mode and platform.
+///
+/// This translator is stateless. It ignores key releases, dead keys, pointer
+/// positions, and does not suppress repeated pressed events. Clipboard commands
+/// remain host requests rather than direct I/O.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::{PlatformKeymap, TextInputMode, TextKeymap};
+/// let keymap = TextKeymap::for_platform(TextInputMode::SingleLine, PlatformKeymap::LinuxWindows);
+/// assert_eq!(keymap.mode, TextInputMode::SingleLine);
+/// assert_eq!(keymap.platform, PlatformKeymap::LinuxWindows);
+/// ```
 pub struct TextKeymap {
+    /// Whether Enter is ignored or translated into newline insertion.
     pub mode: TextInputMode,
+    /// Modifier used for selection, clipboard, word, and history shortcuts.
     pub platform: PlatformKeymap,
 }
 
 impl TextKeymap {
+    /// Creates a keymap using [`PlatformKeymap::current`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::{PlatformKeymap, TextInputMode, TextKeymap};
+    /// let keymap = TextKeymap::new(TextInputMode::MultiLine);
+    /// assert_eq!(keymap.mode, TextInputMode::MultiLine);
+    /// assert_eq!(keymap.platform, PlatformKeymap::current());
+    /// ```
     pub fn new(mode: TextInputMode) -> Self {
         Self {
             mode,
@@ -479,10 +821,49 @@ impl TextKeymap {
         }
     }
 
+    /// Creates a keymap with an explicit, deterministic platform mapping.
+    ///
+    /// This constructor is useful for tests and remote input whose shortcut
+    /// convention differs from the compilation target.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_text::{PlatformKeymap, TextInputMode, TextKeymap};
+    /// let keymap = TextKeymap::for_platform(TextInputMode::SingleLine, PlatformKeymap::MacOs);
+    /// assert_eq!(keymap.platform, PlatformKeymap::MacOs);
+    /// ```
     pub fn for_platform(mode: TextInputMode, platform: PlatformKeymap) -> Self {
         Self { mode, platform }
     }
 
+    /// Translates a pressed key event into one editing action.
+    ///
+    /// Primary-modifier character shortcuts are ASCII case-insensitive: A/C/X/V,
+    /// Z (Shift-Z for redo), and Y. Unknown primary characters return `None`.
+    /// Left/right become word moves with the primary modifier; Home/End become
+    /// document moves. Shift extends movement selections. Plain character input
+    /// prefers `event.text` over the logical key, allowing composed characters;
+    /// Alt or Meta suppress it, and named Space falls back to one ASCII space.
+    /// Enter inserts only in multiline mode. `event.repeat` is intentionally
+    /// ignored, so a repeated pressed event maps identically.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::event::{Key, KeyEvent, KeyState, Modifiers};
+    /// use ailloli_ui_text::{PlatformKeymap, TextEditAction, TextInputMode, TextKeymap};
+    /// let keymap = TextKeymap::for_platform(TextInputMode::SingleLine, PlatformKeymap::LinuxWindows);
+    /// let event = KeyEvent {
+    ///     state: KeyState::Pressed,
+    ///     key: Key::Character("c".into()),
+    ///     modifiers: Modifiers { ctrl: true, ..Modifiers::default() },
+    ///     repeat: false,
+    ///     pointer_pos: None,
+    ///     text: None,
+    /// };
+    /// assert_eq!(keymap.action_for_key(&event), Some(TextEditAction::Copy));
+    /// ```
     pub fn action_for_key(&self, event: &KeyEvent) -> Option<TextEditAction> {
         if event.state != ailloli_ui_core::event::KeyState::Pressed {
             return None;
@@ -582,6 +963,20 @@ impl TextKeymap {
     }
 }
 
+/// Clamps a byte index backward to a valid UTF-8 boundary in `text`.
+///
+/// Inputs beyond the byte length become `text.len()`. An input in the middle of
+/// a multibyte scalar walks backward to that scalar's leading byte. Zero and all
+/// already valid boundaries are unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_text::edit::clamp_boundary;
+/// let text = "aé";
+/// assert_eq!(clamp_boundary(text, 2), 1);
+/// assert_eq!(clamp_boundary(text, usize::MAX), text.len());
+/// ```
 pub fn clamp_boundary(text: &str, byte: usize) -> usize {
     let mut b = byte.min(text.len());
     while b > 0 && !text.is_char_boundary(b) {
@@ -590,6 +985,7 @@ pub fn clamp_boundary(text: &str, byte: usize) -> usize {
     b
 }
 
+/// Returns the previous extended grapheme start, clamped at zero.
 fn previous_grapheme_boundary(text: &str, byte: usize) -> usize {
     let byte = clamp_boundary(text, byte);
     UnicodeSegmentation::grapheme_indices(text, true)
@@ -599,6 +995,7 @@ fn previous_grapheme_boundary(text: &str, byte: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Returns the end of the next extended grapheme, clamped at text length.
 fn next_grapheme_boundary(text: &str, byte: usize) -> usize {
     let byte = clamp_boundary(text, byte);
     if byte >= text.len() {
@@ -610,6 +1007,7 @@ fn next_grapheme_boundary(text: &str, byte: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+/// Moves left across Unicode whitespace and a whitespace-delimited token.
 fn previous_word_boundary(text: &str, byte: usize) -> usize {
     let mut idx = previous_grapheme_boundary(text, byte);
     while idx > 0 && text[idx..].chars().next().is_some_and(char::is_whitespace) {
@@ -625,6 +1023,7 @@ fn previous_word_boundary(text: &str, byte: usize) -> usize {
     idx
 }
 
+/// Moves right across Unicode whitespace and a whitespace-delimited token.
 fn next_word_boundary(text: &str, byte: usize) -> usize {
     let mut idx = next_grapheme_boundary(text, byte);
     while idx < text.len() && text[..idx].chars().last().is_some_and(char::is_whitespace) {
@@ -640,6 +1039,7 @@ fn next_word_boundary(text: &str, byte: usize) -> usize {
     idx
 }
 
+/// Returns the current logical line excluding its newline terminator.
 fn line_bounds(text: &str, byte: usize) -> (usize, usize) {
     let byte = clamp_boundary(text, byte);
     let start = text[..byte].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
@@ -650,6 +1050,7 @@ fn line_bounds(text: &str, byte: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// Moves by signed logical-line count while preserving grapheme column.
 fn vertical_line_move(text: &str, byte: usize, delta_lines: isize) -> usize {
     let (start, _) = line_bounds(text, byte);
     let column = text[start..byte].graphemes(true).count();
@@ -677,6 +1078,7 @@ fn vertical_line_move(text: &str, byte: usize, delta_lines: isize) -> usize {
     column_to_byte(text, line_start, column)
 }
 
+/// Maps a grapheme column into one newline-delimited line, clamping at its end.
 fn column_to_byte(text: &str, line_start: usize, column: usize) -> usize {
     let (_, line_end) = line_bounds(text, line_start);
     let line = &text[line_start..line_end];

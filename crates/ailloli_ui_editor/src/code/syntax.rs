@@ -1,26 +1,58 @@
+//! Deterministic Rust syntax tokenization and optional Tree-sitter enrichment.
+
 use std::ops::Range;
 
 /// Syntax token emitted by code highlighters.
+///
+/// The half-open range uses UTF-8 byte offsets into the exact source passed to
+/// the highlighter.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::code::{SyntaxKind, SyntaxToken};
+/// let token = SyntaxToken { range: 0..2, kind: SyntaxKind::Keyword };
+/// assert_eq!(token.range, 0..2);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SyntaxToken {
+    /// Half-open UTF-8 source byte range.
     pub range: Range<usize>,
+    /// Language-neutral semantic paint category.
     pub kind: SyntaxKind,
 }
 
 /// Language-neutral syntax token categories.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::code::SyntaxKind;
+/// assert_ne!(SyntaxKind::Comment, SyntaxKind::Identifier);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SyntaxKind {
+    /// Reserved language word or structural keyword-like node.
     Keyword,
+    /// Type name or primitive type.
     Type,
+    /// Function or macro name.
     Function,
+    /// String or character literal.
     String,
+    /// Numeric literal.
     Number,
+    /// Line or block comment.
     Comment,
+    /// Operator sequence.
     Operator,
+    /// Delimiter or punctuation byte.
     Punctuation,
+    /// Identifier or Rust lifetime.
     Identifier,
 }
 
+/// ASCII Rust keywords recognized by the lexical highlighter.
 const RUST_KEYWORDS: &[&str] = &[
     "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
     "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
@@ -28,8 +60,25 @@ const RUST_KEYWORDS: &[&str] = &[
     "unsafe", "use", "where", "while",
 ];
 
-/// Lightweight Rust tokenizer used until the optional Tree-sitter backend is
-/// connected. It gives deterministic spans for tests and early styled layouts.
+/// Tokenizes a useful ASCII-oriented subset of Rust without parsing.
+///
+/// The deterministic, linear scan recognizes line comments, quoted strings and
+/// chars, raw strings, lifetimes, numeric/identifier runs, keywords, delimiters,
+/// and operators. It then marks an identifier following `fn` and identifiers
+/// followed by optional ASCII whitespace plus `!` as functions. Non-ASCII
+/// identifier bytes and unrecognized punctuation are skipped. Unterminated
+/// strings/comments extend to EOF; returned ranges are ordered UTF-8 bytes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::code::{highlight_rust_lexical, SyntaxKind};
+/// let text = "fn main() { println!(\"hi\"); }";
+/// let tokens = highlight_rust_lexical(text);
+/// assert!(tokens.iter().any(|t| t.kind == SyntaxKind::Keyword && &text[t.range.clone()] == "fn"));
+/// assert!(tokens.iter().any(|t| t.kind == SyntaxKind::Function && &text[t.range.clone()] == "main"));
+/// assert!(tokens.iter().any(|t| t.kind == SyntaxKind::String && &text[t.range.clone()] == "\"hi\""));
+/// ```
 pub fn highlight_rust_lexical(text: &str) -> Vec<SyntaxToken> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
@@ -130,6 +179,22 @@ pub fn highlight_rust_lexical(text: &str) -> Vec<SyntaxToken> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Combines Tree-sitter Rust tokens with lexical gap filling.
+///
+/// Returns `None` if parser setup/parsing fails or non-whitespace input yields no
+/// structural token. Otherwise ranges are clamped to UTF-8 boundaries, sorted,
+/// deduplicated, and made non-overlapping by semantic priority before and after
+/// lexical gap filling. Whitespace-only input returns `Some(Vec::new())`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::code::{highlight_rust_tree_sitter_hybrid, SyntaxKind};
+/// let text = "fn main() { let n = 1; }";
+/// let tokens = highlight_rust_tree_sitter_hybrid(text).unwrap();
+/// assert!(tokens.iter().any(|t| t.kind == SyntaxKind::Function && &text[t.range.clone()] == "main"));
+/// assert_eq!(highlight_rust_tree_sitter_hybrid("   "), Some(Vec::new()));
+/// ```
 pub fn highlight_rust_tree_sitter_hybrid(text: &str) -> Option<Vec<SyntaxToken>> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_rust::LANGUAGE.into();
@@ -148,6 +213,7 @@ pub fn highlight_rust_tree_sitter_hybrid(text: &str) -> Option<Vec<SyntaxToken>>
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Recursively collects structural and named-item tokens from a syntax tree.
 fn collect_tree_sitter_tokens(node: tree_sitter::Node<'_>, tokens: &mut Vec<SyntaxToken>) {
     if let Some(kind) = tree_sitter_node_kind(node) {
         tokens.push(token(node.start_byte()..node.end_byte(), kind));
@@ -164,6 +230,7 @@ fn collect_tree_sitter_tokens(node: tree_sitter::Node<'_>, tokens: &mut Vec<Synt
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Maps a structural Tree-sitter Rust node to a syntax category.
 fn tree_sitter_node_kind(node: tree_sitter::Node<'_>) -> Option<SyntaxKind> {
     match node.kind() {
         "line_comment" | "block_comment" => Some(SyntaxKind::Comment),
@@ -179,6 +246,7 @@ fn tree_sitter_node_kind(node: tree_sitter::Node<'_>) -> Option<SyntaxKind> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Extracts the named identifier node for declarations with semantic names.
 fn tree_sitter_named_item(
     node: tree_sitter::Node<'_>,
 ) -> Option<(SyntaxKind, tree_sitter::Node<'_>)> {
@@ -191,6 +259,7 @@ fn tree_sitter_named_item(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Adds lexical tokens not superseded by stronger structural tokens.
 fn gap_fill_lexical_tokens(text: &str, tokens: &mut Vec<SyntaxToken>) {
     let existing = tokens.clone();
     tokens.extend(
@@ -201,6 +270,7 @@ fn gap_fill_lexical_tokens(text: &str, tokens: &mut Vec<SyntaxToken>) {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Tests whether a lexical token can coexist with current structural coverage.
 fn lexical_gap_fill_allowed(candidate: &SyntaxToken, existing: &[SyntaxToken]) -> bool {
     let has_overlap = existing
         .iter()
@@ -218,6 +288,7 @@ fn lexical_gap_fill_allowed(candidate: &SyntaxToken, existing: &[SyntaxToken]) -
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Clamps, sorts, deduplicates, and resolves overlapping syntax tokens.
 fn normalize_syntax_tokens(text: &str, tokens: Vec<SyntaxToken>) -> Vec<SyntaxToken> {
     let mut indexed = tokens
         .into_iter()
@@ -265,6 +336,7 @@ fn normalize_syntax_tokens(text: &str, tokens: Vec<SyntaxToken>) -> Vec<SyntaxTo
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Clamps one token to a non-empty valid UTF-8 source range.
 fn normalize_token(text: &str, token: SyntaxToken) -> Option<SyntaxToken> {
     let start = clamp_to_char_boundary(text, token.range.start.min(text.len()));
     let end = clamp_to_char_boundary(text, token.range.end.min(text.len()));
@@ -275,6 +347,7 @@ fn normalize_token(text: &str, token: SyntaxToken) -> Option<SyntaxToken> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Moves an offset backward to the nearest UTF-8 boundary.
 fn clamp_to_char_boundary(text: &str, mut at: usize) -> usize {
     while at > 0 && !text.is_char_boundary(at) {
         at -= 1;
@@ -283,11 +356,13 @@ fn clamp_to_char_boundary(text: &str, mut at: usize) -> usize {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Tests intersection of two half-open byte ranges.
 fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Returns the lower-is-stronger overlap priority for a syntax category.
 fn syntax_kind_priority(kind: SyntaxKind) -> u8 {
     match kind {
         SyntaxKind::Comment => 0,
@@ -302,6 +377,7 @@ fn syntax_kind_priority(kind: SyntaxKind) -> u8 {
     }
 }
 
+/// Reclassifies the next identifier token after each `fn` keyword.
 fn mark_function_identifiers(text: &str, tokens: &mut [SyntaxToken]) {
     for idx in 0..tokens.len().saturating_sub(1) {
         if tokens[idx].kind == SyntaxKind::Keyword && &text[tokens[idx].range.clone()] == "fn" {
@@ -315,6 +391,7 @@ fn mark_function_identifiers(text: &str, tokens: &mut [SyntaxToken]) {
     }
 }
 
+/// Reclassifies identifiers followed by optional whitespace and `!` as macros.
 fn mark_macro_identifiers(text: &str, tokens: &mut [SyntaxToken]) {
     for token in tokens.iter_mut() {
         if token.kind != SyntaxKind::Identifier {
@@ -330,6 +407,7 @@ fn mark_macro_identifiers(text: &str, tokens: &mut [SyntaxToken]) {
     }
 }
 
+/// Returns the end of a Rust-like lifetime, rejecting character literals.
 fn lifetime_end(bytes: &[u8], start: usize) -> Option<usize> {
     let first = *bytes.get(start + 1)?;
     if !is_ident_start(first) {
@@ -345,6 +423,7 @@ fn lifetime_end(bytes: &[u8], start: usize) -> Option<usize> {
     Some(end)
 }
 
+/// Returns the end of a Rust raw string, using EOF for an unterminated string.
 fn raw_string_end(text: &str, start: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     if bytes.get(start) != Some(&b'r') {
@@ -378,14 +457,17 @@ fn raw_string_end(text: &str, start: usize) -> Option<usize> {
     Some(text.len())
 }
 
+/// Constructs a syntax token without normalizing its range.
 fn token(range: Range<usize>, kind: SyntaxKind) -> SyntaxToken {
     SyntaxToken { range, kind }
 }
 
+/// Tests the first byte of an ASCII Rust-like identifier.
 fn is_ident_start(ch: u8) -> bool {
     ch == b'_' || ch.is_ascii_alphabetic()
 }
 
+/// Tests a continuation byte of an ASCII Rust-like identifier.
 fn is_ident_continue(ch: u8) -> bool {
     is_ident_start(ch) || ch.is_ascii_digit()
 }

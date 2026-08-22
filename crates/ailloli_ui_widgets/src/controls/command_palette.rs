@@ -1,3 +1,5 @@
+//! Full-slot command palette overlay with editable filtering and keyboard navigation.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -33,34 +35,81 @@ use super::text_field_core::{
 use super::text_input::TextInputStyle;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in density choices for a [`CommandPalette`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::CommandPaletteSize;
+/// assert_eq!(CommandPaletteSize::default(), CommandPaletteSize::Default);
+/// ```
 pub enum CommandPaletteSize {
+    /// 430-pixel panel target with 34-pixel input and 38-pixel rows.
     Compact,
+    /// 520-pixel panel target with 40-pixel input and 44-pixel rows.
     #[default]
     Default,
 }
 
 #[derive(Clone, Debug)]
+/// Resolved nested styles, colors, typography, and logical-pixel geometry.
+///
+/// [`Self::popup`] owns the actual panel shell fill/border. The separate
+/// `panel_background` and `border` fields are retained for compatibility but are
+/// not currently read by the painter. `radius` is used for panel shadows while
+/// the popup style owns shell radius.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{CommandPaletteSize, CommandPaletteStyle};
+/// let style = CommandPaletteStyle::from_theme(Theme::dark(), CommandPaletteSize::Compact);
+/// assert_eq!(style.width, 430.0);
+/// assert_eq!(style.row_height, 38.0);
+/// ```
 pub struct CommandPaletteStyle {
+    /// Single-line query input style.
     pub input: TextInputStyle,
+    /// Panel shell and active-row style.
     pub popup: SelectStyle,
+    /// Full-host overlay fill.
     pub backdrop: Color,
+    /// Reserved panel fill; current shell uses `popup.background`.
     pub panel_background: Color,
+    /// Reserved panel border; current shell uses `popup.border`.
     pub border: Border,
+    /// Panel shadows; inset entries are skipped.
     pub shadows: Vec<BoxShadow>,
+    /// Command title text style.
     pub title_text: TextStyle,
+    /// Optional command subtitle style.
     pub subtitle_text: TextStyle,
+    /// Right-aligned shortcut hint style.
     pub shortcut_text: TextStyle,
+    /// Empty-filter-result message style.
     pub no_results_text: TextStyle,
+    /// Leading command icon tint.
     pub icon_tint: Color,
+    /// Alpha multiplier used for disabled items and empty-result text.
     pub disabled_opacity: f32,
+    /// Preferred panel width and nested popup width.
     pub width: f32,
+    /// Query input height.
     pub input_height: f32,
+    /// Command row and scroll-line height; callers should keep it positive.
     pub row_height: f32,
+    /// Maximum complete panel height.
     pub panel_max_height: f32,
+    /// Preferred distance from the host's top edge.
     pub panel_top: f32,
+    /// Panel/input/row horizontal inset.
     pub padding: f32,
+    /// Gap after leading icons and before shortcut hints.
     pub gap: f32,
+    /// Leading icon width and height.
     pub icon_size: f32,
+    /// Radius used for panel shadow bounds.
     pub radius: Radius,
 }
 
@@ -71,6 +120,20 @@ impl Default for CommandPaletteStyle {
 }
 
 impl CommandPaletteStyle {
+    /// Resolves nested input/popup styles and palette geometry from theme/size.
+    ///
+    /// Both built-in sizes cap the list viewport at 260 logical pixels and the
+    /// whole panel at 360 logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{CommandPaletteSize, CommandPaletteStyle};
+    /// let style = CommandPaletteStyle::from_theme(Theme::dark(), CommandPaletteSize::Default);
+    /// assert_eq!((style.width, style.input_height), (520.0, 40.0));
+    /// assert_eq!(style.panel_max_height, 360.0);
+    /// ```
     pub fn from_theme(theme: Theme, size: CommandPaletteSize) -> Self {
         let palette = theme.palette();
         let popup = SelectStyle::from_theme(
@@ -126,13 +189,34 @@ impl CommandPaletteStyle {
     }
 }
 
+/// One searchable command row with an optional action.
+///
+/// Filtering checks trimmed ASCII-lowercased query substrings against title,
+/// subtitle, and keywords. Shortcut hints are not searchable. Disabled commands
+/// remain visible but keyboard navigation skips them and activation is consumed
+/// without closing. Enabled commands close the palette even without an action.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::CommandItem;
+/// let item: CommandItem<()> = CommandItem::new("Open file").keyword("search");
+/// let _ = item;
+/// ```
 pub struct CommandItem<A = ()> {
+    /// Primary searchable title.
     title: String,
+    /// Optional searchable subtitle; `Some("")` still selects two-line geometry.
     subtitle: Option<String>,
+    /// Optional non-searchable right-aligned hint.
     shortcut: Option<String>,
+    /// Additional searchable strings; duplicates and empties are retained.
     keywords: Vec<String>,
+    /// Optional leading icon.
     icon: Option<IconId>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Optional action run before the palette closes.
     action: Option<Rc<ClickAction<A>>>,
 }
 
@@ -151,6 +235,15 @@ impl<A> Clone for CommandItem<A> {
 }
 
 impl<A: 'static> CommandItem<A> {
+    /// Creates an enabled command with no optional metadata or action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// let item: CommandItem<()> = CommandItem::new("Open file");
+    /// let _ = item;
+    /// ```
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -163,54 +256,161 @@ impl<A: 'static> CommandItem<A> {
         }
     }
 
+    /// Sets a searchable subtitle, replacing any previous value.
+    ///
+    /// Empty text remains present and selects the two-line row layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// let item: CommandItem<()> = CommandItem::new("Theme").subtitle("Change appearance");
+    /// let _ = item;
+    /// ```
     pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
+    /// Sets a non-searchable shortcut hint, replacing any previous value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// let item: CommandItem<()> = CommandItem::new("Open").shortcut("Ctrl+O");
+    /// let _ = item;
+    /// ```
     pub fn shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
         self
     }
 
+    /// Appends one searchable keyword without normalization or de-duplication.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// let item: CommandItem<()> = CommandItem::new("Preferences").keyword("settings");
+    /// let _ = item;
+    /// ```
     pub fn keyword(mut self, keyword: impl Into<String>) -> Self {
         self.keywords.push(keyword.into());
         self
     }
 
+    /// Appends searchable keywords in iterator order.
+    ///
+    /// Existing keywords remain, and duplicates/empty strings are retained.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// let item: CommandItem<()> = CommandItem::new("Preferences")
+    ///     .keywords(["settings", "configuration"]);
+    /// let _ = item;
+    /// ```
     pub fn keywords(mut self, keywords: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.keywords.extend(keywords.into_iter().map(Into::into));
         self
     }
 
+    /// Sets the leading icon, replacing any previous icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// let item: CommandItem<()> = CommandItem::new("History").leading_icon(IconId::History);
+    /// let _ = item;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled commands remain searchable and visible but are skipped by
+    /// navigation and cannot run or close the palette.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// let item: CommandItem<()> = CommandItem::new("Unavailable").disabled(true);
+    /// let _ = item;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Installs the action run when this enabled command activates.
+    ///
+    /// A later call replaces it. Enabled activation closes even when no action
+    /// is installed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandItem;
+    /// #[derive(Clone)]
+    /// enum Action { Open }
+    /// let item = CommandItem::new("Open").on_select(Action::Open);
+    /// let _ = item;
+    /// ```
     pub fn on_select(mut self, action: impl IntoClickAction<A>) -> Self {
         self.action = Some(Rc::new(action.into_click_action()));
         self
     }
 }
 
+/// A searchable modal command overlay over one optional host child.
+///
+/// Visibility supports controlled, writable-bound, and internal modes. Query
+/// state supports writable-bound or internal modes. Escape, blur, outside click,
+/// and enabled command activation request close. Controlled visibility requires
+/// the consumer to update its binding. Arrow/Home/End navigation wraps/skips
+/// disabled items. Space is reserved for activation, so it is not inserted into
+/// the query by the keyboard handler.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{CommandItem, CommandPalette};
+/// let palette = CommandPalette::<()>::new()
+///     .item(CommandItem::new("Open file"))
+///     .default_open(true);
+/// let _ = palette;
+/// ```
 pub struct CommandPalette<A = ()> {
+    /// Layout configuration for the full host slot.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Optional controlled or bound visibility.
     open: Option<Binding<bool>>,
+    /// Writable visibility signal in bound mode.
     bound_open: Option<Signal<bool>>,
+    /// Initial internal visibility used without external state.
     default_open: bool,
+    /// Optional writable external query signal.
     query: Option<Signal<String>>,
+    /// Initial internal query used without a signal.
     default_query: String,
+    /// Live placeholder displayed for an empty query.
     placeholder: Binding<String>,
+    /// Live disabled state; disabled open palettes are hidden but remain open.
     disabled: Binding<bool>,
+    /// Command values in insertion order; no capacity bound.
     items: Vec<CommandItem<A>>,
+    /// Resolved paint and geometry.
     style: CommandPaletteStyle,
+    /// Optional sole host child painted under the overlay.
     child: Option<View<A>>,
 }
 
@@ -223,6 +423,17 @@ impl<A: 'static> Default for CommandPalette<A> {
 }
 
 impl<A: 'static> CommandPalette<A> {
+    /// Creates a closed, enabled palette with an empty internal query.
+    ///
+    /// Its default placeholder is `"Type a command..."`; it has no items or child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let palette: CommandPalette<()> = CommandPalette::new();
+    /// let _ = palette;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -240,12 +451,35 @@ impl<A: 'static> CommandPalette<A> {
         }
     }
 
+    /// Sets controlled static or reactive visibility and clears bound mode.
+    ///
+    /// Close paths reset active selection but cannot mutate this source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let palette: CommandPalette<()> = CommandPalette::new().open(true);
+    /// let _ = palette;
+    /// ```
     pub fn open(mut self, open: impl Into<Binding<bool>>) -> Self {
         self.open = Some(open.into());
         self.bound_open = None;
         self
     }
 
+    /// Installs a writable signal for two-way close behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let open = Signal::new(Rc::new(RefCell::new(true)), Rc::new(|| {}));
+    /// let palette: CommandPalette<()> = CommandPalette::new().bind_open(open);
+    /// let _ = palette;
+    /// ```
     pub fn bind_open(mut self, open: impl Into<Signal<bool>>) -> Self {
         let signal = open.into();
         self.open = Some(Binding::Signal(signal.clone()));
@@ -253,52 +487,154 @@ impl<A: 'static> CommandPalette<A> {
         self
     }
 
+    /// Sets initial internal visibility when no external source exists.
+    ///
+    /// It initializes retained state on first build rather than acting as a
+    /// recurring reopen command.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let palette: CommandPalette<()> = CommandPalette::new().default_open(true);
+    /// let _ = palette;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Installs the writable signal edited by text and IME events.
+    ///
+    /// The current value initializes the persistent text buffer/caret on first
+    /// build and overrides [`Self::default_query`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let query = Signal::new(Rc::new(RefCell::new("open".to_string())), Rc::new(|| {}));
+    /// let palette: CommandPalette<()> = CommandPalette::new().bind_query(query);
+    /// let _ = palette;
+    /// ```
     pub fn bind_query(mut self, query: impl Into<Signal<String>>) -> Self {
         self.query = Some(query.into());
         self
     }
 
+    /// Sets the initial internal query used when no query signal is bound.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let palette: CommandPalette<()> = CommandPalette::new().default_query("file");
+    /// let _ = palette;
+    /// ```
     pub fn default_query(mut self, query: impl Into<String>) -> Self {
         self.default_query = query.into();
         self
     }
 
+    /// Sets static or reactive query placeholder text.
+    ///
+    /// Empty placeholder is valid and paints no glyphs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let palette: CommandPalette<()> = CommandPalette::new().placeholder("Search commands");
+    /// let _ = palette;
+    /// ```
     pub fn placeholder(mut self, placeholder: impl Into<Binding<String>>) -> Self {
         self.placeholder = placeholder.into();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled state hides overlay/hit bounds and removes focus/input role
+    /// without closing or clearing query/open state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// let palette: CommandPalette<()> = CommandPalette::new().open(true).disabled(true);
+    /// let _ = palette;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Appends one command in filter/display order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{CommandItem, CommandPalette};
+    /// let palette = CommandPalette::<()>::new().item(CommandItem::new("Open"));
+    /// let _ = palette;
+    /// ```
     pub fn item(mut self, item: CommandItem<A>) -> Self {
         self.items.push(item);
         self
     }
 
+    /// Replaces complete palette style and geometry.
+    ///
+    /// Callers should keep `row_height` positive for hit testing and scrolling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{CommandPalette, CommandPaletteSize, CommandPaletteStyle};
+    /// let style = CommandPaletteStyle::from_theme(Theme::dark(), CommandPaletteSize::Compact);
+    /// let palette: CommandPalette<()> = CommandPalette::new().command_style(style);
+    /// let _ = palette;
+    /// ```
     pub fn command_style(mut self, style: CommandPaletteStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces complete style with the default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{CommandPalette, CommandPaletteSize};
+    /// let palette: CommandPalette<()> =
+    ///     CommandPalette::new().command_size(CommandPaletteSize::Compact);
+    /// let _ = palette;
+    /// ```
     pub fn command_size(mut self, size: CommandPaletteSize) -> Self {
         self.style = CommandPaletteStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Sets the sole underlying host child, replacing any previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CommandPalette;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let palette = CommandPalette::<()>::new().child(Text::new("Workspace"));
+    /// let _ = palette;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Component properties used to allocate query/edit/navigation/scroll state.
 struct CommandPaletteComponent<A> {
     layout: LayoutStyle,
     open: Option<Binding<bool>>,
@@ -367,6 +703,7 @@ impl<A: 'static> IntoView<A> for CommandPalette<A> {
     }
 }
 
+/// Retained overlay widget implementing text input, filtering, and activation.
 struct CommandPaletteWidget<A> {
     layout: LayoutStyle,
     open: Option<Binding<bool>>,
@@ -983,11 +1320,15 @@ impl<A: 'static> CommandPaletteWidget<A> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Direction used by wrapping enabled-row navigation.
 enum Direction {
+    /// Move forward through filtered item indices.
     Next,
+    /// Move backward through filtered item indices.
     Previous,
 }
 
+/// Creates edit state with its caret at the end of `text`.
 fn edit_at_end(text: &str) -> TextEditState {
     let mut edit = TextEditState::new();
     let buffer = TextBuffer::from_string(text.to_string());
@@ -995,6 +1336,7 @@ fn edit_at_end(text: &str) -> TextEditState {
     edit
 }
 
+/// Returns source indices matching the trimmed ASCII-insensitive substring query.
 fn filtered_indices<A>(query: &str, items: &[CommandItem<A>]) -> Vec<usize> {
     let q = query.trim().to_ascii_lowercase();
     items
@@ -1016,6 +1358,7 @@ fn filtered_indices<A>(query: &str, items: &[CommandItem<A>]) -> Vec<usize> {
         .collect()
 }
 
+/// Finds the next enabled filtered index with wraparound.
 fn next_enabled(
     filtered: &[usize],
     current: Option<usize>,
@@ -1032,6 +1375,7 @@ fn next_enabled(
         .find(|idx| enabled(*idx))
 }
 
+/// Finds the previous enabled filtered index with wraparound.
 fn previous_enabled(
     filtered: &[usize],
     current: Option<usize>,
@@ -1048,6 +1392,7 @@ fn previous_enabled(
         .find(|idx| enabled(*idx))
 }
 
+/// Resolves host size from its child or finite constraint maxima.
 fn host_slot_size<A: 'static>(
     engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
     ctx: &mut LayoutCtx<'_>,
@@ -1066,6 +1411,7 @@ fn host_slot_size<A: 'static>(
     apply_layout_size(intrinsic, layout, constraints)
 }
 
+/// Returns `value` when finite and `fallback` for NaN or either infinity.
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value
@@ -1075,6 +1421,7 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Paints clipped overlay selection, query/placeholder glyphs, and caret.
 fn paint_overlay_single_line_text(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -1174,7 +1521,9 @@ fn paint_overlay_single_line_text(
     });
 }
 
+/// Local geometry extension used to pass list viewport dimensions.
 trait RectExt {
+    /// Copies rectangle width and height into a [`Size`].
     fn size(self) -> Size;
 }
 

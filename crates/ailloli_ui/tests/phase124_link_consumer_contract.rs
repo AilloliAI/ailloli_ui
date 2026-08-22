@@ -1,3 +1,8 @@
+//! Public facade link-construction contract retained from Phase 124.
+//!
+//! The scenarios ensure both canonical link forms compile while the link
+//! builder does not absorb application-level action or router shortcuts.
+
 use ailloli_ui::prelude::*;
 
 #[test]

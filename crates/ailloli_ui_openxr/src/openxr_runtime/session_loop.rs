@@ -1,3 +1,5 @@
+//! OpenXR/Vulkan initialization, session events, and built-in frame loops.
+
 use std::time::Duration;
 
 use ailloli_ui_render_vulkan::VulkanRenderer;
@@ -15,22 +17,57 @@ use super::swapchain::OpenXrQuadSwapchain;
 use super::ui_layer::OpenXrExternalVulkanContext;
 use super::vulkan::OpenXrVulkanContext;
 
+/// Owned OpenXR session and Vulkan objects for built-in frame loops.
+///
+/// Fields are declared in dependency-safe drop order: session-owned XR objects
+/// precede Vulkan, then the instance. A runtime must be driven from one thread in
+/// accordance with its OpenXR platform requirements.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrRuntime;
+/// fn runtime_name(runtime: &OpenXrRuntime) -> &str { &runtime.xr.runtime_name }
+/// ```
 pub struct OpenXrRuntime {
     // Fields drop in declaration order; keep XR session-owned objects before Vulkan.
+    /// Viewer reference space used to locate the HMD pose.
     pub view_space: xr::Space,
+    /// Application reference space selected from runtime preference.
     pub reference_space: xr::Space,
+    /// Frame submission stream paired with `frame_waiter`.
     pub frame_stream: xr::FrameStream<xr::Vulkan>,
+    /// Wait handle that yields predicted frame timing.
     pub frame_waiter: xr::FrameWaiter,
+    /// Vulkan-backed OpenXR session.
     pub session: xr::Session<xr::Vulkan>,
+    /// Vulkan instance, device, queue, pool, and memory properties.
     pub vk: OpenXrVulkanContext,
+    /// Loader instance, system identity, and negotiated extensions.
     pub xr: OpenXrInstance,
+    /// Environment blend mode used by built-in frame submissions.
     pub blend_mode: xr::EnvironmentBlendMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Names and application reference-space preference for runtime creation.
+///
+/// Names must contain no NUL and fit OpenXR's byte-limited fields, including the
+/// trailing NUL. Defaults use `"ailloli_ui"` and local-then-stage fallback.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::{OpenXrRuntimeOptions, ReferenceSpacePreference};
+/// let options = OpenXrRuntimeOptions::default();
+/// assert_eq!(options.reference_space, ReferenceSpacePreference::LocalThenStage);
+/// ```
 pub struct OpenXrRuntimeOptions {
+    /// OpenXR application name.
     pub application_name: String,
+    /// OpenXR engine name.
     pub engine_name: String,
+    /// Ordered choice of local and stage application space.
     pub reference_space: ReferenceSpacePreference,
 }
 
@@ -45,25 +82,75 @@ impl Default for OpenXrRuntimeOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Application reference-space selection and fallback policy.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::ReferenceSpacePreference;
+/// assert_ne!(ReferenceSpacePreference::LocalOnly, ReferenceSpacePreference::StageOnly);
+/// ```
 pub enum ReferenceSpacePreference {
+    /// Try local space first, then stage space if local creation fails.
     LocalThenStage,
+    /// Require a local application space.
     LocalOnly,
+    /// Require a stage/bounds-floor application space.
     StageOnly,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+/// Internal running/focus state derived from session events.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrRuntimeOptions;
+/// let options = OpenXrRuntimeOptions::default();
+/// assert_eq!(options.application_name, "ailloli_ui");
+/// ```
 pub(crate) struct SessionLoopState {
+    /// Whether the session has begun and frames may be waited.
     pub running: bool,
+    /// Whether the session currently accepts focused input.
     pub focused: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+/// Control signals produced while draining the OpenXR event queue.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrRuntimeOptions;
+/// assert_eq!(OpenXrRuntimeOptions::default().engine_name, "ailloli_ui");
+/// ```
 pub(crate) struct SessionEventOutcome {
+    /// Stop the host loop after exiting, loss-pending, or instance loss.
     pub exit_requested: bool,
+    /// Clear retained input because focus/session validity changed.
     pub reset_input: bool,
 }
 
 impl OpenXrRuntime {
+    /// Loads OpenXR/Vulkan and creates a stereo session and reference spaces.
+    ///
+    /// Vulkan 1.0 is requested through `XR_KHR_vulkan_enable2`; graphics queue
+    /// family zero within the selected family is used. No frame loop is started.
+    ///
+    /// # Errors
+    ///
+    /// Returns loader, extension, name, instance/system, Vulkan, session, or
+    /// reference-space initialization failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntime, OpenXrRuntimeOptions};
+    /// let runtime = OpenXrRuntime::new(OpenXrRuntimeOptions::default())?;
+    /// println!("{}", runtime.xr.runtime_name);
+    /// # Ok::<(), ailloli_ui_openxr::OpenXrRuntimeError>(())
+    /// ```
     pub fn new(options: OpenXrRuntimeOptions) -> Result<Self, OpenXrRuntimeError> {
         let xr = OpenXrInstance::new(OpenXrInstanceOptions {
             application_name: &options.application_name,
@@ -103,14 +190,47 @@ impl OpenXrRuntime {
         })
     }
 
+    /// Returns normalized hand-tracking and hand-aim capabilities.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrInputCapabilities, OpenXrRuntime};
+    /// fn capabilities(runtime: &OpenXrRuntime) -> OpenXrInputCapabilities { runtime.input_capabilities() }
+    /// ```
     pub fn input_capabilities(&self) -> OpenXrInputCapabilities {
         OpenXrInputCapabilities::new(self.xr.hand_tracking_supported, self.xr.hand_aim_supported)
     }
 
+    /// Borrows the runtime's Vulkan handles as an external render context.
+    ///
+    /// Physical-device memory properties are included, enabling staging uploads.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrExternalVulkanContext, OpenXrRuntime};
+    /// fn context(runtime: &OpenXrRuntime) -> OpenXrExternalVulkanContext<'_> { runtime.external_vulkan_context() }
+    /// ```
     pub fn external_vulkan_context(&self) -> OpenXrExternalVulkanContext<'_> {
         OpenXrExternalVulkanContext::from(&self.vk)
     }
 
+    /// Locates the HMD view space relative to the application reference space.
+    ///
+    /// Returns `Ok(None)` when position validity is absent. Orientation validity
+    /// is not separately required by this helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns the native space-location failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntime, OpenXrRuntimeError};
+    /// fn pose(runtime: &OpenXrRuntime, time: openxr::Time) -> Result<Option<openxr::Posef>, OpenXrRuntimeError> { runtime.locate_view_pose(time) }
+    /// ```
     pub fn locate_view_pose(
         &self,
         time: xr::Time,
@@ -128,6 +248,22 @@ impl OpenXrRuntime {
         Ok(Some(location.pose))
     }
 
+    /// Runs a session loop that submits zero composition layers.
+    ///
+    /// The shutdown callback is checked before each event/frame iteration.
+    /// Non-running sessions sleep for 16 ms. Runtime exit/loss and a true callback
+    /// return `Ok(())`.
+    ///
+    /// # Errors
+    ///
+    /// Returns event, session transition, frame wait/begin, or frame end failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntime, OpenXrRuntimeError};
+    /// fn run(runtime: &mut OpenXrRuntime) -> Result<(), OpenXrRuntimeError> { runtime.run_empty_frame_loop(|| false) }
+    /// ```
     pub fn run_empty_frame_loop(
         &mut self,
         mut shutdown: impl FnMut() -> bool,
@@ -163,6 +299,21 @@ impl OpenXrRuntime {
         Ok(())
     }
 
+    /// Runs a clear-only quad-layer frame loop.
+    ///
+    /// Skipped-render frames submit no layers. Acquired images are synchronously
+    /// cleared and released before their quad is submitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns session/frame, swapchain, clear, release, or submission failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrQuadFrameLoopOptions, OpenXrRuntime, OpenXrRuntimeError};
+    /// fn run(runtime: &mut OpenXrRuntime) -> Result<(), OpenXrRuntimeError> { runtime.run_quad_frame_loop(OpenXrQuadFrameLoopOptions::default(), || false) }
+    /// ```
     pub fn run_quad_frame_loop(
         &mut self,
         options: OpenXrQuadFrameLoopOptions,
@@ -238,6 +389,24 @@ impl OpenXrRuntime {
         Ok(())
     }
 
+    /// Runs a quad loop that asks `scene_provider` for Ailloli Vulkan content.
+    ///
+    /// The scene callback runs only on frames the runtime says should render.
+    /// Image release is attempted after every render attempt, and render errors
+    /// take precedence if release also fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns session/frame, renderer, swapchain, render, release, or submission
+    /// failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRenderVulkanFrameLoopOptions, OpenXrRuntime, OpenXrRuntimeError};
+    /// use ailloli_ui_runtime::Scene;
+    /// fn run(runtime: &mut OpenXrRuntime) -> Result<(), OpenXrRuntimeError> { runtime.run_ailloli_ui_render_vulkan_frame_loop(OpenXrRenderVulkanFrameLoopOptions::default(), Scene::default, || false) }
+    /// ```
     pub fn run_ailloli_ui_render_vulkan_frame_loop(
         &mut self,
         options: OpenXrRenderVulkanFrameLoopOptions,
@@ -329,6 +498,17 @@ impl OpenXrRuntime {
         Ok(())
     }
 
+    /// Drains session events and updates running/focus state.
+    ///
+    /// READY begins the stereo session once, STOPPING ends it once, and exit/loss
+    /// signals stop immediately. Any loss of focus requests input reset.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrRuntime;
+    /// fn drive(runtime: &mut OpenXrRuntime) { let _ = runtime; }
+    /// ```
     pub(crate) fn poll_session_events(
         &mut self,
         event_storage: &mut xr::EventDataBuffer,
@@ -398,6 +578,16 @@ impl OpenXrRuntime {
     }
 }
 
+/// Combines render and release results while preserving render-error priority.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrRuntimeError;
+/// let render: Result<(), OpenXrRuntimeError> = Ok(());
+/// let release: Result<(), OpenXrRuntimeError> = Ok(());
+/// assert!(render.and(release).is_ok());
+/// ```
 pub(crate) fn combine_render_release(
     render_result: Result<(), OpenXrRuntimeError>,
     release_result: Result<(), OpenXrRuntimeError>,
@@ -409,6 +599,7 @@ pub(crate) fn combine_render_release(
     }
 }
 
+/// Creates local/stage space according to the requested fallback policy.
 fn create_reference_space(
     session: &xr::Session<xr::Vulkan>,
     preference: ReferenceSpacePreference,

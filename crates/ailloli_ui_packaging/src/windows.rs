@@ -1,3 +1,10 @@
+//! Windows PE resource injection and deterministic portable ZIP generation.
+//!
+//! The backend copies a host-native executable, injects icon and version
+//! resources into that staged copy, writes machine-readable package metadata,
+//! and archives only regular files directly inside the staging directory. It
+//! does not generate an installer or Start Menu shortcut.
+
 use crate::icons::GeneratedIconSet;
 use crate::{PackageContext, PackagingError};
 use std::fs;
@@ -5,6 +12,29 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use zip::write::SimpleFileOptions;
 
+/// Stages a Windows executable, injected resources, icon, and package metadata.
+///
+/// `.exe` is appended only when the binary target name does not already end in
+/// that exact lowercase suffix. The input executable is never modified because
+/// resource injection targets the staged copy.
+///
+/// # Errors
+///
+/// Returns an error for filesystem/JSON failures, non-UTF-8 icon paths, invalid
+/// PE input, or PE resource update/write failures. An error can leave partial
+/// staging output.
+///
+/// # Examples
+///
+/// ```
+/// let binary = "sample_app";
+/// let executable = if binary.ends_with(".exe") {
+///     binary.to_owned()
+/// } else {
+///     format!("{binary}.exe")
+/// };
+/// assert_eq!(executable, "sample_app.exe");
+/// ```
 pub fn stage_windows(
     context: &PackageContext,
     executable: &Path,
@@ -34,6 +64,11 @@ pub fn stage_windows(
     Ok(staged_executable)
 }
 
+/// Injects main-icon and fixed-language version resources into a staged PE file.
+///
+/// Version components are packed into Windows' four 16-bit slots as
+/// `(major, minor, patch, 0)`. String metadata uses language `0x0409` and code
+/// page 1200. Missing authors fall back to `Ailloli UI` as the company name.
 fn inject_windows_resources(
     context: &PackageContext,
     executable: &Path,
@@ -106,6 +141,10 @@ fn inject_windows_resources(
     Ok(())
 }
 
+/// Parses at most three leading-decimal semver components as `u16` values.
+///
+/// Missing, digitless, and overflowing components become zero. Suffixes after
+/// the leading digits are ignored, and components after the third are ignored.
 fn version_components(version: &str) -> (u16, u16, u16) {
     let mut components = version.split('.').map(|part| {
         part.chars()
@@ -121,6 +160,26 @@ fn version_components(version: &str) -> (u16, u16, u16) {
     )
 }
 
+/// Archives regular files directly below `staging` in filename order.
+///
+/// Nested directories and non-files are skipped. `.exe` entries receive Unix
+/// mode `0o755`; other entries use `0o644`. Each file is currently buffered in
+/// memory before compression, so staging inputs should be bounded.
+///
+/// # Errors
+///
+/// Returns an error for staging traversal, input/output I/O, or ZIP encoding
+/// failures. A failure can leave a partial destination file.
+///
+/// # Examples
+///
+/// ```
+/// let mut names = vec!["z.txt", "app.exe"];
+/// names.sort();
+/// assert_eq!(names, ["app.exe", "z.txt"]);
+/// let mode = if names[0].ends_with(".exe") { 0o755 } else { 0o644 };
+/// assert_eq!(mode, 0o755);
+/// ```
 pub fn build_portable_zip(staging: &Path, destination: &Path) -> Result<(), PackagingError> {
     let file = fs::File::create(destination)?;
     let mut writer = zip::ZipWriter::new(file);
@@ -147,6 +206,7 @@ pub fn build_portable_zip(staging: &Path, destination: &Path) -> Result<(), Pack
 }
 
 #[cfg(test)]
+/// Covers deterministic ordering, executable modes, and version parsing.
 mod tests {
     use super::*;
 

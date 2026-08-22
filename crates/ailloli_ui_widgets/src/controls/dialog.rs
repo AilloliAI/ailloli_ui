@@ -1,3 +1,5 @@
+//! Modal confirmation dialogs painted over an optional host child.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -24,35 +26,82 @@ use super::popup::{
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic treatment for a dialog's confirm action.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DialogTone;
+/// assert_eq!(DialogTone::default(), DialogTone::Neutral);
+/// ```
 pub enum DialogTone {
+    /// Accent-colored primary confirmation.
     #[default]
     Neutral,
+    /// Danger-colored confirmation for destructive operations.
     Danger,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved paint, typography, and logical-pixel geometry for a [`Dialog`].
+///
+/// `primary_background_pressed`, `cancel_background_pressed`, and
+/// `danger_background_pressed` are retained for style compatibility but the
+/// current overlay painter does not yet resolve per-button pressed state.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{DialogStyle, DialogTone};
+/// let style = DialogStyle::from_theme(Theme::dark(), DialogTone::Neutral);
+/// assert_eq!(style.panel_width, 360.0);
+/// assert_eq!(style.button_height, 34.0);
+/// ```
 pub struct DialogStyle {
+    /// Full-host overlay fill.
     pub backdrop: Color,
+    /// Panel fill.
     pub panel_background: Color,
+    /// Panel border.
     pub border: Border,
+    /// Panel shadows; inset entries are skipped by the current painter.
     pub shadows: Vec<BoxShadow>,
+    /// Title text style.
     pub title_text: TextStyle,
+    /// Wrapping body text style.
     pub body_text: TextStyle,
+    /// Shared cancel and confirm label style.
     pub button_text: TextStyle,
+    /// Neutral confirm-button fill.
     pub primary_background: Color,
+    /// Reserved neutral pressed fill; currently not painted.
     pub primary_background_pressed: Color,
+    /// Cancel-button fill.
     pub cancel_background: Color,
+    /// Reserved cancel pressed fill; currently not painted.
     pub cancel_background_pressed: Color,
+    /// Danger confirm-button fill.
     pub danger_background: Color,
+    /// Reserved danger pressed fill; currently not painted.
     pub danger_background_pressed: Color,
+    /// Shared button border.
     pub button_border: Border,
+    /// Panel corner radii.
     pub radius: Radius,
+    /// Button corner radii.
     pub button_radius: Radius,
+    /// Preferred panel width in logical pixels.
     pub panel_width: f32,
+    /// Minimum panel height in logical pixels.
     pub panel_min_height: f32,
+    /// Panel and button edge inset in logical pixels.
     pub padding: f32,
+    /// Cancel and confirm button height in logical pixels.
     pub button_height: f32,
+    /// Width of each button in logical pixels.
     pub button_width: f32,
+    /// Horizontal gap between cancel and confirm buttons.
     pub gap: f32,
 }
 
@@ -63,6 +112,20 @@ impl Default for DialogStyle {
 }
 
 impl DialogStyle {
+    /// Resolves `tone` through `theme` into complete dialog style values.
+    ///
+    /// Tone affects the primary and primary-pressed colors; danger-specific
+    /// fields are populated for either tone.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{DialogStyle, DialogTone};
+    /// let neutral = DialogStyle::from_theme(Theme::dark(), DialogTone::Neutral);
+    /// let danger = DialogStyle::from_theme(Theme::dark(), DialogTone::Danger);
+    /// assert_ne!(neutral.primary_background, danger.primary_background);
+    /// ```
     pub fn from_theme(theme: Theme, tone: DialogTone) -> Self {
         let palette = theme.palette();
         let danger = palette.danger;
@@ -99,21 +162,52 @@ impl DialogStyle {
     }
 }
 
+/// A modal confirmation overlay with controlled, bound, or internal visibility.
+///
+/// Confirm activation runs the confirm action and requests close. Cancel-button,
+/// backdrop, and Escape activation run the cancel action and request close.
+/// In controlled mode, close cannot mutate the supplied binding; the consumer
+/// must update it. Bound mode writes `false`, and internal mode updates retained
+/// state. Disabled state hides the dialog without changing visibility state.
+/// The optional child remains the underlying host content.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Dialog;
+/// let dialog: Dialog<()> = Dialog::new().title("Unsaved changes?").default_open(true);
+/// let _ = dialog;
+/// ```
 pub struct Dialog<A = ()> {
+    /// Layout configuration for the full host slot.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Optional controlled or bound visibility source.
     open: Option<Binding<bool>>,
+    /// Writable visibility signal in bound mode only.
     bound_open: Option<Signal<bool>>,
+    /// Initial internal visibility used only without an external binding.
     default_open: bool,
+    /// Live disabled state; disabled open dialogs are hidden but remain open.
     disabled: Binding<bool>,
+    /// Live title text.
     title: Binding<String>,
+    /// Live wrapping body text.
     body: Binding<String>,
+    /// Live confirm-button label.
     confirm_label: Binding<String>,
+    /// Live cancel-button label.
     cancel_label: Binding<String>,
+    /// Semantic confirm treatment.
     tone: DialogTone,
+    /// Resolved paint and geometry.
     style: DialogStyle,
+    /// Optional confirm action.
     on_confirm: Option<Rc<ClickAction<A>>>,
+    /// Optional cancellation action.
     on_cancel: Option<Rc<ClickAction<A>>>,
+    /// Optional sole host child painted under the overlay.
     child: Option<View<A>>,
 }
 
@@ -126,6 +220,18 @@ impl<A: 'static> Default for Dialog<A> {
 }
 
 impl<A: 'static> Dialog<A> {
+    /// Creates a closed, enabled, internally managed neutral dialog.
+    ///
+    /// Default labels are `"Dialog"`, `"Confirm"`, and `"Cancel"`; body text is
+    /// empty and no actions or host child are installed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new();
+    /// let _ = dialog;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -146,12 +252,40 @@ impl<A: 'static> Dialog<A> {
         }
     }
 
+    /// Sets controlled static or reactive visibility.
+    ///
+    /// This clears writable bound mode. Confirm/cancel still run and consume
+    /// their input, but the dialog remains open until the external source reads
+    /// `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new().open(true);
+    /// let _ = dialog;
+    /// ```
     pub fn open(mut self, open: impl Into<Binding<bool>>) -> Self {
         self.open = Some(open.into());
         self.bound_open = None;
         self
     }
 
+    /// Installs a writable visibility signal for two-way close behavior.
+    ///
+    /// Confirm, cancel, backdrop, and Escape paths set the signal to `false`.
+    /// A later [`Self::open`] call returns to controlled mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let open = Signal::new(Rc::new(RefCell::new(true)), Rc::new(|| {}));
+    /// let dialog: Dialog<()> = Dialog::new().bind_open(open);
+    /// let _ = dialog;
+    /// ```
     pub fn bind_open(mut self, open: impl Into<Signal<bool>>) -> Self {
         let signal = open.into();
         self.open = Some(Binding::Signal(signal.clone()));
@@ -159,63 +293,196 @@ impl<A: 'static> Dialog<A> {
         self
     }
 
+    /// Sets initial retained visibility for internal mode.
+    ///
+    /// This value is ignored when [`Self::open`] or [`Self::bind_open`] supplies
+    /// external visibility. It initializes state during first component build;
+    /// it is not a recurring reopen command.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new().default_open(true);
+    /// let _ = dialog;
+    /// ```
     pub fn default_open(mut self, open: bool) -> Self {
         self.default_open = open;
         self
     }
 
+    /// Sets a static or reactive disabled binding.
+    ///
+    /// Disabled state hides overlay paint/hit bounds, ignores events, and
+    /// removes focusability without closing or resetting visibility state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new().open(true).disabled(true);
+    /// let _ = dialog;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Replaces static or reactive title text.
+    ///
+    /// Empty text is valid and paints no glyphs while retaining title geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new().title("Delete project?");
+    /// let _ = dialog;
+    /// ```
     pub fn title(mut self, title: impl Into<Binding<String>>) -> Self {
         self.title = title.into();
         self
     }
 
+    /// Replaces static or reactive wrapping body text.
+    ///
+    /// Empty body reserves one nominal line; any non-empty body reserves two
+    /// nominal lines before layout constraints, independently of actual wraps.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new().body("This operation cannot be undone.");
+    /// let _ = dialog;
+    /// ```
     pub fn body(mut self, body: impl Into<Binding<String>>) -> Self {
         self.body = body.into();
         self
     }
 
+    /// Replaces static or reactive confirm-button text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new().confirm_label("Delete");
+    /// let _ = dialog;
+    /// ```
     pub fn confirm_label(mut self, label: impl Into<Binding<String>>) -> Self {
         self.confirm_label = label.into();
         self
     }
 
+    /// Replaces static or reactive cancel-button text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog: Dialog<()> = Dialog::new().cancel_label("Keep editing");
+    /// let _ = dialog;
+    /// ```
     pub fn cancel_label(mut self, label: impl Into<Binding<String>>) -> Self {
         self.cancel_label = label.into();
         self
     }
 
+    /// Sets semantic tone and replaces the complete style from the default theme.
+    ///
+    /// This discards custom style values installed earlier.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Dialog, DialogTone};
+    /// let dialog: Dialog<()> = Dialog::new().tone(DialogTone::Danger);
+    /// let _ = dialog;
+    /// ```
     pub fn tone(mut self, tone: DialogTone) -> Self {
         self.tone = tone;
         self.style = DialogStyle::from_theme(Theme::default(), tone);
         self
     }
 
+    /// Replaces the complete resolved style without changing semantic tone.
+    ///
+    /// A later [`Self::tone`] call replaces this custom style. Geometry values
+    /// are otherwise accepted as-is.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{Dialog, DialogStyle, DialogTone};
+    /// let style = DialogStyle::from_theme(Theme::dark(), DialogTone::Neutral);
+    /// let dialog: Dialog<()> = Dialog::new().dialog_style(style);
+    /// let _ = dialog;
+    /// ```
     pub fn dialog_style(mut self, style: DialogStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Installs an action run before a confirm close request.
+    ///
+    /// A later call replaces it. Clicking confirm closes even without an action.
+    /// Keyboard Enter does not currently synthesize confirmation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// #[derive(Clone)]
+    /// enum Action { Confirm }
+    /// let dialog = Dialog::new().on_confirm(Action::Confirm);
+    /// let _ = dialog;
+    /// ```
     pub fn on_confirm(mut self, action: impl IntoClickAction<A>) -> Self {
         self.on_confirm = Some(Rc::new(action.into_click_action()));
         self
     }
 
+    /// Installs an action run before cancellation closes are requested.
+    ///
+    /// The action covers cancel-button, backdrop, and Escape paths. A later call
+    /// replaces it; cancellation closes even without an action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// #[derive(Clone)]
+    /// enum Action { Cancel }
+    /// let dialog = Dialog::new().on_cancel(Action::Cancel);
+    /// let _ = dialog;
+    /// ```
     pub fn on_cancel(mut self, action: impl IntoClickAction<A>) -> Self {
         self.on_cancel = Some(Rc::new(action.into_click_action()));
         self
     }
 
+    /// Sets the sole underlying host child, replacing any previous child.
+    ///
+    /// The child fills the resolved host slot and remains painted while the
+    /// dialog overlay is open.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let dialog = Dialog::<()>::new().child(Text::new("Workspace"));
+    /// let _ = dialog;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Component properties used to allocate internal visibility state.
 struct DialogComponent<A> {
     layout: LayoutStyle,
     open: Option<Binding<bool>>,
@@ -285,6 +552,7 @@ impl<A: 'static> IntoView<A> for Dialog<A> {
     }
 }
 
+/// Retained overlay widget resolving visibility and modal event paths.
 struct DialogWidget<A> {
     layout: LayoutStyle,
     open: Option<Binding<bool>>,
@@ -401,6 +669,7 @@ impl<A: 'static> Widget<A> for DialogWidget<A> {
 }
 
 impl<A: 'static> DialogWidget<A> {
+    /// Reads controlled/bound visibility, falling back to retained internal state.
     fn is_open(&self) -> bool {
         self.open
             .as_ref()
@@ -408,6 +677,7 @@ impl<A: 'static> DialogWidget<A> {
             .unwrap_or_else(|| self.internal_open.read())
     }
 
+    /// Writes `false` only in bound or internal mode.
     fn close(&self) {
         if let Some(bound) = &self.bound_open {
             bound.set(false);
@@ -416,6 +686,7 @@ impl<A: 'static> DialogWidget<A> {
         }
     }
 
+    /// Runs the optional cancel action, requests close/repaint, and consumes input.
     fn cancel(&self, ctx: &mut EventCtx<A>) {
         if let Some(action) = &self.on_cancel {
             action.run(ctx);
@@ -425,6 +696,7 @@ impl<A: 'static> DialogWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Centers the preferred panel, reserving 24 pixels per horizontal host edge.
     fn panel_rect(&self, bounds: Rect) -> Rect {
         let width = self.style.panel_width.min((bounds.w - 48.0).max(180.0));
         let body_lines = if self.body.read().is_empty() {
@@ -444,6 +716,7 @@ impl<A: 'static> DialogWidget<A> {
         )
     }
 
+    /// Places the confirm button at the panel's bottom-right padding inset.
     fn confirm_rect(&self, panel: Rect) -> Rect {
         Rect::new(
             panel.right() - self.style.padding - self.style.button_width,
@@ -453,6 +726,7 @@ impl<A: 'static> DialogWidget<A> {
         )
     }
 
+    /// Places the cancel button immediately left of confirm with the style gap.
     fn cancel_rect(&self, panel: Rect) -> Rect {
         let confirm = self.confirm_rect(panel);
         Rect::new(
@@ -463,6 +737,7 @@ impl<A: 'static> DialogWidget<A> {
         )
     }
 
+    /// Paints backdrop, non-inset shadows, panel, text, buttons, then border.
     fn paint_dialog(&self, ctx: &mut PaintCtx<'_>, bounds: Rect) {
         ctx.push_overlay(DrawCmd::Rect(DrawRect {
             rect: bounds,
@@ -544,6 +819,7 @@ impl<A: 'static> DialogWidget<A> {
         }
     }
 
+    /// Paints one overlay button; the reserved pressed color is currently unused.
     fn paint_button(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -583,6 +859,7 @@ impl<A: 'static> DialogWidget<A> {
     }
 }
 
+/// Resolves host size from its child or finite constraint maxima.
 fn host_slot_size<A: 'static>(
     engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
     ctx: &mut LayoutCtx<'_>,
@@ -601,6 +878,7 @@ fn host_slot_size<A: 'static>(
     apply_layout_size(intrinsic, layout, constraints)
 }
 
+/// Returns `value` when finite and `fallback` for NaN or either infinity.
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value

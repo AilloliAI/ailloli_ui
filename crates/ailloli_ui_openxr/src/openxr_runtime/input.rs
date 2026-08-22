@@ -1,3 +1,5 @@
+//! OpenXR actions, controller and hand rays, source selection, and frame polling.
+
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::time::Instant;
@@ -14,17 +16,26 @@ use super::error::OpenXrRuntimeError;
 use super::instance::OpenXrInstance;
 use super::ray_overlay::{OpenXrRayHitKind, OpenXrRaySample, OPENXR_RAY_MAX_LENGTH_METERS};
 
+/// Stable mapper ID for the right controller.
 const RIGHT_CONTROLLER_SOURCE_ID: u64 = 1;
+/// Stable mapper ID for the left controller.
 const LEFT_CONTROLLER_SOURCE_ID: u64 = 2;
+/// Stable mapper ID for the right tracked hand.
 const RIGHT_HAND_SOURCE_ID: u64 = 3;
+/// Stable mapper ID for the left tracked hand.
 const LEFT_HAND_SOURCE_ID: u64 = 4;
 
+/// Index-to-thumb distance at or below which fallback hand input is pressed.
 const PINCH_DISTANCE_METERS: f32 = 0.035;
 
+/// Oculus Touch interaction-profile path.
 const PROFILE_OCULUS_TOUCH: &str = "/interaction_profiles/oculus/touch_controller";
+/// Meta Quest Touch Plus interaction-profile path.
 const PROFILE_QUEST_TOUCH_PLUS: &str = "/interaction_profiles/meta/quest_touch_plus_controller";
+/// Meta Quest Touch Pro interaction-profile path.
 const PROFILE_QUEST_TOUCH_PRO: &str = "/interaction_profiles/meta/quest_touch_pro_controller";
 
+/// Profiles to which the same action bindings are suggested independently.
 const INTERACTION_PROFILES: &[&str] = &[
     PROFILE_OCULUS_TOUCH,
     PROFILE_QUEST_TOUCH_PLUS,
@@ -32,14 +43,36 @@ const INTERACTION_PROFILES: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Input sources, thresholds, scroll scaling, and selection policy.
+///
+/// Trigger and pinch thresholds are compared directly with runtime values;
+/// scroll deadzone is absolute axis magnitude and scroll speed is logical pixels
+/// per second. Poll deltas are capped at 100 ms before scaling.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrUiInputOptions;
+/// let options = OpenXrUiInputOptions::default();
+/// assert_eq!(options.trigger_threshold, 0.75);
+/// assert_eq!(options.scroll_pixels_per_second, 720.0);
+/// ```
 pub struct OpenXrUiInputOptions {
+    /// Whether action creation and polling are enabled at all.
     pub enabled: bool,
+    /// Whether controller aim, trigger, and thumbstick actions are considered.
     pub controllers: bool,
+    /// Whether extension hand tracking may provide pointer candidates.
     pub hands: bool,
+    /// Inclusive controller-trigger pressed threshold.
     pub trigger_threshold: f32,
+    /// Inclusive FB hand-aim pinch-strength threshold.
     pub pinch_threshold: f32,
+    /// Absolute thumbstick magnitude below which scroll is zero.
     pub scroll_deadzone: f32,
+    /// Full-deflection scroll speed in logical pixels per second.
     pub scroll_pixels_per_second: f32,
+    /// Deterministic preference when several sources are available.
     pub pointer_selection: OpenXrPointerSelectionPolicy,
 }
 
@@ -59,20 +92,46 @@ impl Default for OpenXrUiInputOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Priority order for selecting one UI pointer from concurrent candidates.
+///
+/// A pressed source remains locked until release or disappearance, regardless of
+/// policy. Controller hits rank before hands; misses are considered only when no
+/// source hits the UI.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrPointerSelectionPolicy;
+/// assert_eq!(OpenXrPointerSelectionPolicy::PreferRightController, OpenXrPointerSelectionPolicy::PreferRightController);
+/// ```
 pub enum OpenXrPointerSelectionPolicy {
+    /// Right controller, left controller, right hand, then left hand.
     PreferRightController,
+    /// Left controller, right controller, left hand, then right hand.
     PreferLeftController,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Anatomical side associated with an input source.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrInputHand;
+/// assert_ne!(OpenXrInputHand::Right, OpenXrInputHand::Left);
+/// ```
 pub enum OpenXrInputHand {
+    /// User's right hand.
     Right,
+    /// User's left hand.
     Left,
 }
 
+/// Internal short name used throughout polling code.
 type PointerHand = OpenXrInputHand;
 
 impl OpenXrInputHand {
+    /// Returns the stable lowercase label used in logs and errors.
     fn label(self) -> &'static str {
         match self {
             Self::Right => "right",
@@ -80,6 +139,7 @@ impl OpenXrInputHand {
         }
     }
 
+    /// Returns the stable controller mapper ID for this side.
     fn controller_source_id(self) -> u64 {
         match self {
             Self::Right => RIGHT_CONTROLLER_SOURCE_ID,
@@ -87,6 +147,7 @@ impl OpenXrInputHand {
         }
     }
 
+    /// Returns the stable tracked-hand mapper ID for this side.
     fn hand_source_id(self) -> u64 {
         match self {
             Self::Right => RIGHT_HAND_SOURCE_ID,
@@ -96,25 +157,74 @@ impl OpenXrInputHand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Hardware family that produced a pointer candidate.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrInputSourceKind;
+/// assert!(matches!(OpenXrInputSourceKind::Controller, OpenXrInputSourceKind::Controller));
+/// ```
 pub enum OpenXrInputSourceKind {
+    /// Pose action sourced from a tracked controller.
     Controller,
+    /// Aim extension or index-joint ray sourced from hand tracking.
     Hand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Stable identity and origin metadata for the selected pointer.
+///
+/// Source IDs `1..=4` are reserved internally for right/left controllers then
+/// right/left hands.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::{OpenXrInputHand, OpenXrInputSourceInfo, OpenXrInputSourceKind};
+/// let source = OpenXrInputSourceInfo { source_id: 1, source_kind: OpenXrInputSourceKind::Controller, hand: OpenXrInputHand::Right };
+/// assert_eq!(source.source_id, 1);
+/// ```
 pub struct OpenXrInputSourceInfo {
+    /// Stable mapper ID; built-in sources use values `1` through `4`.
     pub source_id: u64,
+    /// Controller or hand-tracking origin.
     pub source_kind: OpenXrInputSourceKind,
+    /// Left/right side.
     pub hand: OpenXrInputHand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Hand-input extensions available on a runtime/system pair.
+///
+/// Hand aim is forced false when base hand tracking is false.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrInputCapabilities;
+/// let capabilities = OpenXrInputCapabilities::new(false, true);
+/// assert!(!capabilities.hand_aim_supported);
+/// ```
 pub struct OpenXrInputCapabilities {
+    /// Whether `XR_EXT_hand_tracking` works for the selected system.
     pub hand_tracking_supported: bool,
+    /// Whether `XR_FB_hand_tracking_aim` is enabled and usable.
     pub hand_aim_supported: bool,
 }
 
 impl OpenXrInputCapabilities {
+    /// Creates a normalized capability pair.
+    ///
+    /// `hand_aim_supported` is retained only when hand tracking is also true.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::OpenXrInputCapabilities;
+    /// assert_eq!(OpenXrInputCapabilities::new(true, true), OpenXrInputCapabilities { hand_tracking_supported: true, hand_aim_supported: true });
+    /// assert!(!OpenXrInputCapabilities::new(false, true).hand_aim_supported);
+    /// ```
     pub fn new(hand_tracking_supported: bool, hand_aim_supported: bool) -> Self {
         Self {
             hand_tracking_supported,
@@ -133,13 +243,38 @@ impl From<&OpenXrInstance> for OpenXrInputCapabilities {
 }
 
 #[derive(Debug, Clone)]
+/// Selected input result for one OpenXR polling iteration.
+///
+/// An empty result has no pointer samples, ray visualization, or source. When a
+/// previously selected source disappears, `pointer_frame` can contain a miss
+/// sample while the optional ray and source metadata are absent or synthesized.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrActionInputFrame;
+/// let frame = OpenXrActionInputFrame::empty();
+/// assert!(frame.pointer_frame.samples.is_empty());
+/// assert!(frame.ray_sample.is_none());
+/// ```
 pub struct OpenXrActionInputFrame {
+    /// Zero or one selected pointer sample routed to the UI mapper.
     pub pointer_frame: OpenXrPointerFrame,
+    /// World-space ray for optional visualization.
     pub ray_sample: Option<OpenXrRaySample>,
+    /// Identity of the selected or release-synthesized source.
     pub source: Option<OpenXrInputSourceInfo>,
 }
 
 impl OpenXrActionInputFrame {
+    /// Returns a frame with no samples or metadata.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::OpenXrActionInputFrame;
+    /// assert!(OpenXrActionInputFrame::empty().source.is_none());
+    /// ```
     pub fn empty() -> Self {
         Self {
             pointer_frame: OpenXrPointerFrame::default(),
@@ -156,21 +291,43 @@ impl Default for OpenXrActionInputFrame {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Fully evaluated world ray and frame-local pointer values.
 struct PointerRay {
+    /// World-space origin in metres.
     origin: Vec3,
+    /// World-space direction; downstream intersection normalizes it.
     direction: Vec3,
+    /// Whether the source's primary action is active.
     pressed: bool,
+    /// Horizontal logical-pixel scroll delta for this frame.
     scroll_dx: f32,
+    /// Vertical logical-pixel scroll delta for this frame.
     scroll_dy: f32,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Routed UI sample paired with visualization and source metadata.
 struct PointerCandidate {
+    /// Logical pointer sample.
     sample: OpenXrPointerSample,
+    /// World ray for overlay rendering.
     ray_sample: OpenXrRaySample,
+    /// Stable source identity.
     source: OpenXrInputSourceInfo,
 }
 
+/// OpenXR action set and per-source state used to poll UI pointer frames.
+///
+/// Construction may return `Ok(None)` when input is disabled. A constructed
+/// value must be attached to exactly one compatible Vulkan session before
+/// polling; polling before attachment returns an empty frame.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrActionInput;
+/// fn reset(input: &mut OpenXrActionInput) { input.clear(); }
+/// ```
 pub struct OpenXrActionInput {
     action_set: xr::ActionSet,
     aim_action: xr::Action<xr::Posef>,
@@ -193,6 +350,21 @@ pub struct OpenXrActionInput {
 }
 
 impl OpenXrActionInput {
+    /// Creates actions from a runtime's instance and negotiated capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an OpenXR error when action-set, action, path, or binding setup
+    /// fails. Returns `Ok(None)` when `options.enabled` is false.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrActionInput, OpenXrInstance, OpenXrRuntimeError, OpenXrUiInputOptions};
+    /// fn create(instance: &OpenXrInstance) -> Result<Option<OpenXrActionInput>, OpenXrRuntimeError> {
+    ///     OpenXrActionInput::new_for_runtime(instance, OpenXrUiInputOptions::default())
+    /// }
+    /// ```
     pub fn new_for_runtime(
         xr: &OpenXrInstance,
         options: OpenXrUiInputOptions,
@@ -200,6 +372,21 @@ impl OpenXrActionInput {
         Self::new_external(&xr.instance, OpenXrInputCapabilities::from(xr), options)
     }
 
+    /// Creates actions from externally owned instance capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an OpenXR setup error for rejected action or binding operations.
+    /// Disabled input returns `Ok(None)` without touching the instance.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrActionInput, OpenXrInputCapabilities, OpenXrRuntimeError, OpenXrUiInputOptions};
+    /// fn create(instance: &openxr::Instance) -> Result<Option<OpenXrActionInput>, OpenXrRuntimeError> {
+    ///     OpenXrActionInput::new_external(instance, OpenXrInputCapabilities::new(false, false), OpenXrUiInputOptions::default())
+    /// }
+    /// ```
     pub fn new_external(
         instance: &xr::Instance,
         capabilities: OpenXrInputCapabilities,
@@ -274,6 +461,24 @@ impl OpenXrActionInput {
         }))
     }
 
+    /// Attaches the action set and creates configured source spaces and trackers.
+    ///
+    /// Repeated calls after a successful attachment are a no-op. Hand-tracker
+    /// creation failures disable the affected tracker rather than failing setup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when attaching the action set or creating a controller
+    /// aim space fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrActionInput, OpenXrRuntimeError};
+    /// fn attach(input: &mut OpenXrActionInput, session: &openxr::Session<openxr::Vulkan>) -> Result<(), OpenXrRuntimeError> {
+    ///     input.attach_session(session)
+    /// }
+    /// ```
     pub fn attach_session(
         &mut self,
         session: &xr::Session<xr::Vulkan>,
@@ -302,12 +507,32 @@ impl OpenXrActionInput {
         Ok(())
     }
 
+    /// Clears source locks and frame-time history without detaching actions.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrActionInput;
+    /// fn clear(input: &mut OpenXrActionInput) { input.clear(); }
+    /// ```
     pub fn clear(&mut self) {
         self.locked_source_id = None;
         self.last_selected_source_id = None;
         self.last_poll = None;
     }
 
+    /// Logs the current left and right interaction-profile paths.
+    ///
+    /// Lookup failures are logged as `"<unknown>"` and are not returned.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrActionInput;
+    /// fn log(input: &OpenXrActionInput, instance: &openxr::Instance, session: &openxr::Session<openxr::Vulkan>) {
+    ///     input.log_interaction_profiles(instance, session);
+    /// }
+    /// ```
     pub fn log_interaction_profiles(
         &self,
         instance: &xr::Instance,
@@ -327,6 +552,27 @@ impl OpenXrActionInput {
         }
     }
 
+    /// Synchronizes actions and selects at most one pointer for the current frame.
+    ///
+    /// Controller scroll is scaled by elapsed time, using 1/60 second on the
+    /// first poll and clamping later deltas to 100 ms. Logical hit points are
+    /// clamped to the supplied top-left-origin size. Before attachment, an empty
+    /// frame is returned without synchronizing actions.
+    ///
+    /// # Errors
+    ///
+    /// Returns failures from action synchronization, action state, space
+    /// location, or hand-joint location.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Size;
+    /// use ailloli_ui_openxr::{OpenXrActionInput, OpenXrActionInputFrame, OpenXrQuadLayerOptions, OpenXrRuntimeError};
+    /// fn poll(input: &mut OpenXrActionInput, instance: &openxr::Instance, session: &openxr::Session<openxr::Vulkan>, space: &openxr::Space, time: openxr::Time) -> Result<OpenXrActionInputFrame, OpenXrRuntimeError> {
+    ///     input.poll_frame(instance, session, space, OpenXrQuadLayerOptions::default(), time, Size::new(1024.0, 576.0))
+    /// }
+    /// ```
     pub fn poll_frame(
         &mut self,
         xr_instance: &xr::Instance,
@@ -395,6 +641,7 @@ impl OpenXrActionInput {
         ))
     }
 
+    /// Creates an identity-offset action space for one controller aim pose.
     fn create_aim_space(
         &self,
         session: &xr::Session<xr::Vulkan>,
@@ -409,6 +656,7 @@ impl OpenXrActionInput {
             })
     }
 
+    /// Polls one active controller into a ray candidate with time-scaled scroll.
     fn poll_controller_candidate(
         &self,
         session: &xr::Session<xr::Vulkan>,
@@ -500,6 +748,7 @@ impl OpenXrActionInput {
         )))
     }
 
+    /// Polls one hand via FB aim or index-joint fallback when controller aim is inactive.
     fn poll_hand_candidate(
         &self,
         xr_instance: &xr::Instance,
@@ -548,6 +797,7 @@ impl OpenXrActionInput {
         )))
     }
 
+    /// Reports whether the configured controller aim action is active for one side.
     fn aim_active(
         &self,
         session: &xr::Session<xr::Vulkan>,
@@ -565,6 +815,7 @@ impl OpenXrActionInput {
             })
     }
 
+    /// Returns the cached OpenXR user path for a hand side.
     fn path_for_hand(&self, hand: PointerHand) -> xr::Path {
         match hand {
             PointerHand::Right => self.right_path,
@@ -573,12 +824,14 @@ impl OpenXrActionInput {
     }
 }
 
+/// Converts a static interaction path and retains it in any error.
 fn path(instance: &xr::Instance, path: &'static str) -> Result<xr::Path, OpenXrRuntimeError> {
     instance
         .string_to_path(path)
         .map_err(|result| OpenXrRuntimeError::StringToPath { path, result })
 }
 
+/// Suggests identical actions for all known Touch profiles, requiring one success.
 fn suggest_bindings(
     instance: &xr::Instance,
     aim_action: &xr::Action<xr::Posef>,
@@ -607,6 +860,7 @@ fn suggest_bindings(
     Ok(())
 }
 
+/// Builds right/left aim, trigger, and thumbstick bindings for one profile.
 fn suggest_bindings_for_profile(
     instance: &xr::Instance,
     profile: &'static str,
@@ -656,6 +910,7 @@ fn suggest_bindings_for_profile(
         .map_err(|result| OpenXrRuntimeError::SuggestInteractionProfileBindings { profile, result })
 }
 
+/// Reads a float action, mapping an inactive action to zero.
 fn action_f32(
     action: &xr::Action<f32>,
     session: &xr::Session<xr::Vulkan>,
@@ -677,6 +932,7 @@ fn action_f32(
     })
 }
 
+/// Applies an exclusive deadzone and converts axis value to frame pixel delta.
 fn scroll_delta(value: f32, deadzone: f32, pixels_per_second: f32, dt: f32, invert: bool) -> f32 {
     if value.abs() < deadzone {
         return 0.0;
@@ -689,6 +945,7 @@ fn scroll_delta(value: f32, deadzone: f32, pixels_per_second: f32, dt: f32, inve
     }
 }
 
+/// Constructs stable identity metadata for a known source.
 fn source_info(
     source_id: u64,
     source_kind: OpenXrInputSourceKind,
@@ -701,6 +958,7 @@ fn source_info(
     }
 }
 
+/// Resolves the four reserved source IDs, returning `None` for external IDs.
 fn source_info_for_id(source_id: u64) -> Option<OpenXrInputSourceInfo> {
     match source_id {
         RIGHT_CONTROLLER_SOURCE_ID => Some(source_info(
@@ -727,6 +985,7 @@ fn source_info_for_id(source_id: u64) -> Option<OpenXrInputSourceInfo> {
     }
 }
 
+/// Intersects a ray with the UI quad and pairs logical and overlay samples.
 fn candidate_from_ray(
     source: OpenXrInputSourceInfo,
     ray: PointerRay,
@@ -768,6 +1027,7 @@ fn candidate_from_ray(
     }
 }
 
+/// Selects one candidate and synthesizes a miss when the prior source disappears.
 fn select_action_input_frame(
     candidates: &[PointerCandidate],
     policy: OpenXrPointerSelectionPolicy,
@@ -819,6 +1079,7 @@ fn select_action_input_frame(
     OpenXrActionInputFrame::empty()
 }
 
+/// Preserves a pressed-source lock, otherwise applies deterministic policy order.
 fn select_pointer_samples(
     candidates: &[PointerCandidate],
     policy: OpenXrPointerSelectionPolicy,
@@ -870,6 +1131,7 @@ fn select_pointer_samples(
     }]
 }
 
+/// Chooses the first policy-ranked hit, falling back to the first ranked miss.
 fn choose_candidate(
     candidates: &[PointerCandidate],
     policy: OpenXrPointerSelectionPolicy,
@@ -907,6 +1169,7 @@ fn choose_candidate(
     None
 }
 
+/// Clamps both logical point axes to inclusive panel bounds.
 fn clamp_point(
     point: ailloli_ui_core::Point,
     logical_width: f32,
@@ -918,6 +1181,7 @@ fn clamp_point(
     )
 }
 
+/// Derives normalized layer axes and half extents clamped to 0.5 mm.
 fn ray_quad_from_layer(layer: OpenXrQuadLayerOptions) -> RayQuad {
     let orientation = layer.pose.orientation;
     RayQuad::new(
@@ -930,6 +1194,7 @@ fn ray_quad_from_layer(layer: OpenXrQuadLayerOptions) -> RayQuad {
     )
 }
 
+/// Calls the FB hand-aim chain and returns a pinch-classified ray when valid.
 fn locate_hand_with_aim(
     instance: &xr::Instance,
     reference_space: &xr::Space,
@@ -988,6 +1253,7 @@ fn locate_hand_with_aim(
     }
 }
 
+/// Builds an index-finger ray and 3.5 cm thumb/index pinch from joint locations.
 fn locate_hand_joints_fallback(
     reference_space: &xr::Space,
     tracker: &xr::HandTracker,
@@ -1035,14 +1301,17 @@ fn locate_hand_joints_fallback(
     }))
 }
 
+/// Copies OpenXR vector components to the lightweight vector type.
 fn vec3_from_xr(v: xr::Vector3f) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
 
+/// Rotates negative Z by a pose quaternion and normalizes with negative-Z fallback.
 fn forward_from_orientation(q: xr::Quaternionf) -> Vec3 {
     rotate_vec3(q, Vec3::new(0.0, 0.0, -1.0)).normalize_or(Vec3::new(0.0, 0.0, -1.0))
 }
 
+/// Rotates a vector by an assumed-normalized quaternion.
 fn rotate_vec3(q: xr::Quaternionf, v: Vec3) -> Vec3 {
     let q_vec = Vec3::new(q.x, q.y, q.z);
     let uv = q_vec.cross(v);
@@ -1051,9 +1320,11 @@ fn rotate_vec3(q: xr::Quaternionf, v: Vec3) -> Vec3 {
 }
 
 #[cfg(test)]
+/// Covers defaults, source priority and locking, loss releases, rays, and scroll.
 mod tests {
     use super::*;
 
+    /// Builds a candidate fixture with matching ray hit classification.
     fn sample(source_id: u64, hit: OpenXrPointerHit, pressed: bool) -> PointerCandidate {
         PointerCandidate {
             sample: OpenXrPointerSample::new(source_id, hit, pressed),

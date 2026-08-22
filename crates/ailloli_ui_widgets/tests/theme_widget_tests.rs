@@ -1,3 +1,5 @@
+//! Default-theme token propagation through representative widget styles.
+
 use ailloli_ui_core::style::Background;
 use ailloli_ui_core::{Color, Theme};
 use ailloli_ui_runtime::component::IntoView;

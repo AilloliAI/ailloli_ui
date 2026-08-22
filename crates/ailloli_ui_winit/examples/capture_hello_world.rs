@@ -1,12 +1,14 @@
 //! Double capture (fenêtre + élément clé) via l'API déclarative `CaptureOpts`.
 //!
 //! API avancée (handle explicite) :
-//! ```ignore
+//! ```
+//! use ailloli_ui::{App, CaptureHandle};
+//!
 //! let cap = CaptureHandle::new();
 //! cap.set_exit_after_all_captures(true);
 //! let id = cap.request_window("main");
-//! App::new().window(...).capture(cap.clone()).run()?;
-//! cap.take_result(id)?;
+//! let _app = App::new().capture(cap.clone());
+//! assert!(cap.take_result(id).is_none());
 //! ```
 //!
 //! ```sh
@@ -19,6 +21,7 @@ use ailloli_ui::{App, CaptureOpts, Window};
 use ailloli_ui_core::{Color, FontId, TextStyle};
 use std::path::PathBuf;
 
+/// Resolves the repository-local directory used for generated capture artifacts.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -26,6 +29,7 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Renders the fixture, captures its window and keyed label, and verifies both files.
 fn main() -> ailloli_ui::Result<()> {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir)?;

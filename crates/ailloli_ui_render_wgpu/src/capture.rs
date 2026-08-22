@@ -3,15 +3,34 @@
 use std::io::Cursor;
 
 /// Pixel format for captured frames.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::CapturedFrameFormat;
+/// let format = CapturedFrameFormat::Rgba8;
+/// assert_eq!(format, CapturedFrameFormat::Rgba8);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapturedFrameFormat {
+    /// Four eight-bit channels in red, green, blue, alpha byte order.
     Rgba8,
 }
 
-/// Parameters for capture readback.
+/// Parameters for one capture readback.
+///
+/// The default requests PNG encoding in addition to the tight RGBA buffer.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::CaptureParams;
+/// let params = CaptureParams::default();
+/// assert!(params.encode_png);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CaptureParams {
-    /// If true, encode to PNG (RGBA8) in `CapturedFrame::png_data`.
+    /// Whether to populate [`CapturedFrame::png_data`] with an RGBA8 PNG.
     pub encode_png: bool,
 }
 
@@ -21,11 +40,31 @@ impl Default for CaptureParams {
     }
 }
 
-/// A captured frame read back from the swapchain surface.
+/// A captured frame read back from a render target.
+///
+/// `rgba` is always available. `png_data` is `None` when PNG encoding was not
+/// requested and `Some` only after a successful encode.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::{CapturedFrame, CapturedFrameFormat};
+/// let frame = CapturedFrame {
+///     width: 1,
+///     height: 1,
+///     format: CapturedFrameFormat::Rgba8,
+///     rgba: vec![255, 0, 0, 255],
+///     png_data: None,
+/// };
+/// assert_eq!(frame.rgba.len(), frame.width as usize * frame.height as usize * 4);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapturedFrame {
+    /// Frame width in physical pixels.
     pub width: u32,
+    /// Frame height in physical pixels.
     pub height: u32,
+    /// Byte layout used by [`Self::rgba`].
     pub format: CapturedFrameFormat,
     /// Tight RGBA8 buffer (`width * height * 4`).
     pub rgba: Vec<u8>,
@@ -33,12 +72,45 @@ pub struct CapturedFrame {
     pub png_data: Option<Vec<u8>>,
 }
 
-/// Row byte length padded to wgpu's 256-byte alignment requirement.
+/// Returns a row byte length rounded up to wgpu's 256-byte copy alignment.
+///
+/// Zero remains zero. Callers must keep the input below the largest multiple
+/// that fits in `u32`; multiplication can otherwise overflow.
+///
+/// # Panics
+///
+/// In debug builds, panics when the rounded result exceeds `u32::MAX`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::capture::bytes_per_row_padded_256;
+/// assert_eq!(bytes_per_row_padded_256(0), 0);
+/// assert_eq!(bytes_per_row_padded_256(68), 256);
+/// assert_eq!(bytes_per_row_padded_256(256), 256);
+/// ```
 pub fn bytes_per_row_padded_256(unpadded_bpr: u32) -> u32 {
     unpadded_bpr.div_ceil(256) * 256
 }
 
-/// Strips row padding from a mapped texture buffer into a tight RGBA layout.
+/// Strips row padding from a mapped texture buffer into a tight row layout.
+///
+/// Exactly `rows * dst_bpr` bytes are returned. Each row copies at most
+/// `dst_bpr` bytes from the corresponding `src_bpr`-spaced source row.
+///
+/// # Panics
+///
+/// Panics if a requested source row starts beyond `src`, if `src_bpr` is
+/// smaller than `dst_bpr` for a fully present row, or if output-size arithmetic
+/// overflows `usize`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::capture::unpad_rows_rgba;
+/// let src = [1, 2, 0, 0, 3, 4, 0, 0];
+/// assert_eq!(unpad_rows_rgba(&src, 4, 2, 2), vec![1, 2, 3, 4]);
+/// ```
 pub fn unpad_rows_rgba(src: &[u8], src_bpr: usize, dst_bpr: usize, rows: usize) -> Vec<u8> {
     let mut out = vec![0u8; dst_bpr * rows];
     for row in 0..rows {
@@ -50,14 +122,39 @@ pub fn unpad_rows_rgba(src: &[u8], src_bpr: usize, dst_bpr: usize, rows: usize) 
     out
 }
 
-/// Swaps R and B channels in-place (BGRA → RGBA).
+/// Swaps R and B channels in-place (BGRA to RGBA).
+///
+/// A trailing slice shorter than four bytes is left unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::capture::bgra_to_rgba_in_place;
+/// let mut bytes = [10, 20, 30, 255, 9];
+/// bgra_to_rgba_in_place(&mut bytes);
+/// assert_eq!(bytes, [30, 20, 10, 255, 9]);
+/// ```
 pub fn bgra_to_rgba_in_place(buf: &mut [u8]) {
     for px in buf.chunks_exact_mut(4) {
         px.swap(0, 2);
     }
 }
 
-/// Encodes an RGBA8 buffer as PNG.
+/// Encodes a tight RGBA8 buffer as PNG.
+///
+/// # Errors
+///
+/// Returns an error when `rgba.len()` is not exactly `width * height * 4` or
+/// when the image encoder rejects the output.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::capture::encode_png_rgba;
+/// let png = encode_png_rgba(1, 1, &[255, 0, 0, 255])?;
+/// assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+/// # Ok::<(), String>(())
+/// ```
 pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
     let mut data = Vec::new();
     let mut writer = Cursor::new(&mut data);
@@ -70,6 +167,7 @@ pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, 
 }
 
 #[cfg(test)]
+/// Verifies row alignment, row unpadding, and BGRA channel conversion.
 mod tests {
     use super::*;
 

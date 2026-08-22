@@ -9,11 +9,39 @@ use std::cell::RefCell;
 use ailloli_ui_runtime::app::ClipboardProvider;
 
 #[derive(Default)]
+/// Process-local clipboard storage for hosts without a system clipboard.
+///
+/// The initial and explicitly cleared state reads as `None`; writing an empty
+/// string also restores that state. Reads return an owned clone.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::VrClipboard;
+/// use ailloli_ui_runtime::app::ClipboardProvider;
+///
+/// let clipboard = VrClipboard::new();
+/// assert_eq!(clipboard.read_text(), None);
+/// clipboard.write_text("XR note")?;
+/// assert_eq!(clipboard.read_text().as_deref(), Some("XR note"));
+/// # Ok::<(), String>(())
+/// ```
 pub struct VrClipboard {
     text: RefCell<String>,
 }
 
 impl VrClipboard {
+    /// Creates an empty process-local clipboard.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::VrClipboard;
+    /// use ailloli_ui_runtime::app::ClipboardProvider;
+    ///
+    /// let clipboard = VrClipboard::new();
+    /// assert_eq!(clipboard.read_text(), None);
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }

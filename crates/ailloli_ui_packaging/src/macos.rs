@@ -1,3 +1,10 @@
+//! Deterministic staging and archival of host-native macOS application bundles.
+//!
+//! The backend creates the conventional `Contents/MacOS` and
+//! `Contents/Resources` layout, emits identity metadata, and archives regular
+//! files with fixed ownership, modes, and timestamps. It does not code-sign,
+//! notarize, or create a disk image.
+
 use crate::icons::GeneratedIconSet;
 use crate::{PackageContext, PackagingError};
 use flate2::Compression;
@@ -5,6 +12,25 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Stages a `.app` bundle and returns its root path.
+///
+/// The display name becomes the bundle basename after validation and colon
+/// replacement. The executable and generated ICNS are copied; existing files
+/// at deterministic paths are replaced. An error can leave a partial bundle.
+///
+/// # Errors
+///
+/// Returns an error for an empty or path-unsafe display name, or for any
+/// directory, copy, or metadata-write failure.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// let staging = Path::new("target/ailloli_ui/package/macos");
+/// let bundle = staging.join("Sample App.app");
+/// assert_eq!(bundle.extension().and_then(|ext| ext.to_str()), Some("app"));
+/// ```
 pub fn stage_macos_bundle(
     context: &PackageContext,
     executable: &Path,
@@ -25,6 +51,28 @@ pub fn stage_macos_bundle(
     Ok(bundle)
 }
 
+/// Writes a reproducible gzip-compressed tar archive containing `bundle`.
+///
+/// Entries are lexicographically sorted. Files anywhere below `Contents/MacOS`
+/// receive mode `0o755`; other files receive `0o644`. Timestamps, user ID, and
+/// group ID are zero. Directories are represented implicitly by file paths.
+///
+/// # Errors
+///
+/// Returns an error for traversal, read, destination creation, tar, gzip, or
+/// finalization failures.
+///
+/// # Panics
+///
+/// Panics if `bundle` has no parent path.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// let output = Path::new("Sample App-1.0.0-x86_64-macos.app.tar.gz");
+/// assert!(output.to_string_lossy().ends_with(".app.tar.gz"));
+/// ```
 pub fn build_bundle_archive(bundle: &Path, destination: &Path) -> Result<(), PackagingError> {
     let output = fs::File::create(destination)?;
     let encoder = flate2::GzBuilder::new()
@@ -42,6 +90,7 @@ pub fn build_bundle_archive(bundle: &Path, destination: &Path) -> Result<(), Pac
     Ok(())
 }
 
+/// Appends all regular files below `path` relative to `base` in sorted order.
 fn append_tree<W: Write>(
     builder: &mut tar::Builder<W>,
     path: &Path,
@@ -71,6 +120,10 @@ fn append_tree<W: Write>(
     Ok(())
 }
 
+/// Recursively collects `path` and every descendant for subsequent sorting.
+///
+/// Symbolic links are followed only insofar as `Path::is_dir` follows them;
+/// callers stage a framework-owned bundle tree without symlinks.
 fn collect(path: &Path, entries: &mut Vec<PathBuf>) -> Result<(), PackagingError> {
     entries.push(path.to_path_buf());
     if path.is_dir() {
@@ -81,6 +134,7 @@ fn collect(path: &Path, entries: &mut Vec<PathBuf>) -> Result<(), PackagingError
     Ok(())
 }
 
+/// Renders an XML-escaped `Info.plist` for the application identity.
 fn info_plist(context: &PackageContext) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>CFBundleDevelopmentRegion</key><string>en</string>\n  <key>CFBundleDisplayName</key><string>{}</string>\n  <key>CFBundleExecutable</key><string>{}</string>\n  <key>CFBundleIconFile</key><string>AppIcon</string>\n  <key>CFBundleIdentifier</key><string>{}</string>\n  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n  <key>CFBundleName</key><string>{}</string>\n  <key>CFBundlePackageType</key><string>APPL</string>\n  <key>CFBundleShortVersionString</key><string>{}</string>\n  <key>CFBundleVersion</key><string>{}</string>\n</dict>\n</plist>\n",
@@ -93,6 +147,11 @@ fn info_plist(context: &PackageContext) -> String {
     )
 }
 
+/// Converts a semver-like string into three dot-separated numeric components.
+///
+/// Only leading ASCII digits of the first three components are retained;
+/// missing or digitless components become `0`. Values are not numerically
+/// parsed or clamped, so arbitrarily long digit strings are preserved.
 fn numeric_bundle_version(version: &str) -> String {
     let mut parts: Vec<_> = version
         .split('.')
@@ -116,6 +175,11 @@ fn numeric_bundle_version(version: &str) -> String {
     parts.join(".")
 }
 
+/// Validates a display name as one safe bundle path component.
+///
+/// Empty or whitespace-only names and names containing `/`, `\`, or NUL are
+/// rejected. Colons are replaced with hyphens because Finder treats them as
+/// legacy path separators; other whitespace is preserved.
 fn safe_bundle_name(name: &str) -> Result<String, PackagingError> {
     if name.trim().is_empty() || name.contains(['/', '\\', '\0']) {
         return Err(PackagingError::message(
@@ -125,6 +189,7 @@ fn safe_bundle_name(name: &str) -> Result<String, PackagingError> {
     Ok(name.replace(':', "-"))
 }
 
+/// Escapes all five XML special characters in plist text nodes.
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -135,6 +200,7 @@ fn xml_escape(value: &str) -> String {
 }
 
 #[cfg(test)]
+/// Covers numeric-version normalization and byte-for-byte archive reproducibility.
 mod tests {
     use super::*;
     use ailloli_ui_core::{

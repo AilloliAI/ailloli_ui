@@ -1,16 +1,61 @@
+//! Normalized, serializable identifiers for local and remote filesystem entries.
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::FileError;
 
+/// Version-one filesystem URI with a normalized scheme, optional authority, and path.
+///
+/// Paths use `/`, collapse repeated separators, and always start with `/`.
+/// This is deliberately a small VFS syntax rather than a complete RFC URI
+/// implementation: queries/fragments are unsupported, dot segments are not
+/// resolved, and only `%` and spaces are encoded/decoded by path helpers.
+/// Constructor methods establish these invariants, but derived deserialization
+/// stores the three fields verbatim and can therefore produce an unnormalized
+/// or otherwise invalid value. Only deserialize data from a trusted compatible
+/// producer when later code relies on normalized paths.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// let uri = FileUri::parse("SFTP://host//home/user")?;
+/// assert_eq!(uri.to_string(), "sftp://host/home/user");
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FileUri {
+    /// Usually normalized lowercase scheme; deserialization can bypass validation.
     scheme: String,
+    /// Optional case-sensitive provider authority.
     authority: Option<String>,
+    /// Usually normalized absolute path; deserialization can bypass validation.
     path: String,
 }
 
 impl FileUri {
+    /// Parses and normalizes a version-one filesystem URI.
+    ///
+    /// Outer whitespace is trimmed and the scheme is lowercased. The input must
+    /// contain `://`, a non-empty target, and no literal `?` or `#`. Backslashes
+    /// in the path become `/` and repeated slashes collapse. Authority text and
+    /// existing percent escapes are otherwise retained verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for empty input, a missing/invalid
+    /// scheme or path, a missing path after an authority, or a query/fragment.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// let uri = FileUri::parse(" file:///tmp/a%20b ")?;
+    /// assert_eq!(uri.path(), "/tmp/a%20b");
+    /// assert!(FileUri::parse("file:///tmp/a?raw=1").is_err());
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn parse(input: impl AsRef<str>) -> Result<Self, FileError> {
         let input = input.as_ref().trim();
         if input.is_empty() {
@@ -33,6 +78,25 @@ impl FileUri {
         })
     }
 
+    /// Converts an absolute local path into an authority-free `file` URI.
+    ///
+    /// The path must be valid UTF-8. Percent signs are encoded as `%25`, spaces
+    /// as `%20`, and platform separators normalize to `/`; other URI-reserved
+    /// characters are left verbatim. Relative paths are rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a relative or non-UTF-8 path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// let uri = FileUri::local("/tmp/a b")?;
+    /// assert_eq!(uri.to_string(), "file:///tmp/a%20b");
+    /// assert!(FileUri::local("relative/path").is_err());
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn local(path: impl Into<PathBuf>) -> Result<Self, FileError> {
         let path = path.into();
         if !path.is_absolute() {
@@ -49,6 +113,25 @@ impl FileUri {
         })
     }
 
+    /// Builds a URI from components using the crate's normalization rules.
+    ///
+    /// An empty authority becomes `None`. Relative path text is accepted and
+    /// receives a leading `/`; backslashes and repeated separators normalize.
+    /// Existing percent escapes, dot segments, `?`, and `#` are not validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] only when the normalized scheme is
+    /// empty or contains a character outside ASCII alphanumeric, `+`, `-`, `.`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// let uri = FileUri::new("SFTP", Some("host"), "home\\user")?;
+    /// assert_eq!(uri.to_string(), "sftp://host/home/user");
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn new(
         scheme: impl Into<String>,
         authority: Option<impl Into<String>>,
@@ -67,26 +150,95 @@ impl FileUri {
         })
     }
 
+    /// Returns the normalized lowercase scheme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// assert_eq!(FileUri::parse("FILE:///")?.scheme(), "file");
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn scheme(&self) -> &str {
         &self.scheme
     }
 
+    /// Returns the authority, or `None` for authority-free URIs.
+    ///
+    /// Authority comparison is case-sensitive and no host normalization occurs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// assert_eq!(FileUri::parse("sftp://host/home")?.authority(), Some("host"));
+    /// assert_eq!(FileUri::parse("file:///tmp")?.authority(), None);
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn authority(&self) -> Option<&str> {
         self.authority.as_deref()
     }
 
+    /// Returns the normalized, absolute, still-percent-encoded path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// assert_eq!(FileUri::parse("file:////tmp//a")?.path(), "/tmp/a");
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn path(&self) -> &str {
         &self.path
     }
 
+    /// Returns the final non-empty encoded path segment.
+    ///
+    /// Root returns `None`; a trailing slash is ignored. No allocation or
+    /// percent decoding occurs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// assert_eq!(FileUri::parse("file:///tmp/a%20b/")?.file_name(), Some("a%20b"));
+    /// assert_eq!(FileUri::parse("file:///")?.file_name(), None);
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn file_name(&self) -> Option<&str> {
         self.path.rsplit('/').find(|segment| !segment.is_empty())
     }
 
+    /// Returns an allocated, partially percent-decoded final segment.
+    ///
+    /// Decoding replaces uppercase `%20` with spaces and `%25` with `%`, in
+    /// that order. Other escapes, lowercase forms, and malformed escapes remain
+    /// unchanged. Root returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// assert_eq!(FileUri::parse("file:///a%20b")?.file_name_decoded().as_deref(), Some("a b"));
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn file_name_decoded(&self) -> Option<String> {
         self.file_name().map(percent_decode_lossy)
     }
 
+    /// Returns the normalized lexical parent while preserving scheme/authority.
+    ///
+    /// Files directly below root return the root URI; root itself returns
+    /// `None`. Dot segments are ordinary text and are not resolved.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// let uri = FileUri::parse("file:///tmp/a")?;
+    /// assert_eq!(uri.parent().unwrap().to_string(), "file:///tmp");
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn parent(&self) -> Option<Self> {
         let trimmed = self.path.trim_end_matches('/');
         let idx = trimmed.rfind('/')?;
@@ -96,6 +248,26 @@ impl FileUri {
         Self::new(self.scheme.clone(), self.authority.clone(), &trimmed[..idx]).ok()
     }
 
+    /// Appends one trimmed child name and encodes percent signs and spaces.
+    ///
+    /// Empty names and names containing `/` or `\` are rejected. Other URI
+    /// delimiters and dot names are accepted verbatim, so a child containing
+    /// `?` or `#` may not round-trip through [`Self::parse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for an empty or multi-segment name, or
+    /// if rebuilding the URI fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// let root = FileUri::parse("file:///tmp")?;
+    /// assert_eq!(root.join_child(" a b ")?.to_string(), "file:///tmp/a%20b");
+    /// assert!(root.join_child("a/b").is_err());
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn join_child(&self, name: impl AsRef<str>) -> Result<Self, FileError> {
         let name = name.as_ref().trim();
         if name.is_empty() || name.contains('/') || name.contains('\\') {
@@ -109,6 +281,22 @@ impl FileUri {
         )
     }
 
+    /// Replaces the final segment using [`Self::join_child`] name rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] when this URI is root or the new name
+    /// is empty or contains a path separator.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// let uri = FileUri::parse("file:///tmp/a")?;
+    /// assert_eq!(uri.with_file_name("b")?.to_string(), "file:///tmp/b");
+    /// assert!(FileUri::parse("file:///")?.with_file_name("b").is_err());
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn with_file_name(&self, name: impl AsRef<str>) -> Result<Self, FileError> {
         let Some(parent) = self.parent() else {
             return Err(FileError::InvalidUri(format!("uri has no parent: {self}")));
@@ -116,6 +304,24 @@ impl FileUri {
         parent.join_child(name)
     }
 
+    /// Returns a decoded lexical path relative to `root` when compatible.
+    ///
+    /// Scheme and authority must match exactly, and `self` must equal or be
+    /// below the root on a path-segment boundary. Equal non-root paths return
+    /// `"."`; equal root or trailing-slash paths return an empty string due to
+    /// normalization semantics. The result uses the same limited decoding as
+    /// [`Self::file_name_decoded`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// let root = FileUri::parse("file:///tmp/work")?;
+    /// let child = FileUri::parse("file:///tmp/work/a%20b")?;
+    /// assert_eq!(child.relative_path_from(&root).as_deref(), Some("a b"));
+    /// assert_eq!(root.relative_path_from(&root).as_deref(), Some("."));
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn relative_path_from(&self, root: &Self) -> Option<String> {
         if self.scheme != root.scheme || self.authority != root.authority {
             return None;
@@ -130,6 +336,25 @@ impl FileUri {
         Some(percent_decode_lossy(relative))
     }
 
+    /// Converts an authority-free or `localhost` `file` URI to a local path.
+    ///
+    /// Authority matching is case-sensitive. Percent decoding is intentionally
+    /// limited to uppercase `%20` and `%25`; no existence check is performed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::UnsupportedScheme`] for non-`file` schemes or a
+    /// non-empty authority other than exact `localhost`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use std::path::PathBuf;
+    /// assert_eq!(FileUri::parse("file://localhost/tmp/a%20b")?.to_local_path()?, PathBuf::from("/tmp/a b"));
+    /// assert!(FileUri::parse("sftp://host/tmp")?.to_local_path().is_err());
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn to_local_path(&self) -> Result<PathBuf, FileError> {
         if self.scheme != "file" {
             return Err(FileError::UnsupportedScheme(self.scheme.clone()));
@@ -166,6 +391,7 @@ impl std::str::FromStr for FileUri {
     }
 }
 
+/// Trims/lowercases a scheme and accepts only ASCII alphanumeric, `+`, `-`, `.`.
 fn normalize_scheme(scheme: &str) -> Result<String, FileError> {
     let scheme = scheme.trim().to_ascii_lowercase();
     let valid = !scheme.is_empty()
@@ -179,6 +405,7 @@ fn normalize_scheme(scheme: &str) -> Result<String, FileError> {
     }
 }
 
+/// Splits the post-scheme target into optional authority and absolute path text.
 fn split_authority_and_path(rest: &str) -> Result<(Option<String>, String), FileError> {
     if rest.is_empty() {
         return Err(FileError::InvalidUri("uri target is empty".into()));
@@ -195,6 +422,7 @@ fn split_authority_and_path(rest: &str) -> Result<(Option<String>, String), File
     Ok((Some(authority.to_string()), format!("/{path}")))
 }
 
+/// Converts separators, collapses repeats, and ensures one leading slash.
 fn normalize_path(path: impl Into<String>) -> String {
     let mut path = path.into().replace('\\', "/");
     while path.contains("//") {
@@ -206,6 +434,7 @@ fn normalize_path(path: impl Into<String>) -> String {
     path
 }
 
+/// Converts one UTF-8 platform path to the crate's minimally encoded URI path.
 fn path_to_uri_path(path: &Path) -> Result<String, FileError> {
     let Some(path) = path.to_str() else {
         return Err(FileError::InvalidUri(
@@ -215,16 +444,20 @@ fn path_to_uri_path(path: &Path) -> Result<String, FileError> {
     Ok(normalize_path(percent_encode_path(path)))
 }
 
+/// Encodes percent signs first and spaces second, leaving other characters unchanged.
 fn percent_encode_path(path: &str) -> String {
     path.replace('%', "%25").replace(' ', "%20")
 }
 
+/// Decodes uppercase `%20` then `%25` without validating other escapes.
 fn percent_decode_lossy(path: &str) -> String {
     path.replace("%20", " ").replace("%25", "%")
 }
 
 #[cfg(test)]
 mod tests {
+    //! Covers v1 parsing, invalid syntax, local conversion, and lexical path helpers.
+
     use super::*;
 
     #[test]

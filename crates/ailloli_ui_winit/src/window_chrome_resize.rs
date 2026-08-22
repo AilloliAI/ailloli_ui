@@ -4,9 +4,31 @@ use ailloli_ui_runtime::input::ResizeEdge;
 use winit::window::ResizeDirection;
 
 /// Pointer-sensitive frame thickness (logical coords; hit test is DPR-neutral).
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     ailloli_ui_winit::window_chrome_resize::CLIENT_RESIZE_BORDER_LOGICAL_PX,
+///     5.0,
+/// );
+/// ```
 pub const CLIENT_RESIZE_BORDER_LOGICAL_PX: f32 = 5.0;
 
 /// Maps runtime resize edges to winit [`ResizeDirection`].
+///
+/// All eight cardinal and diagonal variants map one-to-one; there is no
+/// unsupported or fallback value.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::input::ResizeEdge;
+/// use winit::window::ResizeDirection;
+/// let direction =
+///     ailloli_ui_winit::window_chrome_resize::resize_edge_to_winit(ResizeEdge::NW);
+/// assert!(matches!(direction, ResizeDirection::NorthWest));
+/// ```
 pub fn resize_edge_to_winit(edge: ResizeEdge) -> ResizeDirection {
     match edge {
         ResizeEdge::N => ResizeDirection::North,
@@ -21,6 +43,7 @@ pub fn resize_edge_to_winit(edge: ResizeEdge) -> ResizeDirection {
 }
 
 #[cfg(test)]
+/// One-to-one cardinal and diagonal direction mapping scenarios.
 mod tests {
     use super::*;
 

@@ -1,9 +1,13 @@
+//! Integration coverage for tree reconciliation, watchers, cache policy, and
+//! provider-request correlation.
+
 use ailloli_ui_fs::{
     DirectoryLoadState, FileEntry, FileError, FileIdentity, FileKind, FileMetadata, FileTreeDelta,
     FileTreeStore, FileTreeStoreError, FileTreeStoreLimits, FileUri, WatchEvent, WatchEventKind,
 };
 use std::time::{Duration, Instant};
 
+/// Constructs the common in-memory root used by integration scenarios.
 fn root_store() -> FileTreeStore {
     FileTreeStore::new(
         FileUri::parse("file:///").unwrap(),
@@ -12,6 +16,9 @@ fn root_store() -> FileTreeStore {
     .unwrap()
 }
 
+/// Constructs one test entry and a deterministic provider identity.
+///
+/// Panics if the fixture path cannot form a valid `file` URI.
 fn entry(path: &str, kind: FileKind) -> (FileEntry, Option<FileIdentity>) {
     let uri = FileUri::parse(format!("file:///{path}")).unwrap();
     (

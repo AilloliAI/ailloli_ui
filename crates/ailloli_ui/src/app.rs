@@ -1,6 +1,6 @@
 //! High-level desktop application API.
 //!
-//! [`App`] and [`AppBuilder`] wire [`Window`] definitions into [`ailloli_ui_winit::UiApp`],
+//! [`App`] and [`AppBuilder`] wire [`Window`] definitions into `ailloli_ui_winit::UiApp`,
 //! compose chrome (title bar, rounded surface), and optionally route typed actions through
 //! an [`update`](AppBuilder::update) handler that returns [`Commands`].
 //!
@@ -24,16 +24,18 @@
 //!
 //! # Quick start
 //!
-//! ```ignore
+//! ```no_run
 //! use ailloli_ui::prelude::*;
 //!
-//! App::new()
-//!     .window(
-//!         Window::new("main")
-//!             .title("Hello")
-//!             .content(|| Column::new().child(Text::new("Hi"))),
-//!     )
-//!     .run()?;
+//! fn main() -> ailloli_ui::Result<()> {
+//!     App::new()
+//!         .window(
+//!             Window::new("main")
+//!                 .title("Hello")
+//!                 .content(|| Column::new().child(Text::new("Hi"))),
+//!         )
+//!         .run()
+//! }
 //! ```
 
 use crate::runtime::component::{IntoView, View};
@@ -58,15 +60,32 @@ use crate::runtime::app::RuntimeHandle;
 use std::time::Instant;
 
 /// Application result type (boxed error for ergonomic `?` in `main`).
+///
+/// The erased error is neither required to be [`Send`] nor [`Sync`]; desktop
+/// startup and event-loop errors are returned on the application thread.
+///
+/// # Examples
+///
+/// ```
+/// fn checked() -> ailloli_ui::Result<u32> {
+///     Ok(42)
+/// }
+/// assert_eq!(checked()?, 42);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[cfg(feature = "winit")]
+/// Identifies the builder location that supplied an invalid icon.
 enum AppIconConfigurationSite {
+    /// The application-wide identity icon.
     AppIdentity,
+    /// A per-window override, including its logical window identifier.
     Window { logical_id: String },
 }
 
 #[cfg(feature = "winit")]
+/// Formats an actionable name for the icon configuration site.
 impl std::fmt::Display for AppIconConfigurationSite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -79,9 +98,13 @@ impl std::fmt::Display for AppIconConfigurationSite {
 }
 
 #[cfg(feature = "winit")]
+/// Contextual validation error for an application or per-window SVG icon.
 struct AppIconConfigurationError {
+    /// Builder site at which the icon was supplied.
     site: AppIconConfigurationSite,
+    /// Diagnostic source label retained by [`AppIcon`].
     source_path: String,
+    /// Underlying icon validation failure.
     source: ailloli_ui_icon::IconError,
 }
 
@@ -89,6 +112,7 @@ struct AppIconConfigurationError {
 // identical to the actionable Display message instead of exposing the inner
 // enum variant as only `NonSquare(...)`.
 #[cfg(feature = "winit")]
+/// Uses the actionable display message for `main() -> Result` debug rendering.
 impl std::fmt::Debug for AppIconConfigurationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, f)
@@ -96,6 +120,7 @@ impl std::fmt::Debug for AppIconConfigurationError {
 }
 
 #[cfg(feature = "winit")]
+/// Renders the validation cause, source label, and builder site.
 impl std::fmt::Display for AppIconConfigurationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -115,6 +140,7 @@ impl std::fmt::Display for AppIconConfigurationError {
 }
 
 #[cfg(feature = "winit")]
+/// Exposes the underlying icon validation error as the source.
 impl std::error::Error for AppIconConfigurationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.source)
@@ -122,6 +148,7 @@ impl std::error::Error for AppIconConfigurationError {
 }
 
 #[cfg(feature = "winit")]
+/// Validates an SVG icon and attaches the configuration site to any failure.
 fn validate_configured_app_icon(
     icon: &AppIcon,
     site: AppIconConfigurationSite,
@@ -136,6 +163,14 @@ fn validate_configured_app_icon(
 }
 
 /// Window decoration mode: native OS chrome vs Ailloli UI client chrome.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::WindowChrome;
+/// assert_eq!(WindowChrome::default(), WindowChrome::Os);
+/// assert_ne!(WindowChrome::Custom, WindowChrome::None);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowChrome {
     /// Native title bar and window borders (host-window decorations).
@@ -151,6 +186,19 @@ pub enum WindowChrome {
 }
 
 /// Side effect requested by an [`update`](AppBuilder::update) handler.
+///
+/// Commands are executed in batch order. A zero-duration delayed dispatch is
+/// still scheduled through the delayed-action queue rather than treated as an
+/// immediate [`Dispatch`](Self::Dispatch).
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::Command;
+/// use std::time::Duration;
+/// let command = Command::DispatchAfter { action: 7_u8, delay: Duration::from_millis(5) };
+/// assert!(matches!(command, Command::DispatchAfter { action: 7, .. }));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command<A> {
     /// Exit the winit event loop.
@@ -160,17 +208,42 @@ pub enum Command<A> {
     /// Enqueue an application action for the next drain cycle.
     Dispatch(A),
     /// Enqueue an application action after a delay.
-    DispatchAfter { action: A, delay: Duration },
+    DispatchAfter {
+        /// Action delivered once the deadline is reached.
+        action: A,
+        /// Relative delay measured from the host service instant.
+        delay: Duration,
+    },
 }
 
 /// Batch of [`Command`] values returned from [`AppBuilder::update`].
+///
+/// The batch is unbounded and preserves insertion order. Builder methods own
+/// their values and allocate as the backing vector grows.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::{Command, Commands};
+/// let commands = Commands::redraw().push(Command::Dispatch(3_u8));
+/// assert_eq!(commands.len(), 2);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commands<A> {
+    /// Ordered command storage.
     commands: Vec<Command<A>>,
 }
 
+/// Constructors, inspection, and composition for an ordered command batch.
 impl<A> Commands<A> {
     /// Empty command list.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let commands = ailloli_ui::Commands::<u8>::none();
+    /// assert!(commands.is_empty());
+    /// ```
     pub fn none() -> Self {
         Self {
             commands: Vec::new(),
@@ -178,6 +251,13 @@ impl<A> Commands<A> {
     }
 
     /// Command list containing only [`Command::Quit`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Command, Commands};
+    /// assert!(matches!(Commands::<()>::quit().iter().next(), Some(Command::Quit)));
+    /// ```
     pub fn quit() -> Self {
         Self {
             commands: vec![Command::Quit],
@@ -185,6 +265,13 @@ impl<A> Commands<A> {
     }
 
     /// Command list containing only [`Command::Redraw`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Command, Commands};
+    /// assert_eq!(Commands::<()>::redraw().into_vec(), vec![Command::Redraw]);
+    /// ```
     pub fn redraw() -> Self {
         Self {
             commands: vec![Command::Redraw],
@@ -192,6 +279,13 @@ impl<A> Commands<A> {
     }
 
     /// Command list containing a single [`Command::Dispatch`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Command, Commands};
+    /// assert_eq!(Commands::dispatch("refresh").into_vec(), vec![Command::Dispatch("refresh")]);
+    /// ```
     pub fn dispatch(action: A) -> Self {
         Self {
             commands: vec![Command::Dispatch(action)],
@@ -199,6 +293,17 @@ impl<A> Commands<A> {
     }
 
     /// Command list containing a single delayed dispatch.
+    ///
+    /// `delay` is relative and is not clamped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Command, Commands};
+    /// use std::time::Duration;
+    /// let batch = Commands::dispatch_after(1_u8, Duration::from_secs(2));
+    /// assert!(matches!(batch.iter().next(), Some(Command::DispatchAfter { delay, .. }) if *delay == Duration::from_secs(2)));
+    /// ```
     pub fn dispatch_after(action: A, delay: Duration) -> Self {
         Self {
             commands: vec![Command::DispatchAfter { action, delay }],
@@ -206,38 +311,82 @@ impl<A> Commands<A> {
     }
 
     /// Returns `true` when there are no commands.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(ailloli_ui::Commands::<()>::default().is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
 
     /// Number of commands in the batch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui::Commands::dispatch(4).len(), 1);
+    /// ```
     pub fn len(&self) -> usize {
         self.commands.len()
     }
 
     /// Iterates over commands without consuming the batch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Command, Commands};
+    /// let batch = Commands::dispatch(4);
+    /// assert_eq!(batch.iter().collect::<Vec<_>>(), vec![&Command::Dispatch(4)]);
+    /// ```
     pub fn iter(&self) -> impl Iterator<Item = &Command<A>> {
         self.commands.iter()
     }
 
     /// Appends a command (builder style).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Command, Commands};
+    /// let batch = Commands::<()>::none().push(Command::Redraw);
+    /// assert_eq!(batch.len(), 1);
+    /// ```
     pub fn push(mut self, command: Command<A>) -> Self {
         self.commands.push(command);
         self
     }
 
     /// Appends all commands from another batch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::Commands;
+    /// let batch = Commands::<()>::redraw().extend(Commands::quit());
+    /// assert_eq!(batch.len(), 2);
+    /// ```
     pub fn extend(mut self, commands: Commands<A>) -> Self {
         self.commands.extend(commands.commands);
         self
     }
 
     /// Consumes the batch and returns the underlying `Vec`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Command, Commands};
+    /// assert_eq!(Commands::dispatch(9).into_vec(), vec![Command::Dispatch(9)]);
+    /// ```
     pub fn into_vec(self) -> Vec<Command<A>> {
         self.commands
     }
 }
 
+/// Produces the same empty value as [`Commands::none`].
 impl<A> Default for Commands<A> {
     fn default() -> Self {
         Self::none()
@@ -248,20 +397,40 @@ impl<A> Default for Commands<A> {
 ///
 /// Implement on a unit struct (e.g. `AppActions`) and pass it to [`AppBuilder::actions`]:
 ///
-/// ```ignore
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::ActionSchema;
+///
+/// #[derive(Clone, Copy)]
 /// pub struct AppActions;
+/// #[derive(Debug, PartialEq)]
+/// pub enum AppAction { Refresh }
 /// impl ActionSchema for AppActions {
 ///     type Action = AppAction;
 /// }
 ///
-/// let actions = AppActions;
-/// App::new().state(state).actions(actions).services(services);
+/// fn assert_action_schema<T: ActionSchema<Action = AppAction>>(_: T) {}
+/// assert_action_schema(AppActions);
 /// ```
 pub trait ActionSchema: Copy + 'static {
     /// Application action enum dispatched from widgets and handled in [`AppBuilder::update`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::ActionSchema;
+    /// #[derive(Clone, Copy)] struct Schema;
+    /// impl ActionSchema for Schema { type Action = u32; }
+    /// fn accepts(_: <Schema as ActionSchema>::Action) {}
+    /// accepts(42);
+    /// ```
     type Action: 'static;
 }
 
+/// Reference-counted factory that rebuilds one action-typed view.
+///
+/// Cloning a `Content` shares the closure and does not clone a view tree.
 type Content<A> = Rc<dyn Fn() -> View<A>>;
 
 /// Declarative description of a single window (title, chrome, root view).
@@ -269,44 +438,91 @@ type Content<A> = Rc<dyn Fn() -> View<A>>;
 /// Build with [`Window::new`], chain options, then pass to [`AppBuilder::window`].
 /// The `A` type parameter is the application action type when using
 /// [`ActionSchema`] via [`AppBuilder::actions`] / [`AppBuilder::update`]; use `()` for stateless demos.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::Window;
+/// let window = Window::<()>::new("main").title("Example").size(800.0, 600.0);
+/// assert_eq!(window.id(), "main");
+/// assert_eq!(window.logical_size(), Some((800.0, 600.0)));
+/// ```
 pub struct Window<A> {
+    /// Session-stable logical identifier used for routing, persistence, and capture.
     id: String,
+    /// OS or client-chrome title; defaults to `Ailloli UI`.
     title: String,
+    /// Optional initial inner width and height in logical pixels.
     size: Option<(f32, f32)>,
+    /// Whether native user resizing is enabled.
     resizable: bool,
+    /// Whether client-titlebar drag gestures move the native window.
     titlebar_draggable: bool,
+    /// Selected native or client decoration mode.
     chrome: WindowChrome,
+    /// Client-surface corner radius in logical pixels, clamped to `0..=128`.
     corner_radius: f32,
+    /// Custom title-row factory, present only after [`Window::title_bar`].
     custom_titlebar: Option<Content<A>>,
+    /// Required root-content factory; `None` makes [`AppBuilder::run`] fail.
     content: Option<Content<A>>,
+    /// Optional window-specific icon overriding application identity inheritance.
     icon: Option<AppIcon>,
     #[cfg(feature = "native_overlay")]
+    /// Native overlay configuration, or `None` for an ordinary window.
     native_overlay: Option<ailloli_ui_winit::NativeOverlayOptions>,
     #[cfg(feature = "winit")]
+    /// Ordered declarative GPU captures requested for the first redraw.
     captures: Vec<CaptureOpts>,
 }
 
 #[cfg(feature = "winit")]
+/// Owned window fields consumed exactly once by native host construction.
 struct WindowParts<A> {
+    /// Logical window identifier.
     id: String,
+    /// Native/client title text.
     title: String,
+    /// Optional initial logical-pixel dimensions.
     size: Option<(f32, f32)>,
+    /// Native resizability flag.
     resizable: bool,
+    /// Client-titlebar drag policy.
     titlebar_draggable: bool,
+    /// Selected decoration mode.
     chrome: WindowChrome,
+    /// Clamped logical-pixel corner radius.
     corner_radius: f32,
+    /// Optional custom title-row factory.
     custom_titlebar: Option<Content<A>>,
+    /// Optional root-content factory.
     content: Option<Content<A>>,
+    /// Optional per-window icon.
     icon: Option<AppIcon>,
     #[cfg(feature = "native_overlay")]
+    /// Optional platform overlay behavior.
     native_overlay: Option<ailloli_ui_winit::NativeOverlayOptions>,
 }
 
+/// Builder and read-only inspection methods for a declarative window.
 impl<A> Window<A> {
     /// Creates a window with the given logical id (used for routing and capture).
     ///
     /// Defaults: title `"Ailloli UI"`, [`WindowChrome::Os`], resizable, draggable title bar,
     /// corner radius `0`, no content until [`content`](Self::content) is set.
+    ///
+    /// Empty or duplicate IDs are retained here; native startup rejects
+    /// duplicates, while downstream routing treats the string as opaque.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, WindowChrome};
+    /// let window = Window::<()>::new("main");
+    /// assert_eq!(window.title_str(), "Ailloli UI");
+    /// assert_eq!(window.chrome(), WindowChrome::Os);
+    /// assert!(window.is_resizable());
+    /// ```
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -327,58 +543,148 @@ impl<A> Window<A> {
     }
 
     /// Logical window id (stable across the session).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui::Window::<()>::new("settings").id(), "settings");
+    /// ```
     pub fn id(&self) -> &str {
         &self.id
     }
 
     /// Window title string (OS title bar or client chrome).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let window = ailloli_ui::Window::<()>::new("main").title("Inbox");
+    /// assert_eq!(window.title_str(), "Inbox");
+    /// ```
     pub fn title_str(&self) -> &str {
         &self.title
     }
 
     /// Initial inner size in logical pixels, if [`size`](Self::size) was set.
+    ///
+    /// `None` delegates initial sizing to the native host or restored storage.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let without_size = ailloli_ui::Window::<()>::new("main");
+    /// assert_eq!(without_size.logical_size(), None);
+    /// assert_eq!(without_size.size(640.0, 480.0).logical_size(), Some((640.0, 480.0)));
+    /// ```
     pub fn logical_size(&self) -> Option<(f32, f32)> {
         self.size
     }
 
     /// Current chrome mode (default [`WindowChrome::Os`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, WindowChrome};
+    /// assert_eq!(Window::<()>::new("main").no_chrome().chrome(), WindowChrome::None);
+    /// ```
     pub fn chrome(&self) -> WindowChrome {
         self.chrome
     }
 
     /// `true` when a custom title row was registered ([`WindowChrome::Custom`]).
+    ///
+    /// The presence check is independent of the current chrome mode; changing
+    /// chrome with another mode-specific method clears the stored row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::prelude::{Text, Window};
+    /// let window = Window::<()>::new("main").custom_chrome().title_bar(|| Text::new("Title"));
+    /// assert!(window.has_title_bar());
+    /// ```
     pub fn has_title_bar(&self) -> bool {
         self.custom_titlebar.is_some()
     }
 
     /// `true` when a root [`content`](Self::content) closure was set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::prelude::{Text, Window};
+    /// assert!(Window::<()>::new("main").content(|| Text::new("Body")).has_content());
+    /// ```
     pub fn has_content(&self) -> bool {
         self.content.is_some()
     }
 
     /// Whether the user can resize the window (maps to winit `resizable`). Default: `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(!ailloli_ui::Window::<()>::new("main").resizable(false).is_resizable());
+    /// ```
     pub fn is_resizable(&self) -> bool {
         self.resizable
     }
 
     /// Whether dragging the client title bar moves the window (undecorated chrome only).
     /// Default: `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let window = ailloli_ui::Window::<()>::new("main").titlebar_draggable(false);
+    /// assert!(!window.is_titlebar_draggable());
+    /// ```
     pub fn is_titlebar_draggable(&self) -> bool {
         self.titlebar_draggable
     }
 
     /// Logical corner radius in points, clamped to `0..=128`. Default: `0`.
+    ///
+    /// NaN follows [`f32::clamp`] semantics and remains NaN.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let window = ailloli_ui::Window::<()>::new("main").radius(500.0);
+    /// assert_eq!(window.corner_radius(), 128.0);
+    /// ```
     pub fn corner_radius(&self) -> f32 {
         self.corner_radius
     }
 
     /// Window-specific icon override. The application id and name are never overridden.
+    ///
+    /// Validation is deferred until [`AppBuilder::run`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{AppIcon, Window};
+    /// let icon = AppIcon::from_static_svg(b"<svg/>", "window.svg");
+    /// let window = Window::<()>::new("main").icon(icon);
+    /// assert_eq!(window.icon_override().map(AppIcon::source_path), Some("window.svg"));
+    /// ```
     pub fn icon(mut self, icon: AppIcon) -> Self {
         self.icon = Some(icon);
         self
     }
 
     /// Configured per-window icon override.
+    ///
+    /// `None` means the window inherits the validated application identity icon,
+    /// if one exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(ailloli_ui::Window::<()>::new("main").icon_override().is_none());
+    /// ```
     pub fn icon_override(&self) -> Option<&AppIcon> {
         self.icon.as_ref()
     }
@@ -387,6 +693,16 @@ impl<A> Window<A> {
     ///
     /// The logical window id is deduced from [`Window::new`](Self::new); use
     /// [`CaptureOpts::element`](crate::CaptureOpts::element) to crop a keyed widget.
+    ///
+    /// Requests are retained in insertion order and issued once during startup.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{CaptureOpts, Window};
+    /// let window = Window::<()>::new("main").capture(CaptureOpts::window());
+    /// assert_eq!(window.id(), "main");
+    /// ```
     #[cfg(feature = "winit")]
     pub fn capture(mut self, opts: CaptureOpts) -> Self {
         self.captures.push(opts);
@@ -394,23 +710,57 @@ impl<A> Window<A> {
     }
 
     #[cfg(feature = "winit")]
+    /// Returns ordered capture declarations for native-host assembly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{CaptureOpts, Window};
+    /// let window = Window::<()>::new("main").capture(CaptureOpts::element("chart"));
+    /// assert_eq!(window.id(), "main");
+    /// ```
     pub(crate) fn capture_declarations(&self) -> &[CaptureOpts] {
         &self.captures
     }
 
     /// Sets the window title (alias for [`title`](Self::title)).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let window = ailloli_ui::Window::<()>::new("main").title_text("Files");
+    /// assert_eq!(window.title_str(), "Files");
+    /// ```
     pub fn title_text(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
         self
     }
 
     /// Sets the window title shown in the OS or client title bar.
+    ///
+    /// Empty strings are preserved; no trimming or length limit is applied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui::Window::<()>::new("main").title("").title_str(), "");
+    /// ```
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
         self
     }
 
     /// Sets the initial inner size in logical pixels (width, height).
+    ///
+    /// Values are stored without validation or clamping. A restored persisted
+    /// size takes precedence during native startup.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let window = ailloli_ui::Window::<()>::new("main").size(900.0, 700.0);
+    /// assert_eq!(window.logical_size(), Some((900.0, 700.0)));
+    /// ```
     pub fn size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
         self
@@ -420,6 +770,14 @@ impl<A> Window<A> {
     ///
     /// Accepts any type implementing [`IntoView`] (builders, [`View`], etc.); conversion
     /// to [`View`] happens inside the stored closure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::prelude::{Text, Window};
+    /// let window = Window::<()>::new("main").content(|| Text::new("Hello"));
+    /// assert!(window.has_content());
+    /// ```
     pub fn content<V>(mut self, content: impl Fn() -> V + 'static) -> Self
     where
         V: IntoView<A>,
@@ -429,12 +787,26 @@ impl<A> Window<A> {
     }
 
     /// Enables or disables user resizing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let window = ailloli_ui::Window::<()>::new("main").resizable(false);
+    /// assert_eq!(window.is_resizable(), false);
+    /// ```
     pub fn resizable(mut self, value: bool) -> Self {
         self.resizable = value;
         self
     }
 
     /// Enables or disables title-bar drag-to-move for client chrome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let window = ailloli_ui::Window::<()>::new("main").titlebar_draggable(false);
+    /// assert_eq!(window.is_titlebar_draggable(), false);
+    /// ```
     pub fn titlebar_draggable(mut self, value: bool) -> Self {
         self.titlebar_draggable = value;
         self
@@ -444,12 +816,33 @@ impl<A> Window<A> {
     ///
     /// Has no visual effect with [`WindowChrome::Os`]. With client chrome and
     /// `radius > 0`, the window may use a transparent native surface.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui::Window::<()>::new("main").radius(-2.0).corner_radius(), 0.0);
+    /// assert_eq!(ailloli_ui::Window::<()>::new("main").radius(200.0).corner_radius(), 128.0);
+    /// ```
     pub fn radius(mut self, logical_px: f32) -> Self {
         self.corner_radius = logical_px.clamp(0.0, 128.0);
         self
     }
 
     /// Turns this window into a non-activating native desktop overlay.
+    ///
+    /// This also selects no chrome, disables resizing/titlebar dragging, and
+    /// resets the corner radius to zero. Backend support is validated at native
+    /// window creation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{NativeOverlayOptions, NativeOverlayRect, NativeOverlayTarget, Window, WindowChrome};
+    /// let target = NativeOverlayTarget::new(NativeOverlayRect::new(0.0, 0.0, 640.0, 480.0));
+    /// let window = Window::<()>::new("overlay").native_overlay(NativeOverlayOptions::new(target));
+    /// assert_eq!(window.chrome(), WindowChrome::None);
+    /// assert!(!window.is_resizable());
+    /// ```
     #[cfg(feature = "native_overlay")]
     pub fn native_overlay(mut self, options: ailloli_ui_winit::NativeOverlayOptions) -> Self {
         self.native_overlay = Some(options);
@@ -461,6 +854,16 @@ impl<A> Window<A> {
     }
 
     /// Native OS decorations ([`WindowChrome::Os`]).
+    ///
+    /// Clears any custom title row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, WindowChrome};
+    /// let window = Window::<()>::new("main").no_chrome().os_chrome();
+    /// assert_eq!(window.chrome(), WindowChrome::Os);
+    /// ```
     pub fn os_chrome(mut self) -> Self {
         self.chrome = WindowChrome::Os;
         self.custom_titlebar = None;
@@ -468,6 +871,16 @@ impl<A> Window<A> {
     }
 
     /// Built-in Ailloli UI title bar ([`WindowChrome::AilloliUi`]).
+    ///
+    /// Clears any custom title row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, WindowChrome};
+    /// let window = Window::<()>::new("main").ailloli_ui_chrome();
+    /// assert_eq!(window.chrome(), WindowChrome::AilloliUi);
+    /// ```
     pub fn ailloli_ui_chrome(mut self) -> Self {
         self.chrome = WindowChrome::AilloliUi;
         self.custom_titlebar = None;
@@ -475,6 +888,17 @@ impl<A> Window<A> {
     }
 
     /// Custom title row required — chain [`title_bar`](Self::title_bar) before [`AppBuilder::run`].
+    ///
+    /// Calling this method clears a previously registered custom row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, WindowChrome};
+    /// let window = Window::<()>::new("main").custom_chrome();
+    /// assert_eq!(window.chrome(), WindowChrome::Custom);
+    /// assert!(!window.has_title_bar());
+    /// ```
     pub fn custom_chrome(mut self) -> Self {
         self.chrome = WindowChrome::Custom;
         self.custom_titlebar = None;
@@ -482,6 +906,17 @@ impl<A> Window<A> {
     }
 
     /// Borderless client area only ([`WindowChrome::None`]).
+    ///
+    /// Clears any custom title row but does not alter resize, drag, or radius
+    /// settings; `Window::native_overlay` changes those independently when that
+    /// feature is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, WindowChrome};
+    /// assert_eq!(Window::<()>::new("main").no_chrome().chrome(), WindowChrome::None);
+    /// ```
     pub fn no_chrome(mut self) -> Self {
         self.chrome = WindowChrome::None;
         self.custom_titlebar = None;
@@ -489,6 +924,17 @@ impl<A> Window<A> {
     }
 
     /// Custom title row view (only valid after [`custom_chrome`](Self::custom_chrome)).
+    ///
+    /// Registration itself does not switch chrome mode; native startup rejects
+    /// a title row unless the final mode is [`WindowChrome::Custom`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::prelude::{Text, Window};
+    /// let window = Window::<()>::new("main").custom_chrome().title_bar(|| Text::new("Custom"));
+    /// assert!(window.has_title_bar());
+    /// ```
     pub fn title_bar<V>(mut self, row: impl Fn() -> V + 'static) -> Self
     where
         V: IntoView<A>,
@@ -498,6 +944,7 @@ impl<A> Window<A> {
     }
 
     #[cfg(feature = "winit")]
+    /// Consumes the public builder into the fields required by native startup.
     fn into_parts(self) -> WindowParts<A> {
         WindowParts {
             id: self.id,
@@ -517,12 +964,31 @@ impl<A> Window<A> {
 }
 
 /// Collection of [`Window`] definitions for multi-window apps.
+///
+/// The collection is unbounded and preserves insertion order. Logical IDs are
+/// checked for uniqueness only when the application runs.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::{Window, Windows};
+/// let windows = Windows::new().main(Window::<()>::new("main")).push(Window::new("settings"));
+/// assert_eq!(windows.iter().map(Window::id).collect::<Vec<_>>(), ["main", "settings"]);
+/// ```
 pub struct Windows<A> {
+    /// Ordered declarative window storage.
     windows: Vec<Window<A>>,
 }
 
+/// Builder and inspection methods for an ordered window collection.
 impl<A> Windows<A> {
     /// Creates an empty window list.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!(ailloli_ui::Windows::<()>::new().is_empty());
+    /// ```
     pub fn new() -> Self {
         Self {
             windows: Vec::new(),
@@ -530,36 +996,75 @@ impl<A> Windows<A> {
     }
 
     /// Appends a window (builder style).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, Windows};
+    /// assert_eq!(Windows::new().push(Window::<()>::new("main")).len(), 1);
+    /// ```
     pub fn push(mut self, window: Window<A>) -> Self {
         self.windows.push(window);
         self
     }
 
     /// Alias for [`push`](Self::push) — registers the primary window.
+    ///
+    /// The alias does not reorder or otherwise distinguish the window.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, Windows};
+    /// assert_eq!(Windows::new().main(Window::<()>::new("main")).iter().next().unwrap().id(), "main");
+    /// ```
     pub fn main(self, window: Window<A>) -> Self {
         self.push(window)
     }
 
     /// Number of registered windows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, Windows};
+    /// assert_eq!(Windows::new().push(Window::<()>::new("one")).push(Window::new("two")).len(), 2);
+    /// ```
     pub fn len(&self) -> usize {
         self.windows.len()
     }
 
     /// Returns `true` when no windows are registered.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(ailloli_ui::Windows::<()>::default().is_empty(), true);
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.windows.is_empty()
     }
 
     /// Iterates over window definitions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{Window, Windows};
+    /// let windows = Windows::new().push(Window::<()>::new("main"));
+    /// assert_eq!(windows.iter().map(Window::id).collect::<Vec<_>>(), ["main"]);
+    /// ```
     pub fn iter(&self) -> impl Iterator<Item = &Window<A>> {
         self.windows.iter()
     }
 
+    /// Moves all windows from another collection to the end of this one.
     fn extend(&mut self, windows: Windows<A>) {
         self.windows.extend(windows.windows);
     }
 }
 
+/// Produces the same empty collection as [`Windows::new`].
 impl<A> Default for Windows<A> {
     fn default() -> Self {
         Self::new()
@@ -567,6 +1072,7 @@ impl<A> Default for Windows<A> {
 }
 
 #[cfg(any(feature = "winit", test))]
+/// Rejects duplicate logical IDs before any native window is created.
 fn validate_unique_window_ids<A>(windows: &Windows<A>) -> std::io::Result<()> {
     let mut logical_window_ids = std::collections::HashSet::new();
     for window in windows.iter() {
@@ -588,12 +1094,30 @@ fn validate_unique_window_ids<A>(windows: &Windows<A>) -> std::io::Result<()> {
 /// Start with [`App::new`], then chain [`state`](Self::state), [`actions`](Self::actions),
 /// [`services`](Self::services), and [`window`](Self::window) before calling
 /// [`AppBuilder::run`] on the resulting [`AppBuilder`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::{App, AppBuilder};
+/// let builder: AppBuilder<(), (), ()> = App::new().window(ailloli_ui::Window::new("main"));
+/// let _ = builder;
+/// ```
 pub struct App {
+    /// Initial unit-typed builder delegated to by convenience methods.
     builder: AppBuilder<(), (), ()>,
 }
 
+/// Convenience entry methods for the initial unit-typed application builder.
 impl App {
     /// Creates an empty application (no windows until [`window`](Self::window) is called).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppBuilder};
+    /// let builder: AppBuilder<(), (), ()> = App::new().windows(Default::default());
+    /// let _ = builder;
+    /// ```
     pub fn new() -> Self {
         Self {
             builder: AppBuilder {
@@ -615,6 +1139,17 @@ impl App {
     }
 
     /// Attaches a GPU frame capture handle for tests or tooling (requires `winit`).
+    ///
+    /// This explicit handle can be shared with external tooling; declarative
+    /// window captures use an internal handle unless one is attached.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppBuilder, CaptureHandle};
+    /// let builder: AppBuilder<(), (), ()> = App::new().capture(CaptureHandle::new());
+    /// let _ = builder;
+    /// ```
     #[cfg(feature = "winit")]
     pub fn capture(self, handle: ailloli_ui_winit::CaptureHandle) -> AppBuilder<(), (), ()> {
         let mut b = self.builder;
@@ -623,21 +1158,58 @@ impl App {
     }
 
     #[cfg(all(feature = "winit", feature = "devtools"))]
+    /// Configures the socket address used by the optional remote DevTools server.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppBuilder};
+    /// let address = "127.0.0.1:9229".parse()?;
+    /// let builder: AppBuilder<(), (), ()> = App::new().devtools_remote_addr(address);
+    /// let _ = builder;
+    /// # Ok::<(), std::net::AddrParseError>(())
+    /// ```
     pub fn devtools_remote_addr(self, addr: std::net::SocketAddr) -> AppBuilder<(), (), ()> {
         self.builder.devtools_remote_addr(addr)
     }
 
     /// Sets application state (resets the typed action parameter until [`actions`](Self::actions)).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppBuilder};
+    /// let builder: AppBuilder<u32, (), ()> = App::new().state(7_u32);
+    /// let _ = builder;
+    /// ```
     pub fn state<NextState>(self, state: NextState) -> AppBuilder<NextState, (), ()> {
         self.builder.state(state)
     }
 
     /// Selects the application action type via an [`ActionSchema`] registry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{ActionSchema, App, AppBuilder};
+    /// #[derive(Clone, Copy)] struct Schema;
+    /// impl ActionSchema for Schema { type Action = u8; }
+    /// let builder: AppBuilder<(), u8, ()> = App::new().actions(Schema);
+    /// let _ = builder;
+    /// ```
     pub fn actions<As: ActionSchema>(self, actions: As) -> AppBuilder<(), As::Action, ()> {
         self.builder.actions(actions)
     }
 
     /// Injects a services container (e.g. database, config) passed to [`AppBuilder::update`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppBuilder};
+    /// let builder: AppBuilder<(), (), String> = App::new().services(String::from("service"));
+    /// let _ = builder;
+    /// ```
     pub fn services<NextServices>(
         self,
         services: NextServices,
@@ -646,26 +1218,80 @@ impl App {
     }
 
     /// Configures app-level persistence for preferences and window snapshots.
+    ///
+    /// This stores resolved paths only; directories are created by subsequent
+    /// storage writes, not by attaching the value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppStorage};
+    /// let storage = AppStorage::single_dir("example", "/tmp/example-store").resolve_with_env(|_| None)?;
+    /// let _builder = App::new().storage(storage);
+    /// # Ok::<(), ailloli_ui::AppStorageError>(())
+    /// ```
     pub fn storage(self, storage: AppStorage) -> AppBuilder<(), (), ()> {
         self.builder.storage(storage)
     }
 
     /// Declares the application identity inherited by all windows.
+    ///
+    /// Validation is deferred until [`AppBuilder::run`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppIcon, AppIdentity};
+    /// let identity = AppIdentity::new()
+    ///     .id("org.example.demo")
+    ///     .name("Demo")
+    ///     .icon(AppIcon::from_static_svg(b"<svg/>", "icon.svg"));
+    /// let _builder = App::new().identity(identity);
+    /// ```
     pub fn identity(self, identity: AppIdentity) -> AppBuilder<(), (), ()> {
         self.builder.identity(identity)
     }
 
     /// Registers a single window (action type `()`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, Window};
+    /// let _builder = App::new().window(Window::<()>::new("main"));
+    /// ```
     pub fn window(self, window: Window<()>) -> AppBuilder<(), (), ()> {
         self.builder.window(window)
     }
 
     /// Registers multiple windows from a [`Windows`] collection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, Window, Windows};
+    /// let windows = Windows::new().push(Window::<()>::new("main"));
+    /// let _builder = App::new().windows(windows);
+    /// ```
     pub fn windows(self, windows: Windows<()>) -> AppBuilder<(), (), ()> {
         self.builder.windows(windows)
     }
 
     /// Attaches the bounded cross-thread runtime mailbox used by the native host.
+    ///
+    /// # Errors
+    ///
+    /// This initial builder cannot already contain an inbox, but the result uses
+    /// the same checked API as typed builders for consistency.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, RuntimeInbox};
+    /// use std::num::NonZeroUsize;
+    /// let (_sender, inbox) = RuntimeInbox::<()>::channel(NonZeroUsize::new(4).unwrap());
+    /// assert!(App::new().try_runtime_inbox(inbox).is_ok());
+    /// ```
     #[cfg(feature = "winit")]
     pub fn try_runtime_inbox(
         self,
@@ -675,12 +1301,14 @@ impl App {
     }
 }
 
+/// Creates an empty initial application through [`App::new`].
 impl Default for App {
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Creates the same empty unit-typed builder used by [`App::new`].
 impl Default for AppBuilder<(), (), ()> {
     fn default() -> Self {
         Self {
@@ -701,6 +1329,10 @@ impl Default for AppBuilder<(), (), ()> {
     }
 }
 
+/// Reducer callback receiving mutable state/services and one action.
+///
+/// Function pointers cannot capture environment; put shared dependencies in the
+/// services value. The returned command batch is executed in insertion order.
 type UpdateFn<S, Sv, A> = fn(&mut S, &mut Sv, A) -> Commands<A>;
 
 /// Configurable application before [`run`](Self::run).
@@ -709,24 +1341,55 @@ type UpdateFn<S, Sv, A> = fn(&mut S, &mut Sv, A) -> Commands<A>;
 /// - `S` — application state from [`state`](Self::state)
 /// - `A` — action enum from an [`ActionSchema`] passed to [`actions`](Self::actions)
 /// - `Sv` — services handle from [`services`](Self::services)
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::{App, AppBuilder};
+/// let builder: AppBuilder<u32, (), String> = App::new().state(0_u32).services(String::new());
+/// let _ = builder;
+/// ```
 pub struct AppBuilder<S, A, Sv> {
+    /// User-owned reducer state.
     state: S,
+    /// User-owned service container.
     services: Sv,
+    /// Ordered declarative windows typed by application action.
     windows: Windows<A>,
+    /// Optional reducer; `None` drains and discards dispatched actions.
     update: Option<UpdateFn<S, Sv, A>>,
+    /// Ordered actions dispatched once before entering the native event loop.
     startup_actions: Vec<A>,
+    /// Optional persistence configuration.
     storage: Option<AppStorage>,
+    /// Optional application identity; a present value must validate before startup.
     identity: Option<AppIdentity>,
+    /// Optional single bounded cross-thread action inbox.
     runtime_inbox: Option<ailloli_ui_runtime::app::RuntimeInbox<A>>,
     #[cfg(feature = "winit")]
+    /// Capture handle, declarations, listeners, and deferred I/O failures.
     capture_session: CaptureSession,
     #[cfg(all(feature = "winit", feature = "devtools"))]
+    /// Optional remote DevTools bind address.
     devtools_remote_addr: Option<std::net::SocketAddr>,
+    /// Associates `A` even when no action value is currently stored.
     _action: PhantomData<A>,
 }
 
+/// Typestate transitions and native execution for a configured application.
 impl<S, A, Sv> AppBuilder<S, A, Sv> {
     /// Replaces state (clears [`update`](Self::update) until set again).
+    ///
+    /// Windows, startup actions, storage, identity, and a compatible runtime
+    /// inbox are preserved.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppBuilder};
+    /// let builder: AppBuilder<u16, (), ()> = App::new().state(1_u8).state(2_u16);
+    /// let _ = builder;
+    /// ```
     pub fn state<NextState>(self, state: NextState) -> AppBuilder<NextState, A, Sv> {
         AppBuilder {
             state,
@@ -747,6 +1410,19 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
 
     /// Changes the action type via an [`ActionSchema`] registry and clears windows
     /// (re-register with [`window`](Self::window)).
+    ///
+    /// The reducer, startup actions, and action-typed inbox are also cleared;
+    /// state, services, storage, identity, capture, and DevTools settings remain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{ActionSchema, App, AppBuilder};
+    /// #[derive(Clone, Copy)] struct Schema;
+    /// impl ActionSchema for Schema { type Action = String; }
+    /// let builder: AppBuilder<u8, String, ()> = App::new().state(1_u8).actions(Schema);
+    /// let _ = builder;
+    /// ```
     pub fn actions<As: ActionSchema>(self, _actions: As) -> AppBuilder<S, As::Action, Sv> {
         AppBuilder {
             state: self.state,
@@ -768,6 +1444,15 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
     }
 
     /// Replaces the services container (clears [`update`](Self::update) until set again).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppBuilder};
+    /// let builder: AppBuilder<u8, (), Vec<String>> =
+    ///     App::new().state(1_u8).services(vec![String::from("db")]);
+    /// let _ = builder;
+    /// ```
     pub fn services<NextServices>(self, services: NextServices) -> AppBuilder<S, A, NextServices> {
         AppBuilder {
             state: self.state,
@@ -787,6 +1472,16 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
     }
 
     /// Attaches an explicit GPU capture handle (advanced tests, external tooling).
+    ///
+    /// Replacing a previously attached explicit handle discards that handle from
+    /// the builder; callers retaining a clone still own their clone.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, CaptureHandle};
+    /// let _builder = App::new().state(0_u8).capture(CaptureHandle::new());
+    /// ```
     #[cfg(feature = "winit")]
     pub fn capture(mut self, handle: ailloli_ui_winit::CaptureHandle) -> Self {
         self.capture_session = self.capture_session.use_explicit_handle(handle);
@@ -794,6 +1489,19 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
     }
 
     /// Registers a callback invoked for each declarative [`Window::capture`](Window::capture) result.
+    ///
+    /// Listeners are unbounded, execute synchronously in registration order on
+    /// capture completion, and must be [`Send`] plus [`Sync`]. Native startup
+    /// rejects listeners when no declarative capture exists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::App;
+    /// let _builder = App::new().state(()).on_captured(|artifact| {
+    ///     assert!(artifact.error.is_none() || artifact.rgba.is_empty());
+    /// });
+    /// ```
     #[cfg(feature = "winit")]
     pub fn on_captured<F>(mut self, listener: F) -> Self
     where
@@ -804,42 +1512,120 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
     }
 
     #[cfg(all(feature = "winit", feature = "devtools"))]
+    /// Replaces the optional remote DevTools bind address.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::App;
+    /// let address = "127.0.0.1:9230".parse()?;
+    /// let _builder = App::new().state(()).devtools_remote_addr(address);
+    /// # Ok::<(), std::net::AddrParseError>(())
+    /// ```
     pub fn devtools_remote_addr(mut self, addr: std::net::SocketAddr) -> Self {
         self.devtools_remote_addr = Some(addr);
         self
     }
 
     /// Registers the reducer that turns widget/runtime actions into [`Commands`].
+    ///
+    /// A later state or services typestate transition clears this function
+    /// pointer because its argument types have changed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{ActionSchema, App, Commands};
+    /// #[derive(Clone, Copy)] struct Schema;
+    /// impl ActionSchema for Schema { type Action = u8; }
+    /// fn update(state: &mut u32, _services: &mut (), action: u8) -> Commands<u8> {
+    ///     *state += u32::from(action);
+    ///     Commands::none()
+    /// }
+    /// let _builder = App::new().state(0_u32).actions(Schema).update(update);
+    /// ```
     pub fn update(mut self, update: UpdateFn<S, Sv, A>) -> Self {
         self.update = Some(update);
         self
     }
 
     /// Enqueues an action once when the event loop starts.
+    ///
+    /// Calls are unbounded and preserve insertion order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{ActionSchema, App};
+    /// #[derive(Clone, Copy)] struct Schema;
+    /// impl ActionSchema for Schema { type Action = u8; }
+    /// let _builder = App::new().actions(Schema).startup_action(1).startup_action(2);
+    /// ```
     pub fn startup_action(mut self, action: A) -> Self {
         self.startup_actions.push(action);
         self
     }
 
     /// Configures app-level persistence for preferences and window snapshots.
+    ///
+    /// Replaces any previously attached storage value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppStorage};
+    /// let storage = AppStorage::single_dir("demo", "/tmp/demo-store").resolve_with_env(|_| None)?;
+    /// let _builder = App::new().state(0_u8).storage(storage);
+    /// # Ok::<(), ailloli_ui::AppStorageError>(())
+    /// ```
     pub fn storage(mut self, storage: AppStorage) -> Self {
         self.storage = Some(storage);
         self
     }
 
     /// Declares the application identity inherited by all windows.
+    ///
+    /// Replaces any earlier identity without validating it yet.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, AppIcon, AppIdentity};
+    /// let identity = AppIdentity::new().id("org.example.demo").name("Demo")
+    ///     .icon(AppIcon::from_static_svg(b"<svg/>", "icon.svg"));
+    /// let _builder = App::new().state(()).identity(identity);
+    /// ```
     pub fn identity(mut self, identity: AppIdentity) -> Self {
         self.identity = Some(identity);
         self
     }
 
     /// Adds one window definition.
+    ///
+    /// Duplicate logical IDs are retained and rejected before native creation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, Window};
+    /// let _builder = App::new().state(0_u8).window(Window::new("main"));
+    /// ```
     pub fn window(mut self, window: Window<A>) -> Self {
         self.windows.windows.push(window);
         self
     }
 
     /// Merges a [`Windows`] collection into this builder.
+    ///
+    /// Existing windows stay first and incoming order is preserved.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, Window, Windows};
+    /// let windows = Windows::new().push(Window::<()>::new("main"));
+    /// let _builder = App::new().state(0_u8).windows(windows);
+    /// ```
     pub fn windows(mut self, windows: Windows<A>) -> Self {
         self.windows.extend(windows);
         self
@@ -849,6 +1635,24 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
     ///
     /// Call this after [`actions`](Self::actions), because the mailbox payload is
     /// the application's selected action type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeInboxAttachError`] when this builder already owns an
+    /// inbox. The supplied second inbox is dropped with the error path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui::{App, RuntimeInbox};
+    /// use std::num::NonZeroUsize;
+    /// let capacity = NonZeroUsize::new(2).unwrap();
+    /// let (_, first) = RuntimeInbox::<()>::channel(capacity);
+    /// let (_, second) = RuntimeInbox::<()>::channel(capacity);
+    /// let builder = App::new().state(()).try_runtime_inbox(first)?;
+    /// assert!(builder.try_runtime_inbox(second).is_err());
+    /// # Ok::<(), ailloli_ui::RuntimeInboxAttachError>(())
+    /// ```
     #[cfg(feature = "winit")]
     pub fn try_runtime_inbox(
         mut self,
@@ -865,6 +1669,26 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
     ///
     /// At least one window with [`Window::content`] is required. Composes chrome,
     /// creates surfaces, and drains actions through [`update`](Self::update) when set.
+    /// The call blocks on the event loop. On exit, runtime/native/capture errors
+    /// take precedence over persistence errors; benchmark-finalization failure is
+    /// preserved alongside a primary error.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors for invalid identity/icons, missing or duplicate windows,
+    /// missing content, invalid capture wiring, native host failure, inbox wake,
+    /// capture file I/O, persistence, or benchmark finalization.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui::prelude::*;
+    /// let result: ailloli_ui::Result<()> = App::new()
+    ///     .window(Window::new("main").content(|| Text::new("Hello")))
+    ///     .run();
+    /// result?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     #[cfg(feature = "winit")]
     pub fn run(self) -> Result<()>
     where
@@ -1106,7 +1930,20 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
         }
     }
 
-    /// Stub when the `winit` feature is disabled.
+    /// Returns an unsupported error when the `winit` feature is disabled.
+    ///
+    /// No window, state, service, or storage work is performed.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`std::io::ErrorKind::Unsupported`] inside the boxed error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let error = ailloli_ui::App::new().state(()).run().unwrap_err();
+    /// assert!(error.to_string().contains("requires the `winit` feature"));
+    /// ```
     #[cfg(not(feature = "winit"))]
     pub fn run(self) -> Result<()> {
         let _ = self;
@@ -1119,24 +1956,37 @@ impl<S, A, Sv> AppBuilder<S, A, Sv> {
 }
 
 /// Returned when a second runtime inbox is attached to one application builder.
+///
+/// # Examples
+///
+/// ```
+/// let error = ailloli_ui::RuntimeInboxAttachError;
+/// assert_eq!(error.to_string(), "an AppBuilder can attach only one runtime inbox");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeInboxAttachError;
 
+/// Renders the stable single-inbox invariant diagnostic.
 impl std::fmt::Display for RuntimeInboxAttachError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("an AppBuilder can attach only one runtime inbox")
     }
 }
 
+/// Makes the attachment failure usable through standard error APIs.
 impl std::error::Error for RuntimeInboxAttachError {}
 
 #[cfg(feature = "winit")]
+/// Preserves both an application failure and a later benchmark-finalization failure.
 struct AppRunAndBenchError {
+    /// Higher-priority native, runtime, inbox, capture, or persistence failure.
     primary: Box<dyn std::error::Error>,
+    /// Secondary benchmark writer/finalization failure.
     bench: Box<dyn std::error::Error>,
 }
 
 #[cfg(feature = "winit")]
+/// Formats both failures in priority order.
 impl std::fmt::Display for AppRunAndBenchError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -1148,6 +1998,7 @@ impl std::fmt::Display for AppRunAndBenchError {
 }
 
 #[cfg(feature = "winit")]
+/// Mirrors [`std::fmt::Display`] for boxed-main error reporting.
 impl std::fmt::Debug for AppRunAndBenchError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, formatter)
@@ -1155,6 +2006,7 @@ impl std::fmt::Debug for AppRunAndBenchError {
 }
 
 #[cfg(feature = "winit")]
+/// Exposes the primary application failure as the source.
 impl std::error::Error for AppRunAndBenchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.primary.as_ref())
@@ -1162,6 +2014,7 @@ impl std::error::Error for AppRunAndBenchError {
 }
 
 #[cfg(all(feature = "winit", test))]
+/// Test-facing root composer that deliberately supplies no application icon.
 fn compose_window_root<A: 'static>(
     logical_window_id: String,
     window_title: String,
@@ -1186,16 +2039,28 @@ fn compose_window_root<A: 'static>(
 }
 
 #[cfg(feature = "winit")]
+/// Inputs affecting client chrome and root-surface styling.
 struct WindowRootOptions {
+    /// Logical ID used by built-in titlebar actions.
     logical_window_id: String,
+    /// Text rendered by the built-in titlebar.
     window_title: String,
+    /// Native/client decoration selection.
     chrome: WindowChrome,
+    /// Client-root radius in logical pixels.
     corner_radius: f32,
+    /// Optional internal key used to identify the draggable titlebar element.
     client_titlebar_key: Option<String>,
+    /// Optional effective application or per-window icon for built-in chrome.
     app_icon: Option<AppIcon>,
 }
 
 #[cfg(feature = "winit")]
+/// Validates chrome/title-row coherence and composes the retained root view.
+///
+/// OS and borderless modes use content directly. Built-in and custom client
+/// chrome allocate a column with title and flex-growing content. Surface style
+/// is applied after composition.
 fn compose_window_root_with_icon<A: 'static>(
     options: WindowRootOptions,
     custom_titlebar: Option<Content<A>>,
@@ -1252,6 +2117,10 @@ fn compose_window_root_with_icon<A: 'static>(
 }
 
 #[cfg(feature = "winit")]
+/// Creates and durably writes packaging identity metadata to a new file.
+///
+/// `create_new(true)` prevents overwriting an existing probe file. Bytes are
+/// pretty JSON and `sync_all` is called before success.
 fn write_package_metadata(path: &std::path::Path, identity: &ValidatedAppIdentity) -> Result<()> {
     use std::io::Write;
     let bytes = serde_json::to_vec_pretty(&identity.metadata())?;
@@ -1265,11 +2134,13 @@ fn write_package_metadata(path: &std::path::Path, identity: &ValidatedAppIdentit
 }
 
 #[cfg(feature = "winit")]
+/// Builds the reserved retained-view key for one client titlebar.
 fn client_titlebar_view_key(logical_window_id: &str) -> String {
     format!("__ailloli_ui_client_titlebar:{logical_window_id}")
 }
 
 #[cfg(feature = "winit")]
+/// Wraps a titlebar in a full-width container and optionally assigns its internal key.
 fn wrap_client_titlebar<A: 'static>(key: Option<&str>, titlebar: impl IntoView<A>) -> View<A> {
     use crate::widgets::layout::Container;
 
@@ -1284,6 +2155,9 @@ fn wrap_client_titlebar<A: 'static>(key: Option<&str>, titlebar: impl IntoView<A
 }
 
 #[cfg(feature = "winit")]
+/// Adds rounded clipping/background only for positive-radius client surfaces.
+///
+/// Native OS chrome and nonpositive radii return `inner` unchanged.
 fn apply_window_surface_style<A: 'static>(
     inner: View<A>,
     chrome: WindowChrome,
@@ -1311,6 +2185,12 @@ fn apply_window_surface_style<A: 'static>(
 }
 
 #[cfg(any(feature = "winit", test))]
+/// Drains runtime actions and executes every reducer command until the queue is empty.
+///
+/// Actions dispatched by `execute` during the loop are observed in a subsequent
+/// drain cycle. With no reducer, actions are consumed and discarded. The loop
+/// has no explicit budget and relies on reducers not producing an infinite
+/// self-dispatch chain.
 fn drain_runtime_actions<S, A, Sv>(
     runtime: &RuntimeHandle<A>,
     state: &mut S,
@@ -1337,28 +2217,39 @@ fn drain_runtime_actions<S, A, Sv>(
 }
 
 #[cfg(feature = "winit")]
+/// Native host driver owning reducer state, services, delayed work, and captures.
 struct DxAppDriver<S, A, Sv> {
+    /// Mutable reducer state.
     state: S,
+    /// Mutable services container.
     services: Sv,
+    /// Optional reducer function pointer.
     update: Option<UpdateFn<S, Sv, A>>,
+    /// Unbounded delayed actions awaiting their monotonic deadlines.
     delayed_actions: Vec<DelayedAction<A>>,
+    /// Capture completion wiring and deferred I/O errors.
     capture_session: CaptureSession,
 }
 
 #[cfg(any(feature = "winit", test))]
+/// One action paired with an absolute monotonic dispatch deadline.
 #[derive(Debug)]
 struct DelayedAction<A> {
+    /// Earliest [`Instant`] at which the action becomes eligible.
     due: Instant,
+    /// Owned action dispatched at or after `due`.
     action: A,
 }
 
 #[cfg(feature = "winit")]
+/// Services delayed actions and translates reducer commands into host outcomes.
 impl<S, A, Sv> ailloli_ui_winit::HostDriver<A> for DxAppDriver<S, A, Sv>
 where
     S: 'static,
     A: 'static,
     Sv: 'static,
 {
+    /// Performs one unbudgeted action drain and reports exit/redraw/next-wake state.
     fn service(
         &mut self,
         runtime: &RuntimeHandle<A>,
@@ -1391,6 +2282,10 @@ where
 }
 
 #[cfg(any(feature = "winit", test))]
+/// Dispatches all due delayed actions in stable deadline order and retains the rest.
+///
+/// Equal-deadline order is preserved by Rust's stable slice sort. Capacity is
+/// rebuilt on each service pass and is proportional to the delayed queue.
 fn dispatch_due_delayed_actions<A>(
     runtime: &RuntimeHandle<A>,
     delayed_actions: &mut Vec<DelayedAction<A>>,
@@ -1414,11 +2309,13 @@ fn dispatch_due_delayed_actions<A>(
 }
 
 #[cfg(any(feature = "winit", test))]
+/// Returns the earliest pending deadline, or `None` for an empty delayed queue.
 fn next_delayed_action_due<A>(delayed_actions: &[DelayedAction<A>]) -> Option<Instant> {
     delayed_actions.iter().map(|delayed| delayed.due).min()
 }
 
 #[cfg(test)]
+/// Covers builder typestate, chrome composition, identity, storage, and action scheduling.
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -1427,26 +2324,36 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
+    /// Actions shared by reducer and delayed-dispatch scenarios.
     enum Action {
+        /// Initial test action.
         Start,
+        /// Action emitted by the reducer.
         FollowUp,
     }
 
     #[derive(Default)]
+    /// Records reducer inputs in arrival order.
     struct TestState {
+        /// Actions observed by the reducer.
         updates: Vec<Action>,
     }
 
     #[derive(Default)]
+    /// Unit-like services fixture.
     struct TestServices;
 
     #[derive(Copy, Clone)]
+    /// Action-schema marker for the local action enum.
     struct TestActions;
 
+    /// Connects the marker to [`Action`] for typestate tests.
     impl ActionSchema for TestActions {
+        /// Local reducer action type.
         type Action = Action;
     }
 
+    /// Produces a process- and timestamp-specific path without creating it.
     fn temp_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1535,6 +2442,7 @@ mod tests {
         assert_eq!(builder.startup_actions, vec![Action::Start]);
     }
 
+    /// Records an action and schedules one follow-up for the drain-loop scenario.
     fn update(
         state: &mut TestState,
         _services: &mut TestServices,
@@ -1736,6 +2644,7 @@ mod tests {
     }
 
     #[cfg(feature = "winit")]
+    /// Recursively counts occurrences of a retained-view key in a composed tree.
     fn count_view_key<A>(view: &View<A>, key: &str) -> usize {
         let here = usize::from(view.key_ref() == Some(key));
         here + view

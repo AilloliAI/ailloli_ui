@@ -1,3 +1,5 @@
+//! Editor and code-editor adapter state, paint, input, IME, and scrolling scenarios.
+
 use std::time::Duration;
 
 use ailloli_ui_core::event::{

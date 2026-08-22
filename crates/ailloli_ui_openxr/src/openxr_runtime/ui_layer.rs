@@ -1,3 +1,5 @@
+//! Headless Ailloli runtime/layout/paint orchestration over Vulkan frame targets.
+
 use ailloli_ui_core::event::Modifiers;
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
@@ -23,11 +25,25 @@ use super::error::OpenXrRuntimeError;
 use super::vulkan::OpenXrVulkanContext;
 
 #[derive(Clone, Copy)]
+/// Physical extent, scale, clear color, and renderer settings for one UI layer.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrUiLayerOptions;
+/// let options = OpenXrUiLayerOptions::default();
+/// assert_eq!((options.pixel_width, options.pixel_height, options.scale.dpr), (1024, 576, 1.0));
+/// ```
 pub struct OpenXrUiLayerOptions {
+    /// Render-target width in physical pixels.
     pub pixel_width: u32,
+    /// Render-target height in physical pixels.
     pub pixel_height: u32,
+    /// Color used to clear the Vulkan frame target.
     pub clear: Color,
+    /// Logical-to-physical scale; DPR is clamped to `0.0001` for size division.
     pub scale: Scale,
+    /// Vulkan renderer resource and batching configuration.
     pub renderer: VulkanRendererOptions,
 }
 
@@ -56,15 +72,42 @@ impl From<OpenXrUiFrameLoopOptions> for OpenXrUiLayerOptions {
 }
 
 #[derive(Clone, Copy)]
+/// Borrowed Vulkan handles needed to render or upload in an external XR host.
+///
+/// Handles must all belong to the same live device and queue family. Memory
+/// properties are optional for rendering but required by staging allocations
+/// such as the ray overlay.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrExternalVulkanContext;
+/// fn queue_family(context: OpenXrExternalVulkanContext<'_>) -> u32 { context.queue_family_index }
+/// ```
 pub struct OpenXrExternalVulkanContext<'a> {
+    /// Live Vulkan logical device.
     pub device: &'a ash::Device,
+    /// Graphics queue used for rendering and synchronous uploads.
     pub queue: vk::Queue,
+    /// Family index owning `queue` and `command_pool`.
     pub queue_family_index: u32,
+    /// Command pool from which one-time and renderer buffers are allocated.
     pub command_pool: vk::CommandPool,
+    /// Physical-device memory properties, or `None` when staging is unavailable.
     pub memory_properties: Option<&'a vk::PhysicalDeviceMemoryProperties>,
 }
 
 impl<'a> OpenXrExternalVulkanContext<'a> {
+    /// Creates a render-only context without memory properties.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrExternalVulkanContext;
+    /// fn make(device: &ash::Device, queue: ash::vk::Queue, pool: ash::vk::CommandPool) -> OpenXrExternalVulkanContext<'_> {
+    ///     OpenXrExternalVulkanContext::new(device, queue, 0, pool)
+    /// }
+    /// ```
     pub fn new(
         device: &'a ash::Device,
         queue: vk::Queue,
@@ -80,6 +123,16 @@ impl<'a> OpenXrExternalVulkanContext<'a> {
         }
     }
 
+    /// Creates a context that also supports host-visible staging allocations.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrExternalVulkanContext;
+    /// fn make<'a>(device: &'a ash::Device, queue: ash::vk::Queue, pool: ash::vk::CommandPool, memory: &'a ash::vk::PhysicalDeviceMemoryProperties) -> OpenXrExternalVulkanContext<'a> {
+    ///     OpenXrExternalVulkanContext::with_memory_properties(device, queue, 0, pool, memory)
+    /// }
+    /// ```
     pub fn with_memory_properties(
         device: &'a ash::Device,
         queue: vk::Queue,
@@ -96,6 +149,17 @@ impl<'a> OpenXrExternalVulkanContext<'a> {
         }
     }
 
+    /// Converts this copyable host context to the renderer's borrowed context.
+    ///
+    /// Optional memory properties are preserved.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrExternalVulkanContext;
+    /// use ailloli_ui_render_vulkan::VulkanRenderContext;
+    /// fn convert<'a>(context: OpenXrExternalVulkanContext<'a>) -> VulkanRenderContext<'a> { context.render_context() }
+    /// ```
     pub fn render_context(self) -> VulkanRenderContext<'a> {
         match self.memory_properties {
             Some(memory_properties) => VulkanRenderContext::with_memory_properties(
@@ -127,14 +191,37 @@ impl<'a> From<&'a OpenXrVulkanContext> for OpenXrExternalVulkanContext<'a> {
     }
 }
 
+/// Vulkan render target and optional UI input for one layer render.
+///
+/// Pointer input is omitted with `None`; frame time defaults to zero milliseconds.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrExternalHostFrame;
+/// fn elapsed(frame: &OpenXrExternalHostFrame<'_>) -> u128 { frame.frame_time_ms }
+/// ```
 pub struct OpenXrExternalHostFrame<'a> {
+    /// Vulkan device/queue context for this target.
     pub context: OpenXrExternalVulkanContext<'a>,
+    /// Acquired Vulkan image and layout contract.
     pub target: VulkanFrameTarget,
+    /// Optional complete pointer frame to route before painting.
     pub pointer_frame: Option<&'a OpenXrPointerFrame>,
+    /// Runtime animation/paint time in milliseconds.
     pub frame_time_ms: u128,
 }
 
 impl<'a> OpenXrExternalHostFrame<'a> {
+    /// Creates a frame without pointer input at time zero.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrExternalHostFrame, OpenXrExternalVulkanContext};
+    /// use ailloli_ui_render_vulkan::VulkanFrameTarget;
+    /// fn make<'a>(context: OpenXrExternalVulkanContext<'a>, target: VulkanFrameTarget) -> OpenXrExternalHostFrame<'a> { OpenXrExternalHostFrame::new(context, target) }
+    /// ```
     pub fn new(context: OpenXrExternalVulkanContext<'a>, target: VulkanFrameTarget) -> Self {
         Self {
             context,
@@ -144,17 +231,46 @@ impl<'a> OpenXrExternalHostFrame<'a> {
         }
     }
 
+    /// Replaces the optional pointer frame.
+    ///
+    /// `None` means no new events; it does not clear retained input state.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrExternalHostFrame, OpenXrPointerFrame};
+    /// fn input<'a>(frame: OpenXrExternalHostFrame<'a>, pointers: &'a OpenXrPointerFrame) -> OpenXrExternalHostFrame<'a> { frame.with_pointer_frame(Some(pointers)) }
+    /// ```
     pub fn with_pointer_frame(mut self, pointer_frame: Option<&'a OpenXrPointerFrame>) -> Self {
         self.pointer_frame = pointer_frame;
         self
     }
 
+    /// Replaces runtime frame time in milliseconds.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrExternalHostFrame;
+    /// fn timed<'a>(frame: OpenXrExternalHostFrame<'a>) -> OpenXrExternalHostFrame<'a> { frame.with_frame_time_ms(16) }
+    /// ```
     pub fn with_frame_time_ms(mut self, frame_time_ms: u128) -> Self {
         self.frame_time_ms = frame_time_ms;
         self
     }
 }
 
+/// Headless Ailloli runtime and lazy Vulkan renderer for an OpenXR UI layer.
+///
+/// The renderer is allocated on the first frame, while runtime reconciliation is
+/// performed during construction. Actions accumulate until [`Self::take_actions`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrUiLayer;
+/// fn clear<A: 'static>(layer: &mut OpenXrUiLayer<A>) { layer.clear_input(); }
+/// ```
 pub struct OpenXrUiLayer<A> {
     runtime: Runtime<A>,
     text_system: TextSystem,
@@ -165,6 +281,20 @@ pub struct OpenXrUiLayer<A> {
 }
 
 impl<A: 'static> OpenXrUiLayer<A> {
+    /// Reconciles the root view and prepares a lazy renderer.
+    ///
+    /// # Errors
+    ///
+    /// The current constructor performs no fallible Vulkan work, but returns the
+    /// runtime error type so initialization can remain uniform with future setup.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntimeError, OpenXrUiLayer, OpenXrUiLayerOptions};
+    /// use ailloli_ui_runtime::{app::RuntimeHandle, component::IntoView};
+    /// fn create<A: 'static>(handle: RuntimeHandle<A>, root: impl IntoView<A>) -> Result<OpenXrUiLayer<A>, OpenXrRuntimeError> { OpenXrUiLayer::new(handle, root, OpenXrUiLayerOptions::default()) }
+    /// ```
     pub fn new(
         runtime_handle: RuntimeHandle<A>,
         root: impl IntoView<A>,
@@ -182,6 +312,23 @@ impl<A: 'static> OpenXrUiLayer<A> {
         })
     }
 
+    /// Lays out, routes optional input, paints, and renders one Vulkan frame.
+    ///
+    /// Layout is tight to [`Self::logical_size`]. The first call allocates the
+    /// renderer. Pointer events are routed before paint; `None` retains existing
+    /// pointer/focus state. Text face blobs are refreshed before rendering.
+    ///
+    /// # Errors
+    ///
+    /// Returns Vulkan renderer initialization or frame-render errors.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrExternalHostFrame, OpenXrRuntimeError, OpenXrUiLayer};
+    /// use ailloli_ui_render_vulkan::VulkanRendererStats;
+    /// fn render<A: 'static>(layer: &mut OpenXrUiLayer<A>, frame: OpenXrExternalHostFrame<'_>) -> Result<VulkanRendererStats, OpenXrRuntimeError> { layer.layout_paint_render(frame) }
+    /// ```
     pub fn layout_paint_render(
         &mut self,
         frame: OpenXrExternalHostFrame<'_>,
@@ -225,16 +372,43 @@ impl<A: 'static> OpenXrUiLayer<A> {
         Ok(renderer.stats())
     }
 
+    /// Clears pointer mapper/router state and keyboard focus without events.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrUiLayer;
+    /// fn clear<A: 'static>(layer: &mut OpenXrUiLayer<A>) { layer.clear_input(); }
+    /// ```
     pub fn clear_input(&mut self) {
         self.input_router.clear_pointer_state();
         self.input_router.clear_focus();
         self.input_mapper.clear();
     }
 
+    /// Drains and returns actions queued by the reconciled runtime.
+    ///
+    /// An empty vector means no action was dispatched since the previous drain.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrUiLayer;
+    /// fn actions<A: 'static>(layer: &OpenXrUiLayer<A>) -> Vec<A> { layer.take_actions() }
+    /// ```
     pub fn take_actions(&self) -> Vec<A> {
         self.runtime.runtime.take_actions()
     }
 
+    /// Returns the latest renderer counters or zeroed defaults before first frame.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::OpenXrUiLayer;
+    /// use ailloli_ui_render_vulkan::VulkanRendererStats;
+    /// fn stats<A: 'static>(layer: &OpenXrUiLayer<A>) -> VulkanRendererStats { layer.renderer_stats() }
+    /// ```
     pub fn renderer_stats(&self) -> VulkanRendererStats {
         self.renderer
             .as_ref()
@@ -242,6 +416,18 @@ impl<A: 'static> OpenXrUiLayer<A> {
             .unwrap_or_default()
     }
 
+    /// Returns physical pixels divided by DPR as logical dimensions.
+    ///
+    /// DPR is clamped to at least `0.0001`; pixel axes are otherwise unmodified,
+    /// so zero pixels produce zero logical extent.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Size;
+    /// use ailloli_ui_openxr::OpenXrUiLayer;
+    /// fn size<A: 'static>(layer: &OpenXrUiLayer<A>) -> Size { layer.logical_size() }
+    /// ```
     pub fn logical_size(&self) -> Size {
         let dpr = self.options.scale.dpr.max(0.0001);
         Size::new(
@@ -250,6 +436,7 @@ impl<A: 'static> OpenXrUiLayer<A> {
         )
     }
 
+    /// Converts and routes pointer transitions in sample order.
     fn route_input_frame(&mut self, input_frame: &OpenXrPointerFrame) {
         let events = self
             .input_mapper
@@ -261,9 +448,35 @@ impl<A: 'static> OpenXrUiLayer<A> {
     }
 }
 
+/// Stateless world-ray mapper for one OpenXR quad layer.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Size;
+/// use ailloli_ui_openxr::{OpenXrQuadLayerOptions, OpenXrQuadPointerMapper};
+/// use ailloli_ui_openxr::math::Vec3;
+/// let point = OpenXrQuadPointerMapper::ray_to_logical_point(Vec3::default(), Vec3::new(0.0, 0.0, -1.0), &OpenXrQuadLayerOptions::default(), Size::new(1024.0, 576.0));
+/// assert_eq!(point.map(|p| (p.x, p.y)), Some((512.0, 288.0)));
+/// ```
 pub struct OpenXrQuadPointerMapper;
 
 impl OpenXrQuadPointerMapper {
+    /// Intersects a world ray and returns a top-left-origin logical point.
+    ///
+    /// Returns `None` for parallel rays, hits behind the origin, or points beyond
+    /// the finite quad. Layer axes are derived from its quaternion and its physical
+    /// width/height are clamped to at least one millimetre before halving.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Size;
+    /// use ailloli_ui_openxr::{OpenXrQuadLayerOptions, OpenXrQuadPointerMapper};
+    /// use ailloli_ui_openxr::math::Vec3;
+    /// let point = OpenXrQuadPointerMapper::ray_to_logical_point(Vec3::default(), Vec3::new(0.0, 0.0, -1.0), &OpenXrQuadLayerOptions::default(), Size::new(100.0, 50.0)).unwrap();
+    /// assert_eq!((point.x, point.y), (50.0, 25.0));
+    /// ```
     pub fn ray_to_logical_point(
         ray_origin: Vec3,
         ray_direction: Vec3,
@@ -275,6 +488,20 @@ impl OpenXrQuadPointerMapper {
             .map(|hit| uv_to_logical(hit.u, hit.v, logical_size.w, logical_size.h))
     }
 
+    /// Creates a hit/miss pointer sample from a world ray.
+    ///
+    /// Hit depth is deliberately `None`; this mapper preserves logical routing
+    /// only. Source ID and pressed state are preserved verbatim; scroll is zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Size;
+    /// use ailloli_ui_openxr::{OpenXrPointerHit, OpenXrQuadLayerOptions, OpenXrQuadPointerMapper};
+    /// use ailloli_ui_openxr::math::Vec3;
+    /// let sample = OpenXrQuadPointerMapper::sample_from_ray(7, Vec3::default(), Vec3::new(0.0, 0.0, -1.0), true, &OpenXrQuadLayerOptions::default(), Size::new(100.0, 50.0));
+    /// assert!(matches!(sample.hit, OpenXrPointerHit::Hit(_)) && sample.trigger_pressed);
+    /// ```
     pub fn sample_from_ray(
         source_id: u64,
         ray_origin: Vec3,
@@ -289,11 +516,22 @@ impl OpenXrQuadPointerMapper {
         OpenXrPointerSample::new(source_id, hit, trigger_pressed)
     }
 
+    /// Creates an unpressed miss sample with zero scroll.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::{OpenXrPointerHit, OpenXrQuadPointerMapper};
+    /// let sample = OpenXrQuadPointerMapper::miss_sample(9);
+    /// assert_eq!(sample.hit, OpenXrPointerHit::Miss);
+    /// assert!(!sample.trigger_pressed);
+    /// ```
     pub fn miss_sample(source_id: u64) -> OpenXrPointerSample {
         OpenXrPointerSample::new(source_id, OpenXrPointerHit::Miss, false)
     }
 }
 
+/// Derives a normalized finite quad from layer pose and clamped dimensions.
 fn ray_quad_from_layer(layer: OpenXrQuadLayerOptions) -> RayQuad {
     let orientation = layer.pose.orientation;
     RayQuad::new(
@@ -306,10 +544,12 @@ fn ray_quad_from_layer(layer: OpenXrQuadLayerOptions) -> RayQuad {
     )
 }
 
+/// Copies OpenXR vector components into the lightweight vector type.
 fn vec3_from_xr(v: xr::Vector3f) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
 
+/// Rotates `v` by an assumed-normalized OpenXR quaternion.
 fn rotate_vec3(q: xr::Quaternionf, v: Vec3) -> Vec3 {
     let q_vec = Vec3::new(q.x, q.y, q.z);
     let uv = q_vec.cross(v);
@@ -318,9 +558,11 @@ fn rotate_vec3(q: xr::Quaternionf, v: Vec3) -> Vec3 {
 }
 
 #[cfg(test)]
+/// Verifies defaults plus center, top-left, and outside ray mappings.
 mod tests {
     use super::*;
 
+    /// Returns the canonical identity-facing layer fixture.
     fn default_layer() -> OpenXrQuadLayerOptions {
         OpenXrQuadLayerOptions::default()
     }

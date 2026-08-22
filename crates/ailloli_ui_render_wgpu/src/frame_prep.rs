@@ -31,9 +31,21 @@ use crate::text::{Glyph, GlyphKey, TextAtlas};
 ///
 /// `build_cpu` later reads these maps to emit `PlannedBatch`es with the
 /// correct `TextureBindKind`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::PreparedResources;
+/// let prepared = PreparedResources::default();
+/// assert!(prepared.glyphs.is_empty() && prepared.icons.is_empty());
+/// ```
 #[derive(Debug, Default)]
 pub struct PreparedResources {
+    /// Pinned glyphs keyed by face, glyph, physical size, and DPR bucket.
+    ///
+    /// Each value is `(atlas_page, glyph_metrics)`.
     pub glyphs: HashMap<GlyphKey, (u8, Glyph)>,
+    /// Exact icon keys uploaded or found in the persistent icon cache.
     pub icons: HashSet<IconKey>,
 }
 
@@ -42,6 +54,27 @@ impl PreparedResources {
     ///
     /// Touches `device`, `queue`, `atlas` and `icon_cache`. Callers must have
     /// already called `atlas.start_frame()` (Renderer keeps this contract).
+    /// Physical glyph sizes are rounded and clamped to `8..=128`; icon sizes to
+    /// `8..=256`; the DPR bucket is `round(dpr * 100)` clamped to
+    /// `1..=u16::MAX`. Missing face blobs increment atlas diagnostics and omit
+    /// that glyph rather than panicking.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::{collections::HashMap, sync::Arc};
+    /// use ailloli_ui_core::math::Scale;
+    /// use ailloli_ui_render_wgpu::{frame_prep::PreparedResources,
+    ///     icons::IconCache, text::TextAtlas};
+    /// fn prepare(atlas: &mut TextAtlas, icons: &mut IconCache,
+    ///     device: &wgpu::Device, queue: &wgpu::Queue,
+    ///     layout: &wgpu::BindGroupLayout) -> PreparedResources {
+    ///     atlas.start_frame();
+    ///     let faces: HashMap<u64, Arc<[u8]>> = HashMap::new();
+    ///     PreparedResources::prepare(&[], Scale::new(1.0), atlas, icons,
+    ///         device, queue, layout, &faces)
+    /// }
+    /// ```
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         layers: &[LayerPass<'_>],

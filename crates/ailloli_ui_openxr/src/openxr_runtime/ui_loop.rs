@@ -1,3 +1,5 @@
+//! Built-in OpenXR loop that owns Ailloli layout, input routing, paint, and render.
+
 use std::time::Duration;
 
 use ailloli_ui_core::Size;
@@ -13,6 +15,27 @@ use super::swapchain::OpenXrQuadSwapchain;
 use super::ui_layer::{OpenXrExternalHostFrame, OpenXrExternalVulkanContext, OpenXrUiLayer};
 
 impl OpenXrRuntime {
+    /// Runs the full Ailloli UI lifecycle in a quad composition layer.
+    ///
+    /// Session focus controls input polling; focus/session transitions clear
+    /// retained input. The shutdown callback is checked each iteration. Frames
+    /// marked non-renderable submit no layer. Render release is always attempted,
+    /// with render failure taking precedence over simultaneous release failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns UI initialization, actions, session/frame, swapchain, rendering,
+    /// release, or composition submission failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntime, OpenXrRuntimeError, OpenXrUiFrameLoopOptions};
+    /// use ailloli_ui_runtime::{app::RuntimeHandle, component::IntoView};
+    /// fn run<A: 'static>(runtime: &mut OpenXrRuntime, handle: RuntimeHandle<A>, root: impl IntoView<A>) -> Result<(), OpenXrRuntimeError> {
+    ///     runtime.run_ailloli_ui_frame_loop(OpenXrUiFrameLoopOptions::default(), handle, root, || false)
+    /// }
+    /// ```
     pub fn run_ailloli_ui_frame_loop<A: 'static>(
         &mut self,
         options: OpenXrUiFrameLoopOptions,
@@ -140,6 +163,7 @@ impl OpenXrRuntime {
     }
 }
 
+/// Converts physical pixels to logical dimensions with DPR clamped to `0.0001`.
 fn logical_size(options: OpenXrUiFrameLoopOptions) -> (f32, f32) {
     let dpr = options.scale.dpr.max(0.0001);
     (

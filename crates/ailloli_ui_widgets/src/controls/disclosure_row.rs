@@ -1,3 +1,5 @@
+//! Single-line disclosure rows with optional leading and trailing content.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey};
@@ -14,30 +16,68 @@ use lucide_icons::Icon as LucideIcon;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic text treatment for a [`DisclosureRow`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DisclosureRowVariant;
+/// assert_eq!(DisclosureRowVariant::default(), DisclosureRowVariant::Default);
+/// ```
 pub enum DisclosureRowVariant {
+    /// Normal theme text color.
     #[default]
     Default,
+    /// Danger-colored label; interaction behavior is unchanged.
     Danger,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved colors, typography, and logical-pixel metrics for a disclosure row.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::DisclosureRowStyle;
+/// let style = DisclosureRowStyle::from_theme(Theme::dark());
+/// assert_eq!(style.height, 38.0);
+/// assert_eq!(style.disabled_opacity, 0.42);
+/// ```
 pub struct DisclosureRowStyle {
+    /// Intrinsic row height in logical pixels.
     pub height: f32,
+    /// Leading and trailing inset in logical pixels.
     pub padding_x: f32,
+    /// Gap between content regions in logical pixels.
     pub gap: f32,
+    /// Width and height of the optional leading icon in logical pixels.
     pub icon_size: f32,
+    /// Width and height of the disclosure chevron in logical pixels.
     pub chevron_size: f32,
+    /// Background and focus-ring corner radii.
     pub radius: Radius,
+    /// Idle background color.
     pub background: Color,
+    /// Background used while an actionable row is hovered.
     pub hover_background: Color,
+    /// Background used while an actionable row is pressed.
     pub pressed_background: Color,
+    /// Background used whenever the selected binding is true.
     pub selected_background: Color,
+    /// Default label style.
     pub text: TextStyle,
+    /// Optional trailing-label style.
     pub trailing_text: TextStyle,
+    /// Label style for [`DisclosureRowVariant::Danger`].
     pub danger_text: TextStyle,
+    /// Leading-icon tint.
     pub icon_tint: Color,
+    /// Chevron tint.
     pub chevron_tint: Color,
+    /// Border painted for a focused, enabled, actionable row.
     pub focus_ring: Border,
+    /// Alpha multiplier for disabled backgrounds, icons, and text.
     pub disabled_opacity: f32,
 }
 
@@ -48,6 +88,20 @@ impl Default for DisclosureRowStyle {
 }
 
 impl DisclosureRowStyle {
+    /// Resolves row colors and metrics from `theme`.
+    ///
+    /// The returned opacity is `0.42`; values are not clamped if the caller
+    /// later mutates the public fields.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::DisclosureRowStyle;
+    /// let style = DisclosureRowStyle::from_theme(Theme::dark());
+    /// assert_eq!(style.padding_x, 12.0);
+    /// assert_eq!(style.icon_size, 16.0);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         Self {
@@ -72,23 +126,59 @@ impl DisclosureRowStyle {
     }
 }
 
+/// An optional-action row used to disclose a destination or secondary pane.
+///
+/// The row activates on a left-button release inside its bounds, or on a
+/// pressed Enter/Space key while focused. It is focusable only when enabled and
+/// an action is installed. Selection changes appearance but does not suppress
+/// activation. Bindings are read during layout, painting, and event handling.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::DisclosureRow;
+/// let row: DisclosureRow<()> = DisclosureRow::new("Advanced");
+/// let _ = row;
+/// ```
 pub struct DisclosureRow<A = ()> {
+    /// Layout configuration used to resolve intrinsic geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Primary row label; empty text is valid.
     label: String,
+    /// Optional icon shown before the label.
     leading_icon: Option<IconId>,
+    /// Optional right-aligned text before the chevron.
     trailing_text: Option<String>,
+    /// Live selected state.
     selected: Binding<bool>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Semantic label treatment.
     variant: DisclosureRowVariant,
+    /// Resolved paint and geometry configuration.
     style: DisclosureRowStyle,
+    /// Whether to reserve and paint the trailing chevron.
     show_chevron: bool,
+    /// Optional activation action.
     on_select: Option<ClickAction<A>>,
 }
 
 crate::impl_layout_builders!(DisclosureRow);
 
 impl<A: 'static> DisclosureRow<A> {
+    /// Creates an enabled, unselected row with a chevron and no action.
+    ///
+    /// A row without an action is decorative and not focusable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// let row: DisclosureRow<()> = DisclosureRow::new("Details");
+    /// let _ = row;
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -105,41 +195,134 @@ impl<A: 'static> DisclosureRow<A> {
         }
     }
 
+    /// Sets the leading icon, replacing any previous icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// let row: DisclosureRow<()> = DisclosureRow::new("History").leading_icon(IconId::History);
+    /// let _ = row;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.leading_icon = Some(icon);
         self
     }
 
+    /// Sets right-aligned secondary text, replacing any previous value.
+    ///
+    /// An empty string remains present and reserves only its leading gap when
+    /// a text system is available.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// let row: DisclosureRow<()> = DisclosureRow::new("Version").trailing_text("1.0");
+    /// let _ = row;
+    /// ```
     pub fn trailing_text(mut self, text: impl Into<String>) -> Self {
         self.trailing_text = Some(text.into());
         self
     }
 
+    /// Sets a static or reactive selected binding.
+    ///
+    /// Selection takes paint precedence over pressed and hovered backgrounds.
+    /// It does not alter focusability or action dispatch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// let row: DisclosureRow<()> = DisclosureRow::new("Current").selected(true);
+    /// let _ = row;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<bool>>) -> Self {
         self.selected = selected.into();
         self
     }
 
+    /// Sets a static or reactive disabled binding.
+    ///
+    /// Disabled rows ignore events, cannot receive focus, and multiply painted
+    /// alpha by [`DisclosureRowStyle::disabled_opacity`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// let row: DisclosureRow<()> = DisclosureRow::new("Unavailable").disabled(true);
+    /// let _ = row;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Selects the normal or danger label style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{DisclosureRow, DisclosureRowVariant};
+    /// let row: DisclosureRow<()> =
+    ///     DisclosureRow::new("Delete").variant(DisclosureRowVariant::Danger);
+    /// let _ = row;
+    /// ```
     pub fn variant(mut self, variant: DisclosureRowVariant) -> Self {
         self.variant = variant;
         self
     }
 
+    /// Replaces all resolved style and intrinsic geometry values.
+    ///
+    /// Values are accepted as-is; explicit layout builders may override the
+    /// style's intrinsic height or measured width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{DisclosureRow, DisclosureRowStyle};
+    /// let style = DisclosureRowStyle::from_theme(Theme::dark());
+    /// let row: DisclosureRow<()> = DisclosureRow::new("Details").disclosure_row_style(style);
+    /// let _ = row;
+    /// ```
     pub fn disclosure_row_style(mut self, style: DisclosureRowStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Controls whether a right-pointing chevron is reserved and painted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// let row: DisclosureRow<()> = DisclosureRow::new("Static").show_chevron(false);
+    /// let _ = row;
+    /// ```
     pub fn show_chevron(mut self, show: bool) -> Self {
         self.show_chevron = show;
         self
     }
 
+    /// Installs an action value to emit on pointer or keyboard activation.
+    ///
+    /// A later action builder replaces the previous action. The row stops event
+    /// propagation after running it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// #[derive(Clone)]
+    /// enum Action { Open }
+    /// let row = DisclosureRow::new("Advanced").on_select(Action::Open);
+    /// let _ = row;
+    /// ```
     pub fn on_select(mut self, action: impl IntoClickAction<A>) -> Self
     where
         A: Clone,
@@ -148,12 +331,25 @@ impl<A: 'static> DisclosureRow<A> {
         self
     }
 
+    /// Installs a context-aware activation handler.
+    ///
+    /// The handler may emit actions or request runtime effects through
+    /// [`EventCtx`]. A later action builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::DisclosureRow;
+    /// let row = DisclosureRow::<()>::new("Advanced").on_select_ctx(|ctx| ctx.stop_propagation());
+    /// let _ = row;
+    /// ```
     pub fn on_select_ctx(mut self, f: impl Fn(&mut EventCtx<A>) + 'static) -> Self {
         self.on_select = Some(ClickAction::handler(f));
         self
     }
 }
 
+/// Retained leaf widget that reads bindings and handles activation.
 struct DisclosureRowWidget<A> {
     layout: LayoutStyle,
     label: String,
@@ -334,6 +530,7 @@ impl<A: 'static> Widget<A> for DisclosureRowWidget<A> {
 }
 
 impl<A> DisclosureRowWidget<A> {
+    /// Runs the installed action, then stops propagation; does nothing without one.
     fn run_action(&self, ctx: &mut EventCtx<A>) {
         if let Some(on_select) = &self.on_select {
             on_select.run(ctx);
@@ -341,6 +538,7 @@ impl<A> DisclosureRowWidget<A> {
         }
     }
 
+    /// Resolves the label style from the semantic variant.
     fn label_style(&self) -> TextStyle {
         if self.variant == DisclosureRowVariant::Danger {
             self.style.danger_text
@@ -371,6 +569,7 @@ impl<A: 'static> IntoView<A> for DisclosureRow<A> {
     }
 }
 
+/// Measures one unwrapped line, returning `None` when no text system is available.
 fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option<f32> {
     ctx.text_system.as_deref_mut().map(|text_system| {
         text_system
@@ -385,6 +584,7 @@ fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option
     })
 }
 
+/// Creates one unwrapped prepared layout, or `None` without a text system.
 fn layout_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -400,6 +600,7 @@ fn layout_text(
     })
 }
 
+/// Paints left-anchored text vertically centered in `bounds`.
 fn paint_text_centered(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -425,6 +626,7 @@ fn paint_text_centered(
     }));
 }
 
+/// Paints text right-aligned to `right` and vertically centered in `bounds`.
 fn paint_trailing_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,

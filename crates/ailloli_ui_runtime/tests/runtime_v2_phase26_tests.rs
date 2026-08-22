@@ -1,3 +1,5 @@
+//! Phase 26 regression scenarios for the second-generation runtime pipeline.
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -14,13 +16,17 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_text::TextSystem;
 
 #[test]
+/// Verifies that layout does not build.
 fn layout_does_not_build() {
     #[derive(Clone)]
+    /// Test support type for CountingComponent scenarios.
     struct CountingComponent {
         builds: Rc<Cell<u32>>,
     }
 
+    /// Implements the ComponentNode<()> test contract for CountingComponent.
     impl ComponentNode<()> for CountingComponent {
+        /// Builds the retained test view.
         fn build(&self, _context: &mut Context<()>) -> View<()> {
             self.builds.set(self.builds.get() + 1);
             View::leaf(TestLeafWidget {
@@ -57,13 +63,17 @@ fn layout_does_not_build() {
 }
 
 #[test]
+/// Verifies that dirty component reconcile rebuilds before layout.
 fn dirty_component_reconcile_rebuilds_before_layout() {
     #[derive(Clone)]
+    /// Test support type for DirtyComponent scenarios.
     struct DirtyComponent {
         builds: Rc<Cell<u32>>,
     }
 
+    /// Implements the ComponentNode<()> test contract for DirtyComponent.
     impl ComponentNode<()> for DirtyComponent {
+        /// Builds the retained test view.
         fn build(&self, context: &mut Context<()>) -> View<()> {
             self.builds.set(self.builds.get() + 1);
             let expanded = context.signal(false);
@@ -73,16 +83,20 @@ fn dirty_component_reconcile_rebuilds_before_layout() {
     }
 
     #[derive(Clone)]
+    /// Test support type for DirtyToggleWidget scenarios.
     struct DirtyToggleWidget {
         expanded: Signal<bool>,
         height: f32,
     }
 
+    /// Implements the Widget<()> test contract for DirtyToggleWidget.
     impl Widget<()> for DirtyToggleWidget {
+        /// Returns the stable diagnostic widget name.
         fn debug_name(&self) -> &'static str {
             "DirtyToggle"
         }
 
+        /// Computes this test widget’s layout result.
         fn layout(
             &self,
             _engine: &mut LayoutEngine<'_, ()>,
@@ -103,8 +117,10 @@ fn dirty_component_reconcile_rebuilds_before_layout() {
             }
         }
 
+        /// Emits this test widget’s paint output.
         fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+        /// Handles one event routed to this test widget.
         fn event(
             &self,
             _ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,
@@ -170,6 +186,7 @@ fn dirty_component_reconcile_rebuilds_before_layout() {
 }
 
 #[test]
+/// Verifies that flex produces child offsets for paint and hit test.
 fn flex_produces_child_offsets_for_paint_and_hit_test() {
     // Tree: RootFlex(Column) -> ChildA, ChildB
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
@@ -208,6 +225,7 @@ fn flex_produces_child_offsets_for_paint_and_hit_test() {
 }
 
 #[test]
+/// Verifies that dispatch event passes absolute target bounds.
 fn dispatch_event_passes_absolute_target_bounds() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
@@ -249,6 +267,7 @@ fn dispatch_event_passes_absolute_target_bounds() {
 }
 
 #[test]
+/// Verifies that component layout supports multiple children.
 fn component_layout_supports_multiple_children() {
     // Simulate a component element having 2 children (0..N contract in layout).
     // We create a tiny tree manually and ensure layout computes and stores a result without panicking.
@@ -291,23 +310,30 @@ fn component_layout_supports_multiple_children() {
     );
 }
 
+/// Test support type for NoopComponent scenarios.
 struct NoopComponent;
+/// Implements the ComponentNode<()> test contract for NoopComponent.
 impl ComponentNode<()> for NoopComponent {
+    /// Builds the retained test view.
     fn build(&self, _context: &mut Context<()>) -> View<()> {
         View::empty()
     }
 }
 
 #[derive(Clone)]
+/// Test support type for TestLeafWidget scenarios.
 struct TestLeafWidget {
     size: Size,
 }
 
+/// Implements the Widget<()> test contract for TestLeafWidget.
 impl Widget<()> for TestLeafWidget {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "TestLeaf"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -328,8 +354,10 @@ impl Widget<()> for TestLeafWidget {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         _ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,
@@ -341,16 +369,20 @@ impl Widget<()> for TestLeafWidget {
 }
 
 #[derive(Clone)]
+/// Test support type for RecordingWidget scenarios.
 struct RecordingWidget {
     size: Size,
     seen_bounds: Rc<RefCell<Option<Rect>>>,
 }
 
+/// Implements the Widget<()> test contract for RecordingWidget.
 impl Widget<()> for RecordingWidget {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "RecordingWidget"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -371,8 +403,10 @@ impl Widget<()> for RecordingWidget {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         _ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,
@@ -384,15 +418,19 @@ impl Widget<()> for RecordingWidget {
     }
 }
 
+/// Test support type for TestFlexColumnWidget scenarios.
 struct TestFlexColumnWidget {
     gap: f32,
 }
 
+/// Implements the Widget<()> test contract for TestFlexColumnWidget.
 impl Widget<()> for TestFlexColumnWidget {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "TestFlexColumn"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, ()>,
@@ -435,8 +473,10 @@ impl Widget<()> for TestFlexColumnWidget {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Handles one event routed to this test widget.
     fn event(
         &self,
         _ctx: &mut ailloli_ui_runtime::input::EventCtx<()>,

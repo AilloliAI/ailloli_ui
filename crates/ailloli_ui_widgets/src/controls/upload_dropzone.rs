@@ -1,3 +1,5 @@
+//! Retained file dropzone with browse and filtered-drop callbacks.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -17,31 +19,71 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawText};
 use ailloli_ui_text::{TextLayoutParams, WrapMode};
 
+/// Shared callback receiving accepted files in producer order.
 type UploadDropHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Vec<UploadFile>)>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in density choices for an [`UploadDropzone`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::UploadDropzoneVariant;
+/// assert_eq!(UploadDropzoneVariant::default(), UploadDropzoneVariant::Default);
+/// ```
 pub enum UploadDropzoneVariant {
+    /// `260 × 104` logical pixels with smaller typography and button.
     Compact,
+    /// `360 × 142` logical pixels with standard typography and button.
     #[default]
     Default,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved paint, typography, and intrinsic geometry for a dropzone.
+///
+/// `shadows` is retained for style compatibility but is not currently painted.
+/// Dimensions are logical pixels and are otherwise accepted as-is.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{UploadDropzoneStyle, UploadDropzoneVariant};
+/// let style = UploadDropzoneStyle::from_theme(Theme::dark(), UploadDropzoneVariant::Compact);
+/// assert_eq!((style.width, style.height), (260.0, 104.0));
+/// assert_eq!(style.button_height, 28.0);
+/// ```
 pub struct UploadDropzoneStyle {
+    /// Idle background fill.
     pub background: Color,
+    /// Background fill while at least one dragged file is accepted.
     pub background_hovered: Color,
+    /// Idle border.
     pub border: Border,
+    /// Border while an accepted dragged file is over the bounds.
     pub border_hovered: Border,
+    /// Border used while the enabled dropzone has focus.
     pub focus_ring: Border,
+    /// Browse-button fill.
     pub button_background: Color,
+    /// Browse-button label style.
     pub button_text: TextStyle,
+    /// Primary title style.
     pub title_text: TextStyle,
+    /// Secondary description style.
     pub description_text: TextStyle,
+    /// Replacement alpha for disabled fills and text colors.
     pub disabled_opacity: f32,
+    /// Reserved shadows; currently not painted.
     pub shadows: Vec<BoxShadow>,
+    /// Intrinsic width in logical pixels.
     pub width: f32,
+    /// Intrinsic height in logical pixels.
     pub height: f32,
+    /// Dropzone border radius.
     pub radius: Radius,
+    /// Browse-button height in logical pixels; its width is fixed at 116.
     pub button_height: f32,
 }
 
@@ -52,6 +94,17 @@ impl Default for UploadDropzoneStyle {
 }
 
 impl UploadDropzoneStyle {
+    /// Resolves `variant` through `theme` into concrete style values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{UploadDropzoneStyle, UploadDropzoneVariant};
+    /// let style = UploadDropzoneStyle::from_theme(Theme::dark(), UploadDropzoneVariant::Default);
+    /// assert_eq!((style.width, style.height), (360.0, 142.0));
+    /// assert_eq!(style.disabled_opacity, 0.45);
+    /// ```
     pub fn from_theme(theme: Theme, variant: UploadDropzoneVariant) -> Self {
         let palette = theme.palette();
         let compact = variant == UploadDropzoneVariant::Compact;
@@ -79,16 +132,40 @@ impl UploadDropzoneStyle {
     }
 }
 
+/// A file drop target with reactive labels and caller-owned actions.
+///
+/// Dragged files are filtered using [`UploadAccept`]. With `multiple(false)`,
+/// only the first accepted file in producer order reaches the drop handler.
+/// Empty accepted sets do not invoke it. The browse button merely runs the
+/// installed action; opening a native picker remains the consumer's job.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::UploadDropzone;
+/// let dropzone: UploadDropzone<()> = UploadDropzone::new().accept([".png", "image/*"]);
+/// let _ = dropzone;
+/// ```
 pub struct UploadDropzone<A = ()> {
+    /// Layout configuration used to resolve intrinsic size.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Live primary label.
     title: Binding<String>,
+    /// Live secondary label.
     description: Binding<String>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Whether a drop may deliver every accepted file instead of only the first.
     multiple: bool,
+    /// Normalized accepted extension and MIME patterns.
     accept: UploadAccept,
+    /// Resolved paint and geometry configuration.
     style: UploadDropzoneStyle,
+    /// Optional action run by a left-button release inside the browse button.
     on_browse: Option<Rc<ClickAction<A>>>,
+    /// Optional callback receiving non-empty accepted drops.
     on_drop: Option<UploadDropHandler<A>>,
 }
 
@@ -101,6 +178,18 @@ impl<A: 'static> Default for UploadDropzone<A> {
 }
 
 impl<A: 'static> UploadDropzone<A> {
+    /// Creates a single-file dropzone accepting every file.
+    ///
+    /// It starts enabled with default English labels and no callbacks. Without
+    /// callbacks it is not focusable, though it still paints drag-hover state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// let dropzone: UploadDropzone<()> = UploadDropzone::new();
+    /// let _ = dropzone;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -116,57 +205,182 @@ impl<A: 'static> UploadDropzone<A> {
         }
     }
 
+    /// Replaces the static or reactive primary label.
+    ///
+    /// Empty text is valid and simply produces no visible glyphs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// let dropzone: UploadDropzone<()> = UploadDropzone::new().title("Drop images here");
+    /// let _ = dropzone;
+    /// ```
     pub fn title(mut self, value: impl Into<Binding<String>>) -> Self {
         self.title = value.into();
         self
     }
 
+    /// Replaces the static or reactive secondary label.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// let dropzone: UploadDropzone<()> = UploadDropzone::new().description("PNG or JPEG");
+    /// let _ = dropzone;
+    /// ```
     pub fn description(mut self, value: impl Into<Binding<String>>) -> Self {
         self.description = value.into();
         self
     }
 
+    /// Sets a static or reactive disabled binding.
+    ///
+    /// Disabled dropzones ignore pointer and file events, are not focusable,
+    /// clear hover visually, and apply the style's disabled alpha.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// let dropzone: UploadDropzone<()> = UploadDropzone::new().disabled(true);
+    /// let _ = dropzone;
+    /// ```
     pub fn disabled(mut self, value: impl Into<Binding<bool>>) -> Self {
         self.disabled = value.into();
         self
     }
 
+    /// Controls whether a drop delivers all accepted files.
+    ///
+    /// `false` (the default) truncates the filtered list to one; `true` keeps
+    /// every accepted file in the producer's original order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// let dropzone: UploadDropzone<()> = UploadDropzone::new().multiple(true);
+    /// let _ = dropzone;
+    /// ```
     pub fn multiple(mut self, value: bool) -> Self {
         self.multiple = value;
         self
     }
 
+    /// Replaces accepted extension and MIME patterns.
+    ///
+    /// Supported forms are `.ext`, exact MIME values, and top-level wildcards
+    /// such as `image/*`; matching behavior is defined by [`UploadAccept`]. An
+    /// empty iterator accepts every file. This filter applies to drag events;
+    /// the browse action receives no automatic native-picker configuration.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// let dropzone: UploadDropzone<()> = UploadDropzone::new().accept([".pdf", "image/*"]);
+    /// let _ = dropzone;
+    /// ```
     pub fn accept(mut self, patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.accept = UploadAccept::new(patterns);
         self
     }
 
+    /// Replaces the complete resolved style without clamping its values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{UploadDropzone, UploadDropzoneStyle, UploadDropzoneVariant};
+    /// let style = UploadDropzoneStyle::from_theme(Theme::dark(), UploadDropzoneVariant::Compact);
+    /// let dropzone: UploadDropzone<()> = UploadDropzone::new().upload_style(style);
+    /// let _ = dropzone;
+    /// ```
     pub fn upload_style(mut self, style: UploadDropzoneStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces the complete style with the default-theme `variant`.
+    ///
+    /// This discards any previously customized style values. Explicit layout
+    /// width and height builders may still override its intrinsic dimensions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{UploadDropzone, UploadDropzoneVariant};
+    /// let dropzone: UploadDropzone<()> =
+    ///     UploadDropzone::new().upload_variant(UploadDropzoneVariant::Compact);
+    /// let _ = dropzone;
+    /// ```
     pub fn upload_variant(mut self, variant: UploadDropzoneVariant) -> Self {
         self.style = UploadDropzoneStyle::from_theme(Theme::default(), variant);
         self
     }
 
+    /// Installs the action run by a left-button release inside the browse button.
+    ///
+    /// A later call replaces the action. Keyboard activation is not currently
+    /// synthesized by this widget.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// #[derive(Clone)]
+    /// enum Action { Browse }
+    /// let dropzone = UploadDropzone::new().on_browse(Action::Browse);
+    /// let _ = dropzone;
+    /// ```
     pub fn on_browse(mut self, action: impl IntoClickAction<A>) -> Self {
         self.on_browse = Some(Rc::new(action.into_click_action()));
         self
     }
 
+    /// Maps accepted files to one action and dispatches it.
+    ///
+    /// The mapper runs only for a non-empty accepted drop inside the widget.
+    /// A later drop-handler builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::UploadFile;
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// enum Action { Dropped(Vec<UploadFile>) }
+    /// let dropzone = UploadDropzone::new().on_drop(Action::Dropped);
+    /// let _ = dropzone;
+    /// ```
     pub fn on_drop(mut self, f: impl Fn(Vec<UploadFile>) -> A + 'static) -> Self {
         self.on_drop = Some(Rc::new(move |ctx, files| ctx.dispatch(f(files))));
         self
     }
 
+    /// Installs a context-aware handler for accepted files.
+    ///
+    /// The handler may dispatch zero or more actions and request runtime effects.
+    /// It runs only for a non-empty accepted drop and replaces any prior handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::UploadDropzone;
+    /// let dropzone = UploadDropzone::<()>::new().on_drop_ctx(|ctx, files| {
+    ///     if !files.is_empty() { ctx.request_repaint(); }
+    /// });
+    /// let _ = dropzone;
+    /// ```
     pub fn on_drop_ctx(mut self, f: impl Fn(&mut EventCtx<A>, Vec<UploadFile>) + 'static) -> Self {
         self.on_drop = Some(Rc::new(f));
         self
     }
 }
 
+/// Component wrapper allocating retained hover state during reconciliation.
 struct UploadDropzoneComponent<A> {
     props: UploadDropzone<A>,
 }
@@ -200,6 +414,7 @@ impl<A: 'static> IntoView<A> for UploadDropzone<A> {
     }
 }
 
+/// Retained leaf that filters file events and paints drop/browse affordances.
 struct UploadDropzoneWidget<A> {
     layout: LayoutStyle,
     title: Binding<String>,
@@ -397,6 +612,7 @@ impl<A: 'static> Widget<A> for UploadDropzoneWidget<A> {
 }
 
 impl<A> UploadDropzoneWidget<A> {
+    /// Returns the fixed-width browse button centered 18 pixels above the bottom.
     fn button_rect(&self, bounds: Rect) -> Rect {
         Rect::new(
             bounds.x + (bounds.w - 116.0) * 0.5,
@@ -407,6 +623,7 @@ impl<A> UploadDropzoneWidget<A> {
     }
 }
 
+/// Paints one unwrapped line centered at `center_x`, if a text system exists.
 fn push_text_centered(
     ctx: &mut PaintCtx<'_>,
     text: &str,

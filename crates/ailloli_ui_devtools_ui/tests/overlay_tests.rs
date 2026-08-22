@@ -1,3 +1,8 @@
+//! Headless retained-layout scenarios for visible and hidden DevTools views.
+//!
+//! Tests reconcile the generated view into a runtime and verify that overlay
+//! composition honors the host constraints without requiring a renderer.
+
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_devtools_core::{
@@ -8,6 +13,7 @@ use ailloli_ui_devtools_ui::{build_devtools_overlay, DevToolsAction, DevToolsSta
 use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui_text::TextSystem;
 
+/// Builds one fully laid-out selected container for overlay tests.
 fn snapshot() -> DebugSnapshot {
     DebugSnapshot {
         root: 1,

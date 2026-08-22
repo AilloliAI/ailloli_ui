@@ -1,3 +1,5 @@
+//! Verifies every [`Length`](ailloli_ui_core::style::Length) resolution mode and clamping.
+
 use ailloli_ui_core::style::Length;
 
 #[test]

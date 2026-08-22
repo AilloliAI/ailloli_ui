@@ -1,3 +1,5 @@
+//! Retained runtime implementation of the public document-aware code editor.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
@@ -23,6 +25,18 @@ use ailloli_ui_text::{TextEditAction, TextInputMode, TextKeymap, TextSelection};
 use super::adapter::paint_editor_frame;
 use super::code_builder::DocumentChangeHandler;
 
+/// Builder snapshot that creates initial code-editor session and engine state.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{Document, DocumentId};
+/// use ailloli_ui_runtime::component::{IntoView, State, View};
+/// use ailloli_ui_text::TextBuffer;
+/// use ailloli_ui_widgets::editor::CodeEditor;
+/// let view: View<()> = CodeEditor::new(State::new(Document::new(DocumentId(1), TextBuffer::new()))).into_view();
+/// let _ = view;
+/// ```
 pub(crate) struct CodeEditorComponent<A> {
     pub(crate) layout: LayoutStyle,
     pub(crate) document: Signal<Document>,
@@ -39,6 +53,7 @@ pub(crate) struct CodeEditorComponent<A> {
     pub(crate) on_document_change: Option<DocumentChangeHandler<A>>,
 }
 
+/// Builds the first session, clamps initial selection, and refreshes enabled models.
 impl<A: 'static> ComponentNode<A> for CodeEditorComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let document = document_with_language(self.document.read(), self.language);
@@ -90,6 +105,18 @@ impl<A: 'static> ComponentNode<A> for CodeEditorComponent<A> {
     }
 }
 
+/// Stateful leaf that synchronizes props, input, document edits, and painting.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{Document, DocumentId};
+/// use ailloli_ui_runtime::component::{IntoView, State, View};
+/// use ailloli_ui_text::TextBuffer;
+/// use ailloli_ui_widgets::editor::CodeEditor;
+/// let view: View<()> = CodeEditor::new(State::new(Document::new(DocumentId(1), TextBuffer::new()))).into_view();
+/// let _ = view;
+/// ```
 pub(crate) struct CodeEditorWidget<A> {
     layout: LayoutStyle,
     document: Signal<Document>,
@@ -107,6 +134,7 @@ pub(crate) struct CodeEditorWidget<A> {
     on_document_change: Option<DocumentChangeHandler<A>>,
 }
 
+/// Implements editor layout, paint, keyboard/IME, wheel, selection, and fold input.
 impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
     fn debug_name(&self) -> &'static str {
         "CodeEditor"
@@ -337,6 +365,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
     }
 }
 
+/// Prop reconciliation and edit-to-document synchronization helpers.
 impl<A: 'static> CodeEditorWidget<A> {
     fn sync_session_from_props(&self) -> CodeEditorSession {
         let mut session = self.session.read();
@@ -429,11 +458,13 @@ impl<A: 'static> CodeEditorWidget<A> {
     }
 }
 
+/// Resolves a language override/path hint into a cloned document value.
 fn document_with_language(mut document: Document, language: Option<EditorLanguage>) -> Document {
     document.language = resolve_document_language(&document, language);
     document
 }
 
+/// Applies a query/active index or clears retained search state.
 fn apply_search_props(
     session: &mut CodeEditorSession,
     query: Option<SearchQuery>,
@@ -447,6 +478,7 @@ fn apply_search_props(
     }
 }
 
+/// Applies external fold geometry or refreshes language-derived regions.
 fn apply_fold_regions_prop(session: &mut CodeEditorSession, fold_regions: Option<Vec<FoldRegion>>) {
     if let Some(fold_regions) = fold_regions {
         if !same_fold_region_shape(&session.fold_regions, &fold_regions) {
@@ -457,6 +489,7 @@ fn apply_fold_regions_prop(session: &mut CodeEditorSession, fold_regions: Option
     }
 }
 
+/// Compares fold identity and line geometry while ignoring collapsed state.
 fn same_fold_region_shape(current: &[FoldRegion], next: &[FoldRegion]) -> bool {
     current.len() == next.len()
         && current

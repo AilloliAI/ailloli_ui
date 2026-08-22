@@ -7,8 +7,10 @@ use ailloli_ui::runtime::component::{component, Context};
 use ailloli_ui::{App, Window};
 use ailloli_ui_render_wgpu::CapturedFrame;
 
+/// Inline white external-link glyph used to avoid filesystem dependencies.
 const EXTERNAL_LINK_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>"#;
 
+/// Resolves the repository-local directory used for link captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -16,6 +18,7 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Counts frame pixels accepted by the supplied RGBA8 predicate.
 fn count_pixels(frame: &CapturedFrame, pred: impl Fn([u8; 4]) -> bool) -> usize {
     frame
         .rgba
@@ -24,6 +27,7 @@ fn count_pixels(frame: &CapturedFrame, pred: impl Fn([u8; 4]) -> bool) -> usize 
         .count()
 }
 
+/// Builds visited/unvisited link variants and retains their activation state.
 fn link_showcase_component(ctx: &mut Context<()>, _props: ()) -> View<()> {
     ctx.runtime().request_focus_key("phase124-focused-link");
     let palette = Theme::default().palette();

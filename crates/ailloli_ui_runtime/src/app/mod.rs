@@ -1,15 +1,26 @@
 //! Application loop: runtime instance, handles, scheduler, and shared state.
 
+/// Command implementation details.
 pub mod command;
+/// Diagnostics implementation details.
 pub mod diagnostics;
+/// External url implementation details.
 pub mod external_url;
+/// Invalidation implementation details.
 pub mod invalidation;
+/// Presentation implementation details.
 pub mod presentation;
+/// Runtime implementation details.
 pub mod runtime;
+/// Runtime handle implementation details.
 pub mod runtime_handle;
+/// Runtime inbox implementation details.
 pub mod runtime_inbox;
+/// Scheduler implementation details.
 pub mod scheduler;
+/// State store implementation details.
 pub mod state_store;
+/// Ui inbox implementation details.
 pub mod ui_inbox;
 
 pub use command::Command;

@@ -1,4 +1,9 @@
 //! Ailloli UI widget frontend for DevTools snapshots.
+//!
+//! The builder is pure retained-view composition: it does not mutate the
+//! snapshot or state. Overlay/right modes use a 560-logical-pixel panel;
+//! bottom mode uses a 280-logical-pixel panel. All interactions emit typed
+//! [`DevToolsAction`] values for the host to reduce.
 
 use ailloli_ui_core::style::Length;
 use ailloli_ui_core::{Color, FontId, TextStyle};
@@ -10,32 +15,109 @@ use ailloli_ui_widgets::controls::Button;
 use ailloli_ui_widgets::layout::{Column, Container, FlexItemExt, Row, ScrollView};
 use ailloli_ui_widgets::text::Text;
 
+/// Stable retained key for the panel container.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_ui::DEVTOOLS_PANEL_KEY;
+/// assert_eq!(DEVTOOLS_PANEL_KEY, "ailloli_ui-devtools-panel");
+/// ```
 pub const DEVTOOLS_PANEL_KEY: &str = "ailloli_ui-devtools-panel";
+/// Stable retained key for the overlay-mode button.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_ui::DEVTOOLS_MODE_OVERLAY_KEY;
+/// assert!(DEVTOOLS_MODE_OVERLAY_KEY.ends_with("overlay"));
+/// ```
 pub const DEVTOOLS_MODE_OVERLAY_KEY: &str = "ailloli_ui-devtools-mode-overlay";
+/// Stable retained key for the right-dock button.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_ui::DEVTOOLS_MODE_RIGHT_KEY;
+/// assert!(DEVTOOLS_MODE_RIGHT_KEY.ends_with("right"));
+/// ```
 pub const DEVTOOLS_MODE_RIGHT_KEY: &str = "ailloli_ui-devtools-mode-right";
+/// Stable retained key for the bottom-dock button.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_ui::DEVTOOLS_MODE_BOTTOM_KEY;
+/// assert!(DEVTOOLS_MODE_BOTTOM_KEY.ends_with("bottom"));
+/// ```
 pub const DEVTOOLS_MODE_BOTTOM_KEY: &str = "ailloli_ui-devtools-mode-bottom";
+/// Stable retained key for the picker toggle button.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_ui::DEVTOOLS_PICK_KEY;
+/// assert_eq!(DEVTOOLS_PICK_KEY, "ailloli_ui-devtools-pick");
+/// ```
 pub const DEVTOOLS_PICK_KEY: &str = "ailloli_ui-devtools-pick";
 
+/// User intent emitted by the retained DevTools view.
+///
+/// The UI never applies these actions itself; the host owns state reduction and
+/// snapshot refresh.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_ui::DevToolsAction;
+/// let action = DevToolsAction::Select(Some(42));
+/// assert_eq!(action, DevToolsAction::Select(Some(42)));
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum DevToolsAction {
+    /// Selects an element ID, or clears selection with `None`.
     Select(Option<u64>),
+    /// Sets an element hover ID, or clears hover with `None`.
     Hover(Option<u64>),
+    /// Requests one core presentation mode.
     SetMode(DevToolsMode),
+    /// Toggles host-controlled element-picking mode.
     TogglePicker,
+    /// Replaces the case-insensitive tree filter; empty/whitespace shows all nodes.
     SetFilter(String),
 }
 
+/// Host-owned presentation and interaction state consumed by the view builder.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_core::DevToolsMode;
+/// use ailloli_ui_devtools_ui::DevToolsState;
+/// let state = DevToolsState::default();
+/// assert!(!state.enabled);
+/// assert_eq!(state.mode, DevToolsMode::Overlay);
+/// assert!(state.filter.is_empty());
+/// ```
 #[derive(Debug, Clone)]
 pub struct DevToolsState {
+    /// Master visibility switch; `false` produces an empty view.
     pub enabled: bool,
+    /// Overlay/docking mode; `Hidden` also produces an empty view.
     pub mode: DevToolsMode,
+    /// Whether the header reports active host picking.
     pub picker_active: bool,
+    /// Selected element ID used by the tree marker and details panel.
     pub selected: Option<u64>,
+    /// Hovered element ID used by the tree marker when not selected.
     pub hovered: Option<u64>,
+    /// Case-insensitive widget-name/key/decimal-ID filter.
     pub filter: String,
 }
 
+/// Starts disabled in overlay mode with no interaction state or filter.
 impl Default for DevToolsState {
+    /// Returns the conservative host-controlled defaults.
     fn default() -> Self {
         Self {
             enabled: false,
@@ -48,6 +130,24 @@ impl Default for DevToolsState {
     }
 }
 
+/// Builds an overlay or docked panel from immutable snapshot and UI state.
+///
+/// Disabled/hidden state returns [`View::empty`]. Overlay mode right-aligns a
+/// 560-pixel panel with 12 pixels of top spacing; right docking reserves 560
+/// pixels; bottom docking reserves 280 pixels. The tree filter does not change
+/// the details fallback, which uses the selected node or first snapshot node.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_devtools_core::DebugSnapshot;
+/// use ailloli_ui_devtools_ui::{build_devtools_overlay, DevToolsAction, DevToolsState};
+/// use ailloli_ui_runtime::component::View;
+/// fn build(snapshot: &DebugSnapshot) {
+///     let view: View<DevToolsAction> = build_devtools_overlay(snapshot, &DevToolsState::default());
+///     let _ = view;
+/// }
+/// ```
 pub fn build_devtools_overlay(
     snapshot: &DebugSnapshot,
     state: &DevToolsState,
@@ -102,6 +202,7 @@ pub fn build_devtools_overlay(
     }
 }
 
+/// Builds counts, picker status, three mode buttons, and picker toggle.
 fn header(snapshot: &DebugSnapshot, state: &DevToolsState) -> View<DevToolsAction> {
     Row::new()
         .fill_width()
@@ -124,6 +225,10 @@ fn header(snapshot: &DebugSnapshot, state: &DevToolsState) -> View<DevToolsActio
         .into_view()
 }
 
+/// Builds filtered pre-order node buttons inside a scroll view.
+///
+/// Selected nodes use `>`; otherwise hovered nodes use `~`. Indentation repeats
+/// two spaces per depth and `!` marks any per-node warning.
 fn tree_panel(snapshot: &DebugSnapshot, state: &DevToolsState) -> View<DevToolsAction> {
     let mut list = Column::new().fill_width();
     for node in snapshot
@@ -163,6 +268,10 @@ fn tree_panel(snapshot: &DebugSnapshot, state: &DevToolsState) -> View<DevToolsA
     section("Tree", ScrollView::new().child(list).into_view())
 }
 
+/// Builds property/layout, optional terminal, and warning sections.
+///
+/// Details prefer the selected ID when present in the snapshot, otherwise the
+/// first node. The warning section is always present.
 fn details_panel(snapshot: &DebugSnapshot, state: &DevToolsState) -> View<DevToolsAction> {
     let selected = state
         .selected
@@ -186,6 +295,7 @@ fn details_panel(snapshot: &DebugSnapshot, state: &DevToolsState) -> View<DevToo
     ScrollView::new().child(content).into_view()
 }
 
+/// Formats stable identity, key, parent, and child values for one node.
 fn node_properties(node: &DebugNode) -> View<DevToolsAction> {
     Column::new()
         .fill_width()
@@ -200,6 +310,9 @@ fn node_properties(node: &DebugNode) -> View<DevToolsAction> {
         .into_view()
 }
 
+/// Formats node geometry, hints, flex inputs, and optional constraints.
+///
+/// Floating-point display uses one decimal place; absent values use `-`.
 fn node_layout(node: &DebugNode) -> View<DevToolsAction> {
     Column::new()
         .fill_width()
@@ -241,6 +354,7 @@ fn node_layout(node: &DebugNode) -> View<DevToolsAction> {
         .into_view()
 }
 
+/// Builds warning rows or the explicit `No warnings` empty state.
 fn warnings_view(snapshot: &DebugSnapshot) -> View<DevToolsAction> {
     let mut list = Column::new().fill_width();
     if snapshot.warnings.is_empty() {
@@ -253,6 +367,7 @@ fn warnings_view(snapshot: &DebugSnapshot) -> View<DevToolsAction> {
     list.into_view()
 }
 
+/// Builds a warning button that selects its optional affected node.
 fn warning_row(warning: &DebugWarning) -> View<DevToolsAction> {
     Button::new()
         .fill_width()
@@ -265,6 +380,7 @@ fn warning_row(warning: &DebugWarning) -> View<DevToolsAction> {
 }
 
 #[cfg(feature = "terminal")]
+/// Builds one terminal block per inspection in snapshot order.
 fn terminal_inspector(snapshot: &DebugSnapshot) -> View<DevToolsAction> {
     let mut list = Column::new().fill_width();
     for terminal in &snapshot.terminal_inspections {
@@ -274,6 +390,10 @@ fn terminal_inspector(snapshot: &DebugSnapshot) -> View<DevToolsAction> {
 }
 
 #[cfg(feature = "terminal")]
+/// Formats bounded terminal state without exposing hyperlink targets.
+///
+/// It shows the newest three commands in reverse order, the oldest three
+/// retained warnings, and the first four captured latest-output lines.
 fn terminal_debug_block(terminal: &TerminalDebugSnapshot) -> View<DevToolsAction> {
     let snapshot = &terminal.snapshot;
     let mut list = Column::new()
@@ -335,6 +455,7 @@ fn terminal_debug_block(terminal: &TerminalDebugSnapshot) -> View<DevToolsAction
     list.into_view()
 }
 
+/// Wraps titled content with eight logical pixels of padding and panel styling.
 fn section(title: impl Into<String>, child: impl IntoView<DevToolsAction>) -> View<DevToolsAction> {
     Container::new()
         .fill_width()
@@ -349,6 +470,7 @@ fn section(title: impl Into<String>, child: impl IntoView<DevToolsAction>) -> Vi
         .into_view()
 }
 
+/// Builds a keyed mode button; hidden mode uses an internal stable fallback key.
 fn mode_button(label_text: &str, mode: DevToolsMode) -> View<DevToolsAction> {
     let key = match mode {
         DevToolsMode::Overlay => DEVTOOLS_MODE_OVERLAY_KEY,
@@ -363,10 +485,15 @@ fn mode_button(label_text: &str, mode: DevToolsMode) -> View<DevToolsAction> {
         .into_view()
 }
 
+/// Builds 12-logical-pixel white UI text.
 fn label(text: impl Into<String>) -> Text {
     Text::new(text.into()).style(TextStyle::new(FontId::Ui, 12, Color::WHITE))
 }
 
+/// Matches trimmed lowercase filter text against widget name, key, or decimal ID.
+///
+/// Unicode lowercase conversion allocates for each inspected node when the
+/// filter is nonempty. Whitespace-only filters match every node.
 fn node_matches(node: &DebugNode, state: &DevToolsState) -> bool {
     if state.filter.trim().is_empty() {
         return true;
@@ -380,6 +507,7 @@ fn node_matches(node: &DebugNode, state: &DevToolsState) -> bool {
         || node.id.to_string().contains(&needle)
 }
 
+/// Returns 560 logical pixels for overlay/right, fill for bottom, and zero when hidden.
 fn panel_width(mode: DevToolsMode) -> Length {
     match mode {
         DevToolsMode::Overlay | DevToolsMode::DockRight => Length::px(560.0),
@@ -388,6 +516,7 @@ fn panel_width(mode: DevToolsMode) -> Length {
     }
 }
 
+/// Returns fill for overlay/right, 280 logical pixels for bottom, and zero when hidden.
 fn panel_height(mode: DevToolsMode) -> Length {
     match mode {
         DevToolsMode::Overlay | DevToolsMode::DockRight => Length::Fill,
@@ -396,6 +525,7 @@ fn panel_height(mode: DevToolsMode) -> Length {
     }
 }
 
+/// Formats optional logical geometry with one decimal and derived bottom edge.
 fn format_rect(label: &str, rect: Option<ailloli_ui_devtools_core::DebugRect>) -> String {
     match rect {
         Some(rect) => format!(
@@ -410,6 +540,7 @@ fn format_rect(label: &str, rect: Option<ailloli_ui_devtools_core::DebugRect>) -
     }
 }
 
+/// Formats `(min_w,min_h)` and `(max_w,max_h)` with one decimal place.
 fn format_constraints(c: ailloli_ui_devtools_core::DebugConstraints) -> String {
     format!(
         "min=({:.1},{:.1}) max=({:.1},{:.1})",

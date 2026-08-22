@@ -3,26 +3,66 @@
 use super::Rect;
 
 /// Axis-aligned or rounded clip region in local coordinates.
+///
+/// Possible values are [`ClipShape::Rect`] and [`ClipShape::RoundRect`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{ClipShape, Rect};
+/// assert!(ClipShape::rect(Rect::new(0.0, 0.0, 10.0, 10.0)).contains_point(5.0, 5.0));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ClipShape {
     /// Axis-aligned rectangle.
     Rect(Rect),
     /// Rounded rectangle with uniform corner radius.
-    RoundRect { rect: Rect, radius: f32 },
+    RoundRect {
+        /// Axis-aligned outer bounds in local logical pixels.
+        rect: Rect,
+        /// Requested uniform radius in logical pixels.
+        ///
+        /// Hit-testing clamps this to a non-negative half-extent, but the stored
+        /// value itself is not normalized.
+        radius: f32,
+    },
 }
 
 impl ClipShape {
     /// Creates a rectangular clip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+    /// assert_eq!(ClipShape::rect(rect).bounding_rect(), rect);
+    /// ```
     pub fn rect(r: Rect) -> Self {
         Self::Rect(r)
     }
 
-    /// Creates a rounded-rect clip.
+    /// Creates a rounded-rect clip without normalizing its radius or bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// assert!(matches!(ClipShape::round_rect(Rect::new(0.0, 0.0, 10.0, 10.0), 2.0), ClipShape::RoundRect { .. }));
+    /// ```
     pub fn round_rect(rect: Rect, radius: f32) -> Self {
         Self::RoundRect { rect, radius }
     }
 
     /// Tight axis-aligned bounds of this clip (ignores corner cut-outs for `RoundRect`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// let rect = Rect::new(1.0, 2.0, 3.0, 4.0);
+    /// assert_eq!(ClipShape::round_rect(rect, 2.0).bounding_rect(), rect);
+    /// ```
     pub fn bounding_rect(&self) -> Rect {
         match self {
             Self::Rect(r) | Self::RoundRect { rect: r, .. } => *r,
@@ -30,6 +70,13 @@ impl ClipShape {
     }
 
     /// Hit-test in **local** clip space (same coordinate system as `rect`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// assert!(!ClipShape::round_rect(Rect::new(0.0, 0.0, 10.0, 10.0), 5.0).contains_point(0.0, 0.0));
+    /// ```
     pub fn contains_point(&self, px: f32, py: f32) -> bool {
         match self {
             Self::Rect(r) => r.contains(px, py),
@@ -37,7 +84,21 @@ impl ClipShape {
         }
     }
 
-    /// Intersection of two clips (radius is the minimum when both are rounded).
+    /// Returns a conservative rectangular intersection of two clips.
+    ///
+    /// A rounded result keeps the rounded operand's radius, or the minimum
+    /// radius when both operands are rounded. This is not an exact geometric
+    /// intersection of corner arcs; it is a compact clip approximation. Zero-
+    /// area edge contact returns `None` through [`Rect::intersection`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// let a = ClipShape::rect(Rect::new(0.0, 0.0, 10.0, 10.0));
+    /// let b = ClipShape::rect(Rect::new(5.0, 5.0, 10.0, 10.0));
+    /// assert_eq!(a.intersect(&b).unwrap().bounding_rect(), Rect::new(5.0, 5.0, 5.0, 5.0));
+    /// ```
     pub fn intersect(&self, other: &Self) -> Option<Self> {
         match (self, other) {
             (Self::Rect(a), Self::Rect(b)) => a.intersection(*b).map(Self::Rect),
@@ -73,6 +134,7 @@ impl ClipShape {
     }
 }
 
+/// Tests inclusive rounded bounds after clamping radius to the rectangle extents.
 fn round_rect_contains(rect: Rect, radius: f32, px: f32, py: f32) -> bool {
     if px < rect.x || py < rect.y || px > rect.right() || py > rect.bottom() {
         return false;
@@ -116,6 +178,8 @@ fn round_rect_contains(rect: Rect, radius: f32, px: f32, py: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    //! Covers rectangular bounds and rounded-corner exclusion.
+
     use super::*;
 
     #[test]

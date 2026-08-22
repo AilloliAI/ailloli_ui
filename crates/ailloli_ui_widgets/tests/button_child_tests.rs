@@ -1,3 +1,5 @@
+//! Button child composition, alignment, box-model, and shadow scenarios.
+
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::style::{AlignItems, Background, Border, BoxStyle, JustifyContent, Radius};

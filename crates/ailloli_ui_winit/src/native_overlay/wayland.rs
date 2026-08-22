@@ -34,13 +34,37 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Positive compositor configure dimensions plus the current integer buffer scale.
+///
+/// # Examples
+///
+/// ```
+/// // A 1280x720 logical output at scale 2 requires a 2560x1440 surface.
+/// let physical: (u32, u32) = (1280_u32.saturating_mul(2), 720_u32.saturating_mul(2));
+/// assert_eq!(physical, (2560, 1440));
+/// ```
 pub(crate) struct WaylandOverlayConfigured {
+    /// Configured logical surface width.
     pub logical_width: u32,
+    /// Configured logical surface height.
     pub logical_height: u32,
+    /// Integer Wayland buffer scale, normalized to at least one when consumed.
     pub scale_factor: i32,
 }
 
+/// Conversion from logical layer-shell configure to physical surface extent.
 impl WaylandOverlayConfigured {
+    /// Multiplies logical dimensions by `max(scale_factor, 1)` with saturation.
+    ///
+    /// Each result component is then clamped to at least one physical pixel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // The native-overlay API exposes physical dimensions after configure.
+    /// let scale = 2_u32;
+    /// assert_eq!(640_u32.saturating_mul(scale).max(1), 1280);
+    /// ```
     pub fn physical_size(self) -> PhysicalSize<u32> {
         let scale = self.scale_factor.max(1) as u32;
         PhysicalSize::new(
@@ -51,29 +75,65 @@ impl WaylandOverlayConfigured {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Events delivered from the Wayland dispatcher to the UI host.
+///
+/// # Examples
+///
+/// ```
+/// // Public hosts treat configure as drawable and closure as presentation loss.
+/// let configured_is_drawable = true;
+/// assert!(configured_is_drawable);
+/// ```
 pub(crate) enum WaylandOverlayEvent {
+    /// A positive logical configure with the current buffer scale.
     Configured(WaylandOverlayConfigured),
+    /// The compositor permanently closed the layer surface.
     Closed,
 }
 
 /// Keeps the connection and native objects alive for wgpu's surface.
+///
+/// Drop signals the dispatcher with release ordering and joins it before the
+/// connection, surface, layer role, or input region can be destroyed.
+///
+/// # Examples
+///
+/// ```no_run
+/// // The public `UiApp` retains this owner behind its native presentation.
+/// let options = ailloli_ui_winit::NativeOverlayOptions::new(
+///     ailloli_ui_winit::NativeOverlayTarget::new(
+///         ailloli_ui_winit::NativeOverlayRect::new(0.0, 0.0, 800.0, 600.0),
+///     ),
+/// );
+/// assert_eq!(options.target.logical_rect.height, 600.0);
+/// ```
 pub(crate) struct WaylandOverlaySurface {
+    /// Live display connection backing the exported raw display handle.
     connection: Connection,
+    /// Live Wayland surface backing the exported raw window handle.
     surface: wl_surface::WlSurface,
+    /// Layer role retained for the lifetime of the surface.
     _layer: LayerSurface,
+    /// Empty pointer region retained only for pass-through mode.
     _empty_input_region: Option<Region>,
+    /// Release/acquire stop bit shared with the dispatcher thread.
     stop: Arc<AtomicBool>,
+    /// Joined on drop so protocol objects outlive the dispatcher.
     dispatcher: Option<JoinHandle<()>>,
 }
 
+/// Omits raw Wayland pointers and protocol internals from debug output.
 impl std::fmt::Debug for WaylandOverlaySurface {
+    /// Formats a non-exhaustive label without exposing native pointers.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WaylandOverlaySurface")
             .finish_non_exhaustive()
     }
 }
 
+/// Stops and joins the dispatcher before native protocol owners are dropped.
 impl Drop for WaylandOverlaySurface {
+    /// Stops and joins the dispatcher synchronously.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(dispatcher) = self.dispatcher.take() {
@@ -82,7 +142,9 @@ impl Drop for WaylandOverlaySurface {
     }
 }
 
+/// Borrows a display handle whose lifetime is bounded by the owned connection.
 impl HasDisplayHandle for WaylandOverlaySurface {
+    /// Returns a borrowed non-null display pointer owned by `connection`.
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         let pointer = NonNull::new(self.connection.backend().display_ptr().cast())
             .expect("live Wayland connection has a display pointer");
@@ -92,7 +154,9 @@ impl HasDisplayHandle for WaylandOverlaySurface {
     }
 }
 
+/// Borrows a window handle whose lifetime is bounded by the owned surface.
 impl HasWindowHandle for WaylandOverlaySurface {
+    /// Returns a borrowed non-null surface object pointer owned by `surface`.
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let pointer = NonNull::new(self.surface.id().as_ptr().cast())
             .expect("live Wayland surface has an object pointer");
@@ -102,13 +166,43 @@ impl HasWindowHandle for WaylandOverlaySurface {
     }
 }
 
+/// Fully established layer-shell presentation returned to the UI host.
+///
+/// # Examples
+///
+/// ```
+/// // Public capability records identify the established layer-shell backend.
+/// use ailloli_ui_winit::NativeOverlayBackend;
+/// assert_eq!(format!("{:?}", NativeOverlayBackend::WaylandLayerShell), "WaylandLayerShell");
+/// ```
 pub(crate) struct CreatedWaylandOverlay {
+    /// Shared raw-window-handle owner for the renderer surface.
     pub surface: Arc<WaylandOverlaySurface>,
+    /// Initial positive configure used to size the renderer.
     pub configured: WaylandOverlayConfigured,
+    /// Unbounded configure/closed receiver drained by the UI host.
     pub events: mpsc::Receiver<WaylandOverlayEvent>,
+    /// Invariants established before this value was returned.
     pub capabilities: NativeOverlayCapabilities,
 }
 
+/// Creates and synchronously configures an exact-output Wayland layer-shell overlay.
+///
+/// Matching requires one output with the same integral logical rectangle and,
+/// when supplied, the same name. The initial configure must arrive within five
+/// seconds and must equal the requested logical dimensions. A named dispatcher
+/// thread then owns event delivery; its unbounded channel wakes the UI host.
+///
+/// # Examples
+///
+/// ```no_run
+/// // `UiApp` invokes this backend after validating public overlay options.
+/// use ailloli_ui_winit::{NativeOverlayOptions, NativeOverlayRect, NativeOverlayTarget};
+/// let options = NativeOverlayOptions::new(NativeOverlayTarget::new(
+///     NativeOverlayRect::new(0.0, 0.0, 1920.0, 1080.0),
+/// ));
+/// assert_eq!(options.target.logical_rect.width, 1920.0);
+/// ```
 pub(crate) fn create(
     options: &NativeOverlayOptions,
     event_wake: Arc<dyn UiWake>,
@@ -215,6 +309,7 @@ pub(crate) fn create(
     })
 }
 
+/// Finds exactly one output matching integral geometry and optional exact name.
 fn match_output(
     output_state: &OutputState,
     target: NativeOverlayRect,
@@ -242,9 +337,14 @@ fn match_output(
     Ok(first)
 }
 
+/// Converts finite near-integral rectangle components to exact signed integers.
+///
+/// Values may differ from their rounded integer by at most `1e-6`; dimensions
+/// have already been checked positive by the caller. Out-of-range values fail.
 fn logical_rect_as_i32(
     rect: NativeOverlayRect,
 ) -> Result<(i32, i32, i32, i32), NativeOverlayError> {
+    /// Rounds an `f64` only when it is within `1e-6` of the `i32` range.
     fn exact_i32(value: f64) -> Option<i32> {
         let rounded = value.round();
         ((value - rounded).abs() <= 1.0e-6
@@ -260,6 +360,7 @@ fn logical_rect_as_i32(
     ))
 }
 
+/// Polls the Wayland file descriptor in 100 ms slices until stop, close, or I/O failure.
 fn dispatch_loop(
     mut event_queue: wayland_client::EventQueue<OverlayDispatch>,
     mut state: OverlayDispatch,
@@ -288,24 +389,36 @@ fn dispatch_loop(
     }
 }
 
+/// Dispatcher-owned protocol state and host-notification channel.
 struct OverlayDispatch {
+    /// Toolkit registry state.
     registry_state: RegistryState,
+    /// Output metadata used only during initial exact matching.
     output_state: OutputState,
+    /// Active layer surface after creation.
     layer: Option<LayerSurface>,
+    /// Current integer buffer scale, normalized to at least one on updates.
     scale_factor: i32,
+    /// Unbounded configure/closed event sender.
     event_tx: mpsc::Sender<WaylandOverlayEvent>,
+    /// Best-effort UI-thread wake after each queued event.
     event_wake: Arc<dyn UiWake>,
+    /// Permanent compositor-close flag terminating dispatch.
     closed: bool,
 }
 
+/// Event queueing and best-effort host wake-up.
 impl OverlayDispatch {
+    /// Sends an event, then wakes the UI host; both failures are teardown-safe.
     fn send(&self, event: WaylandOverlayEvent) {
         let _ = self.event_tx.send(event);
         let _ = self.event_wake.wake();
     }
 }
 
+/// Maintains buffer scale; other compositor notifications carry no host state.
 impl CompositorHandler for OverlayDispatch {
+    /// Applies `max(new_factor, 1)` to both the surface and stored scale.
     fn scale_factor_changed(
         &mut self,
         _connection: &Connection,
@@ -317,6 +430,7 @@ impl CompositorHandler for OverlayDispatch {
         self.scale_factor = new_factor.max(1);
     }
 
+    /// Ignores transform notifications because layer configure supplies logical size.
     fn transform_changed(
         &mut self,
         _connection: &Connection,
@@ -326,6 +440,7 @@ impl CompositorHandler for OverlayDispatch {
     ) {
     }
 
+    /// Ignores frame callbacks; the renderer controls presentation cadence.
     fn frame(
         &mut self,
         _connection: &Connection,
@@ -335,6 +450,7 @@ impl CompositorHandler for OverlayDispatch {
     ) {
     }
 
+    /// Ignores entry because the layer was created for one exact output.
     fn surface_enter(
         &mut self,
         _connection: &Connection,
@@ -344,6 +460,7 @@ impl CompositorHandler for OverlayDispatch {
     ) {
     }
 
+    /// Ignores leave; compositor closure is the terminal signal.
     fn surface_leave(
         &mut self,
         _connection: &Connection,
@@ -354,11 +471,14 @@ impl CompositorHandler for OverlayDispatch {
     }
 }
 
+/// Supplies output state for toolkit dispatch after initial matching.
 impl OutputHandler for OverlayDispatch {
+    /// Returns mutable toolkit output metadata.
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
 
+    /// No-op: this surface remains bound to its initially matched output.
     fn new_output(
         &mut self,
         _connection: &Connection,
@@ -367,6 +487,7 @@ impl OutputHandler for OverlayDispatch {
     ) {
     }
 
+    /// No-op: configure events communicate size/scale changes to the host.
     fn update_output(
         &mut self,
         _connection: &Connection,
@@ -375,6 +496,7 @@ impl OutputHandler for OverlayDispatch {
     ) {
     }
 
+    /// No-op: layer closure is forwarded separately.
     fn output_destroyed(
         &mut self,
         _connection: &Connection,
@@ -384,7 +506,9 @@ impl OutputHandler for OverlayDispatch {
     }
 }
 
+/// Forwards positive configure sizes and terminal compositor closure.
 impl LayerShellHandler for OverlayDispatch {
+    /// Marks dispatch closed and queues one terminal event.
     fn closed(
         &mut self,
         _connection: &Connection,
@@ -395,6 +519,7 @@ impl LayerShellHandler for OverlayDispatch {
         self.send(WaylandOverlayEvent::Closed);
     }
 
+    /// Queues only configure events whose logical width and height are non-zero.
     fn configure(
         &mut self,
         _connection: &Connection,
@@ -419,7 +544,9 @@ delegate_output!(OverlayDispatch);
 delegate_layer!(OverlayDispatch);
 delegate_registry!(OverlayDispatch);
 
+/// Exposes registry state and delegated output handlers.
 impl ProvidesRegistryState for OverlayDispatch {
+    /// Returns mutable registry state.
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
@@ -428,6 +555,7 @@ impl ProvidesRegistryState for OverlayDispatch {
 }
 
 #[cfg(test)]
+/// Integral and fractional portal-rectangle conversion scenarios.
 mod tests {
     use super::*;
 

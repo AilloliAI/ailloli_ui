@@ -1,3 +1,5 @@
+//! Cross-widget focus-only activation and pointer-cancellation policy scenarios.
+
 use std::rc::Rc;
 use std::time::Duration;
 

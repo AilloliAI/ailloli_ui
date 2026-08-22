@@ -1,3 +1,11 @@
+//! Deterministic raster and platform-container generation for application icons.
+//!
+//! The packaging pipeline validates one SVG source, rasterizes it at the fixed
+//! platform sizes below, and writes PNG, ICO, and ICNS derivatives into a
+//! content-addressed cache directory. The functions allocate their encoded
+//! output in memory before writing it; callers should therefore avoid untrusted
+//! or unbounded size lists.
+
 use ailloli_ui_core::AppIcon;
 use ailloli_ui_icon::{rasterize_app_icon, validate_app_icon, IconError};
 use image::codecs::png::PngEncoder;
@@ -5,32 +13,131 @@ use image::{ExtendedColorType, ImageEncoder};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Square PNG edge lengths, in physical pixels, installed in Linux hicolor directories.
+///
+/// # Examples
+///
+/// ```
+/// let sizes: &[u32] = &[16, 24, 32, 48, 64, 128, 256, 512];
+/// assert_eq!(sizes.first(), Some(&16));
+/// assert_eq!(sizes.last(), Some(&512));
+/// ```
 pub const LINUX_PNG_SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256, 512];
+/// Square PNG edge lengths, in physical pixels, embedded as Windows ICO layers.
+///
+/// An edge length of `256` is represented by the ICO sentinel byte `0`.
+///
+/// # Examples
+///
+/// ```
+/// let sizes: &[u32] = &[16, 24, 32, 48, 64, 256];
+/// assert!(sizes.contains(&256));
+/// ```
 pub const WINDOWS_ICO_SIZES: &[u32] = &[16, 24, 32, 48, 64, 256];
+/// Square PNG edge lengths, in physical pixels, embedded in an Apple ICNS file.
+///
+/// # Examples
+///
+/// ```
+/// let sizes: &[u32] = &[16, 32, 64, 128, 256, 512, 1024];
+/// assert_eq!(sizes.len(), 7);
+/// ```
 pub const MACOS_ICNS_SIZES: &[u32] = &[16, 32, 64, 128, 256, 512, 1024];
 
+/// Failure produced while loading, validating, rasterizing, encoding, or writing icons.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_packaging::PackagingError;
+///
+/// let error: PackagingError = std::io::Error::new(
+///     std::io::ErrorKind::NotFound,
+///     "icon.svg",
+/// ).into();
+/// assert!(error.to_string().contains("packaging I/O failed"));
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum IconGenerationError {
+    /// The SVG source violates the framework icon contract.
     #[error(transparent)]
     Validation(#[from] IconError),
+    /// Reading or writing an icon file failed.
     #[error("icon I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Raster data could not be encoded as PNG.
     #[error("PNG encoding failed: {0}")]
     Png(#[from] image::ImageError),
 }
 
+/// Paths produced by [`generate_icon_set`].
+///
+/// `root` owns the `png/` directory; `ico` and `icns` name the two platform
+/// containers directly below that root. Construction succeeds only after all
+/// files have been written.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+///
+/// let root = PathBuf::from("target/ailloli_ui/icons/digest");
+/// let ico = root.join("app.ico");
+/// let icns = root.join("AppIcon.icns");
+/// assert_eq!(ico.file_name().and_then(|name| name.to_str()), Some("app.ico"));
+/// assert_eq!(icns.extension().and_then(|ext| ext.to_str()), Some("icns"));
+/// ```
 #[derive(Debug, Clone)]
 pub struct GeneratedIconSet {
+    /// Cache directory containing every generated derivative.
     pub root: PathBuf,
+    /// Windows multi-resolution icon at `root/app.ico`.
     pub ico: PathBuf,
+    /// macOS icon family at `root/AppIcon.icns`.
     pub icns: PathBuf,
 }
 
+/// Reads an SVG file without validating or rasterizing it.
+///
+/// The returned icon retains the lossy display form of `path` as its source
+/// name. Validation is deferred to generation.
+///
+/// # Errors
+///
+/// Returns [`IconGenerationError::Io`] when the file cannot be read.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::AppIcon;
+///
+/// let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>"#;
+/// let icon: AppIcon = AppIcon::from_svg_bytes(bytes.to_vec(), "icon.svg");
+/// assert_eq!(icon.source_path(), "icon.svg");
+/// ```
 pub fn app_icon_from_file(path: &Path) -> Result<AppIcon, IconGenerationError> {
     let bytes = fs::read(path)?;
     Ok(AppIcon::from_svg_bytes(bytes, path.to_string_lossy()))
 }
 
+/// Rasterizes `icon` to a square RGBA image and encodes it as PNG bytes.
+///
+/// `size` is both the width and height in physical pixels. The rasterizer's
+/// validation and dimension bounds apply; the complete RGBA raster and encoded
+/// PNG coexist in memory while this function runs.
+///
+/// # Errors
+///
+/// Returns a validation error for an invalid SVG or dimension and a PNG error
+/// if encoding fails.
+///
+/// # Examples
+///
+/// ```
+/// let size: u32 = 32;
+/// let png_signature: &[u8] = b"\x89PNG\r\n\x1a\n";
+/// assert_eq!((size, png_signature.len()), (32, 8));
+/// ```
 pub fn encode_png(icon: &AppIcon, size: u32) -> Result<Vec<u8>, IconGenerationError> {
     let raster = rasterize_app_icon(icon, size)?;
     let mut bytes = Vec::new();
@@ -43,6 +150,26 @@ pub fn encode_png(icon: &AppIcon, size: u32) -> Result<Vec<u8>, IconGenerationEr
     Ok(bytes)
 }
 
+/// Generates the complete Linux, Windows, and macOS icon set below `root`.
+///
+/// Existing files at the deterministic output paths are replaced. The function
+/// does not remove unrelated files already present under `root`, and a failure
+/// can leave a partial set behind.
+///
+/// # Errors
+///
+/// Returns an error when validation, rasterization, encoding, directory
+/// creation, or file writing fails.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+///
+/// let root = Path::new("target/ailloli_ui/icons/digest");
+/// assert_eq!(root.join("png/16.png").extension().and_then(|x| x.to_str()), Some("png"));
+/// assert_eq!(root.join("app.ico").file_name().and_then(|x| x.to_str()), Some("app.ico"));
+/// ```
 pub fn generate_icon_set(
     icon: &AppIcon,
     root: &Path,
@@ -65,6 +192,24 @@ pub fn generate_icon_set(
     })
 }
 
+/// Encodes one PNG-compressed layer per requested size into a Windows ICO file.
+///
+/// Layer order follows `sizes`; duplicates and an empty slice are preserved.
+/// ICO records store width and height as one byte, using `0` for every size at
+/// least 256. The current platform size list keeps counts, offsets, and lengths
+/// within their on-disk integer widths.
+///
+/// # Errors
+///
+/// Returns the first rasterization or PNG-encoding failure.
+///
+/// # Examples
+///
+/// ```
+/// let sizes: &[u32] = &[16, 32, 256];
+/// let encoded_widths: Vec<u8> = sizes.iter().map(|&size| if size >= 256 { 0 } else { size as u8 }).collect();
+/// assert_eq!(encoded_widths, [16, 32, 0]);
+/// ```
 pub fn encode_ico(icon: &AppIcon, sizes: &[u32]) -> Result<Vec<u8>, IconGenerationError> {
     let images: Vec<(u32, Vec<u8>)> = sizes
         .iter()
@@ -95,7 +240,25 @@ pub fn encode_ico(icon: &AppIcon, sizes: &[u32]) -> Result<Vec<u8>, IconGenerati
     Ok(output)
 }
 
+/// Encodes the seven standard PNG-backed application-icon chunks as ICNS.
+///
+/// Chunks are ordered from 16 through 1024 physical pixels and the container
+/// length uses big-endian bytes as required by ICNS.
+///
+/// # Errors
+///
+/// Returns the first rasterization or PNG-encoding failure.
+///
+/// # Examples
+///
+/// ```
+/// let header: &[u8; 4] = b"icns";
+/// let chunk_kinds = [b"icp4", b"icp5", b"icp6", b"ic07", b"ic08", b"ic09", b"ic10"];
+/// assert_eq!(header, b"icns");
+/// assert_eq!(chunk_kinds.len(), 7);
+/// ```
 pub fn encode_icns(icon: &AppIcon) -> Result<Vec<u8>, IconGenerationError> {
+    /// ICNS chunk identifiers paired positionally with [`MACOS_ICNS_SIZES`].
     const CHUNKS: &[&[u8; 4]] = &[
         b"icp4", b"icp5", b"icp6", b"ic07", b"ic08", b"ic09", b"ic10",
     ];
@@ -117,11 +280,14 @@ pub fn encode_icns(icon: &AppIcon) -> Result<Vec<u8>, IconGenerationError> {
 }
 
 #[cfg(test)]
+/// Verifies binary container headers and the fixed platform layer inventories.
 mod tests {
     use super::*;
 
+    /// Minimal valid SVG fixture shared by icon container scenarios.
     const SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#ef641c"/></svg>"##;
 
+    /// Builds the immutable icon fixture used by both encoding tests.
     fn icon() -> AppIcon {
         AppIcon::from_static_svg(SVG, "src/assets/icons/icon.svg")
     }

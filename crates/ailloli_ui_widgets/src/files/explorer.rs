@@ -1,3 +1,5 @@
+//! Snapshot-backed and retained-model filesystem tree widgets.
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -23,25 +25,40 @@ use crate::layout::{Container, LayoutExt, ScrollView};
 use super::icons::file_icon_visual_for_entry;
 use super::model::{sort_file_nodes, FileExplorerNode};
 
+/// Shared callback for the complete high-level action stream.
 type ActionHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileExplorerAction)>;
+/// Shared callback for one selected/opened URI.
 type UriHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileUri)>;
+/// Shared callback for an expansion transition.
 type ToggleHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileUri, bool)>;
+/// Shared callback for a committed inline rename.
 type RenameHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileExplorerRename)>;
+/// Shared callback for a committed directory draft.
 type CreateDirHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileExplorerCreateDir)>;
+/// Shared callback for a committed removal URI and optional parent.
 type RemoveHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileUri, Option<FileUri>)>;
+/// Resolves opaque retained identity to current file metadata on demand.
 type RetainedNodeResolver<T> = Rc<dyn Fn(T) -> Option<FileExplorerNode>>;
+/// Resolves a URI back to opaque retained identity for commands.
 type RetainedIdResolver<T> = Rc<dyn Fn(&FileUri) -> Option<T>>;
+/// Reserves an identity for a transient create draft.
 type RetainedNodeReserve<T> = Rc<dyn Fn(Option<&T>, FileKind) -> Option<T>>;
+/// Releases a reserved identity after create cancellation/failure.
 type RetainedNodeRelease<T> = Rc<dyn Fn(T)>;
+/// Shared callback for identity-aware retained model events.
 type RetainedEventHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, FileExplorerModelEvent<T>)>;
+/// Begins inline rename through the inner tree command channel.
 type TreeRenameCommandHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileUri)>;
+/// Begins inline create through the inner tree command channel.
 type TreeCreateCommandHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileUri, &'static str)>;
 
+/// Cloneable pair of context-menu-to-tree edit command adapters.
 struct FileExplorerTreeCommands<A> {
     rename: TreeRenameCommandHandler<A>,
     create: TreeCreateCommandHandler<A>,
 }
 
+/// Clones only reference-counted command closures, never application state.
 impl<A> Clone for FileExplorerTreeCommands<A> {
     fn clone(&self) -> Self {
         Self {
@@ -52,176 +69,369 @@ impl<A> Clone for FileExplorerTreeCommands<A> {
 }
 
 impl<A> FileExplorerTreeCommands<A> {
+    /// Requests inline editing for the URI row.
     fn begin_rename(&self, ctx: &mut EventCtx<A>, uri: FileUri) {
         (self.rename)(ctx, uri);
     }
 
+    /// Requests a transient child draft with the supplied default label.
     fn begin_create(&self, ctx: &mut EventCtx<A>, parent: FileUri, label: &'static str) {
         (self.create)(ctx, parent, label);
     }
 }
 
+/// Sentinel default label that also classifies a transient draft as a file.
 const NEW_FILE_NAME: &str = "New_File";
+/// Sentinel default label for a transient directory draft.
 const NEW_FOLDER_NAME: &str = "New_Folder";
 
+/// High-level intent emitted by snapshot and retained file explorers.
+///
+/// Requested variants start UI/application workflows; committed variants carry
+/// completed inline edit data. The widget never performs filesystem mutations.
+/// Context-menu items that require an absent handler are rendered disabled.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::FileExplorerAction;
+/// let uri = FileUri::parse("file:///repo/main.rs")?;
+/// assert_eq!(FileExplorerAction::Select(uri.clone()), FileExplorerAction::Select(uri));
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileExplorerAction {
+    /// Row selection changed to the URI.
     Select(FileUri),
+    /// A leaf or context-menu target was activated.
     Open(FileUri),
+    /// A branch changed expansion state.
     Toggle {
+        /// Branch URI.
         uri: FileUri,
+        /// `true` for expanded, `false` for collapsed.
         expanded: bool,
     },
+    /// UI should begin or authorize renaming this URI.
     RenameRequested {
+        /// Target URI before rename.
         uri: FileUri,
     },
+    /// Inline rename was committed.
     Rename(FileExplorerRename),
+    /// UI/application should confirm or begin removal.
     RemoveRequested {
+        /// Target URI.
         uri: FileUri,
+        /// Lexical parent when available.
         parent: Option<FileUri>,
     },
+    /// Tree delete interaction was committed.
     Remove {
+        /// Target URI.
         uri: FileUri,
+        /// Lexical parent when available.
         parent: Option<FileUri>,
     },
+    /// UI should begin a file draft below the parent.
     CreateFileRequested {
+        /// Intended parent directory.
         parent: FileUri,
     },
+    /// UI should begin a directory draft below the parent.
     CreateDirRequested {
+        /// Intended parent directory.
         parent: FileUri,
     },
+    /// Inline file creation was committed.
     CreateFile(FileExplorerCreateFile),
+    /// Inline directory creation was committed.
     CreateDir(FileExplorerCreateDir),
+    /// Copies an absolute/display path string through application integration.
     CopyPath {
+        /// URI whose path is requested.
         uri: FileUri,
     },
+    /// Copies a path relative to its matching explorer root.
     CopyRelativePath {
+        /// URI whose relative path is requested.
         uri: FileUri,
     },
+    /// Copies the file/directory entry to application clipboard state.
     CopyFile {
+        /// Source URI.
         uri: FileUri,
     },
+    /// Cuts the entry into application clipboard state.
     CutFile {
+        /// Source URI.
         uri: FileUri,
     },
+    /// Pastes clipboard content into a directory.
     PasteInto {
+        /// Destination directory URI.
         target_dir: FileUri,
     },
+    /// Drag/drop move intent with resolved source/destination metadata.
     MoveEntry(FileExplorerMove),
+    /// Requests refreshing one directory/workspace root.
     Refresh {
+        /// Directory URI to refresh.
         uri: FileUri,
     },
+    /// Requests a terminal rooted at a directory.
     OpenTerminalHere {
+        /// Directory URI.
         uri: FileUri,
     },
+    /// Requests scoped search in a directory.
     SearchInFolder {
+        /// Directory URI.
         uri: FileUri,
     },
+    /// Requests revealing the entry in a workspace integration.
     RevealInWorkspace {
+        /// Entry URI.
         uri: FileUri,
     },
+    /// Adds a directory as a workspace root.
     AddFolderToWorkspace {
+        /// Directory URI.
         uri: FileUri,
     },
+    /// Removes an existing explorer root from the workspace.
     RemoveFolderFromWorkspace {
+        /// Root URI.
         uri: FileUri,
     },
+    /// Replaces the workspace root with a directory.
     SetWorkspaceRoot {
+        /// New root URI.
         uri: FileUri,
     },
+    /// Opens a workspace rooted at the URI.
     OpenWorkspaceHere {
+        /// Workspace root URI.
         uri: FileUri,
     },
+    /// Opens workspace settings.
     OpenWorkspaceSettings,
+    /// Collapses all branches.
     CollapseAll,
+    /// Expands all branches.
     ExpandAll,
+    /// Reveals the application's active file.
     RevealActiveFile,
+    /// Opens workspace-wide search.
     SearchInWorkspace,
 }
 
+/// Committed inline rename payload.
+///
+/// Names are stored verbatim; validation and filesystem mutation belong to the
+/// application/provider layer.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::FileExplorerRename;
+/// let rename = FileExplorerRename { uri: FileUri::parse("file:///old")?, old_name: "old".into(), new_name: "new".into() };
+/// assert_eq!(rename.new_name, "new");
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileExplorerRename {
+    /// URI before the rename is applied.
     pub uri: FileUri,
+    /// Previous visible label.
     pub old_name: String,
+    /// User-committed new label, possibly empty/invalid.
     pub new_name: String,
 }
 
+/// Committed inline directory-creation payload.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::FileExplorerCreateDir;
+/// let parent = FileUri::parse("file:///repo")?;
+/// let event = FileExplorerCreateDir { uri: parent.join_child("src")?, parent: Some(parent), after: None, name: "src".into() };
+/// assert_eq!(event.name, "src");
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileExplorerCreateDir {
+    /// Proposed URI for the new directory.
     pub uri: FileUri,
+    /// Parent directory, or `None` for a root-level draft.
     pub parent: Option<FileUri>,
+    /// Optional sibling after which the draft was positioned.
     pub after: Option<FileUri>,
+    /// User-committed name stored verbatim.
     pub name: String,
 }
 
+/// Committed inline file-creation payload.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::FileExplorerCreateFile;
+/// let parent = FileUri::parse("file:///repo")?;
+/// let event = FileExplorerCreateFile { uri: parent.join_child("main.rs")?, parent: Some(parent), after: None, name: "main.rs".into() };
+/// assert_eq!(event.name, "main.rs");
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileExplorerCreateFile {
+    /// Proposed URI for the new file.
     pub uri: FileUri,
+    /// Parent directory, or `None` for a root-level draft.
     pub parent: Option<FileUri>,
+    /// Optional sibling after which the draft was positioned.
     pub after: Option<FileUri>,
+    /// User-committed name stored verbatim.
     pub name: String,
 }
 
+/// Resolved drag/drop move intent.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::FileExplorerMove;
+/// let from = FileUri::parse("file:///repo/a")?;
+/// let parent = FileUri::parse("file:///repo/sub")?;
+/// let movement = FileExplorerMove { from: from.clone(), to: parent.join_child("a")?, source_parent: from.parent(), target_parent: parent };
+/// assert_ne!(movement.from, movement.to);
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileExplorerMove {
+    /// Original entry URI.
     pub from: FileUri,
+    /// Proposed destination URI including the original filename.
     pub to: FileUri,
+    /// Original lexical parent, if one exists.
     pub source_parent: Option<FileUri>,
+    /// Resolved destination directory.
     pub target_parent: FileUri,
 }
 
 /// Identity-aware event emitted by [`RetainedFileExplorer`]. The opaque node
 /// IDs let a filesystem coordinator mutate its store without rediscovering a
 /// node from a path that may already have changed.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::FileExplorerModelEvent;
+/// let event = FileExplorerModelEvent::Select { node_id: 7_u64, uri: FileUri::parse("file:///a")? };
+/// assert!(matches!(event, FileExplorerModelEvent::Select { node_id: 7, .. }));
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileExplorerModelEvent<T> {
+    /// Selection changed to an existing retained node.
     Select {
+        /// Opaque stable node identity.
         node_id: T,
+        /// URI resolved at interaction time.
         uri: FileUri,
     },
+    /// An existing retained leaf was activated.
     Open {
+        /// Opaque stable node identity.
         node_id: T,
+        /// URI resolved at interaction time.
         uri: FileUri,
     },
+    /// Expansion changed for an existing retained branch.
     Toggle {
+        /// Opaque stable node identity.
         node_id: T,
+        /// URI resolved at interaction time.
         uri: FileUri,
+        /// New expansion state.
         expanded: bool,
     },
+    /// Inline rename committed for an existing retained node.
     Rename {
+        /// Opaque stable node identity.
         node_id: T,
+        /// Path/name payload.
         rename: FileExplorerRename,
     },
+    /// Inline create committed using a previously reserved identity.
     Create {
+        /// Reserved identity for the new node.
         node_id: T,
+        /// Existing destination parent identity.
         parent_id: T,
+        /// Requested file or directory kind.
         kind: FileKind,
+        /// Proposed destination URI.
         uri: FileUri,
+        /// User-committed name.
         name: String,
     },
+    /// Inline create was cancelled and the reserved identity was released.
     CancelCreate {
+        /// Released draft identity.
         node_id: T,
     },
+    /// Valid drag/drop move resolved to retained identities.
     Move {
+        /// Moved node identity.
         node_id: T,
+        /// Destination parent identity.
         target_parent_id: T,
+        /// URI-level move payload.
         movement: FileExplorerMove,
     },
 }
 
+/// Row-density preset for file explorer tree styling.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::FileExplorerSize;
+/// assert_eq!(FileExplorerSize::default(), FileExplorerSize::Default);
+/// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileExplorerSize {
+    /// Compact tree row metrics.
     Compact,
+    /// Standard tree row metrics and default.
     #[default]
     Default,
 }
 
+/// File explorer styling delegated to the underlying tree view.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::FileExplorerStyle;
+/// let style = FileExplorerStyle::default();
+/// let _ = style.tree;
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileExplorerStyle {
+    /// Complete tree row, indent, icon, and interaction styling.
     pub tree: TreeViewStyle,
 }
 
+/// Derives standard-density styling from the default theme.
 impl Default for FileExplorerStyle {
     fn default() -> Self {
         Self::from_theme(Theme::default(), FileExplorerSize::Default)
@@ -229,6 +439,16 @@ impl Default for FileExplorerStyle {
 }
 
 impl FileExplorerStyle {
+    /// Maps file density to the equivalent tree-view size under `theme`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::files::{FileExplorerSize, FileExplorerStyle};
+    /// let style = FileExplorerStyle::from_theme(Theme::default(), FileExplorerSize::Compact);
+    /// let _ = style.tree;
+    /// ```
     pub fn from_theme(theme: Theme, size: FileExplorerSize) -> Self {
         let tree_size = match size {
             FileExplorerSize::Compact => TreeViewSize::Compact,
@@ -240,8 +460,27 @@ impl FileExplorerStyle {
     }
 }
 
+/// Snapshot-backed, URI-identified filesystem tree with editing and context menus.
+///
+/// Input snapshots are recursively sorted directory-first on each build and
+/// projected into an intent-only [`TreeView`]. The widget emits actions but does
+/// not mutate a filesystem. Default rendering is non-virtualized and vertically
+/// scrollable. `A` is the surrounding application's action type.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerNode};
+/// let nodes = [FileExplorerNode::directory(FileUri::parse("file:///repo")?, "repo")];
+/// let explorer = FileExplorer::<()>::new(nodes);
+/// let _ = explorer;
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 pub struct FileExplorer<A = ()> {
+    /// Standard logical-pixel size and position constraints.
     pub(crate) layout: LayoutStyle,
+    /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
     nodes: Vec<FileExplorerNode>,
     bound_nodes: Option<Signal<Vec<FileExplorerNode>>>,
@@ -266,6 +505,7 @@ pub struct FileExplorer<A = ()> {
 
 crate::impl_layout_builders!(FileExplorer);
 
+/// Creates an empty enabled explorer through [`Self::new`].
 impl<A: 'static> Default for FileExplorer<A> {
     fn default() -> Self {
         Self::new(Vec::new())
@@ -273,6 +513,22 @@ impl<A: 'static> Default for FileExplorer<A> {
 }
 
 impl<A: 'static> FileExplorer<A> {
+    /// Collects a static recursive snapshot with default interaction/style state.
+    ///
+    /// Input order is not retained during rendering: sibling nodes are sorted
+    /// recursively. Duplicate URIs are accepted but make identity ambiguous.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerNode};
+    /// let explorer = FileExplorer::<()>::new([
+    ///     FileExplorerNode::file(FileUri::parse("file:///a")?, "a"),
+    /// ]);
+    /// let _ = explorer;
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn new(nodes: impl IntoIterator<Item = FileExplorerNode>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -299,17 +555,59 @@ impl<A: 'static> FileExplorer<A> {
         }
     }
 
+    /// Binds the recursive snapshot to live shared state.
+    ///
+    /// Bound nodes take precedence over constructor nodes. Each build reads,
+    /// clones, and recursively sorts the current vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerNode};
+    /// let explorer = FileExplorer::<()>::default().bind_nodes(State::new(Vec::<FileExplorerNode>::new()));
+    /// let _ = explorer;
+    /// ```
     pub fn bind_nodes(mut self, nodes: impl Into<Signal<Vec<FileExplorerNode>>>) -> Self {
         self.bound_nodes = Some(nodes.into());
         self
     }
 
+    /// Sets static/generic selected-URI input and clears writable selection state.
+    ///
+    /// User selection still emits callbacks, but only [`Self::bind_selected`]
+    /// installs the writable signal that the inner tree updates automatically.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().selected(FileUri::parse("file:///a")?);
+    /// let _ = explorer;
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<FileUri>>) -> Self {
         self.selected = Some(selected.into());
         self.bound_selected = None;
         self
     }
 
+    /// Binds selection to writable shared state.
+    ///
+    /// The inner tree writes the URI on user selection before callbacks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let selected = State::new(FileUri::parse("file:///a")?);
+    /// let explorer = FileExplorer::<()>::default().bind_selected(selected);
+    /// let _ = explorer;
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn bind_selected(mut self, selected: impl Into<Signal<FileUri>>) -> Self {
         let signal = selected.into();
         self.selected = Some(Binding::Signal(signal.clone()));
@@ -317,12 +615,39 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Sets static/generic expanded URIs and clears writable expansion state.
+    ///
+    /// This input takes precedence over default expansion. Only a signal installed
+    /// by [`Self::bind_expanded`] is automatically written on toggles.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().expanded(vec![FileUri::parse("file:///repo")?]);
+    /// let _ = explorer;
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn expanded(mut self, expanded: impl Into<Binding<Vec<FileUri>>>) -> Self {
         self.expanded = Some(expanded.into());
         self.bound_expanded = None;
         self
     }
 
+    /// Binds expansion to writable shared state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let expanded = State::new(vec![FileUri::parse("file:///repo")?]);
+    /// let explorer = FileExplorer::<()>::default().bind_expanded(expanded);
+    /// let _ = explorer;
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn bind_expanded(mut self, expanded: impl Into<Signal<Vec<FileUri>>>) -> Self {
         let signal = expanded.into();
         self.expanded = Some(Binding::Signal(signal.clone()));
@@ -330,6 +655,20 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Appends one unique initial expansion URI.
+    ///
+    /// Defaults apply only when neither [`Self::expanded`] nor
+    /// [`Self::bind_expanded`] supplies controlled state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().default_expanded(FileUri::parse("file:///repo")?);
+    /// let _ = explorer;
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn default_expanded(mut self, uri: FileUri) -> Self {
         if !self.default_expanded.iter().any(|item| item == &uri) {
             self.default_expanded.push(uri);
@@ -337,6 +676,18 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Replaces initial expansion URIs, preserving first-occurrence order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let root = FileUri::parse("file:///repo")?;
+    /// let explorer = FileExplorer::<()>::default().default_expanded_many([root.clone(), root]);
+    /// let _ = explorer;
+    /// # Ok::<(), ailloli_ui_fs::FileError>(())
+    /// ```
     pub fn default_expanded_many(mut self, uris: impl IntoIterator<Item = FileUri>) -> Self {
         self.default_expanded.clear();
         for uri in uris {
@@ -347,41 +698,128 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Binds whether tree interaction is disabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().disabled(State::new(true));
+    /// let _ = explorer;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Binds whether keyboard/blank-area paste actions are eligible.
+    ///
+    /// A row context menu can still emit `PasteInto` when an aggregate action
+    /// handler exists; this flag primarily gates shortcuts and blank menus.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().clipboard_can_paste(true);
+    /// let _ = explorer;
+    /// ```
     pub fn clipboard_can_paste(mut self, can_paste: impl Into<Binding<bool>>) -> Self {
         self.clipboard_can_paste = can_paste.into();
         self
     }
 
+    /// Replaces the complete tree style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerStyle};
+    /// let explorer = FileExplorer::<()>::default().file_style(FileExplorerStyle::default());
+    /// let _ = explorer;
+    /// ```
     pub fn file_style(mut self, style: FileExplorerStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Applies a density preset using the default theme.
+    ///
+    /// This replaces the entire existing style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerSize};
+    /// let explorer = FileExplorer::<()>::default().file_size(FileExplorerSize::Compact);
+    /// let _ = explorer;
+    /// ```
     pub fn file_size(mut self, size: FileExplorerSize) -> Self {
         self.style = FileExplorerStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Enables viewport-driven row virtualization in the inner tree.
+    ///
+    /// The default is `false`; this changes rendering work, not snapshot contents.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().virtualized(true);
+    /// let _ = explorer;
+    /// ```
     pub fn virtualized(mut self, virtualized: bool) -> Self {
         self.virtualized = virtualized;
         self
     }
 
+    /// Wraps the tree in a vertical [`ScrollView`] when true.
+    ///
+    /// Scrolling is enabled by default. When disabled, explorer layout builders
+    /// apply directly to the tree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().scrollable(false);
+    /// let _ = explorer;
+    /// ```
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
         self
     }
 
+    /// Maps the complete explorer action stream into application actions.
+    ///
+    /// Specialized callbacks run first for their committed interaction, so both
+    /// may dispatch for one event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerAction};
+    /// enum Action { Explorer(FileExplorerAction) }
+    /// let explorer = FileExplorer::<Action>::default().on_action(Action::Explorer);
+    /// let _ = explorer;
+    /// ```
     pub fn on_action(mut self, f: impl Fn(FileExplorerAction) -> A + 'static) -> Self {
         self.on_action = Some(Rc::new(move |ctx, action| ctx.dispatch(f(action))));
         self
     }
 
+    /// Handles the complete action stream with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().on_action_ctx(|_ctx, _action| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_action_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, FileExplorerAction) + 'static,
@@ -390,41 +828,123 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Maps row selection into an application action before aggregate emission.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// enum Action { Select(FileUri) }
+    /// let explorer = FileExplorer::<Action>::default().on_select(Action::Select);
+    /// let _ = explorer;
+    /// ```
     pub fn on_select(mut self, f: impl Fn(FileUri) -> A + 'static) -> Self {
         self.on_select = Some(Rc::new(move |ctx, uri| ctx.dispatch(f(uri))));
         self
     }
 
+    /// Handles row selection with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().on_select_ctx(|_ctx, _uri| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_select_ctx(mut self, f: impl Fn(&mut EventCtx<A>, FileUri) + 'static) -> Self {
         self.on_select = Some(Rc::new(f));
         self
     }
 
+    /// Maps leaf/context-menu activation before aggregate `Open` emission.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// enum Action { Open(FileUri) }
+    /// let explorer = FileExplorer::<Action>::default().on_open(Action::Open);
+    /// let _ = explorer;
+    /// ```
     pub fn on_open(mut self, f: impl Fn(FileUri) -> A + 'static) -> Self {
         self.on_open = Some(Rc::new(move |ctx, uri| ctx.dispatch(f(uri))));
         self
     }
 
+    /// Handles leaf/context-menu activation with event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().on_open_ctx(|_ctx, _uri| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_open_ctx(mut self, f: impl Fn(&mut EventCtx<A>, FileUri) + 'static) -> Self {
         self.on_open = Some(Rc::new(f));
         self
     }
 
+    /// Maps branch URI/new-state transitions before aggregate emission.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// enum Action { Toggle(FileUri, bool) }
+    /// let explorer = FileExplorer::<Action>::default().on_toggle(Action::Toggle);
+    /// let _ = explorer;
+    /// ```
     pub fn on_toggle(mut self, f: impl Fn(FileUri, bool) -> A + 'static) -> Self {
         self.on_toggle = Some(Rc::new(move |ctx, uri, open| ctx.dispatch(f(uri, open))));
         self
     }
 
+    /// Handles branch expansion transitions with event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().on_toggle_ctx(|_ctx, _uri, _open| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_toggle_ctx(mut self, f: impl Fn(&mut EventCtx<A>, FileUri, bool) + 'static) -> Self {
         self.on_toggle = Some(Rc::new(f));
         self
     }
 
+    /// Maps committed inline renames before aggregate `Rename` emission.
+    ///
+    /// Context-menu rename requests begin editing and emit `RenameRequested` but
+    /// do not call this handler until editing commits.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerRename};
+    /// enum Action { Rename(FileExplorerRename) }
+    /// let explorer = FileExplorer::<Action>::default().on_rename(Action::Rename);
+    /// let _ = explorer;
+    /// ```
     pub fn on_rename(mut self, f: impl Fn(FileExplorerRename) -> A + 'static) -> Self {
         self.on_rename = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles committed inline renames with event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().on_rename_ctx(|_ctx, _rename| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_rename_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, FileExplorerRename) + 'static,
@@ -433,6 +953,20 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Maps committed tree delete events before aggregate `Remove` emission.
+    ///
+    /// Context-menu delete emits `RemoveRequested` through the aggregate handler;
+    /// it uses this handler only to enable the item and does not call it directly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// enum Action { Remove(FileUri, Option<FileUri>) }
+    /// let explorer = FileExplorer::<Action>::default().on_remove(Action::Remove);
+    /// let _ = explorer;
+    /// ```
     pub fn on_remove(mut self, f: impl Fn(FileUri, Option<FileUri>) -> A + 'static) -> Self {
         self.on_remove = Some(Rc::new(move |ctx, uri, parent| {
             ctx.dispatch(f(uri, parent))
@@ -440,6 +974,15 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Handles committed tree delete events with event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().on_remove_ctx(|_ctx, _uri, _parent| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_remove_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, FileUri, Option<FileUri>) + 'static,
@@ -448,11 +991,33 @@ impl<A: 'static> FileExplorer<A> {
         self
     }
 
+    /// Maps committed directory drafts before aggregate `CreateDir` emission.
+    ///
+    /// File drafts have no specialized callback and emit only aggregate
+    /// [`FileExplorerAction::CreateFile`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorer, FileExplorerCreateDir};
+    /// enum Action { Create(FileExplorerCreateDir) }
+    /// let explorer = FileExplorer::<Action>::default().on_create_dir(Action::Create);
+    /// let _ = explorer;
+    /// ```
     pub fn on_create_dir(mut self, f: impl Fn(FileExplorerCreateDir) -> A + 'static) -> Self {
         self.on_create_dir = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles committed directory drafts with event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::FileExplorer;
+    /// let explorer = FileExplorer::<()>::default().on_create_dir_ctx(|_ctx, _event| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_create_dir_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, FileExplorerCreateDir) + 'static,
@@ -462,6 +1027,7 @@ impl<A: 'static> FileExplorer<A> {
     }
 }
 
+/// Converts the builder into an intent-only tree, optional scroll view, and menu.
 impl<A: 'static> IntoView<A> for FileExplorer<A> {
     fn into_view(self) -> View<A> {
         finish_view_sized(
@@ -493,6 +1059,7 @@ impl<A: 'static> IntoView<A> for FileExplorer<A> {
     }
 }
 
+/// Snapshot explorer component inputs retained across runtime builds.
 struct FileExplorerComponent<A> {
     layout: LayoutStyle,
     nodes: Vec<FileExplorerNode>,
@@ -516,6 +1083,7 @@ struct FileExplorerComponent<A> {
     on_create_dir: Option<CreateDirHandler<A>>,
 }
 
+/// Builds a sorted intent-only tree plus transient edit and context-menu wiring.
 impl<A: 'static> ComponentNode<A> for FileExplorerComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let mut nodes = self
@@ -792,8 +1360,27 @@ impl<A: 'static> ComponentNode<A> for FileExplorerComponent<A> {
 /// Filesystem explorer backed by a retained [`TreeModelHandle`]. Node
 /// metadata is resolved only for the row being interacted with; ordinary
 /// build, layout, paint, and scroll never reconstruct a recursive snapshot.
+///
+/// The inner tree is always virtualized and uses intent-only mutation mode.
+/// Callers own the authoritative model/store and apply emitted identity-aware
+/// events. Reserved create IDs must be unique and must remain valid until commit
+/// or the matching release callback.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+/// use ailloli_ui_widgets::files::RetainedFileExplorer;
+/// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+/// let explorer = RetainedFileExplorer::<u64, ()>::new(
+///     model, |_| None, |_| None, |_parent, _kind| Some(1), |_id| {},
+/// );
+/// let _ = explorer;
+/// ```
 pub struct RetainedFileExplorer<T, A = ()> {
+    /// Standard logical-pixel size and position constraints.
     pub(crate) layout: LayoutStyle,
+    /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
     model: TreeModelHandle<T>,
     resolve_node: RetainedNodeResolver<T>,
@@ -811,6 +1398,7 @@ pub struct RetainedFileExplorer<T, A = ()> {
     on_model_event: Option<RetainedEventHandler<T, A>>,
 }
 
+/// Exposes standard layout mutation to generated extension/builders.
 impl<T, A> LayoutExt for RetainedFileExplorer<T, A> {
     fn layout_mut(&mut self) -> &mut LayoutStyle {
         &mut self.layout
@@ -822,6 +1410,24 @@ where
     T: Clone + Eq + Hash + fmt::Debug + 'static,
     A: 'static,
 {
+    /// Creates a virtualized explorer over an authoritative retained model.
+    ///
+    /// `resolve_node` supplies current URI/metadata for one ID, `resolve_id`
+    /// maps context-menu URI commands back to identity, `reserve_node` allocates
+    /// a transient file/directory draft ID, and `release_node` rolls it back on
+    /// cancellation or invalid commit. Returning `None` rejects that operation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u32>::new());
+    /// let explorer = RetainedFileExplorer::<u32, ()>::new(
+    ///     model, |_| None, |_| None, |_parent, _kind| Some(10), |_id| {},
+    /// );
+    /// let _ = explorer;
+    /// ```
     pub fn new(
         model: TreeModelHandle<T>,
         resolve_node: impl Fn(T) -> Option<FileExplorerNode> + 'static,
@@ -849,12 +1455,35 @@ where
         }
     }
 
+    /// Sets static/generic retained selection and clears writable selection state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).selected(1);
+    /// let _ = explorer;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<T>>) -> Self {
         self.selected = Some(selected.into());
         self.bound_selected = None;
         self
     }
 
+    /// Binds selection to writable shared retained identity state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).bind_selected(State::new(1));
+    /// let _ = explorer;
+    /// ```
     pub fn bind_selected(mut self, selected: impl Into<Signal<T>>) -> Self {
         let selected = selected.into();
         self.selected = Some(Binding::Signal(selected.clone()));
@@ -862,26 +1491,83 @@ where
         self
     }
 
+    /// Binds whether retained-tree interaction is disabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).disabled(true);
+    /// let _ = explorer;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Binds keyboard and blank-menu paste eligibility.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).clipboard_can_paste(true);
+    /// let _ = explorer;
+    /// ```
     pub fn clipboard_can_paste(mut self, can_paste: impl Into<Binding<bool>>) -> Self {
         self.clipboard_can_paste = can_paste.into();
         self
     }
 
+    /// Replaces the complete retained tree style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::{FileExplorerStyle, RetainedFileExplorer};
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).file_style(FileExplorerStyle::default());
+    /// let _ = explorer;
+    /// ```
     pub fn file_style(mut self, style: FileExplorerStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Applies a density preset under the default theme, replacing prior style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::{FileExplorerSize, RetainedFileExplorer};
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).file_size(FileExplorerSize::Compact);
+    /// let _ = explorer;
+    /// ```
     pub fn file_size(mut self, size: FileExplorerSize) -> Self {
         self.style = FileExplorerStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Wraps the retained tree in a vertical scroll view when true.
+    ///
+    /// Scrolling defaults to true; row virtualization remains enabled either way.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).scrollable(false);
+    /// let _ = explorer;
+    /// ```
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
         self
@@ -891,16 +1577,54 @@ where
     ///
     /// The handle is UI-local and does not affect model ownership or worker
     /// scheduling. It is intended for performance gates and diagnostics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle, TreeViewDiagnostics};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let diagnostics = TreeViewDiagnostics::new();
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).tree_diagnostics(diagnostics.clone());
+    /// assert_eq!(diagnostics.snapshot().layout_calls, 0);
+    /// let _ = explorer;
+    /// ```
     pub fn tree_diagnostics(mut self, diagnostics: TreeViewDiagnostics) -> Self {
         self.diagnostics = Some(diagnostics);
         self
     }
 
+    /// Maps high-level URI actions into application actions.
+    ///
+    /// Identity-aware model events are emitted separately and first where both
+    /// representations exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::{FileExplorerAction, RetainedFileExplorer};
+    /// enum Action { Explorer(FileExplorerAction) }
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, Action>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).on_action(Action::Explorer);
+    /// let _ = explorer;
+    /// ```
     pub fn on_action(mut self, f: impl Fn(FileExplorerAction) -> A + 'static) -> Self {
         self.on_action = Some(Rc::new(move |ctx, action| ctx.dispatch(f(action))));
         self
     }
 
+    /// Handles high-level URI actions with event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).on_action_ctx(|_ctx, _action| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_action_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, FileExplorerAction) + 'static,
@@ -909,11 +1633,34 @@ where
         self
     }
 
+    /// Maps identity-aware select/open/toggle/edit events into application actions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::{FileExplorerModelEvent, RetainedFileExplorer};
+    /// enum Action { Model(FileExplorerModelEvent<u64>) }
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, Action>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).on_model_event(Action::Model);
+    /// let _ = explorer;
+    /// ```
     pub fn on_model_event(mut self, f: impl Fn(FileExplorerModelEvent<T>) -> A + 'static) -> Self {
         self.on_model_event = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles identity-aware events with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{TreeModel, TreeModelHandle};
+    /// use ailloli_ui_widgets::files::RetainedFileExplorer;
+    /// let model = TreeModelHandle::new(TreeModel::<u64>::new());
+    /// let explorer = RetainedFileExplorer::<u64, ()>::new(model, |_| None, |_| None, |_, _| Some(1), |_| {}).on_model_event_ctx(|_ctx, _event| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_model_event_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, FileExplorerModelEvent<T>) + 'static,
@@ -923,6 +1670,7 @@ where
     }
 }
 
+/// Converts the retained adapter into a virtualized tree and context-menu view.
 impl<T, A> IntoView<A> for RetainedFileExplorer<T, A>
 where
     T: Clone + Eq + Hash + fmt::Debug + 'static,
@@ -953,6 +1701,7 @@ where
     }
 }
 
+/// Retained-model explorer inputs and identity resolver lifecycle callbacks.
 struct RetainedFileExplorerComponent<T, A> {
     layout: LayoutStyle,
     model: TreeModelHandle<T>,
@@ -971,6 +1720,7 @@ struct RetainedFileExplorerComponent<T, A> {
     on_model_event: Option<RetainedEventHandler<T, A>>,
 }
 
+/// Wires direct model virtualization to identity-aware interactions and drafts.
 impl<T, A> ComponentNode<A> for RetainedFileExplorerComponent<T, A>
 where
     T: Clone + Eq + Hash + fmt::Debug + 'static,
@@ -1348,6 +2098,7 @@ where
     }
 }
 
+/// Invokes the optional aggregate URI action handler.
 fn emit_action<A>(
     ctx: &mut EventCtx<A>,
     on_action: &Option<ActionHandler<A>>,
@@ -1358,6 +2109,7 @@ fn emit_action<A>(
     }
 }
 
+/// Invokes the optional identity-aware retained event handler.
 fn emit_model_event<T, A>(
     ctx: &mut EventCtx<A>,
     handler: &Option<RetainedEventHandler<T, A>>,
@@ -1368,6 +2120,7 @@ fn emit_model_event<T, A>(
     }
 }
 
+/// Resolves only retained root IDs for context-menu workspace operations.
 fn retained_root_nodes<T>(
     model: &TreeModelHandle<T>,
     resolve_node: &RetainedNodeResolver<T>,
@@ -1384,6 +2137,10 @@ where
     })
 }
 
+/// Validates a retained drag/drop and resolves its destination parent/URI.
+///
+/// Self-drops, before/after root drops, leaf-inside drops, descendant cycles,
+/// missing names/resolvers, invalid joins, and no-op destinations return `None`.
 fn retained_file_move<T>(
     model: &TreeModelHandle<T>,
     resolve_node: &RetainedNodeResolver<T>,
@@ -1434,6 +2191,10 @@ where
     ))
 }
 
+/// Converts supported retained tree shortcuts into high-level URI actions.
+///
+/// Missing resolvers suppress the action. Paste is additionally gated by the
+/// clipboard flag and resolves a leaf selection to its parent directory.
 fn dispatch_retained_file_shortcut<T, A>(
     ctx: &mut EventCtx<A>,
     model: &TreeModelHandle<T>,
@@ -1512,6 +2273,7 @@ fn dispatch_retained_file_shortcut<T, A>(
     }
 }
 
+/// Mirrors transient/expanded tree state back only when snapshot nodes are bound.
 fn sync_bound_tree_nodes(
     bound_nodes: &Option<Signal<Vec<FileExplorerNode>>>,
     tree_nodes_signal: &Signal<Vec<TreeNode<FileUri>>>,
@@ -1527,6 +2289,7 @@ fn sync_bound_tree_nodes(
     }
 }
 
+/// Routes snapshot-tree delete/copy/cut/paste shortcuts to specialized/actions.
 fn dispatch_file_shortcut<A>(
     ctx: &mut EventCtx<A>,
     nodes: &[FileExplorerNode],
@@ -1564,6 +2327,7 @@ fn dispatch_file_shortcut<A>(
     }
 }
 
+/// Resolves paste to selected directory/branch, selected leaf parent, or first root.
 fn shortcut_paste_target(nodes: &[FileExplorerNode], id: Option<&FileUri>) -> Option<FileUri> {
     if let Some(uri) = id {
         if let Some(node) = find_node(nodes, uri) {
@@ -1578,6 +2342,7 @@ fn shortcut_paste_target(nodes: &[FileExplorerNode], id: Option<&FileUri>) -> Op
     nodes.first().map(|node| node.entry.uri.clone())
 }
 
+/// Converts URI-identified drag/drop into a validated high-level move action.
 fn file_move_action_from_tree_move(
     nodes: &[FileExplorerNode],
     event: TreeMove<FileUri>,
@@ -1615,6 +2380,7 @@ fn file_move_action_from_tree_move(
     }))
 }
 
+/// Tests location-aware ancestry through `relative_path_from`, including self.
 fn uri_is_same_or_descendant(candidate: &FileUri, root: &FileUri) -> bool {
     if candidate.scheme() != root.scheme() || candidate.authority() != root.authority() {
         return false;
@@ -1628,6 +2394,7 @@ fn uri_is_same_or_descendant(candidate: &FileUri, root: &FileUri) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Dispatches row/blank context menu construction from a tree event.
 fn build_context_menu_entries<A: 'static>(
     nodes: &[FileExplorerNode],
     expanded: &[FileUri],
@@ -1669,6 +2436,7 @@ fn build_context_menu_entries<A: 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Selects directory or file menus using metadata plus synthetic branch status.
 fn build_row_context_menu<A: 'static>(
     nodes: &[FileExplorerNode],
     expanded: &[FileUri],
@@ -1707,6 +2475,7 @@ fn build_row_context_menu<A: 'static>(
 
 #[allow(clippy::vec_init_then_push)]
 #[allow(clippy::too_many_arguments)]
+/// Builds file actions and disables integrations lacking required handlers.
 fn build_file_context_menu<A: 'static>(
     nodes: &[FileExplorerNode],
     node: &FileExplorerNode,
@@ -1772,6 +2541,7 @@ fn build_file_context_menu<A: 'static>(
 
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::vec_init_then_push)]
+/// Builds branch creation/clipboard/path/workspace actions and compacts separators.
 fn build_directory_context_menu<A: 'static>(
     nodes: &[FileExplorerNode],
     expanded: &[FileUri],
@@ -1899,6 +2669,7 @@ fn build_directory_context_menu<A: 'static>(
 }
 
 #[allow(clippy::vec_init_then_push)]
+/// Builds workspace/selected-target actions for context clicks outside rows.
 fn build_blank_context_menu<A: 'static>(
     nodes: &[FileExplorerNode],
     selected: Option<FileUri>,
@@ -2010,6 +2781,7 @@ fn build_blank_context_menu<A: 'static>(
     compact_separators(entries)
 }
 
+/// Appends absolute and root-relative path-copy actions with availability gates.
 fn push_path_items<A: 'static>(
     entries: &mut Vec<ContextMenuEntry<A>>,
     nodes: &[FileExplorerNode],
@@ -2032,6 +2804,7 @@ fn push_path_items<A: 'static>(
     ));
 }
 
+/// Builds an open item that invokes specialized then aggregate callbacks.
 fn open_item<A: 'static>(
     label: &'static str,
     shortcut: &'static str,
@@ -2055,6 +2828,7 @@ fn open_item<A: 'static>(
     ContextMenuEntry::Item(item)
 }
 
+/// Builds the F2 item that begins inline editing and emits a request intent.
 fn rename_item<A: 'static>(
     uri: &FileUri,
     on_action: &Option<ActionHandler<A>>,
@@ -2081,6 +2855,7 @@ fn rename_item<A: 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Builds an inline-create launcher plus its high-level requested intent.
 fn create_item<A: 'static>(
     label: &'static str,
     parent: &FileUri,
@@ -2101,6 +2876,7 @@ fn create_item<A: 'static>(
     ))
 }
 
+/// Builds a delete-request item; committed removal occurs in the tree handler.
 fn remove_item<A: 'static>(
     uri: &FileUri,
     parent: Option<FileUri>,
@@ -2127,6 +2903,7 @@ fn remove_item<A: 'static>(
     )
 }
 
+/// Builds a generic optional-shortcut item that clones one emitted action.
 fn action_item<A: 'static>(
     label: &'static str,
     shortcut: Option<&'static str>,
@@ -2144,6 +2921,7 @@ fn action_item<A: 'static>(
     })))
 }
 
+/// Recursively returns the first depth-first node with an exact URI.
 fn find_node<'a>(nodes: &'a [FileExplorerNode], uri: &FileUri) -> Option<&'a FileExplorerNode> {
     for node in nodes {
         if &node.entry.uri == uri {
@@ -2156,6 +2934,7 @@ fn find_node<'a>(nodes: &'a [FileExplorerNode], uri: &FileUri) -> Option<&'a Fil
     None
 }
 
+/// Resolves blank-menu target from selected branch/leaf or first branch root.
 fn blank_target_dir(nodes: &[FileExplorerNode], selected: Option<FileUri>) -> Option<FileUri> {
     if let Some(selected) = selected {
         if let Some(node) = find_node(nodes, &selected) {
@@ -2173,6 +2952,7 @@ fn blank_target_dir(nodes: &[FileExplorerNode], selected: Option<FileUri>) -> Op
         .map(|node| node.entry.uri.clone())
 }
 
+/// Returns the first root from which `uri` has a relative path.
 fn root_for_uri<'a>(nodes: &'a [FileExplorerNode], uri: &FileUri) -> Option<&'a FileUri> {
     nodes
         .iter()
@@ -2180,6 +2960,7 @@ fn root_for_uri<'a>(nodes: &'a [FileExplorerNode], uri: &FileUri) -> Option<&'a 
         .map(|node| &node.entry.uri)
 }
 
+/// Removes leading, trailing, and adjacent context-menu separators.
 fn compact_separators<A>(entries: Vec<ContextMenuEntry<A>>) -> Vec<ContextMenuEntry<A>> {
     let mut out = Vec::new();
     let mut last_separator = true;
@@ -2202,6 +2983,9 @@ fn compact_separators<A>(entries: Vec<ContextMenuEntry<A>>) -> Vec<ContextMenuEn
     out
 }
 
+/// Recursively projects snapshot metadata to URI-identified decorated tree nodes.
+///
+/// Empty-name nodes are forced disabled, and icon tint follows file icon mapping.
 fn to_tree_node(node: &FileExplorerNode) -> TreeNode<FileUri> {
     let icon = file_icon_visual_for_entry(&node.entry);
     let mut tree = if node.is_branch() {
@@ -2222,6 +3006,7 @@ fn to_tree_node(node: &FileExplorerNode) -> TreeNode<FileUri> {
     tree
 }
 
+/// Keeps the current tree wholesale while any inline create draft exists.
 fn preserve_transient_tree_nodes(
     current: Vec<TreeNode<FileUri>>,
     next: Vec<TreeNode<FileUri>>,
@@ -2233,12 +3018,14 @@ fn preserve_transient_tree_nodes(
     }
 }
 
+/// Recursively detects an inline transient node.
 fn has_transient_tree_node(nodes: &[TreeNode<FileUri>]) -> bool {
     nodes
         .iter()
         .any(|node| node.is_transient() || has_transient_tree_node(node.child_nodes()))
 }
 
+/// Creates a styled transient file/folder node from sentinel default labels.
 fn create_explorer_node(request: TreeCreateRequest<FileUri>) -> Option<TreeNode<FileUri>> {
     let uri = create_entry_uri(&request)?;
     if request.default_label == NEW_FILE_NAME {
@@ -2258,6 +3045,7 @@ fn create_explorer_node(request: TreeCreateRequest<FileUri>) -> Option<TreeNode<
     )
 }
 
+/// Resolves child or sibling draft placement; missing/invalid parents return none.
 fn create_entry_uri(request: &TreeCreateRequest<FileUri>) -> Option<FileUri> {
     let name = if request.default_label.is_empty() {
         NEW_FOLDER_NAME
@@ -2270,10 +3058,12 @@ fn create_entry_uri(request: &TreeCreateRequest<FileUri>) -> Option<FileUri> {
     }
 }
 
+/// Classifies a snapshot draft as a file by the decoded sentinel filename.
 fn is_create_file_id(uri: &FileUri) -> bool {
     uri.file_name_decoded().as_deref() == Some(NEW_FILE_NAME)
 }
 
+/// Prefers parent join, then filename replacement, then the unchanged draft URI.
 fn create_uri_from_event(fallback: &FileUri, parent: Option<&FileUri>, label: &str) -> FileUri {
     parent
         .and_then(|parent| parent.join_child(label).ok())

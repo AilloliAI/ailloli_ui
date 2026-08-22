@@ -1,3 +1,9 @@
+//! Deterministic sample summaries, robust memory trends, and regression gates.
+//!
+//! Quantiles use nearest rank, variability uses median absolute deviation, and
+//! memory growth uses the pairwise Theil-Sen estimator. All public computations
+//! reject non-finite input instead of relying on partial floating-point order.
+
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -7,47 +13,121 @@ use crate::log::ParsedRun;
 use crate::model::MetricRole;
 
 /// Deterministic summary of one finite sample series.
+///
+/// # Examples
+///
+/// ```
+/// let summary = ailloli_ui_bench::summarize_samples(&[1.0, 2.0, 3.0])?;
+/// assert_eq!(summary.median, 2.0);
+/// assert_eq!(summary.count, 3);
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SampleSummary {
+    /// Number of samples summarized.
     pub count: usize,
+    /// Standard median; even series average the two middle values.
     pub median: f64,
+    /// Nearest-rank 95th percentile.
     pub p95: f64,
+    /// Nearest-rank 99th percentile.
     pub p99: f64,
+    /// Median absolute deviation from [`Self::median`].
     pub mad: f64,
+    /// Smallest sample.
     pub min: f64,
+    /// Largest sample.
     pub max: f64,
 }
 
 /// Maximum accepted RSS growth during a Phase 127 steady-state soak.
+///
+/// Unit: binary MiB per second. The gate fails only when slope is strictly
+/// greater than this limit.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_bench::MAX_RSS_SLOPE_MIB_PER_SEC, 0.10);
+/// ```
 pub const MAX_RSS_SLOPE_MIB_PER_SEC: f64 = 0.10;
 
 /// Maximum accepted RSS extent after the soak warmup period.
+///
+/// Unit: binary MiB. The gate fails only when extent is strictly greater than
+/// this limit.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_bench::MAX_RSS_EXTENT_MIB, 32.0);
+/// ```
 pub const MAX_RSS_EXTENT_MIB: f64 = 32.0;
 
 /// Deterministic memory-trend decision for a sampled process.
+///
+/// # Examples
+///
+/// ```
+/// let trend = ailloli_ui_bench::summarize_memory_trend(&[(0.0, 10.0), (1.0, 10.05)])?;
+/// assert_eq!(trend.count, 2);
+/// assert!(!trend.failed());
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MemoryTrendSummary {
+    /// Number of `(seconds, MiB)` samples.
     pub count: usize,
+    /// Theil-Sen RSS growth estimate in MiB per second.
     pub slope_mib_per_sec: f64,
+    /// Minimum observed RSS in MiB.
     pub min_mib: f64,
+    /// Maximum observed RSS in MiB.
     pub max_mib: f64,
+    /// `max_mib - min_mib` in MiB.
     pub extent_mib: f64,
+    /// Locked slope limit in MiB per second.
     pub slope_limit_mib_per_sec: f64,
+    /// Locked RSS extent limit in MiB.
     pub extent_limit_mib: f64,
+    /// Whether slope strictly exceeded its limit.
     pub slope_failed: bool,
+    /// Whether extent strictly exceeded its limit.
     pub extent_failed: bool,
 }
 
 impl MemoryTrendSummary {
     /// Returns true when either the robust growth slope or memory extent fails.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let trend = ailloli_ui_bench::summarize_memory_trend(&[(0.0, 10.0), (1.0, 100.0)])?;
+    /// assert!(trend.failed());
+    /// # Ok::<(), ailloli_ui_bench::StatsError>(())
+    /// ```
     pub const fn failed(&self) -> bool {
         self.slope_failed || self.extent_failed
     }
 }
 
 /// Summary of one named metric, including its gate behavior and process count.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{MetricRole, MetricSummary, SampleSummary};
+/// let summary = MetricSummary {
+///     role: MetricRole::Diagnostic,
+///     runs: 1,
+///     samples: SampleSummary { count: 1, median: 2.0, p95: 2.0, p99: 2.0,
+///         mad: 0.0, min: 2.0, max: 2.0 },
+/// };
+/// assert_eq!(summary.runs, 1);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MetricSummary {
+    /// Shared role carried by every contributing sample.
     pub role: MetricRole,
     /// Number of independent run artifacts which contributed samples.
     pub runs: usize,
@@ -57,26 +137,65 @@ pub struct MetricSummary {
 }
 
 /// Invalid input for deterministic statistics.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     ailloli_ui_bench::summarize_samples(&[]),
+///     Err(ailloli_ui_bench::StatsError::Empty),
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum StatsError {
     #[error("sample series is empty")]
+    /// A summary was requested for no samples.
     Empty,
     #[error("sample at index {index} is not finite")]
-    NonFinite { index: usize },
+    /// A timestamp or value was NaN or infinite.
+    NonFinite {
+        /// Zero-based input index of the invalid pair or value.
+        index: usize,
+    },
+    /// Samples sharing a metric name declared incompatible regression roles.
     #[error("metric {metric:?} mixes regression roles {first:?} and {second:?}")]
     MixedMetricRoles {
+        /// Metric whose samples disagree.
         metric: String,
+        /// Role observed first.
         first: MetricRole,
+        /// Conflicting later role.
         second: MetricRole,
     },
     #[error("a trend requires at least two samples, got {count}")]
-    InsufficientTrendSamples { count: usize },
+    /// A trend received fewer than two samples.
+    InsufficientTrendSamples {
+        /// Number of supplied samples.
+        count: usize,
+    },
     #[error("trend timestamps do not contain two distinct values")]
+    /// Every trend pair had equal timestamps, leaving no defined slope.
     NoDistinctTrendTimestamps,
 }
 
 /// Computes standard median, nearest-rank p95/p99, and median absolute deviation.
+///
+/// Input order is irrelevant and the input slice is not mutated.
+///
+/// # Errors
+///
+/// Returns [`StatsError::Empty`] for no samples and `NonFinite` at the first
+/// NaN/infinite input index.
+///
+/// # Examples
+///
+/// ```
+/// let summary = ailloli_ui_bench::summarize_samples(&[4.0, 1.0, 3.0, 2.0])?;
+/// assert_eq!(summary.median, 2.5);
+/// assert_eq!(summary.p95, 4.0);
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 pub fn summarize_samples(samples: &[f64]) -> Result<SampleSummary, StatsError> {
     if samples.is_empty() {
         return Err(StatsError::Empty);
@@ -107,6 +226,9 @@ pub fn summarize_samples(samples: &[f64]) -> Result<SampleSummary, StatsError> {
     })
 }
 
+/// Computes the median of a nonempty ascending finite slice.
+///
+/// The caller upholds both preconditions; even lengths average middle values.
 fn median_of_sorted(sorted: &[f64]) -> f64 {
     let middle = sorted.len() / 2;
     if sorted.len().is_multiple_of(2) {
@@ -116,6 +238,9 @@ fn median_of_sorted(sorted: &[f64]) -> f64 {
     }
 }
 
+/// Selects a bounded nearest-rank quantile from a nonempty sorted slice.
+///
+/// Saturating multiplication and index clamping prevent integer/index overflow.
 fn nearest_rank(sorted: &[f64], numerator: usize, denominator: usize) -> f64 {
     let rank = sorted
         .len()
@@ -131,6 +256,23 @@ fn nearest_rank(sorted: &[f64], numerator: usize, denominator: usize) -> f64 {
 /// timestamps. Input ordering does not affect the result. It is robust to
 /// isolated RSS spikes and is therefore preferable to an endpoint delta for a
 /// long-running memory gate.
+///
+/// Time is in seconds and values use the caller's unit, so the returned slope
+/// is value-units per second. Equal-time pairs are ignored. Memory use is
+/// quadratic in sample count because every distinct-time pair contributes.
+///
+/// # Errors
+///
+/// Returns `InsufficientTrendSamples`, `NonFinite`, or
+/// `NoDistinctTrendTimestamps` for the corresponding invalid inputs.
+///
+/// # Examples
+///
+/// ```
+/// let slope = ailloli_ui_bench::theil_sen_slope(&[(0.0, 10.0), (2.0, 11.0)])?;
+/// assert_eq!(slope, 0.5);
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 pub fn theil_sen_slope(samples: &[(f64, f64)]) -> Result<f64, StatsError> {
     if samples.len() < 2 {
         return Err(StatsError::InsufficientTrendSamples {
@@ -161,6 +303,22 @@ pub fn theil_sen_slope(samples: &[(f64, f64)]) -> Result<f64, StatsError> {
 }
 
 /// Evaluates the locked Phase 127 RSS slope and extent limits.
+///
+/// Each pair is `(elapsed_seconds, rss_mib)`. Equality at either limit passes;
+/// only strictly larger values fail.
+///
+/// # Errors
+///
+/// Propagates all [`theil_sen_slope`] input errors.
+///
+/// # Examples
+///
+/// ```
+/// let trend = ailloli_ui_bench::summarize_memory_trend(&[(0.0, 100.0), (10.0, 100.5)])?;
+/// assert_eq!(trend.extent_mib, 0.5);
+/// assert!(!trend.failed());
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 pub fn summarize_memory_trend(samples: &[(f64, f64)]) -> Result<MemoryTrendSummary, StatsError> {
     let slope_mib_per_sec = theil_sen_slope(samples)?;
     let mut min_mib = f64::INFINITY;
@@ -184,6 +342,13 @@ pub fn summarize_memory_trend(samples: &[(f64, f64)]) -> Result<MemoryTrendSumma
 }
 
 /// Whether a comparison represents steady-state or cold-start measurements.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::ComparisonMode;
+/// assert_ne!(ComparisonMode::SteadyState, ComparisonMode::ColdStart);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonMode {
     /// Gate median and p95; p99 is diagnostic.
@@ -193,27 +358,75 @@ pub enum ComparisonMode {
 }
 
 /// Regression decision for one metric.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{compare_metric, summarize_samples, ComparisonMode};
+/// let baseline = summarize_samples(&[100.0; 30])?;
+/// let candidate = summarize_samples(&[105.0; 30])?;
+/// let comparison = compare_metric("frame_us", baseline, candidate, ComparisonMode::SteadyState);
+/// assert!(!comparison.failed());
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MetricComparison {
+    /// Stable metric name.
     pub metric: String,
+    /// Gate policy applied to this metric.
     pub role: MetricRole,
+    /// Baseline sample statistics.
     pub baseline: SampleSummary,
+    /// Candidate sample statistics.
     pub candidate: SampleSummary,
+    /// Inclusive median upper bound for gating performance roles.
     pub median_limit: f64,
+    /// Inclusive p95 upper bound for steady-state roles only.
     pub p95_limit: Option<f64>,
+    /// Whether candidate median strictly exceeded its active limit.
     pub median_regressed: bool,
+    /// Whether candidate p95 strictly exceeded its active limit.
     pub p95_regressed: bool,
+    /// Whether baseline or candidate correctness samples contained nonzero data.
     pub correctness_failed: bool,
 }
 
 impl MetricComparison {
     /// Returns true when this metric fails its configured gate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::{compare_metric, summarize_samples, ComparisonMode};
+    /// let baseline = summarize_samples(&[0.0])?;
+    /// let candidate = summarize_samples(&[1.0])?;
+    /// let comparison = compare_metric(
+    ///     "correctness.lost_wake", baseline, candidate, ComparisonMode::SteadyState,
+    /// );
+    /// assert!(comparison.failed());
+    /// # Ok::<(), ailloli_ui_bench::StatsError>(())
+    /// ```
     pub fn failed(&self) -> bool {
         self.median_regressed || self.p95_regressed || self.correctness_failed
     }
 }
 
 /// Compares two summaries using `baseline + max(10%, 3 * baseline MAD)`.
+///
+/// Names beginning with `correctness.` receive zero-tolerance correctness
+/// semantics. Other names use `mode` to choose median+p95 or median-only gating.
+/// P99 is always diagnostic.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{compare_metric, summarize_samples, ComparisonMode};
+/// let baseline = summarize_samples(&[10.0; 30])?;
+/// let candidate = summarize_samples(&[11.0; 30])?;
+/// let result = compare_metric("paint_us", baseline, candidate, ComparisonMode::SteadyState);
+/// assert_eq!(result.median_limit, 11.0);
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 pub fn compare_metric(
     metric: impl Into<String>,
     baseline: SampleSummary,
@@ -233,6 +446,23 @@ pub fn compare_metric(
 }
 
 /// Compares two summaries according to the role carried by the metric.
+///
+/// Diagnostic roles never fail. Correctness requires every baseline and
+/// candidate value to be exactly zero. Performance tolerances use baseline MAD;
+/// equality at a limit passes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{
+///     compare_metric_with_role, summarize_samples, MetricRole,
+/// };
+/// let baseline = summarize_samples(&[1.0])?;
+/// let candidate = summarize_samples(&[1_000.0])?;
+/// let result = compare_metric_with_role("probe", baseline, candidate, MetricRole::Diagnostic);
+/// assert!(!result.failed());
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 pub fn compare_metric_with_role(
     metric: impl Into<String>,
     baseline: SampleSummary,
@@ -267,12 +497,34 @@ pub fn compare_metric_with_role(
 }
 
 /// Aggregates all metric samples, roles, and process counts from parsed runs.
+///
+/// Each artifact contributes at most one to `runs` for a metric, regardless of
+/// its sample count. Metrics are returned in name order. Empty metric series are
+/// skipped.
+///
+/// # Errors
+///
+/// Returns [`StatsError::MixedMetricRoles`] when a name carries different roles
+/// within or across runs, and propagates sample-summary errors.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{summarize_runs_with_roles, ParsedRun};
+/// let summaries = summarize_runs_with_roles(&[ParsedRun::default()])?;
+/// assert_eq!(summaries["correctness.get_current_texture_err"].runs, 1);
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 pub fn summarize_runs_with_roles(
     runs: &[ParsedRun],
 ) -> Result<BTreeMap<String, MetricSummary>, StatsError> {
+    /// Accumulates one metric's consistent role, run count, and raw samples.
     struct Accumulator {
+        /// Role shared by every accumulated sample.
         role: MetricRole,
+        /// Independent artifacts that contributed this metric.
         runs: usize,
+        /// Finite raw values across all contributing artifacts.
         samples: Vec<f64>,
     }
 
@@ -328,6 +580,19 @@ pub fn summarize_runs_with_roles(
 }
 
 /// Aggregates samples without exposing gate roles to compatibility callers.
+///
+/// # Errors
+///
+/// Propagates all [`summarize_runs_with_roles`] errors.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{summarize_runs, ParsedRun};
+/// let summaries = summarize_runs(&[ParsedRun::default()])?;
+/// assert_eq!(summaries["correctness.get_current_texture_err"].median, 0.0);
+/// # Ok::<(), ailloli_ui_bench::StatsError>(())
+/// ```
 pub fn summarize_runs(runs: &[ParsedRun]) -> Result<BTreeMap<String, SampleSummary>, StatsError> {
     summarize_runs_with_roles(runs).map(|summaries| {
         summaries
@@ -338,6 +603,7 @@ pub fn summarize_runs(runs: &[ParsedRun]) -> Result<BTreeMap<String, SampleSumma
 }
 
 #[cfg(test)]
+/// Verifies quantiles, roles, tolerances, correctness, and robust memory trends.
 mod tests {
     use super::*;
 

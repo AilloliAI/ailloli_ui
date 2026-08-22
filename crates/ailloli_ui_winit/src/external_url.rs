@@ -1,16 +1,41 @@
+//! Platform browser handoff for already validated HTTP(S) URLs.
+//!
+//! Unix-like systems spawn an opaque single argument without a shell; Windows
+//! calls `ShellExecuteW`. Success means launch was accepted, not that navigation
+//! completed. Unsupported targets return `Unavailable`.
+
 use ailloli_ui_runtime::app::{ExternalUrl, ExternalUrlOpener, OpenUrlError};
 
 /// Native, non-blocking external URL opener used by [`crate::UiApp`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::SystemExternalUrlOpener;
+/// let opener = SystemExternalUrlOpener::new();
+/// assert_eq!(format!("{opener:?}"), "SystemExternalUrlOpener");
+/// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemExternalUrlOpener;
 
+/// Zero-state construction.
 impl SystemExternalUrlOpener {
+    /// Creates a stateless platform opener without launching a process.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_winit::SystemExternalUrlOpener;
+    /// let _: SystemExternalUrlOpener = SystemExternalUrlOpener::new();
+    /// ```
     pub const fn new() -> Self {
         Self
     }
 }
 
+/// Delegates validated URLs to the platform-specific nonblocking launch path.
 impl ExternalUrlOpener for SystemExternalUrlOpener {
+    /// Delegates a validated URL to the platform opener implementation.
     fn open(&self, url: &ExternalUrl) -> Result<(), OpenUrlError> {
         open_system_url(url)
     }
@@ -23,11 +48,13 @@ impl ExternalUrlOpener for SystemExternalUrlOpener {
     target_os = "netbsd",
     target_os = "dragonfly"
 ))]
+/// Launches `xdg-open` on Linux and supported BSD targets.
 fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     spawn_opener("xdg-open", url)
 }
 
 #[cfg(target_os = "macos")]
+/// Launches the absolute macOS `/usr/bin/open` utility.
 fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     spawn_opener("/usr/bin/open", url)
 }
@@ -40,6 +67,7 @@ fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     target_os = "dragonfly",
     target_os = "macos"
 ))]
+/// Spawns `program` with the URL as one opaque argument and does not wait.
 fn spawn_opener(program: &str, url: &ExternalUrl) -> Result<(), OpenUrlError> {
     std::process::Command::new(program)
         .arg(url.as_str())
@@ -49,6 +77,7 @@ fn spawn_opener(program: &str, url: &ExternalUrl) -> Result<(), OpenUrlError> {
 }
 
 #[cfg(windows)]
+/// Passes a NUL-terminated UTF-16 URL to `ShellExecuteW` with operation `open`.
 fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     use std::iter;
     use std::ptr;
@@ -82,6 +111,7 @@ fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
 }
 
 #[cfg(windows)]
+/// Applies the Win32 contract: values strictly greater than 32 mean success.
 fn shell_execute_succeeded(result: isize) -> bool {
     result > 32
 }
@@ -95,11 +125,13 @@ fn shell_execute_succeeded(result: isize) -> bool {
     target_os = "macos",
     windows
 )))]
+/// Reports platform unavailability without side effects.
 fn open_system_url(_url: &ExternalUrl) -> Result<(), OpenUrlError> {
     Err(OpenUrlError::Unavailable)
 }
 
 #[cfg(test)]
+/// Command construction, Windows return-code, and opt-in real-launch scenarios.
 mod tests {
     use super::*;
 

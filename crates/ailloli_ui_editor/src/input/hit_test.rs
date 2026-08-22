@@ -1,27 +1,73 @@
+//! Screen-point hit testing for text and code-editor zones.
+
 use ailloli_ui_core::Point;
 
 use crate::layout::{layout_visual_height, run_visual_bottom, run_visual_top, EditorTextRun};
 use crate::{EditorStyle, EditorViewport};
 
 /// Hit-test result in UTF-8 byte coordinates.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::EditorHitTest;
+/// assert_eq!(EditorHitTest { byte: 4 }.byte, 4);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditorHitTest {
+    /// Clamped source-buffer UTF-8 byte offset.
     pub byte: usize,
 }
 
+/// Semantic editor area containing a hit point.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::EditorHitZone;
+/// assert_ne!(EditorHitZone::Text, EditorHitZone::Gutter);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorHitZone {
+    /// Text viewport or padded content area.
     Text,
+    /// Enabled left gutter.
     Gutter,
+    /// Outside the complete content rectangle.
     Outside,
 }
 
+/// Hit result including semantic zone and source byte.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{EditorHitZone, EditorZoneHitTest};
+/// let hit = EditorZoneHitTest { zone: EditorHitZone::Outside, byte: 10 };
+/// assert_eq!((hit.zone, hit.byte), (EditorHitZone::Outside, 10));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditorZoneHitTest {
+    /// Text, gutter, or outside classification.
     pub zone: EditorHitZone,
+    /// Source-buffer byte; outside hits use `buffer_len_bytes`.
     pub byte: usize,
 }
 
+/// Maps a screen point to the closest visible run's UTF-8 source byte.
+///
+/// Above/below points select the first/last run. With no runs the result is
+/// `buffer_len_bytes`. Local run results are clamped to shaped text length.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Point, Rect};
+/// use ailloli_ui_editor::{input::hit_test::byte_at_point, EditorConfig, EditorStyle, EditorViewport};
+/// use ailloli_ui_text::TextEditState;
+/// let viewport = EditorViewport::new(Rect::new(0.0, 0.0, 80.0, 40.0), EditorConfig::default(), &TextEditState::new());
+/// assert_eq!(byte_at_point(viewport, &[], EditorStyle::default(), 12, Point::new(1.0, 1.0)).byte, 12);
+/// ```
 pub fn byte_at_point(
     viewport: EditorViewport,
     runs: &[EditorTextRun],
@@ -57,6 +103,22 @@ pub fn byte_at_point(
     }
 }
 
+/// Classifies gutter/text/outside before resolving the nearest byte.
+///
+/// Gutter hits resolve at the text left edge on the same y coordinate. Padded
+/// content outside `text_rect` is still classified as text. Outside uses the
+/// supplied buffer length without consulting runs.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Point, Rect};
+/// use ailloli_ui_editor::{input::hit_test::zone_byte_at_point, EditorConfig, EditorHitZone, EditorStyle, EditorViewport};
+/// use ailloli_ui_text::TextEditState;
+/// let viewport = EditorViewport::new(Rect::new(0.0, 0.0, 80.0, 40.0), EditorConfig::default(), &TextEditState::new());
+/// let hit = zone_byte_at_point(viewport, &[], EditorStyle::default(), 9, Point::new(100.0, 100.0));
+/// assert_eq!((hit.zone, hit.byte), (EditorHitZone::Outside, 9));
+/// ```
 pub fn zone_byte_at_point(
     viewport: EditorViewport,
     runs: &[EditorTextRun],

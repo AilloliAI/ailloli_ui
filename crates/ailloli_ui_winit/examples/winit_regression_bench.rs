@@ -50,30 +50,51 @@ use ailloli_ui_winit::{
 };
 use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
 
+/// Winit release recorded in benchmark metadata for result comparability.
 const WINIT_VERSION: &str = "0.30.13";
+/// Maximum actions retained by the bounded runtime mailbox.
 const MAILBOX_CAPACITY: usize = 1024;
+/// Default excluded samples collected before steady-state measurement.
 const DEFAULT_WARMUPS: u32 = 3;
+/// Default gating sample count after warmup.
 const DEFAULT_MEASURED_SAMPLES: u32 = 30;
+/// Actions sent at each scheduled point in the burst-wake scenario.
 const WAKE_BURST_SIZE: u32 = 16;
+/// Stable logical identity of the primary harness window and surface.
 const MAIN_WINDOW_ID: &str = "main";
+/// View key used to locate and focus the IME target.
 const INPUT_TARGET_KEY: &str = "winit-regression-input";
+/// View key used to locate the select that opens the retained popup.
 const POPUP_TRIGGER_KEY: &str = "winit-regression-popup-trigger";
+/// View key used to verify that modal popup dismissal suppresses background activation.
 const POPUP_BACKGROUND_BUTTON_KEY: &str = "winit-regression-popup-background-button";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Surface-backed workload selected by `AILLOLI_UI_BENCH_SCENARIO`.
 enum Scenario {
+    /// Measures process start through the first observed successful presentation.
     Startup,
+    /// Measures event-loop wait jitter without redraw work.
     Idle,
+    /// Measures one mailbox dispatch and native wake per sample.
     WakeSingle,
+    /// Measures sixteen mailbox dispatches sharing each scheduled burst.
     WakeBurst,
+    /// Exercises a synthetic zero-extent pause followed by surface restoration.
     ResizeZero,
+    /// Injects lost and outdated surface faults and observes reattachment.
     SurfaceRecovery,
+    /// Drives two independently retained native windows.
     MultiWindow,
+    /// Routes an IME lifecycle through provider-neutral event envelopes.
     InputIme,
+    /// Opens and dismisses a retained select popup through injected pointer input.
     PopupPortal,
 }
 
+/// Describes scenario capabilities, sampling metrics, and fidelity.
 impl Scenario {
+    /// Parses canonical underscore names and supported hyphen/legacy aliases.
     fn parse(value: &str) -> Result<Self, HarnessError> {
         match value {
             "startup" | "cold_start" => Ok(Self::Startup),
@@ -91,6 +112,7 @@ impl Scenario {
         }
     }
 
+    /// Returns two for `MultiWindow` and one for every other scenario.
     const fn logical_window_count(self) -> usize {
         if matches!(self, Self::MultiWindow) {
             2
@@ -99,6 +121,7 @@ impl Scenario {
         }
     }
 
+    /// Reports whether scheduled samples must request a native redraw.
     const fn needs_periodic_redraw(self) -> bool {
         matches!(
             self,
@@ -106,10 +129,12 @@ impl Scenario {
         )
     }
 
+    /// Reports whether a producer thread dispatches mailbox actions.
     const fn uses_external_wakes(self) -> bool {
         matches!(self, Self::WakeSingle | Self::WakeBurst)
     }
 
+    /// Returns the stable JSONL metric name for scheduled-loop jitter.
     const fn periodic_metric_name(self) -> &'static str {
         match self {
             Self::Idle => "idle.wait_jitter_us",
@@ -122,6 +147,7 @@ impl Scenario {
         }
     }
 
+    /// Classifies faithful steady workloads as gating and all others as diagnostic.
     const fn periodic_metric_role(self) -> ailloli_ui_bench::MetricRole {
         match self {
             Self::Idle | Self::SurfaceRecovery | Self::MultiWindow if self.gate_ready() => {
@@ -139,6 +165,7 @@ impl Scenario {
         }
     }
 
+    /// Reports whether the compiled feature set can run this scenario faithfully.
     const fn gate_ready(self) -> bool {
         match self {
             Self::Startup
@@ -152,6 +179,7 @@ impl Scenario {
         }
     }
 
+    /// Returns a machine-readable explanation of exercised or missing behavior.
     const fn fidelity(self) -> &'static str {
         match self {
             Self::Startup if cfg!(feature = "test_support") => {
@@ -185,72 +213,113 @@ impl Scenario {
 }
 
 #[derive(Debug)]
+/// Human-readable configuration or harness invariant failure.
 struct HarnessError(String);
 
+/// Writes the contained diagnostic without an additional wrapper.
 impl std::fmt::Display for HarnessError {
+    /// Formats the original diagnostic text.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
+/// Marks harness failures as standard errors for propagation from the example.
 impl Error for HarnessError {}
 
 #[derive(Debug, Clone, Copy)]
+/// Timestamped action carried through the bounded runtime inbox.
 struct WakeSample {
+    /// Monotonic instant immediately before mailbox dispatch.
     sent_at: Instant,
+    /// Whether the action belongs to excluded warmup or measured data.
     phase: ailloli_ui_bench::SamplePhase,
+    /// Behavior that consuming the action should account for.
     kind: HarnessActionKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Actions delivered through the harness runtime inbox.
 enum HarnessActionKind {
+    /// External wake whose dispatch-to-service latency is measured.
     Wake,
+    /// Popup-background button activation, which should never occur.
     PopupBackground,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// First successful presentation observed by the event-loop test service.
 struct FirstPresentObservation {
+    /// Monotonic instant at which the successful frame became observable.
     observed_at: Instant,
+    /// Native presentation generation associated with the frame.
     generation: u64,
 }
 
 #[derive(Debug, Default)]
+/// Shared atomic correctness counters updated by producers, driver, and probe.
 struct HarnessAccounting {
+    /// Mailbox dispatches accepted by the bounded sender.
     successful_sends: AtomicU64,
+    /// Mailbox dispatches rejected before event-loop service.
     failed_sends: AtomicU64,
+    /// Wake actions drained by the host driver.
     observed_actions: AtomicU64,
+    /// IME sequences followed by a successful presentation.
     input_sequences: AtomicU64,
+    /// Provider-neutral input envelopes rejected by the UI adapter.
     input_rejected_events: AtomicU64,
+    /// Attempts that failed to focus the keyed IME target.
     input_focus_failures: AtomicU64,
+    /// Zero-extent transitions followed by restore and presentation.
     resize_zero_round_trips: AtomicU64,
+    /// Zero-extent faults rejected by the presentation test seam.
     resize_zero_injection_failures: AtomicU64,
+    /// Completed popup open-and-dismiss presentation pairs.
     popup_round_trips: AtomicU64,
+    /// Popup openings followed by a successful presentation.
     popup_request_present_samples: AtomicU64,
+    /// Popup dismissals followed by a successful presentation.
     popup_dismiss_present_samples: AtomicU64,
+    /// Popup pointer envelopes rejected by the UI adapter.
     popup_rejected_events: AtomicU64,
+    /// Popup requests that vanished before their opening presentation.
     popup_lost: AtomicU64,
+    /// Additional simultaneously open matching popups beyond the expected one.
     popup_duplicate: AtomicU64,
+    /// Outside-click transitions that did not close the popup.
     popup_dismiss_failures: AtomicU64,
+    /// Background button actions incorrectly delivered while a popup was modal.
     popup_background_activations: AtomicU64,
+    /// Dismissals that did not restore focus to the select trigger.
     popup_focus_restore_failures: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Timing window and sample split shared by driver, producer, and native probe.
 struct SamplingPlan {
+    /// Monotonic origin used for all scheduled deadlines.
     started_at: Instant,
+    /// Maximum wall-clock runtime after the host reports readiness.
     duration: Duration,
+    /// Initial delay before the first sample.
     settle: Duration,
+    /// Number of excluded samples at the start of the run.
     warmup_samples: u32,
+    /// Number of samples eligible for evaluation.
     measured_samples: u32,
 }
 
+/// Computes a non-empty sample count and a bounded sampling interval.
 impl SamplingPlan {
+    /// Returns warmup plus measured samples, saturating and never below one.
     fn total_samples(self) -> u32 {
         self.warmup_samples
             .saturating_add(self.measured_samples)
             .max(1)
     }
 
+    /// Evenly divides post-settle time and clamps the interval to at least 1 ms.
     fn interval(self) -> Duration {
         self.duration
             .saturating_sub(self.settle)
@@ -261,34 +330,56 @@ impl SamplingPlan {
 }
 
 #[derive(Debug)]
+/// Bridges runtime inbox wake requests to a winit user event.
 struct EventLoopWake(EventLoopProxy<()>);
 
+/// Sends a unit event and reports a closed event-loop target explicitly.
 impl UiWake for EventLoopWake {
+    /// Wakes the event loop or returns `TargetClosed` once its receiver is gone.
     fn wake(&self) -> Result<(), UiWakeError> {
         self.0.send_event(()).map_err(|_| UiWakeError::TargetClosed)
     }
 }
 
+/// Event-loop driver that schedules samples and emits final correctness metrics.
 struct RegressionDriver {
+    /// Selected workload and its behavioral contract.
     scenario: Scenario,
+    /// Process-side start instant used by cold-start metrics.
     started_at: Instant,
+    /// Allowed run time beginning at first host service.
     duration: Duration,
+    /// Quiet period before periodic sampling begins.
     settle: Duration,
+    /// Hard event-loop exit deadline.
     deadline: Instant,
+    /// Next periodic sample deadline, or `None` when sampling is complete.
     next_sample_at: Option<Instant>,
+    /// Spacing between scheduled samples, never below one millisecond.
     sample_interval: Duration,
+    /// Initial sample count classified as warmup.
     warmup_samples: u32,
+    /// Total warmup and measured samples to emit.
     total_samples: u32,
+    /// Periodic samples already emitted.
     emitted_samples: u32,
+    /// Whether host-readiness timing and deadlines have been initialized.
     first_service_recorded: bool,
+    /// Whether the startup first-present metric has been emitted.
     first_present_recorded: bool,
+    /// Shared first-service instant used to anchor producer scheduling.
     ready_at: Arc<OnceLock<Instant>>,
+    /// Successful first presentation reported by the native probe.
     first_present: Arc<OnceLock<FirstPresentObservation>>,
+    /// Cross-thread correctness counters.
     accounting: Arc<HarnessAccounting>,
+    /// Sender whose queue statistics are checked when the run finishes.
     sender: RuntimeSender<WakeSample>,
 }
 
+/// Constructs the driver and services scheduled or externally woken samples.
 impl RegressionDriver {
+    /// Initializes deadlines and counters from a shared sampling plan.
     fn new(
         scenario: Scenario,
         sampling: SamplingPlan,
@@ -320,6 +411,7 @@ impl RegressionDriver {
         }
     }
 
+    /// Classifies a zero-based sample index against the warmup boundary.
     fn sample_phase(&self, index: u32) -> ailloli_ui_bench::SamplePhase {
         if index < self.warmup_samples {
             ailloli_ui_bench::SamplePhase::Warmup
@@ -328,6 +420,7 @@ impl RegressionDriver {
         }
     }
 
+    /// Best-effort records a timestamped metric without aborting host service.
     fn record_sample(
         name: &'static str,
         value: f64,
@@ -345,6 +438,7 @@ impl RegressionDriver {
         );
     }
 
+    /// Anchors duration and sampling once, and records startup host readiness.
     fn record_first_service(&mut self, now: Instant) {
         if self.first_service_recorded {
             return;
@@ -365,6 +459,7 @@ impl RegressionDriver {
         }
     }
 
+    /// Emits the startup cold-start metric once; returns whether it was emitted.
     fn record_first_present(&mut self) -> bool {
         if self.scenario != Scenario::Startup || self.first_present_recorded {
             return false;
@@ -394,6 +489,7 @@ impl RegressionDriver {
         true
     }
 
+    /// Drains all queued actions, recording wake latency and forbidden background actions.
     fn drain_wake_samples(&self, runtime: &RuntimeHandle<WakeSample>, now: Instant) -> bool {
         let mut received = false;
         for sample in runtime.take_actions() {
@@ -420,6 +516,7 @@ impl RegressionDriver {
         received
     }
 
+    /// Emits every due scheduled sample and reports whether a redraw is needed.
     fn service_periodic_samples(&mut self, now: Instant) -> bool {
         let mut redraw = false;
         while self.emitted_samples < self.total_samples
@@ -447,11 +544,13 @@ impl RegressionDriver {
         redraw
     }
 
+    /// Returns the earlier of the next sample and the hard exit deadline.
     fn next_wake(&self) -> Instant {
         self.next_sample_at
             .map_or(self.deadline, |sample| sample.min(self.deadline))
     }
 
+    /// Publishes scenario-specific correctness counters after the event loop exits.
     fn finish_metrics(&self) {
         let stats = self.sender.stats();
         let successful_sends = self.accounting.successful_sends.load(Ordering::Relaxed);
@@ -577,7 +676,9 @@ impl RegressionDriver {
     }
 }
 
+/// Integrates sampling, inbox drains, redraw requests, and termination with the host.
 impl HostDriver<WakeSample> for RegressionDriver {
+    /// Services one host turn and supplies its redraw, wake-deadline, or exit outcome.
     fn service(&mut self, runtime: &RuntimeHandle<WakeSample>, now: Instant) -> HostOutcome {
         self.record_first_service(now);
         let wake_redraw = self.drain_wake_samples(runtime, now);
@@ -619,6 +720,7 @@ impl HostDriver<WakeSample> for RegressionDriver {
     }
 }
 
+/// Returns milliseconds since the Unix epoch, falling back to zero before it.
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -626,10 +728,12 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// Records a non-timing correctness metric for final regression evaluation.
 fn record_correctness(name: &'static str, value: f64) {
     ailloli_ui_bench::metric_with_role(name, value, ailloli_ui_bench::MetricRole::Correctness);
 }
 
+/// Returns the first non-empty value among current and two compatibility names.
 fn env_value(primary: &str, legacy: &str, historical: &str) -> Option<String> {
     std::env::var(primary)
         .ok()
@@ -638,6 +742,7 @@ fn env_value(primary: &str, legacy: &str, historical: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+/// Parses an unsigned sample-count override, falling back on absence or invalid text.
 fn sample_count(suffix: &str, fallback: u32) -> u32 {
     env_value(
         &format!("AILLOLI_UI_BENCH_{suffix}"),
@@ -648,6 +753,7 @@ fn sample_count(suffix: &str, fallback: u32) -> u32 {
     .unwrap_or(fallback)
 }
 
+/// Enforces the locked popup warmup count and measured-sample minimum.
 fn validate_sampling_contract(
     scenario: Scenario,
     warmup_samples: u32,
@@ -669,6 +775,7 @@ fn validate_sampling_contract(
     Ok(())
 }
 
+/// Rejects popup injection when the compile-time test-support capability is absent.
 fn validate_scenario_capability(scenario: Scenario) -> Result<(), HarnessError> {
     if scenario == Scenario::PopupPortal && !cfg!(feature = "test_support") {
         return Err(HarnessError(
@@ -680,10 +787,12 @@ fn validate_scenario_capability(scenario: Scenario) -> Result<(), HarnessError> 
 }
 
 #[cfg(feature = "test_support")]
+/// Accepts only an explicit positive native-focus observation.
 fn popup_native_focus_ready(native_focus: Option<bool>) -> bool {
     native_focus == Some(true)
 }
 
+/// Reads the first compatible backend override, defaulting to automatic selection.
 fn requested_backend() -> String {
     env_value(
         "AILLOLI_UI_BENCH_BACKEND",
@@ -694,6 +803,7 @@ fn requested_backend() -> String {
     .to_ascii_lowercase()
 }
 
+/// Creates the requested platform event loop and returns its observed backend name.
 fn create_event_loop(requested: &str) -> Result<(EventLoop<()>, String), Box<dyn Error>> {
     #[cfg(target_os = "linux")]
     {
@@ -736,6 +846,7 @@ fn create_event_loop(requested: &str) -> Result<(EventLoop<()>, String), Box<dyn
     }
 }
 
+/// Builds the deterministic window content and scenario-specific interactive targets.
 fn root_view(scenario: Scenario, window_name: &str) -> impl IntoView<WakeSample> {
     let mut column = Column::<WakeSample>::new()
         .gap(12.0)
@@ -784,6 +895,7 @@ fn root_view(scenario: Scenario, window_name: &str) -> impl IntoView<WakeSample>
         .child(column)
 }
 
+/// Builds default native-window options with an explicit logical identity and size.
 fn window_options(id: &str, title: &str, size: Size) -> WindowOptions {
     WindowOptions {
         logical_window_id: id.to_string(),
@@ -793,6 +905,7 @@ fn window_options(id: &str, title: &str, size: Size) -> WindowOptions {
     .with_logical_inner_size(size)
 }
 
+/// Sleeps in at-most-10-ms slices until `deadline` or cooperative shutdown.
 fn wait_until_or_stopped(deadline: Instant, stop: &AtomicBool) -> bool {
     while !stop.load(Ordering::Acquire) {
         let now = Instant::now();
@@ -808,6 +921,7 @@ fn wait_until_or_stopped(deadline: Instant, stop: &AtomicBool) -> bool {
     false
 }
 
+/// Spawns the scheduled inbox producer for wake scenarios; others return `None`.
 fn spawn_wake_producer(
     scenario: Scenario,
     sampling: SamplingPlan,
@@ -867,6 +981,7 @@ fn spawn_wake_producer(
     }))
 }
 
+/// Builds a per-process fallback JSONL path for a winit scenario.
 fn default_bench_path(scenario: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -877,6 +992,7 @@ fn default_bench_path(scenario: &str) -> PathBuf {
         .join(format!("winit-{scenario}-{}.jsonl", std::process::id()))
 }
 
+/// Publishes backend, feature fidelity, timing, and scenario interpretation metadata.
 fn update_harness_metadata(
     scenario: Scenario,
     requested_backend: &str,
@@ -992,55 +1108,90 @@ fn update_harness_metadata(
 }
 
 #[cfg(feature = "test_support")]
+/// Event-loop-thread probe that injects native lifecycle and input scenarios.
 struct NativeHarnessProbe {
+    /// Scenario whose native behavior is being observed.
     scenario: Scenario,
+    /// Shared scheduling origin and sample counts.
     sampling: SamplingPlan,
+    /// One-shot first successful frame observation.
     first_present: Arc<OnceLock<FirstPresentObservation>>,
+    /// Cross-thread correctness counters.
     accounting: Arc<HarnessAccounting>,
+    /// Next monotonically increasing provider-neutral event identifier.
     next_event_id: u64,
+    /// Whether the input target has accepted synthetic pointer focus.
     input_focus_ready: bool,
+    /// Next IME sample index to inject.
     next_input_sample: u32,
+    /// IME transition awaiting a subsequent successful frame.
     pending_input_sample: Option<PendingInputSample>,
+    /// Next zero-extent sample index to inject.
     next_resize_zero_sample: u32,
+    /// Zero-extent transition awaiting restoration and a successful frame.
     pending_resize_zero_sample: Option<PendingResizeZeroSample>,
+    /// Next popup round-trip sample index to inject.
     next_popup_sample: u32,
+    /// Popup opening or dismissal awaiting a subsequent successful frame.
     pending_popup_sample: Option<PendingPopupSample>,
 }
 
 #[cfg(feature = "test_support")]
+/// IME sequence awaiting event-to-present completion.
 struct PendingInputSample {
+    /// Warmup or measured phase attached to the sequence.
     phase: ailloli_ui_bench::SamplePhase,
+    /// Monotonic injection start used for latency.
     injected_at: Instant,
+    /// Frame counter that must advance before completion.
     rendered_frame_count_before: u64,
+    /// Optional marker identifier used as metric causality metadata.
     cause_event_id: Option<ailloli_ui_bench::EventId>,
 }
 
 #[cfg(feature = "test_support")]
+/// Synthetic zero-extent round trip awaiting a restored presentation.
 struct PendingResizeZeroSample {
+    /// Warmup or measured phase attached to the transition.
     phase: ailloli_ui_bench::SamplePhase,
+    /// Monotonic injection start used for latency.
     injected_at: Instant,
+    /// Lifecycle counter that must advance after injection.
     zero_extent_count_before: u64,
+    /// Frame counter that must advance after surface restoration.
     rendered_frame_count_before: u64,
+    /// Optional marker identifier used as metric causality metadata.
     cause_event_id: Option<ailloli_ui_bench::EventId>,
 }
 
 #[cfg(feature = "test_support")]
+/// Popup transition awaiting a successful frame after opening or dismissal.
 struct PendingPopupSample {
+    /// Warmup or measured phase attached to the round trip.
     phase: ailloli_ui_bench::SamplePhase,
+    /// Transition and popup identity currently being observed.
     stage: PendingPopupStage,
+    /// Monotonic transition time used for presentation latency.
     transition_observed_at: Instant,
+    /// Frame counter that must advance before the transition is complete.
     rendered_frame_count_before: u64,
+    /// Optional marker identifier used as metric causality metadata.
     cause_event_id: Option<ailloli_ui_bench::EventId>,
 }
 
 #[cfg(feature = "test_support")]
+/// Current half of a two-presentation popup round trip.
 enum PendingPopupStage {
+    /// Popup request has opened and awaits its first presented frame.
     Opening(PopupId),
+    /// Outside click has dismissed the popup and awaits the next presented frame.
     Dismissing(PopupId),
 }
 
 #[cfg(feature = "test_support")]
+/// Constructs and advances native test-support injection state.
 impl NativeHarnessProbe {
+    /// Initializes event IDs at one with no sample currently pending.
     fn new(
         scenario: Scenario,
         sampling: SamplingPlan,
@@ -1063,6 +1214,7 @@ impl NativeHarnessProbe {
         }
     }
 
+    /// Observes the latest presentation and advances the selected native scenario.
     fn service(&mut self, ui: &mut UiApp<WakeSample>) {
         let logical_window_id = LogicalWindowId::new(MAIN_WINDOW_ID);
         let Some(state) = ui.presentation_test_state(&logical_window_id) else {
@@ -1200,6 +1352,7 @@ impl NativeHarnessProbe {
         ui.request_redraw_all();
     }
 
+    /// Schedules zero-extent faults and records latency after restore and presentation.
     fn service_resize_zero(
         &mut self,
         ui: &mut UiApp<WakeSample>,
@@ -1286,6 +1439,7 @@ impl NativeHarnessProbe {
         self.next_resize_zero_sample = self.next_resize_zero_sample.saturating_add(1);
     }
 
+    /// Advances retained popup open/present/dismiss/present round trips.
     fn service_popup_portal(
         &mut self,
         ui: &mut UiApp<WakeSample>,
@@ -1481,6 +1635,7 @@ impl NativeHarnessProbe {
         ui.request_redraw_all();
     }
 
+    /// Lists root retained listbox popups owned by the current presentation generation.
     fn retained_select_popups(
         ui: &UiApp<WakeSample>,
         state: &ailloli_ui_winit::PresentationTestState,
@@ -1502,6 +1657,7 @@ impl NativeHarnessProbe {
             .collect()
     }
 
+    /// Builds metric context for the primary window, surface generation, and phase.
     fn bench_context(
         generation: PresentationGeneration,
         phase: ailloli_ui_bench::SamplePhase,
@@ -1515,6 +1671,7 @@ impl NativeHarnessProbe {
             .with_sample_phase(phase)
     }
 
+    /// Injects one uniquely identified event and counts runtime rejection.
     fn inject(
         &mut self,
         ui: &mut UiApp<WakeSample>,
@@ -1539,6 +1696,7 @@ impl NativeHarnessProbe {
         }
     }
 
+    /// Injects a left-button press/release pair and counts each rejected envelope.
     fn inject_popup_click(
         &mut self,
         ui: &mut UiApp<WakeSample>,
@@ -1572,6 +1730,7 @@ impl NativeHarnessProbe {
 }
 
 #[cfg(feature = "test_support")]
+/// Queues one lost and one outdated surface fault for the primary window.
 fn queue_surface_recovery_faults(ui: &mut UiApp<WakeSample>) -> Result<(), HarnessError> {
     let logical_window_id = LogicalWindowId::new(MAIN_WINDOW_ID);
     for fault in [
@@ -1588,6 +1747,7 @@ fn queue_surface_recovery_faults(ui: &mut UiApp<WakeSample>) -> Result<(), Harne
 }
 
 #[cfg(feature = "test_support")]
+/// Records lifecycle recovery counts and fails when presentation state is unavailable.
 fn record_surface_recovery_correctness(ui: &UiApp<WakeSample>) -> Result<(), HarnessError> {
     let logical_window_id = LogicalWindowId::new(MAIN_WINDOW_ID);
     let state = ui
@@ -1621,6 +1781,7 @@ fn record_surface_recovery_correctness(ui: &UiApp<WakeSample>) -> Result<(), Har
 }
 
 #[cfg(feature = "test_support")]
+/// Records zero-extent lifecycle mismatches after all expected round trips.
 fn record_resize_zero_correctness(
     ui: &UiApp<WakeSample>,
     expected_round_trips: u32,
@@ -1644,6 +1805,7 @@ fn record_resize_zero_correctness(
     Ok(())
 }
 
+/// Creates the native host, runs the selected workload, and emits final correctness data.
 fn run_harness(
     scenario: Scenario,
     config: &ailloli_ui_bench::BenchConfig,
@@ -1772,6 +1934,7 @@ fn run_harness(
     Ok(())
 }
 
+/// Initializes and finalizes benchmark output around one harness execution.
 fn execute() -> Result<(), Box<dyn Error>> {
     let started_at = Instant::now();
     let config = ailloli_ui_bench::config_from_env();
@@ -1801,6 +1964,7 @@ fn execute() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Converts harness success or failure into a process exit code.
 fn main() -> ExitCode {
     match execute() {
         Ok(()) => ExitCode::SUCCESS,
@@ -1812,6 +1976,7 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
+/// Scenario-name, fidelity, feature-capability, and sampling-contract tests.
 mod tests {
     use super::*;
 

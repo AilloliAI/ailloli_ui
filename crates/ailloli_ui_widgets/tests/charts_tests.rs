@@ -1,3 +1,5 @@
+//! Bar, line, and radial chart style, layout, paint, and input scenarios.
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Modifiers};
 use ailloli_ui_core::geometry::Constraints;

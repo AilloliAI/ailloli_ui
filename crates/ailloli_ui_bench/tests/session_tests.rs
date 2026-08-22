@@ -1,3 +1,9 @@
+//! Integration scenarios for session persistence and tolerant log reading.
+//!
+//! These tests cover bounded asynchronous recording, periodic staging-file
+//! visibility, atomic publication, metadata merging, corruption handling, and
+//! queue saturation under concurrent producers.
+
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
@@ -9,11 +15,14 @@ use ailloli_ui_bench::{
     FrameId, MetricRole, RunMetadata, SamplePhase, TimeOrigin,
 };
 
+/// Monotonic suffix used to avoid temporary-directory collisions in this process.
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Per-test directory removed on scope exit.
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {
+    /// Creates a process- and sequence-qualified directory for `label`.
     fn new(label: &str) -> Self {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -24,17 +33,20 @@ impl TestDirectory {
         Self(path)
     }
 
+    /// Resolves a fixture path relative to this test's temporary root.
     fn join(&self, path: impl AsRef<Path>) -> PathBuf {
         self.0.join(path)
     }
 }
 
 impl Drop for TestDirectory {
+    /// Performs best-effort cleanup without masking a test failure.
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
 
+/// Parses every non-empty JSONL line from a trusted test fixture.
 fn read_jsonl_records(path: &Path) -> Vec<serde_json::Value> {
     fs::read_to_string(path)
         .unwrap()
@@ -43,6 +55,7 @@ fn read_jsonl_records(path: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Rewrites a JSONL fixture with exactly one trailing newline.
 fn write_jsonl_records(path: &Path, records: &[serde_json::Value]) {
     let mut contents = records
         .iter()

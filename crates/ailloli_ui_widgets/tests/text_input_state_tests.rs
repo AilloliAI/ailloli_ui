@@ -1,3 +1,5 @@
+//! Text-input state synchronization, selection, IME, scrolling, and role scenarios.
+
 use ailloli_ui_core::event::{
     Event, ImeEvent, ImePreedit, Key, KeyEvent, KeyState, Modifiers, MouseButton, NamedKey,
     PointerEvent, WheelDelta,

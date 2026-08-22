@@ -1,3 +1,5 @@
+//! Non-interactive bar, line, and radial-gauge data visualizations.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use ailloli_ui_core::event::Event;
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
@@ -16,41 +18,109 @@ use ailloli_ui_runtime::{
 use ailloli_ui_text::{TextLayoutParams, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in chart canvas and stroke sizes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ChartSize;
+/// let sizes = [ChartSize::Compact, ChartSize::Default, ChartSize::Large];
+/// assert_eq!(sizes.len(), 3);
+/// assert_eq!(ChartSize::default(), ChartSize::Default);
+/// ```
 pub enum ChartSize {
+    /// 180 by 124 logical-pixel canvas.
     Compact,
+    /// 240 by 164 logical-pixel canvas; the default.
     #[default]
     Default,
+    /// 320 by 220 logical-pixel canvas.
     Large,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic series color for line charts and radial gauges.
+///
+/// Bar charts instead cycle through all six colors in [`ChartStyle::colors`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ChartTone;
+/// let tones = [
+///     ChartTone::Accent,
+///     ChartTone::Success,
+///     ChartTone::Warning,
+///     ChartTone::Danger,
+///     ChartTone::Info,
+///     ChartTone::Neutral,
+/// ];
+/// assert_eq!(tones.len(), 6);
+/// assert_eq!(ChartTone::default(), ChartTone::Accent);
+/// ```
 pub enum ChartTone {
+    /// Accent-brand color; the default.
     #[default]
     Accent,
+    /// Successful-state color.
     Success,
+    /// Warning-state color.
     Warning,
+    /// Destructive or error color.
     Danger,
+    /// Informational color.
     Info,
+    /// Muted neutral color.
     Neutral,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved chart colors, typography, and logical-pixel geometry.
+///
+/// Custom geometry is not validated. Padding larger than the canvas collapses
+/// the content area to zero; non-finite values can propagate to draw commands.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{ChartSize, ChartStyle};
+/// let style = ChartStyle::from_theme(Theme::dark(), ChartSize::Compact);
+/// assert_eq!((style.width, style.height, style.padding), (180.0, 124.0, 10.0));
+/// assert_eq!(style.colors.len(), 6);
+/// ```
 pub struct ChartStyle {
+    /// Rounded outer canvas fill.
     pub background: Color,
+    /// Plot area and radial-gauge track fill.
     pub plot_background: Color,
+    /// Horizontal grid-line color.
     pub grid: Color,
+    /// Left and bottom axis color.
     pub axis: Color,
+    /// Outer canvas border.
     pub border: Border,
+    /// Title and gauge percentage typography.
     pub text: TextStyle,
+    /// Empty-state, x-label, and gauge-label typography.
     pub muted_text: TextStyle,
+    /// Accent, success, info, warning, danger, and neutral colors in that order.
     pub colors: [Color; 6],
+    /// Intrinsic canvas width in logical pixels.
     pub width: f32,
+    /// Intrinsic canvas height in logical pixels.
     pub height: f32,
+    /// Inner inset on every side in logical pixels.
     pub padding: f32,
+    /// Outer canvas corner radius in logical pixels.
     pub radius: f32,
+    /// Horizontal space reserved within each bar group in logical pixels.
     pub bar_gap: f32,
+    /// Line-chart stroke width in logical pixels.
     pub line_thickness: f32,
+    /// Line-chart point diameter in logical pixels.
     pub point_size: f32,
+    /// Preferred radial-gauge ring thickness in logical pixels.
     pub gauge_thickness: f32,
 }
 
@@ -61,6 +131,17 @@ impl Default for ChartStyle {
 }
 
 impl ChartStyle {
+    /// Resolves all chart styling from a theme and built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ChartSize, ChartStyle};
+    /// let style = ChartStyle::from_theme(Theme::default(), ChartSize::Large);
+    /// assert_eq!((style.width, style.height), (320.0, 220.0));
+    /// assert_eq!((style.line_thickness, style.point_size), (3.0, 6.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: ChartSize) -> Self {
         let palette = theme.palette();
         let (width, height, text_px, padding, line_thickness, point_size, gauge_thickness) =
@@ -96,10 +177,12 @@ impl ChartStyle {
         }
     }
 
+    /// Returns the configured intrinsic canvas size.
     fn intrinsic_size(&self) -> Size {
         Size::new(self.width, self.height)
     }
 
+    /// Resolves a semantic tone through the fixed six-color palette.
     fn tone_color(&self, tone: ChartTone) -> Color {
         match tone {
             ChartTone::Accent => self.colors[0],
@@ -112,36 +195,112 @@ impl ChartStyle {
     }
 }
 
+/// A grouped vertical bar chart with optional x-axis labels.
+///
+/// Each added series forms one bar per point index. Point `x` coordinates are
+/// ignored; non-finite `y` values are skipped. The longest series determines
+/// group count, and labels are independently distributed across the plot, so a
+/// mismatched label count does not automatically align with groups. The first
+/// series name is used as the title; no legend is drawn.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::BarChart;
+/// let chart = BarChart::new()
+///     .series("Requests", [12.0, 18.0, 9.0])
+///     .labels(["Mon", "Tue", "Wed"]);
+/// let _ = chart;
+/// ```
 pub struct BarChart {
+    /// Layout configuration applied to the intrinsic canvas.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Series in insertion/color-cycle order.
     series: Vec<ChartSeries>,
+    /// Independently spaced x-axis labels.
     labels: Vec<String>,
+    /// Optional explicit sanitized y-domain.
     y_range: Option<ChartRange>,
+    /// Resolved paint and geometry.
     style: ChartStyle,
+    /// Empty-state text.
     empty_text: String,
 }
 
+/// A multi-series polyline chart using one semantic color.
+///
+/// All series share the selected tone; the first series name is the title and
+/// no legend is drawn. Empty series display the empty text. A non-empty series
+/// containing only non-finite coordinates is not considered empty, but yields
+/// no valid polyline. When points are enabled, callers should provide finite
+/// coordinates because point markers are emitted without an additional filter.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{ChartTone, LineChart};
+/// let chart = LineChart::new()
+///     .series("Latency", [(0.0, 12.0), (1.0, 8.0)])
+///     .show_points(true)
+///     .tone(ChartTone::Info);
+/// let _ = chart;
+/// ```
 pub struct LineChart {
+    /// Layout configuration applied to the intrinsic canvas.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Series in insertion order.
     series: Vec<ChartSeries>,
+    /// Optional explicit sanitized x-domain.
     x_range: Option<ChartRange>,
+    /// Optional explicit sanitized y-domain.
     y_range: Option<ChartRange>,
+    /// Whether to paint a circular marker for every source point.
     show_points: bool,
+    /// Resolved paint and geometry.
     style: ChartStyle,
+    /// Shared semantic series color.
     tone: ChartTone,
+    /// Empty-state text.
     empty_text: String,
 }
 
+/// A radial normalized value indicator with optional percentage and label.
+///
+/// Values are mapped through [`ChartRange`], clamped to `0.0..=1.0`, and
+/// non-finite values map to zero. The optional percentage is rounded to a whole
+/// number. The default range is `0.0..=1.0`, value is zero, and text is hidden.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::RadialGauge;
+/// let gauge = RadialGauge::new()
+///     .value(75.0)
+///     .range(0.0, 100.0)
+///     .show_value(true)
+///     .label("Complete");
+/// let _ = gauge;
+/// ```
 pub struct RadialGauge {
+    /// Layout configuration applied to the intrinsic canvas.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Live data value in the range's caller-defined unit.
     value: Binding<f32>,
+    /// Sanitized inclusive data domain.
     range: ChartRange,
+    /// Optional live label below the ring.
     label: Option<Binding<String>>,
+    /// Whether to paint the rounded percentage inside the ring.
     show_value: bool,
+    /// Resolved paint and geometry.
     style: ChartStyle,
+    /// Semantic ring fill color.
     tone: ChartTone,
 }
 
@@ -156,6 +315,15 @@ impl Default for BarChart {
 }
 
 impl BarChart {
+    /// Creates an empty chart with automatic y-range and `"No data"` text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::BarChart;
+    /// let chart = BarChart::new();
+    /// let _ = chart;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -168,6 +336,18 @@ impl BarChart {
         }
     }
 
+    /// Appends a named series whose x coordinates are zero-based indices.
+    ///
+    /// Values, including non-finite values, are retained; the painter skips
+    /// non-finite y values. Empty series are allowed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::BarChart;
+    /// let chart = BarChart::new().series("CPU", [20.0, 35.0]);
+    /// let _ = chart;
+    /// ```
     pub fn series(
         mut self,
         name: impl Into<String>,
@@ -177,11 +357,35 @@ impl BarChart {
         self
     }
 
+    /// Appends an existing series without normalization.
+    ///
+    /// Its x coordinates are ignored by bar placement.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ChartSeries;
+    /// use ailloli_ui_widgets::controls::BarChart;
+    /// let chart = BarChart::new().chart_series(ChartSeries::from_values("CPU", [1.0, 2.0]));
+    /// let _ = chart;
+    /// ```
     pub fn chart_series(mut self, series: ChartSeries) -> Self {
         self.series.push(series);
         self
     }
 
+    /// Replaces all x-axis labels with values collected in iterator order.
+    ///
+    /// Labels are spread according to their own count, independently of bar
+    /// groups. Empty text remains a label; an empty iterator hides the label row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::BarChart;
+    /// let chart = BarChart::new().labels(["Q1", "Q2"]);
+    /// let _ = chart;
+    /// ```
     pub fn labels<I, S>(mut self, labels: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -191,21 +395,63 @@ impl BarChart {
         self
     }
 
+    /// Sets an explicit y-domain after finite/order/degeneracy sanitization.
+    ///
+    /// Reversed bounds are swapped, non-finite bounds fall back to `0`/`1`, and
+    /// nearly equal bounds are widened when representable. Values outside the
+    /// domain are clamped to the plot edges.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::BarChart;
+    /// let chart = BarChart::new().range(-100.0, 100.0);
+    /// let _ = chart;
+    /// ```
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.y_range = Some(ChartRange::new(min, max));
         self
     }
 
+    /// Replaces complete chart style and intrinsic geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BarChart, ChartStyle};
+    /// let chart = BarChart::new().chart_style(ChartStyle::default());
+    /// let _ = chart;
+    /// ```
     pub fn chart_style(mut self, style: ChartStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BarChart, ChartSize};
+    /// let chart = BarChart::new().chart_size(ChartSize::Large);
+    /// let _ = chart;
+    /// ```
     pub fn chart_size(mut self, size: ChartSize) -> Self {
         self.style = ChartStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Replaces text painted when there are no points or no plot area.
+    ///
+    /// Empty text is valid and paints no glyphs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::BarChart;
+    /// let chart = BarChart::new().empty_text("Awaiting samples");
+    /// let _ = chart;
+    /// ```
     pub fn empty_text(mut self, text: impl Into<String>) -> Self {
         self.empty_text = text.into();
         self
@@ -219,6 +465,15 @@ impl Default for LineChart {
 }
 
 impl LineChart {
+    /// Creates an empty accent chart with automatic axes and hidden points.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::LineChart;
+    /// let chart = LineChart::new();
+    /// let _ = chart;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -233,6 +488,15 @@ impl LineChart {
         }
     }
 
+    /// Appends a named series of `(x, y)` points without normalization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::LineChart;
+    /// let chart = LineChart::new().series("CPU", [(10.0, 0.4), (20.0, 0.8)]);
+    /// let _ = chart;
+    /// ```
     pub fn series(
         mut self,
         name: impl Into<String>,
@@ -242,41 +506,120 @@ impl LineChart {
         self
     }
 
+    /// Appends an existing series without normalization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ChartSeries;
+    /// use ailloli_ui_widgets::controls::LineChart;
+    /// let chart = LineChart::new().chart_series(ChartSeries::from_xy("CPU", [(0.0, 1.0)]));
+    /// let _ = chart;
+    /// ```
     pub fn chart_series(mut self, series: ChartSeries) -> Self {
         self.series.push(series);
         self
     }
 
+    /// Sets an explicit sanitized y-domain.
+    ///
+    /// Reversed bounds are swapped, non-finite bounds fall back to `0`/`1`, and
+    /// values outside the result are clamped to the plot edges.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::LineChart;
+    /// let chart = LineChart::new().range(0.0, 100.0);
+    /// let _ = chart;
+    /// ```
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.y_range = Some(ChartRange::new(min, max));
         self
     }
 
+    /// Sets an explicit sanitized x-domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::LineChart;
+    /// let chart = LineChart::new().x_range(1_000.0, 2_000.0);
+    /// let _ = chart;
+    /// ```
     pub fn x_range(mut self, min: f32, max: f32) -> Self {
         self.x_range = Some(ChartRange::new(min, max));
         self
     }
 
+    /// Shows or hides a marker for every source point.
+    ///
+    /// The default is `false`. Point markers do not filter non-finite source
+    /// coordinates, so finite coordinates are required when enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::LineChart;
+    /// let chart = LineChart::new().show_points(true);
+    /// let _ = chart;
+    /// ```
     pub fn show_points(mut self, show: bool) -> Self {
         self.show_points = show;
         self
     }
 
+    /// Sets the single semantic color shared by all series.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ChartTone, LineChart};
+    /// let chart = LineChart::new().tone(ChartTone::Success);
+    /// let _ = chart;
+    /// ```
     pub fn tone(mut self, tone: ChartTone) -> Self {
         self.tone = tone;
         self
     }
 
+    /// Replaces complete chart style and intrinsic geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ChartStyle, LineChart};
+    /// let chart = LineChart::new().chart_style(ChartStyle::default());
+    /// let _ = chart;
+    /// ```
     pub fn chart_style(mut self, style: ChartStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ChartSize, LineChart};
+    /// let chart = LineChart::new().chart_size(ChartSize::Compact);
+    /// let _ = chart;
+    /// ```
     pub fn chart_size(mut self, size: ChartSize) -> Self {
         self.style = ChartStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Replaces text painted only when every series has no points.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::LineChart;
+    /// let chart = LineChart::new().empty_text("No samples");
+    /// let _ = chart;
+    /// ```
     pub fn empty_text(mut self, text: impl Into<String>) -> Self {
         self.empty_text = text.into();
         self
@@ -290,6 +633,15 @@ impl Default for RadialGauge {
 }
 
 impl RadialGauge {
+    /// Creates a zero-valued accent gauge over `0.0..=1.0` with no text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadialGauge;
+    /// let gauge = RadialGauge::new();
+    /// let _ = gauge;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -303,42 +655,115 @@ impl RadialGauge {
         }
     }
 
+    /// Sets the static or reactive data value.
+    ///
+    /// Painting maps it through the configured range, clamps out-of-range
+    /// values, and treats NaN or infinity as the range minimum.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadialGauge;
+    /// let gauge = RadialGauge::new().value(0.75);
+    /// let _ = gauge;
+    /// ```
     pub fn value(mut self, value: impl Into<Binding<f32>>) -> Self {
         self.value = value.into();
         self
     }
 
+    /// Sets the inclusive sanitized data domain.
+    ///
+    /// Reversed bounds are swapped and non-finite bounds become `0`/`1`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadialGauge;
+    /// let gauge = RadialGauge::new().range(0.0, 100.0).value(25.0);
+    /// let _ = gauge;
+    /// ```
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.range = ChartRange::new(min, max);
         self
     }
 
+    /// Sets static or reactive text painted below the ring.
+    ///
+    /// Empty text remains present but paints no glyphs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadialGauge;
+    /// let gauge = RadialGauge::new().label("Storage");
+    /// let _ = gauge;
+    /// ```
     pub fn label(mut self, label: impl Into<Binding<String>>) -> Self {
         self.label = Some(label.into());
         self
     }
 
+    /// Shows or hides a whole-number percentage inside the ring.
+    ///
+    /// The default is `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RadialGauge;
+    /// let gauge = RadialGauge::new().show_value(true);
+    /// let _ = gauge;
+    /// ```
     pub fn show_value(mut self, show: bool) -> Self {
         self.show_value = show;
         self
     }
 
+    /// Sets the semantic ring fill color.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ChartTone, RadialGauge};
+    /// let gauge = RadialGauge::new().tone(ChartTone::Warning);
+    /// let _ = gauge;
+    /// ```
     pub fn tone(mut self, tone: ChartTone) -> Self {
         self.tone = tone;
         self
     }
 
+    /// Replaces complete gauge style and intrinsic geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ChartStyle, RadialGauge};
+    /// let gauge = RadialGauge::new().chart_style(ChartStyle::default());
+    /// let _ = gauge;
+    /// ```
     pub fn chart_style(mut self, style: ChartStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ChartSize, RadialGauge};
+    /// let gauge = RadialGauge::new().chart_size(ChartSize::Large);
+    /// let _ = gauge;
+    /// ```
     pub fn chart_size(mut self, size: ChartSize) -> Self {
         self.style = ChartStyle::from_theme(Theme::default(), size);
         self
     }
 }
 
+/// Retained leaf widget that paints grouped bar series.
 struct BarChartWidget {
     layout: LayoutStyle,
     series: Vec<ChartSeries>,
@@ -348,6 +773,7 @@ struct BarChartWidget {
     empty_text: String,
 }
 
+/// Retained leaf widget that paints one-color polyline series.
 struct LineChartWidget {
     layout: LayoutStyle,
     series: Vec<ChartSeries>,
@@ -359,6 +785,7 @@ struct LineChartWidget {
     empty_text: String,
 }
 
+/// Retained leaf widget that reads and paints a reactive gauge value/label.
 struct RadialGaugeWidget {
     layout: LayoutStyle,
     value: Binding<f32>,
@@ -530,6 +957,7 @@ impl<A: 'static> IntoView<A> for RadialGauge {
     }
 }
 
+/// Builds childless layout from intrinsic style size and layout overrides.
 fn chart_layout_result(
     intrinsic: Size,
     layout: LayoutStyle,
@@ -549,6 +977,7 @@ fn chart_layout_result(
     }
 }
 
+/// Paints the rounded canvas/border and returns its non-negative content inset.
 fn paint_chart_frame(ctx: &mut PaintCtx<'_>, bounds: Rect, style: &ChartStyle) -> Rect {
     if bounds.w <= 0.0 || bounds.h <= 0.0 {
         return bounds;
@@ -573,6 +1002,7 @@ fn paint_chart_frame(ctx: &mut PaintCtx<'_>, bounds: Rect, style: &ChartStyle) -
     )
 }
 
+/// Paints grouped indexed bars, axes, title, labels, or the empty state.
 fn paint_bar_chart(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -629,6 +1059,7 @@ fn paint_bar_chart(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Paints clipped polyline series, optional markers, axes, or the empty state.
 fn paint_line_chart(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -702,6 +1133,7 @@ fn paint_line_chart(
     paint_axis(ctx, plot, style);
 }
 
+/// Paints the clamped ring fraction and optional percentage/label text.
 fn paint_radial_gauge(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -734,6 +1166,7 @@ fn paint_radial_gauge(
     }
 }
 
+/// Paints the rounded plot fill when both dimensions are positive.
 fn paint_plot_background(ctx: &mut PaintCtx<'_>, plot: Rect, style: &ChartStyle) {
     if plot.w > 0.0 && plot.h > 0.0 {
         ctx.push(DrawCmd::RRect(DrawRRect {
@@ -744,6 +1177,7 @@ fn paint_plot_background(ctx: &mut PaintCtx<'_>, plot: Rect, style: &ChartStyle)
     }
 }
 
+/// Paints a non-empty first-series title in the reserved title row.
 fn paint_chart_title(
     ctx: &mut PaintCtx<'_>,
     content: Rect,
@@ -761,6 +1195,7 @@ fn paint_chart_title(
     }
 }
 
+/// Paints three evenly spaced horizontal grid lines.
 fn paint_grid(ctx: &mut PaintCtx<'_>, plot: Rect, style: &ChartStyle) {
     for idx in 1..=3 {
         let y = plot.y + plot.h * idx as f32 / 4.0;
@@ -771,6 +1206,7 @@ fn paint_grid(ctx: &mut PaintCtx<'_>, plot: Rect, style: &ChartStyle) {
     }
 }
 
+/// Paints one-pixel bottom and left axes.
 fn paint_axis(ctx: &mut PaintCtx<'_>, plot: Rect, style: &ChartStyle) {
     ctx.push(DrawCmd::Rect(DrawRect {
         rect: Rect::new(plot.x, plot.bottom() - 1.0, plot.w, 1.0),
@@ -782,6 +1218,7 @@ fn paint_axis(ctx: &mut PaintCtx<'_>, plot: Rect, style: &ChartStyle) {
     }));
 }
 
+/// Distributes and centers labels across equal-width slots below the plot.
 fn paint_x_labels(ctx: &mut PaintCtx<'_>, plot: Rect, labels: &[String], style: &ChartStyle) {
     if labels.is_empty() || plot.w <= 0.0 {
         return;
@@ -794,10 +1231,12 @@ fn paint_x_labels(ctx: &mut PaintCtx<'_>, plot: Rect, labels: &[String], style: 
     }
 }
 
+/// Maps a data value to a bottom-origin clamped plot y coordinate.
 fn value_y(plot: Rect, range: ChartRange, value: f32) -> f32 {
     plot.bottom() - range.fraction_for_value(value) * plot.h
 }
 
+/// Maps a chart point through x/y domains into plot coordinates.
 fn point_to_screen(
     plot: Rect,
     x_range: ChartRange,
@@ -810,6 +1249,7 @@ fn point_to_screen(
     ]
 }
 
+/// Shapes one unwrapped line and centers it within a rectangle.
 fn paint_centered_text(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str, style: TextStyle) {
     let Some(ts) = ctx.text_system.as_deref_mut() else {
         return;
@@ -835,6 +1275,7 @@ fn paint_centered_text(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str, style: Te
     }));
 }
 
+/// Shapes and paints one unwrapped line at an explicit baseline position.
 fn paint_text(
     ctx: &mut PaintCtx<'_>,
     pos: [f32; 2],

@@ -1,3 +1,9 @@
+//! Shared retained-view builders and deterministic fixtures for the widget-bundle examples.
+//!
+//! The public functions are example-target entry points, not library API. Each
+//! accepts an explicit palette mode so visual captures can compare stable white
+//! and default-theme variants without process-global theme mutation.
+
 use ailloli_ui::core::TextStyle;
 use ailloli_ui::prelude::*;
 
@@ -8,28 +14,52 @@ use ailloli_ui_editor::code::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Palette variant applied to every deterministic showcase entry point.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_showcase(ShowcaseMode::White)` for
+/// the fixed light palette or pass `ShowcaseMode::DefaultTheme` for theme tokens.
 pub enum ShowcaseMode {
+    /// Fixed high-contrast light palette used by screenshot baselines.
     White,
+    /// Colors derived from [`Theme::default`].
     DefaultTheme,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Complete color set shared by sections so one mode is applied consistently.
+/// Retained helper state for the `ShowcasePalette` showcase fixture.
 struct ShowcasePalette {
+    /// Page background.
     background: Color,
+    /// Primary card/control surface.
     surface: Color,
+    /// Raised surface.
     elevated: Color,
+    /// Separator and outline color.
     border: Color,
+    /// Primary text color.
     text: Color,
+    /// Secondary text color.
     muted: Color,
+    /// Interactive accent.
     accent: Color,
+    /// Destructive/error tone.
     danger: Color,
+    /// Success tone.
     success: Color,
+    /// Warning tone.
     warning: Color,
+    /// Informational tone.
     info: Color,
+    /// Shadow color including alpha.
     shadow: Color,
 }
 
+/// Stable root identity, title, and complete palette for a showcase mode.
 impl ShowcaseMode {
+    /// Returns the stable root view key used by capture tests.
     fn root_key(self) -> &'static str {
         match self {
             Self::White => "phase39-white-root",
@@ -37,6 +67,7 @@ impl ShowcaseMode {
         }
     }
 
+    /// Returns the human-readable gallery title.
     fn title(self) -> &'static str {
         match self {
             Self::White => "Ailloli UI Widget Bundle - White Showcase",
@@ -44,6 +75,7 @@ impl ShowcaseMode {
         }
     }
 
+    /// Resolves every semantic color without later global lookup.
     fn palette(self) -> ShowcasePalette {
         let theme = Theme::default();
         let p = theme.palette();
@@ -80,12 +112,30 @@ impl ShowcaseMode {
     }
 }
 
+/// Builds the `ui bundle showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     build_showcase(mode)
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle switches showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_switches_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_switches_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -103,6 +153,15 @@ pub fn ui_bundle_switches_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle radio group showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_radio_group_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_radio_group_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -120,6 +179,15 @@ pub fn ui_bundle_radio_group_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle segmented control showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_segmented_control_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_segmented_control_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -137,6 +205,15 @@ pub fn ui_bundle_segmented_control_showcase(mode: ShowcaseMode) -> impl IntoView
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle slider showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_slider_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_slider_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -154,6 +231,15 @@ pub fn ui_bundle_slider_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle progress showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_progress_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_progress_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -171,6 +257,15 @@ pub fn ui_bundle_progress_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle select dropdown showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_select_dropdown_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_select_dropdown_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -188,6 +283,15 @@ pub fn ui_bundle_select_dropdown_showcase(mode: ShowcaseMode) -> impl IntoView<(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle combobox autocomplete showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_combobox_autocomplete_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_combobox_autocomplete_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -205,6 +309,15 @@ pub fn ui_bundle_combobox_autocomplete_showcase(mode: ShowcaseMode) -> impl Into
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle cards avatar status divider showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_cards_avatar_status_divider_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_cards_avatar_status_divider_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -222,6 +335,15 @@ pub fn ui_bundle_cards_avatar_status_divider_showcase(mode: ShowcaseMode) -> imp
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle navigation lists showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_navigation_lists_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_navigation_lists_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -239,6 +361,15 @@ pub fn ui_bundle_navigation_lists_showcase(mode: ShowcaseMode) -> impl IntoView<
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle accordion tree showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_accordion_tree_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_accordion_tree_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -256,6 +387,15 @@ pub fn ui_bundle_accordion_tree_showcase(mode: ShowcaseMode) -> impl IntoView<()
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle tree edit drag showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_tree_edit_drag_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_tree_edit_drag_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -273,6 +413,15 @@ pub fn ui_bundle_tree_edit_drag_showcase(mode: ShowcaseMode) -> impl IntoView<()
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle table view showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_table_view_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_table_view_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -290,6 +439,15 @@ pub fn ui_bundle_table_view_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle feedback overlays showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_feedback_overlays_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_feedback_overlays_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -307,6 +465,15 @@ pub fn ui_bundle_feedback_overlays_showcase(mode: ShowcaseMode) -> impl IntoView
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle command palette showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_command_palette_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_command_palette_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -324,6 +491,15 @@ pub fn ui_bundle_command_palette_showcase(mode: ShowcaseMode) -> impl IntoView<(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle pickers upload showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_pickers_upload_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_pickers_upload_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -341,6 +517,15 @@ pub fn ui_bundle_pickers_upload_showcase(mode: ShowcaseMode) -> impl IntoView<()
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle charts showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_charts_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_charts_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -358,12 +543,30 @@ pub fn ui_bundle_charts_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle terminal phase54 1 showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_terminal_phase54_1_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_terminal_phase54_1_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     terminal_phase54_1_showcase(mode, TerminalShowcaseScenario::Default)
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle terminal phase77 showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_terminal_phase77_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_terminal_phase77_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -381,6 +584,15 @@ pub fn ui_bundle_terminal_phase77_showcase(mode: ShowcaseMode) -> impl IntoView<
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle terminal phase78 showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_terminal_phase78_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_terminal_phase78_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -409,6 +621,15 @@ pub fn ui_bundle_terminal_phase78_showcase(mode: ShowcaseMode) -> impl IntoView<
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle terminal phase80 showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_terminal_phase80_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_terminal_phase80_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -426,18 +647,45 @@ pub fn ui_bundle_terminal_phase80_showcase(mode: ShowcaseMode) -> impl IntoView<
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle terminal phase54 1 search showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_terminal_phase54_1_search_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_terminal_phase54_1_search_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     terminal_phase54_1_showcase(mode, TerminalShowcaseScenario::Search)
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle terminal phase54 1 selection showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_terminal_phase54_1_selection_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_terminal_phase54_1_selection_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     terminal_phase54_1_showcase(mode, TerminalShowcaseScenario::Selection)
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle terminal phase54 1 capture suite showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_terminal_phase54_1_capture_suite_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_terminal_phase54_1_capture_suite_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -481,13 +729,18 @@ pub fn ui_bundle_terminal_phase54_1_capture_suite_showcase(
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
+/// Closed scenario/value set used by the `TerminalShowcaseScenario` showcase fixture.
 enum TerminalShowcaseScenario {
+    /// Ordinary terminal widget state without forced interaction.
     Default,
+    /// Search overlay and match-navigation state.
     Search,
+    /// Text-selection state.
     Selection,
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase54 1 showcase` deterministic showcase fixture.
 fn terminal_phase54_1_showcase(
     mode: ShowcaseMode,
     scenario: TerminalShowcaseScenario,
@@ -505,6 +758,7 @@ fn terminal_phase54_1_showcase(
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase54 1 section` deterministic showcase fixture.
 fn terminal_phase54_1_section(
     mode: ShowcaseMode,
     key: &'static str,
@@ -521,6 +775,15 @@ fn terminal_phase54_1_section(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -538,6 +801,15 @@ pub fn ui_bundle_code_editor_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -555,6 +827,15 @@ pub fn ui_bundle_code_editor_phase54_3_showcase(mode: ShowcaseMode) -> impl Into
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 baseline showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_baseline_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_baseline_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -572,6 +853,15 @@ pub fn ui_bundle_code_editor_phase54_3_baseline_showcase(mode: ShowcaseMode) -> 
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 active line showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_active_line_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_active_line_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -591,6 +881,15 @@ pub fn ui_bundle_code_editor_phase54_3_active_line_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 tree sitter showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_tree_sitter_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_tree_sitter_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -610,6 +909,15 @@ pub fn ui_bundle_code_editor_phase54_3_tree_sitter_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 extension detection showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_extension_detection_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_extension_detection_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -629,6 +937,15 @@ pub fn ui_bundle_code_editor_phase54_3_extension_detection_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 symbol outline showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_symbol_outline_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_symbol_outline_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -648,6 +965,15 @@ pub fn ui_bundle_code_editor_phase54_3_symbol_outline_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 ctags fallback showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_ctags_fallback_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_ctags_fallback_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -667,6 +993,15 @@ pub fn ui_bundle_code_editor_phase54_3_ctags_fallback_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 symbol graph showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_symbol_graph_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_symbol_graph_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -686,6 +1021,15 @@ pub fn ui_bundle_code_editor_phase54_3_symbol_graph_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 search showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_search_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_search_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -703,6 +1047,15 @@ pub fn ui_bundle_code_editor_phase54_3_search_showcase(mode: ShowcaseMode) -> im
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 multiclick selection showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_multiclick_selection_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_multiclick_selection_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -722,6 +1075,15 @@ pub fn ui_bundle_code_editor_phase54_3_multiclick_selection_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 diagnostics showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_diagnostics_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_diagnostics_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -741,6 +1103,15 @@ pub fn ui_bundle_code_editor_phase54_3_diagnostics_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 folding showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_folding_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_folding_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -758,6 +1129,15 @@ pub fn ui_bundle_code_editor_phase54_3_folding_showcase(mode: ShowcaseMode) -> i
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 ide folding gutter showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_ide_folding_gutter_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_ide_folding_gutter_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -777,6 +1157,15 @@ pub fn ui_bundle_code_editor_phase54_3_ide_folding_gutter_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 lsp showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_lsp_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_lsp_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -794,6 +1183,15 @@ pub fn ui_bundle_code_editor_phase54_3_lsp_showcase(mode: ShowcaseMode) -> impl 
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 scip showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_scip_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_scip_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
@@ -811,6 +1209,15 @@ pub fn ui_bundle_code_editor_phase54_3_scip_showcase(mode: ShowcaseMode) -> impl
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 large file showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_large_file_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_large_file_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -830,6 +1237,15 @@ pub fn ui_bundle_code_editor_phase54_3_large_file_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle code editor phase54 3 theme variants showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_code_editor_phase54_3_theme_variants_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_code_editor_phase54_3_theme_variants_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
@@ -849,6 +1265,15 @@ pub fn ui_bundle_code_editor_phase54_3_theme_variants_showcase(
 
 #[cfg(test)]
 #[allow(dead_code)]
+/// Builds the `ui bundle line chart debug showcase` deterministic retained-view scenario.
+///
+/// `mode` selects either the fixed white palette or default theme tokens; it
+/// does not mutate global theme state.
+///
+/// # Examples
+///
+/// In this example target, call `ui_bundle_line_chart_debug_showcase(ShowcaseMode::White)` and pass the
+/// returned view to the sandbox or capture harness.
 pub fn ui_bundle_line_chart_debug_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     let mut style = showcase_chart_style(mode, ChartSize::Large);
@@ -879,6 +1304,7 @@ pub fn ui_bundle_line_chart_debug_showcase(mode: ShowcaseMode) -> impl IntoView<
         )
 }
 
+/// Builds or computes the `build showcase` deterministic showcase fixture.
 fn build_showcase(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
 
@@ -1100,6 +1526,7 @@ fn build_showcase(mode: ShowcaseMode) -> View<()> {
         .key(mode.root_key())
 }
 
+/// Builds or computes the `section` deterministic showcase fixture.
 fn section(
     mode: ShowcaseMode,
     key: &'static str,
@@ -1129,14 +1556,17 @@ fn section(
         .key(key)
 }
 
+/// Builds or computes the `text` deterministic showcase fixture.
 fn text(content: impl Into<String>, size: u16, color: Color) -> Text {
     Text::new(content.into()).style(TextStyle::new(FontId::Ui, size, color))
 }
 
+/// Builds or computes the `mono` deterministic showcase fixture.
 fn mono(content: impl Into<String>, size: u16, color: Color) -> Text {
     Text::new(content.into()).style(TextStyle::new(FontId::Mono, size, color))
 }
 
+/// Builds or computes the `token card` deterministic showcase fixture.
 fn token_card(label: &'static str, color: Color, text_color: Color, border: Color) -> View<()> {
     Container::new()
         .width(132.0)
@@ -1158,6 +1588,7 @@ fn token_card(label: &'static str, color: Color, text_color: Color, border: Colo
         .into_view()
 }
 
+/// Builds or computes the `theme tokens` deterministic showcase fixture.
 fn theme_tokens(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Row::new()
@@ -1213,6 +1644,7 @@ fn theme_tokens(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `buttons section` deterministic showcase fixture.
 fn buttons_section(_mode: ShowcaseMode) -> View<()> {
     Column::new()
         .gap(10.0)
@@ -1263,6 +1695,7 @@ fn buttons_section(_mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `badges chips tags section` deterministic showcase fixture.
 fn badges_chips_tags_section() -> View<()> {
     Row::new()
         .gap(8.0)
@@ -1303,6 +1736,7 @@ fn badges_chips_tags_section() -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `switches section` deterministic showcase fixture.
 fn switches_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let mut focused_style = SwitchStyle::from_theme(Theme::default(), SwitchSize::Default);
@@ -1350,6 +1784,7 @@ fn switches_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `switch sample` deterministic showcase fixture.
 fn switch_sample(colors: ShowcasePalette, label: &'static str, switch: Switch<()>) -> View<()> {
     Container::new()
         .width(146.0)
@@ -1368,12 +1803,17 @@ fn switch_sample(colors: ShowcasePalette, label: &'static str, switch: Switch<()
 }
 
 #[derive(Clone, PartialEq)]
+/// Closed scenario/value set used by the `ShowcaseChoice` showcase fixture.
 enum ShowcaseChoice {
+    /// First closed-set selection value.
     One,
+    /// Second closed-set selection value.
     Two,
+    /// Third closed-set selection value.
     Three,
 }
 
+/// Builds or computes the `radio groups section` deterministic showcase fixture.
 fn radio_groups_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let mut focused_style = RadioStyle::from_theme(Theme::default(), RadioSize::Default);
@@ -1441,6 +1881,7 @@ fn radio_groups_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `radio sample card` deterministic showcase fixture.
 fn radio_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -1462,6 +1903,7 @@ fn radio_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `segmented controls section` deterministic showcase fixture.
 fn segmented_controls_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let mut focused_style = SegmentedStyle::from_theme(Theme::default(), SegmentedSize::Compact);
@@ -1530,6 +1972,7 @@ fn segmented_controls_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `segmented sample card` deterministic showcase fixture.
 fn segmented_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -1551,6 +1994,7 @@ fn segmented_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `sliders section` deterministic showcase fixture.
 fn sliders_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -1645,6 +2089,7 @@ fn sliders_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `slider sample card` deterministic showcase fixture.
 fn slider_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -1666,6 +2111,7 @@ fn slider_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `progress section` deterministic showcase fixture.
 fn progress_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -1762,6 +2208,7 @@ fn progress_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `progress sample card` deterministic showcase fixture.
 fn progress_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -1783,6 +2230,7 @@ fn progress_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `select dropdowns section` deterministic showcase fixture.
 fn select_dropdowns_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -1879,6 +2327,7 @@ fn select_dropdowns_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `long select` deterministic showcase fixture.
 fn long_select() -> Select<ShowcaseChoice> {
     Select::<ShowcaseChoice>::new()
         .placeholder("Choose an item")
@@ -1894,6 +2343,7 @@ fn long_select() -> Select<ShowcaseChoice> {
         .option(ShowcaseChoice::Three, "Project Iota")
 }
 
+/// Builds or computes the `select sample card` deterministic showcase fixture.
 fn select_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -1915,6 +2365,7 @@ fn select_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `dropdown sample card` deterministic showcase fixture.
 fn dropdown_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -1936,6 +2387,7 @@ fn dropdown_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `combobox autocomplete section` deterministic showcase fixture.
 fn combobox_autocomplete_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -2008,6 +2460,7 @@ fn combobox_autocomplete_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `long autocomplete` deterministic showcase fixture.
 fn long_autocomplete() -> Autocomplete<()> {
     Autocomplete::<()>::new()
         .bind(State::new(String::new()))
@@ -2025,6 +2478,7 @@ fn long_autocomplete() -> Autocomplete<()> {
         .suggestion("United States")
 }
 
+/// Builds or computes the `combobox sample card` deterministic showcase fixture.
 fn combobox_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -2046,6 +2500,7 @@ fn combobox_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `autocomplete sample card` deterministic showcase fixture.
 fn autocomplete_sample_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -2067,6 +2522,7 @@ fn autocomplete_sample_card(
         .into_view()
 }
 
+/// Builds or computes the `cards avatar status divider section` deterministic showcase fixture.
 fn cards_avatar_status_divider_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -2088,6 +2544,7 @@ fn cards_avatar_status_divider_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `profile card` deterministic showcase fixture.
 fn profile_card(colors: ShowcasePalette) -> View<()> {
     Card::<()>::elevated()
         .width(300.0)
@@ -2122,6 +2579,7 @@ fn profile_card(colors: ShowcasePalette) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `metric card` deterministic showcase fixture.
 fn metric_card(colors: ShowcasePalette) -> View<()> {
     Card::<()>::surface()
         .width(230.0)
@@ -2151,6 +2609,7 @@ fn metric_card(colors: ShowcasePalette) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `media like card` deterministic showcase fixture.
 fn media_like_card(colors: ShowcasePalette) -> View<()> {
     Card::<()>::new()
         .variant(CardVariant::Outline)
@@ -2184,6 +2643,7 @@ fn media_like_card(colors: ShowcasePalette) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `avatar samples` deterministic showcase fixture.
 fn avatar_samples(colors: ShowcasePalette) -> View<()> {
     sample_panel(
         colors,
@@ -2216,6 +2676,7 @@ fn avatar_samples(colors: ShowcasePalette) -> View<()> {
     )
 }
 
+/// Builds or computes the `status samples` deterministic showcase fixture.
 fn status_samples(colors: ShowcasePalette) -> View<()> {
     sample_panel(
         colors,
@@ -2249,6 +2710,7 @@ fn status_samples(colors: ShowcasePalette) -> View<()> {
     )
 }
 
+/// Builds or computes the `divider samples` deterministic showcase fixture.
 fn divider_samples(colors: ShowcasePalette) -> View<()> {
     sample_panel(
         colors,
@@ -2283,6 +2745,7 @@ fn divider_samples(colors: ShowcasePalette) -> View<()> {
     )
 }
 
+/// Builds or computes the `metric text` deterministic showcase fixture.
 fn metric_text(value: &'static str, label: &'static str, colors: ShowcasePalette) -> View<()> {
     Column::new()
         .gap(2.0)
@@ -2291,6 +2754,7 @@ fn metric_text(value: &'static str, label: &'static str, colors: ShowcasePalette
         .into_view()
 }
 
+/// Builds or computes the `status row` deterministic showcase fixture.
 fn status_row(
     label: &'static str,
     tone: StatusTone,
@@ -2304,6 +2768,7 @@ fn status_row(
         .into_view()
 }
 
+/// Builds or computes the `sample panel` deterministic showcase fixture.
 fn sample_panel(
     colors: ShowcasePalette,
     title: &'static str,
@@ -2325,6 +2790,7 @@ fn sample_panel(
         .into_view()
 }
 
+/// Builds or computes the `navigation lists section` deterministic showcase fixture.
 fn navigation_lists_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Row::new()
@@ -2439,6 +2905,7 @@ fn navigation_lists_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `navigation sample panel` deterministic showcase fixture.
 fn navigation_sample_panel(
     colors: ShowcasePalette,
     title: &'static str,
@@ -2462,6 +2929,7 @@ fn navigation_sample_panel(
         .into_view()
 }
 
+/// Builds or computes the `accordion tree section` deterministic showcase fixture.
 fn accordion_tree_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Row::new()
@@ -2530,6 +2998,7 @@ fn accordion_tree_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `tree edit drag section` deterministic showcase fixture.
 fn tree_edit_drag_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let editable_nodes = State::new(vec![showcase_tree()]);
@@ -2615,6 +3084,7 @@ fn tree_edit_drag_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `table view section` deterministic showcase fixture.
 fn table_view_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let selected = State::new("alex");
@@ -2741,6 +3211,7 @@ fn table_view_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `feedback overlays section` deterministic showcase fixture.
 fn feedback_overlays_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Row::new()
@@ -2822,6 +3293,7 @@ fn feedback_overlays_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `command palette section` deterministic showcase fixture.
 fn command_palette_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Container::new()
@@ -2900,6 +3372,7 @@ fn command_palette_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `pickers upload section` deterministic showcase fixture.
 fn pickers_upload_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let date = State::new(Some(DateValue::new(2026, 5, 29)));
@@ -3006,6 +3479,7 @@ fn pickers_upload_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `picker demo card` deterministic showcase fixture.
 fn picker_demo_card(
     mode: ShowcaseMode,
     label: &'static str,
@@ -3029,6 +3503,7 @@ fn picker_demo_card(
         .into_view()
 }
 
+/// Builds or computes the `upload demo card` deterministic showcase fixture.
 fn upload_demo_card(
     mode: ShowcaseMode,
     label: &'static str,
@@ -3051,6 +3526,7 @@ fn upload_demo_card(
         .into_view()
 }
 
+/// Builds or computes the `charts section` deterministic showcase fixture.
 fn charts_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let default_style = showcase_chart_style(mode, ChartSize::Default);
@@ -3149,6 +3625,7 @@ fn charts_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `chart metric card` deterministic showcase fixture.
 fn chart_metric_card(
     colors: ShowcasePalette,
     label: &'static str,
@@ -3175,6 +3652,7 @@ fn chart_metric_card(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Builds or computes the `table row` deterministic showcase fixture.
 fn table_row(
     id: &'static str,
     name: &'static str,
@@ -3203,6 +3681,7 @@ fn table_row(
     row
 }
 
+/// Builds or computes the `showcase table style` deterministic showcase fixture.
 fn showcase_table_style(mode: ShowcaseMode) -> TableViewStyle {
     let mut style = TableViewStyle::default();
     if mode == ShowcaseMode::White {
@@ -3224,6 +3703,7 @@ fn showcase_table_style(mode: ShowcaseMode) -> TableViewStyle {
     style
 }
 
+/// Builds or computes the `showcase toast style` deterministic showcase fixture.
 fn showcase_toast_style(mode: ShowcaseMode) -> ToastStyle {
     let mut style = ToastStyle::default();
     if mode == ShowcaseMode::White {
@@ -3243,6 +3723,7 @@ fn showcase_toast_style(mode: ShowcaseMode) -> ToastStyle {
     style
 }
 
+/// Builds or computes the `showcase dialog style` deterministic showcase fixture.
 fn showcase_dialog_style(mode: ShowcaseMode, tone: DialogTone) -> DialogStyle {
     let mut style = DialogStyle::from_theme(Theme::default(), tone);
     if mode == ShowcaseMode::White {
@@ -3263,6 +3744,7 @@ fn showcase_dialog_style(mode: ShowcaseMode, tone: DialogTone) -> DialogStyle {
     style
 }
 
+/// Builds or computes the `showcase command palette style` deterministic showcase fixture.
 fn showcase_command_palette_style(mode: ShowcaseMode) -> CommandPaletteStyle {
     let mut style = CommandPaletteStyle::default();
     if mode == ShowcaseMode::White {
@@ -3293,6 +3775,7 @@ fn showcase_command_palette_style(mode: ShowcaseMode) -> CommandPaletteStyle {
     style
 }
 
+/// Builds or computes the `showcase date picker style` deterministic showcase fixture.
 fn showcase_date_picker_style(mode: ShowcaseMode) -> DatePickerStyle {
     let mut style = DatePickerStyle::default();
     if mode == ShowcaseMode::White {
@@ -3301,6 +3784,7 @@ fn showcase_date_picker_style(mode: ShowcaseMode) -> DatePickerStyle {
     style
 }
 
+/// Builds or computes the `showcase time picker style` deterministic showcase fixture.
 fn showcase_time_picker_style(mode: ShowcaseMode) -> TimePickerStyle {
     let mut style = TimePickerStyle::default();
     if mode == ShowcaseMode::White {
@@ -3309,6 +3793,7 @@ fn showcase_time_picker_style(mode: ShowcaseMode) -> TimePickerStyle {
     style
 }
 
+/// Builds or computes the `showcase color picker style` deterministic showcase fixture.
 fn showcase_color_picker_style(mode: ShowcaseMode) -> ColorPickerStyle {
     let mut style = ColorPickerStyle::default();
     if mode == ShowcaseMode::White {
@@ -3317,6 +3802,7 @@ fn showcase_color_picker_style(mode: ShowcaseMode) -> ColorPickerStyle {
     style
 }
 
+/// Builds or computes the `apply white picker base` deterministic showcase fixture.
 fn apply_white_picker_base(
     base: &mut ailloli_ui::widgets::controls::pickers::PickerBaseStyle,
     colors: ShowcasePalette,
@@ -3337,6 +3823,7 @@ fn apply_white_picker_base(
     base.accent_text.color = colors.accent;
 }
 
+/// Builds or computes the `showcase upload style` deterministic showcase fixture.
 fn showcase_upload_style(mode: ShowcaseMode) -> UploadDropzoneStyle {
     let mut style = UploadDropzoneStyle::default();
     if mode == ShowcaseMode::White {
@@ -3353,6 +3840,7 @@ fn showcase_upload_style(mode: ShowcaseMode) -> UploadDropzoneStyle {
     style
 }
 
+/// Builds or computes the `showcase chart style` deterministic showcase fixture.
 fn showcase_chart_style(mode: ShowcaseMode, size: ChartSize) -> ChartStyle {
     let mut style = ChartStyle::from_theme(Theme::default(), size);
     if mode == ShowcaseMode::White {
@@ -3376,6 +3864,7 @@ fn showcase_chart_style(mode: ShowcaseMode, size: ChartSize) -> ChartStyle {
     style
 }
 
+/// Builds or computes the `drop sample row` deterministic showcase fixture.
 fn drop_sample_row(
     colors: ShowcasePalette,
     position: TreeDropPosition,
@@ -3411,6 +3900,7 @@ fn drop_sample_row(
     }
 }
 
+/// Builds or computes the `showcase tree` deterministic showcase fixture.
 fn showcase_tree() -> TreeNode<&'static str> {
     TreeNode::branch("root", "Project Root")
         .leading_icon(IconId::History)
@@ -3434,6 +3924,7 @@ fn showcase_tree() -> TreeNode<&'static str> {
         .child(TreeNode::leaf("cargo", "Cargo.toml").leading_icon(IconId::Check))
 }
 
+/// Builds or computes the `accordion tree sample panel` deterministic showcase fixture.
 fn accordion_tree_sample_panel(
     colors: ShowcasePalette,
     title: &'static str,
@@ -3457,6 +3948,7 @@ fn accordion_tree_sample_panel(
         .into_view()
 }
 
+/// Builds or computes the `text inputs section` deterministic showcase fixture.
 fn text_inputs_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let empty = State::new(String::new());
@@ -3501,6 +3993,7 @@ fn text_inputs_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `layout boxes section` deterministic showcase fixture.
 fn layout_boxes_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let theme = Theme::default();
@@ -3559,6 +4052,7 @@ fn layout_boxes_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `typography section` deterministic showcase fixture.
 fn typography_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -3582,6 +4076,7 @@ fn typography_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `icons section` deterministic showcase fixture.
 fn icons_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Row::new()
@@ -3594,6 +4089,7 @@ fn icons_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `icon tile` deterministic showcase fixture.
 fn icon_tile(label: &'static str, icon: IconId, colors: ShowcasePalette) -> View<()> {
     Container::new()
         .width(104.0)
@@ -3611,6 +4107,7 @@ fn icon_tile(label: &'static str, icon: IconId, colors: ShowcasePalette) -> View
         .into_view()
 }
 
+/// Builds or computes the `editor section` deterministic showcase fixture.
 fn editor_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
@@ -3633,6 +4130,7 @@ fn editor_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `code editor section` deterministic showcase fixture.
 fn code_editor_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
@@ -3667,6 +4165,7 @@ fn code_editor_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 section` deterministic showcase fixture.
 fn code_editor_phase54_3_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_code_editor_fixture();
@@ -3696,6 +4195,7 @@ fn code_editor_phase54_3_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 baseline section` deterministic showcase fixture.
 fn code_editor_phase54_3_baseline_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
@@ -3734,6 +4234,7 @@ fn code_editor_phase54_3_baseline_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 active line section` deterministic showcase fixture.
 fn code_editor_phase54_3_active_line_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
@@ -3769,6 +4270,7 @@ fn code_editor_phase54_3_active_line_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 tree sitter section` deterministic showcase fixture.
 fn code_editor_phase54_3_tree_sitter_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
@@ -3814,6 +4316,7 @@ fn code_editor_phase54_3_tree_sitter_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 extension detection section` deterministic showcase fixture.
 fn code_editor_phase54_3_extension_detection_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
@@ -3852,6 +4355,7 @@ fn code_editor_phase54_3_extension_detection_section(mode: ShowcaseMode) -> View
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 symbol outline section` deterministic showcase fixture.
 fn code_editor_phase54_3_symbol_outline_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_symbol_outline_fixture();
@@ -3886,6 +4390,7 @@ fn code_editor_phase54_3_symbol_outline_section(mode: ShowcaseMode) -> View<()> 
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 ctags fallback section` deterministic showcase fixture.
 fn code_editor_phase54_3_ctags_fallback_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
@@ -3937,6 +4442,7 @@ fn code_editor_phase54_3_ctags_fallback_section(mode: ShowcaseMode) -> View<()> 
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 symbol graph section` deterministic showcase fixture.
 fn code_editor_phase54_3_symbol_graph_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_symbol_graph_fixture();
@@ -3971,6 +4477,7 @@ fn code_editor_phase54_3_symbol_graph_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 search section` deterministic showcase fixture.
 fn code_editor_phase54_3_search_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_search_fixture();
@@ -4007,6 +4514,7 @@ fn code_editor_phase54_3_search_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 multiclick selection section` deterministic showcase fixture.
 fn code_editor_phase54_3_multiclick_selection_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_multiclick_selection_fixture();
@@ -4068,6 +4576,7 @@ fn code_editor_phase54_3_multiclick_selection_section(mode: ShowcaseMode) -> Vie
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 diagnostics section` deterministic showcase fixture.
 fn code_editor_phase54_3_diagnostics_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_diagnostics_fixture();
@@ -4104,6 +4613,7 @@ fn code_editor_phase54_3_diagnostics_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 folding section` deterministic showcase fixture.
 fn code_editor_phase54_3_folding_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_folding_fixture();
@@ -4141,6 +4651,7 @@ fn code_editor_phase54_3_folding_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 ide folding gutter section` deterministic showcase fixture.
 fn code_editor_phase54_3_ide_folding_gutter_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_ide_folding_gutter_fixture();
@@ -4176,6 +4687,7 @@ fn code_editor_phase54_3_ide_folding_gutter_section(mode: ShowcaseMode) -> View<
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 lsp section` deterministic showcase fixture.
 fn code_editor_phase54_3_lsp_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_lsp_fixture();
@@ -4211,6 +4723,7 @@ fn code_editor_phase54_3_lsp_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 scip section` deterministic showcase fixture.
 fn code_editor_phase54_3_scip_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_scip_code_fixture();
@@ -4245,6 +4758,7 @@ fn code_editor_phase54_3_scip_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 large file section` deterministic showcase fixture.
 fn code_editor_phase54_3_large_file_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = phase54_3_large_file_fixture();
@@ -4279,6 +4793,7 @@ fn code_editor_phase54_3_large_file_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code editor phase54 3 theme variants section` deterministic showcase fixture.
 fn code_editor_phase54_3_theme_variants_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let white_code = phase54_3_theme_variants_fixture("white");
@@ -4321,6 +4836,7 @@ fn code_editor_phase54_3_theme_variants_section(mode: ShowcaseMode) -> View<()> 
 }
 
 #[cfg(test)]
+/// Builds or computes the `code theme static preview` deterministic showcase fixture.
 fn code_theme_static_preview(theme: CodeTheme, border: Color, label: &'static str) -> View<()> {
     Container::new()
         .width(590.0)
@@ -4361,6 +4877,7 @@ fn code_theme_static_preview(theme: CodeTheme, border: Color, label: &'static st
 }
 
 #[cfg(test)]
+/// Builds or computes the `folding panel` deterministic showcase fixture.
 fn folding_panel(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Container::new()
@@ -4391,6 +4908,7 @@ fn folding_panel(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `ide folding gutter panel` deterministic showcase fixture.
 fn ide_folding_gutter_panel(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Container::new()
@@ -4421,6 +4939,7 @@ fn ide_folding_gutter_panel(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `lsp enrichment panel` deterministic showcase fixture.
 fn lsp_enrichment_panel(
     mode: ShowcaseMode,
     enrichment: &ailloli_ui_editor::code::LspEnrichment,
@@ -4478,6 +4997,7 @@ fn lsp_enrichment_panel(
 }
 
 #[cfg(test)]
+/// Builds or computes the `scip project panel` deterministic showcase fixture.
 fn scip_project_panel(
     mode: ShowcaseMode,
     project: &ailloli_ui_editor::code::ScipProjectSummary,
@@ -4529,6 +5049,7 @@ fn scip_project_panel(
 }
 
 #[cfg(test)]
+/// Builds or computes the `large file metrics panel` deterministic showcase fixture.
 fn large_file_metrics_panel(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Container::new()
@@ -4560,6 +5081,7 @@ fn large_file_metrics_panel(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `ctags fallback panel` deterministic showcase fixture.
 fn ctags_fallback_panel(
     mode: ShowcaseMode,
     summary: &ailloli_ui_editor::code::CodeFileSummary,
@@ -4602,6 +5124,7 @@ fn ctags_fallback_panel(
 }
 
 #[cfg(test)]
+/// Builds or computes the `search panel` deterministic showcase fixture.
 fn search_panel(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Container::new()
@@ -4625,6 +5148,7 @@ fn search_panel(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `diagnostics panel` deterministic showcase fixture.
 fn diagnostics_panel(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Container::new()
@@ -4648,6 +5172,7 @@ fn diagnostics_panel(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `symbol graph panel` deterministic showcase fixture.
 fn symbol_graph_panel(
     mode: ShowcaseMode,
     summary: &ailloli_ui_editor::code::CodeFileSummary,
@@ -4688,6 +5213,7 @@ fn symbol_graph_panel(
 }
 
 #[cfg(test)]
+/// Builds or computes the `symbol outline panel` deterministic showcase fixture.
 fn symbol_outline_panel(
     mode: ShowcaseMode,
     summary: &ailloli_ui_editor::code::CodeFileSummary,
@@ -4724,6 +5250,7 @@ fn symbol_outline_panel(
 }
 
 #[cfg(test)]
+/// Builds or computes the `symbol label` deterministic showcase fixture.
 fn symbol_label(summary: &ailloli_ui_editor::code::CodeFileSummary, id: SymbolId) -> String {
     if id == SymbolId(0) {
         return "root".to_string();
@@ -4737,6 +5264,7 @@ fn symbol_label(summary: &ailloli_ui_editor::code::CodeFileSummary, id: SymbolId
 }
 
 #[cfg(test)]
+/// Builds or computes the `symbol depth` deterministic showcase fixture.
 fn symbol_depth(summary: &ailloli_ui_editor::code::CodeFileSummary, id: SymbolId) -> usize {
     let mut depth = 0;
     let mut current = summary
@@ -4756,6 +5284,7 @@ fn symbol_depth(summary: &ailloli_ui_editor::code::CodeFileSummary, id: SymbolId
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 symbol graph fixture` deterministic showcase fixture.
 fn phase54_3_symbol_graph_fixture() -> String {
     [
         "use crate::runtime::build;",
@@ -4789,6 +5318,7 @@ fn phase54_3_symbol_graph_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 search fixture` deterministic showcase fixture.
 fn phase54_3_search_fixture() -> String {
     [
         "pub fn main() {",
@@ -4812,6 +5342,7 @@ fn phase54_3_search_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 multiclick selection fixture` deterministic showcase fixture.
 fn phase54_3_multiclick_selection_fixture() -> String {
     [
         "pub fn demo<'a>() {",
@@ -4825,6 +5356,7 @@ fn phase54_3_multiclick_selection_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 diagnostics fixture` deterministic showcase fixture.
 fn phase54_3_diagnostics_fixture() -> String {
     [
         "pub fn main() {",
@@ -4843,6 +5375,7 @@ fn phase54_3_diagnostics_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 folding fixture` deterministic showcase fixture.
 fn phase54_3_folding_fixture() -> String {
     [
         "pub mod phase54_3 {",
@@ -4866,6 +5399,7 @@ fn phase54_3_folding_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 ide folding gutter fixture` deterministic showcase fixture.
 fn phase54_3_ide_folding_gutter_fixture() -> String {
     let mut lines = Vec::with_capacity(1_655);
     for idx in 1..=1_655 {
@@ -4900,6 +5434,7 @@ fn phase54_3_ide_folding_gutter_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 ide folding regions` deterministic showcase fixture.
 fn phase54_3_ide_folding_regions() -> Vec<FoldRegion> {
     vec![
         FoldRegion::new(1627, 1630),
@@ -4912,6 +5447,7 @@ fn phase54_3_ide_folding_regions() -> Vec<FoldRegion> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 lsp fixture` deterministic showcase fixture.
 fn phase54_3_lsp_fixture() -> String {
     [
         "pub fn main() {",
@@ -4928,6 +5464,7 @@ fn phase54_3_lsp_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 scip code fixture` deterministic showcase fixture.
 fn phase54_3_scip_code_fixture() -> String {
     [
         "pub mod helper;",
@@ -4941,6 +5478,7 @@ fn phase54_3_scip_code_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 large file fixture` deterministic showcase fixture.
 fn phase54_3_large_file_fixture() -> String {
     let mut lines = Vec::with_capacity(10_050);
     lines.push("pub fn large_file_entry() {".to_string());
@@ -4962,6 +5500,7 @@ fn phase54_3_large_file_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 theme variants fixture` deterministic showcase fixture.
 fn phase54_3_theme_variants_fixture(label: &str) -> String {
     [
         "pub fn themed_editor(value: i32) -> i32 {",
@@ -4975,6 +5514,7 @@ fn phase54_3_theme_variants_fixture(label: &str) -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code theme white variant` deterministic showcase fixture.
 fn code_theme_white_variant() -> CodeTheme {
     CodeTheme {
         background: Color::rgb(250, 250, 250),
@@ -5007,6 +5547,7 @@ fn code_theme_white_variant() -> CodeTheme {
 }
 
 #[cfg(test)]
+/// Builds or computes the `code theme dark variant` deterministic showcase fixture.
 fn code_theme_dark_variant() -> CodeTheme {
     CodeTheme {
         background: Color::rgb(15, 17, 23),
@@ -5039,6 +5580,7 @@ fn code_theme_dark_variant() -> CodeTheme {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 scip project summary` deterministic showcase fixture.
 fn phase54_3_scip_project_summary() -> ailloli_ui_editor::code::ScipProjectSummary {
     let json = r#"{
         "metadata": { "project_root": "/repo", "tool_info": "mock-scip" },
@@ -5103,6 +5645,7 @@ fn phase54_3_scip_project_summary() -> ailloli_ui_editor::code::ScipProjectSumma
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 lsp mock enrichment` deterministic showcase fixture.
 fn phase54_3_lsp_mock_enrichment(
     document: &Document,
     code: &str,
@@ -5157,6 +5700,7 @@ fn phase54_3_lsp_mock_enrichment(
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 diagnostics for fixture` deterministic showcase fixture.
 fn phase54_3_diagnostics_for_fixture(code: &str) -> Vec<Diagnostic> {
     vec![
         Diagnostic::new(
@@ -5183,12 +5727,14 @@ fn phase54_3_diagnostics_for_fixture(code: &str) -> Vec<Diagnostic> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `diagnostic fixture range` deterministic showcase fixture.
 fn diagnostic_fixture_range(code: &str, needle: &str) -> std::ops::Range<usize> {
     let start = code.find(needle).expect("diagnostic fixture needle");
     start..start + needle.len()
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 symbol outline fixture` deterministic showcase fixture.
 fn phase54_3_symbol_outline_fixture() -> String {
     [
         "use crate::fmt::Display;",
@@ -5231,6 +5777,7 @@ fn phase54_3_symbol_outline_fixture() -> String {
 }
 
 #[cfg(test)]
+/// Builds or computes the `phase54 3 code editor fixture` deterministic showcase fixture.
 fn phase54_3_code_editor_fixture() -> String {
     let mut lines = vec![
         "use ailloli_ui::prelude::*;".to_string(),
@@ -5253,6 +5800,7 @@ fn phase54_3_code_editor_fixture() -> String {
     lines.join("\n")
 }
 
+/// Builds or computes the `scroll section` deterministic showcase fixture.
 fn scroll_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let mut rows = Column::new().gap(6.0).padding(10.0);
@@ -5271,6 +5819,7 @@ fn scroll_section(mode: ShowcaseMode) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `terminal view section` deterministic showcase fixture.
 fn terminal_view_section(mode: ShowcaseMode, scenario: TerminalShowcaseScenario) -> View<()> {
     let colors = mode.palette();
     let (query, selection, scroll_y) = match scenario {
@@ -5312,6 +5861,7 @@ fn terminal_view_section(mode: ShowcaseMode, scenario: TerminalShowcaseScenario)
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase77 section` deterministic showcase fixture.
 fn terminal_phase77_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let mut terminal_style = TerminalWidgetStyle::from_theme(Theme::default());
@@ -5340,6 +5890,7 @@ fn terminal_phase77_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase77 fixture` deterministic showcase fixture.
 fn terminal_phase77_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
@@ -5375,6 +5926,7 @@ fn terminal_phase77_fixture() -> ailloli_ui::terminal_core::TerminalState {
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase78 style` deterministic showcase fixture.
 fn terminal_phase78_style(height: f32) -> TerminalWidgetStyle {
     let mut terminal_style = TerminalWidgetStyle::from_theme(Theme::default());
     terminal_style.height = height;
@@ -5383,6 +5935,7 @@ fn terminal_phase78_style(height: f32) -> TerminalWidgetStyle {
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase78 scrollback section` deterministic showcase fixture.
 fn terminal_phase78_scrollback_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -5412,6 +5965,7 @@ fn terminal_phase78_scrollback_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase78 tui section` deterministic showcase fixture.
 fn terminal_phase78_tui_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -5435,6 +5989,7 @@ fn terminal_phase78_tui_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase78 scrollback fixture` deterministic showcase fixture.
 fn terminal_phase78_scrollback_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
@@ -5470,6 +6025,7 @@ fn terminal_phase78_scrollback_fixture() -> ailloli_ui::terminal_core::TerminalS
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase78 tui fixture` deterministic showcase fixture.
 fn terminal_phase78_tui_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
@@ -5498,6 +6054,7 @@ fn terminal_phase78_tui_fixture() -> ailloli_ui::terminal_core::TerminalState {
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase80 section` deterministic showcase fixture.
 fn terminal_phase80_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
@@ -5522,6 +6079,7 @@ fn terminal_phase80_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
+/// Builds or computes the `terminal phase80 fixture` deterministic showcase fixture.
 fn terminal_phase80_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
@@ -5553,6 +6111,7 @@ fn terminal_phase80_fixture() -> ailloli_ui::terminal_core::TerminalState {
     state
 }
 
+/// Builds or computes the `terminal badge` deterministic showcase fixture.
 fn terminal_badge(colors: ShowcasePalette, label: &'static str) -> View<()> {
     Container::new()
         .height(24.0)
@@ -5564,6 +6123,7 @@ fn terminal_badge(colors: ShowcasePalette, label: &'static str) -> View<()> {
         .into_view()
 }
 
+/// Builds or computes the `terminal phase54 1 fixture` deterministic showcase fixture.
 fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
     vec![
         TerminalLine::system("ailloli_ui terminal fixture - phase 54.1"),
@@ -5614,6 +6174,7 @@ fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
     ]
 }
 
+/// Builds or computes the `planned widgets section` deterministic showcase fixture.
 fn planned_widgets_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let items = [("Final visual audit", "Phase 55", "missing")];
@@ -5629,6 +6190,7 @@ fn planned_widgets_section(mode: ShowcaseMode) -> View<()> {
     outer.into_view()
 }
 
+/// Builds or computes the `planned card` deterministic showcase fixture.
 fn planned_card(
     name: &'static str,
     phase: &'static str,

@@ -1,3 +1,5 @@
+//! Visible paragraph shaping with filtered and no-wrap virtualized paths.
+
 use ailloli_ui_core::{Size, TextStyle};
 use ailloli_ui_text::{TextBuffer, TextSystem};
 
@@ -8,15 +10,54 @@ use crate::layout::{
 };
 use crate::{EditorStyle, EditorViewport, EditorWrapMode};
 
+/// Visible paragraph layouts plus whole-content scroll metrics.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Size;
+/// use ailloli_ui_editor::layout::{ParagraphMetricsStats, VisibleTextLayout};
+/// let visible = VisibleTextLayout {
+///     runs: Vec::new(),
+///     content_size: Size::new(0.0, 0.0),
+///     metrics_stats: ParagraphMetricsStats::default(),
+///     used_fast_path: false,
+/// };
+/// assert!(visible.runs.is_empty());
+/// ```
 #[derive(Debug, Clone)]
 pub struct VisibleTextLayout {
+    /// Paragraph runs intersecting the viewport, in logical order.
     pub runs: Vec<EditorTextRun>,
+    /// Estimated or shaped full-content width and height in logical pixels.
     pub content_size: Size,
+    /// Metrics-cache activity during this build.
     pub metrics_stats: ParagraphMetricsStats,
+    /// Whether the no-wrap virtualized path avoided shaping offscreen lines.
     pub used_fast_path: bool,
 }
 
 /// Builds visible paragraph runs for the current viewport.
+///
+/// This is equivalent to [`build_visible_text_layout_filtered`] with no hidden
+/// paragraphs. No-wrap mode uses a virtualized shaping path; soft-wrap mode must
+/// shape every paragraph to determine wrapped heights. Paragraph trailing `\n`
+/// bytes are excluded from run layouts and source ranges.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_editor::{layout::{build_visible_text_layout, LayoutCache, ParagraphMetricsCache}, EditorConfig, EditorStyle, EditorViewport};
+/// use ailloli_ui_text::{TextBuffer, TextEditState, TextSystem};
+/// let buffer = TextBuffer::from_string("one\ntwo");
+/// let viewport = EditorViewport::new(Rect::new(0.0, 0.0, 120.0, 60.0), EditorConfig::default(), &TextEditState::new());
+/// let mut layouts = LayoutCache::default();
+/// let mut metrics = ParagraphMetricsCache::default();
+/// let visible = build_visible_text_layout(&buffer, viewport, EditorStyle::default(), &mut layouts, &mut metrics, &mut TextSystem::new());
+/// assert_eq!(visible.runs.iter().map(|run| run.index).collect::<Vec<_>>(), [0, 1]);
+/// assert!(!visible.used_fast_path);
+/// ```
 pub fn build_visible_text_layout(
     buffer: &TextBuffer,
     viewport: EditorViewport,
@@ -36,6 +77,27 @@ pub fn build_visible_text_layout(
     )
 }
 
+/// Builds visible runs while completely removing selected logical paragraphs.
+///
+/// `is_hidden` receives every paragraph index during fast-path eligibility and
+/// later layout. Hidden paragraphs consume no vertical space and produce no
+/// run or metrics entry. The returned content size therefore describes the
+/// filtered document. A filtering closure that hides nothing permits the
+/// no-wrap virtualized path.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_editor::{layout::{build_visible_text_layout_filtered, LayoutCache, ParagraphMetricsCache}, EditorConfig, EditorStyle, EditorViewport};
+/// use ailloli_ui_text::{TextBuffer, TextEditState, TextSystem};
+/// let buffer = TextBuffer::from_string("zero\none\ntwo");
+/// let viewport = EditorViewport::new(Rect::new(0.0, 0.0, 120.0, 80.0), EditorConfig::default(), &TextEditState::new());
+/// let mut layouts = LayoutCache::default();
+/// let mut metrics = ParagraphMetricsCache::default();
+/// let visible = build_visible_text_layout_filtered(&buffer, viewport, EditorStyle::default(), &mut layouts, &mut metrics, &mut TextSystem::new(), &|index| index == 1);
+/// assert_eq!(visible.runs.iter().map(|run| run.index).collect::<Vec<_>>(), [0, 2]);
+/// ```
 pub fn build_visible_text_layout_filtered(
     buffer: &TextBuffer,
     viewport: EditorViewport,
@@ -134,6 +196,11 @@ pub fn build_visible_text_layout_filtered(
     }
 }
 
+/// Builds a no-wrap viewport while shaping only visible and overscan paragraphs.
+///
+/// The full document is still scanned to estimate its widest line. The estimate
+/// counts Unicode scalar values at `0.62 * px_size`; shaped visible widths can
+/// increase it. Vertical height uses the configured line-height floor.
 fn build_visible_nowrap_text_layout(
     buffer: &TextBuffer,
     viewport: EditorViewport,
@@ -228,6 +295,7 @@ fn build_visible_nowrap_text_layout(
     }
 }
 
+/// Estimates a no-wrap line width from Unicode scalar count and font size.
 fn estimate_nowrap_width(text: &str, style: EditorStyle) -> f32 {
     text.chars().count() as f32 * style.px_size as f32 * 0.62
 }

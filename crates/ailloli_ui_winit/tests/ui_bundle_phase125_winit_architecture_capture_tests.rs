@@ -26,11 +26,16 @@ use ailloli_ui_winit::{
     run_winit_host, NoopHostDriver, PresentationTestFault, UiApp, WindowOptions, WinitHost,
 };
 
+/// Stable logical identity of the provider-neutral input window.
 const INPUT_WINDOW: &str = "phase125-input";
+/// Stable logical identity of the retained-popup window.
 const POPUP_WINDOW: &str = "phase125-popup";
+/// Stable logical identity of the surface-recovery window.
 const RECOVERY_WINDOW: &str = "phase125-recovery";
+/// Text inserted before surface loss to prove retained editor preservation.
 const RECOVERY_EDITOR_MARKER: &str = "/* edited before Lost */";
 
+/// Resolves the repository-local directory used for Phase 125 captures.
 fn captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -38,6 +43,7 @@ fn captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Builds undecorated options with an explicit logical size in logical pixels.
 fn window_options(id: &str, title: &str, width: f32, height: f32) -> WindowOptions {
     WindowOptions {
         logical_window_id: id.to_owned(),
@@ -49,11 +55,15 @@ fn window_options(id: &str, title: &str, width: f32, height: f32) -> WindowOptio
 }
 
 #[derive(Clone)]
+/// Bound input and editor state rendered in the input proof window.
 struct InputSceneProps {
+    /// Single-line input value mutated through synthetic IME events.
     input: State<String>,
+    /// Editor buffer mutated through synthetic key events.
     editor: State<TextBuffer>,
 }
 
+/// Builds the focused input/editor scene plus link and button routing targets.
 fn input_scene(ctx: &mut Context<()>, props: InputSceneProps) -> View<()> {
     ctx.runtime().request_focus_key("phase125-focused-input");
     let palette = Theme::default().palette();
@@ -116,6 +126,7 @@ fn input_scene(ctx: &mut Context<()>, props: InputSceneProps) -> View<()> {
         .key("phase125-input-scene")
 }
 
+/// Builds select, dropdown, combo-box, autocomplete, menu, and tooltip fixtures.
 fn popup_scene(_ctx: &mut Context<()>, _props: ()) -> View<()> {
     let selected = State::new("Development".to_owned());
     let combo = State::new("Ailloli UI".to_owned());
@@ -235,11 +246,15 @@ fn popup_scene(_ctx: &mut Context<()>, _props: ()) -> View<()> {
 }
 
 #[derive(Clone)]
+/// Bound state expected to survive native surface detachment and reattachment.
 struct RecoverySceneProps {
+    /// Single-line retained value and caret state.
     input: State<String>,
+    /// Multiline retained buffer, selection, and revision.
     editor: State<TextBuffer>,
 }
 
+/// Builds the recovery proof scene and requests focus for its retained input.
 fn recovery_scene(ctx: &mut Context<()>, props: RecoverySceneProps) -> View<()> {
     ctx.runtime().request_focus_key("phase125-recovery-input");
     let palette = Theme::default().palette();
@@ -304,6 +319,7 @@ fn recovery_scene(ctx: &mut Context<()>, props: RecoverySceneProps) -> View<()> 
         .key("phase125-recovery-scene")
 }
 
+/// Verifies frame extent, PNG data, color diversity, and scenario-specific regions.
 fn assert_visual_frame(frame: &CapturedFrame, label: &str) {
     assert!(frame.width >= 700, "{label}: width={}", frame.width);
     assert!(frame.height >= 420, "{label}: height={}", frame.height);
@@ -345,6 +361,7 @@ fn assert_visual_frame(frame: &CapturedFrame, label: &str) {
     }
 }
 
+/// Requires sampled color and bright-pixel diversity inside a clipped region.
 fn assert_visual_region(
     frame: &CapturedFrame,
     label: &str,
@@ -373,6 +390,7 @@ fn assert_visual_region(
     );
 }
 
+/// Writes a frame's required PNG payload beneath the Phase 125 capture directory.
 fn write_frame(name: &str, frame: &CapturedFrame) {
     let directory = captures_dir();
     std::fs::create_dir_all(&directory).expect("create Phase 125 capture directory");
@@ -383,6 +401,7 @@ fn write_frame(name: &str, frame: &CapturedFrame) {
     .expect("write Phase 125 capture");
 }
 
+/// Builds a pointer-move envelope with millisecond timestamp derived from `event_id`.
 fn pointer_move(
     event_id: u64,
     logical_window_id: &str,
@@ -403,6 +422,7 @@ fn pointer_move(
     )
 }
 
+/// Builds a left-button envelope using the shared pointer-event constructor.
 fn pointer_button(
     event_id: u64,
     logical_window_id: &str,
@@ -420,6 +440,7 @@ fn pointer_button(
     )
 }
 
+/// Builds a press/release envelope for an explicit mouse button and presentation generation.
 fn pointer_button_with(
     event_id: u64,
     logical_window_id: &str,
@@ -444,6 +465,7 @@ fn pointer_button_with(
     )
 }
 
+/// Builds an IME commit envelope targeted at one logical window generation.
 fn window_ime_commit(
     event_id: u64,
     logical_window_id: &str,
@@ -461,6 +483,7 @@ fn window_ime_commit(
     )
 }
 
+/// Builds a non-repeating pressed character-key envelope with explicit modifiers.
 fn window_character_key(
     event_id: u64,
     logical_window_id: &str,
@@ -486,6 +509,7 @@ fn window_character_key(
     )
 }
 
+/// Returns Control on non-macOS targets and Command on macOS.
 fn primary_modifier() -> Modifiers {
     Modifiers {
         ctrl: !cfg!(target_os = "macos"),
@@ -494,6 +518,7 @@ fn primary_modifier() -> Modifiers {
     }
 }
 
+/// Builds a non-repeating pressed named-key envelope with no modifiers.
 fn window_key(
     event_id: u64,
     logical_window_id: &str,
@@ -518,10 +543,12 @@ fn window_key(
     )
 }
 
+/// Builds a named-key envelope targeted at the popup fixture window.
 fn popup_key(event_id: u64, generation: PresentationGeneration, key: NamedKey) -> EventEnvelope {
     window_key(event_id, POPUP_WINDOW, generation, key)
 }
 
+/// Builds an Escape-key envelope targeted at the popup fixture window.
 fn popup_escape(event_id: u64, generation: PresentationGeneration) -> EventEnvelope {
     popup_key(event_id, generation, NamedKey::Escape)
 }

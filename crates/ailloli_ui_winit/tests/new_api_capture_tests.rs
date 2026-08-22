@@ -11,6 +11,7 @@ use ailloli_ui::widgets::layout::Align;
 use ailloli_ui::{App, Window};
 use ailloli_ui_core::{Color, FontId, TextStyle};
 
+/// Resolves the repository-local directory used for capture API artifacts.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")

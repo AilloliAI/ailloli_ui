@@ -1,5 +1,26 @@
 //! GPU upload helpers for glyph / atlas regions (`bytes_per_row` padding invariants).
 
+/// Writes a tight RGBA8 rectangle into a texture, padding rows to 256 bytes.
+///
+/// `rgba` should contain `w * h * 4` bytes. Short data is zero-padded only when
+/// row repacking is required; an already aligned short slice is passed directly
+/// to wgpu and fails validation. Zero width produces a zero row pitch, which is
+/// not a valid nonempty texture copy.
+///
+/// # Panics
+///
+/// Panics on arithmetic overflow, allocation failure, or a short source row
+/// during the padding copy.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_wgpu::text::glyph_upload::write_subtexture_rgba;
+/// fn upload(queue: &wgpu::Queue, texture: &wgpu::Texture) {
+///     write_subtexture_rgba(queue, texture, wgpu::Origin3d::ZERO,
+///         2, 2, &[255; 2 * 2 * 4]);
+/// }
+/// ```
 pub fn write_subtexture_rgba(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -40,6 +61,7 @@ pub fn write_subtexture_rgba(
     );
 }
 
+/// Copies tight rows into a zero-filled wider row pitch.
 fn pad_rows(src: &[u8], src_bpr: usize, dst_bpr: usize, rows: usize) -> Vec<u8> {
     let mut out = vec![0u8; dst_bpr * rows];
     for row in 0..rows {

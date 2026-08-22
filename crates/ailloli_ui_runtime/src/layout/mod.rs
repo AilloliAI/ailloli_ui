@@ -1,9 +1,14 @@
 //! Layout: measurement context, engine, results, and retained layout nodes.
 
+/// Layout commit implementation details.
 pub mod layout_commit;
+/// Layout ctx implementation details.
 pub mod layout_ctx;
+/// Layout engine implementation details.
 pub mod layout_engine;
+/// Layout node implementation details.
 pub mod layout_node;
+/// Layout result implementation details.
 pub mod layout_result;
 
 pub use layout_commit::commit_layout_element;

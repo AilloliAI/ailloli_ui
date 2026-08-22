@@ -1,3 +1,5 @@
+//! Cache-stable identifiers for built-in and custom icon sources.
+
 use std::hash::{Hash, Hasher};
 
 use lucide_icons::Icon;
@@ -5,6 +7,17 @@ use lucide_icons::Icon;
 use super::svg_source::SvgSource;
 
 /// Icon source for rendering (`DrawCmd::Image` / `Icon` widget).
+///
+/// Values cover built-in chrome/actions, Lucide glyphs, Devicons codepoints,
+/// and custom SVG sources.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::IconId;
+/// assert_eq!(IconId::Devicon('R'), IconId::Devicon('R'));
+/// assert_ne!(IconId::Close, IconId::Check);
+/// ```
 #[derive(Debug, Clone)]
 pub enum IconId {
     /// Window minimize (chrome).
@@ -32,6 +45,7 @@ pub enum IconId {
 }
 
 impl IconId {
+    /// Returns the stable tag mixed into manual equality and hashing.
     fn discriminant_tag(&self) -> u8 {
         match self {
             IconId::Minimize => 0,
@@ -50,6 +64,10 @@ impl IconId {
 }
 
 impl PartialEq for IconId {
+    /// Compares built-ins by variant and dynamic sources by their cache identity.
+    ///
+    /// Lucide comparison uses the icon's display name; SVG comparison follows
+    /// [`SvgSource`]'s pointer-identity contract rather than byte content.
     fn eq(&self, other: &Self) -> bool {
         if self.discriminant_tag() != other.discriminant_tag() {
             return false;
@@ -74,6 +92,7 @@ impl PartialEq for IconId {
 impl Eq for IconId {}
 
 impl Hash for IconId {
+    /// Hashes the same discriminant and dynamic identity used by equality.
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.discriminant_tag().hash(state);
         match self {

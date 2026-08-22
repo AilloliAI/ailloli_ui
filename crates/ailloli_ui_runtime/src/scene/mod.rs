@@ -1,11 +1,18 @@
 //! Scene graph: draw commands, layered clips, and paint context.
 
+/// Clip stack implementation details.
 pub mod clip_stack;
+/// Dirty implementation details.
 pub mod dirty;
+/// Draw cmd implementation details.
 pub mod draw_cmd;
+/// Isolated effects implementation details.
 pub mod isolated_effects;
+/// Paint ctx implementation details.
 pub mod paint_ctx;
+/// Paint engine implementation details.
 pub mod paint_engine;
+/// Scene graph implementation details.
 pub mod scene_graph;
 
 pub use clip_stack::{ClipEntry, ClipStack, ClipStackSnapshot};

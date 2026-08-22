@@ -4,6 +4,14 @@ use ailloli_ui_core::{ClipShape, Rect};
 use ailloli_ui_runtime::scene::{ClipEntry, ClipStackSnapshot};
 
 /// How a layer clip is applied on the GPU.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::ClipRenderMode;
+/// let mode = ClipRenderMode::Scissor;
+/// assert_eq!(mode, ClipRenderMode::Scissor);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ClipRenderMode {
     /// Axis-aligned scissor rect.
@@ -15,24 +23,74 @@ pub enum ClipRenderMode {
 }
 
 /// GPU-ready interpretation of a non-destructive clip stack.
+///
+/// `scissor` is the rectangular intersection of the full stack. Rounded entries
+/// remain separate so window-root identity and nested masks are not discarded.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::resolve_clip_render_plan;
+/// use ailloli_ui_runtime::scene::ClipStackSnapshot;
+/// let clip = ClipStackSnapshot::from_entries(Vec::new());
+/// let plan = resolve_clip_render_plan(&clip, 0);
+/// assert!(plan.rounded_masks.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderClipPlan {
+    /// Rectangular clip intersection in logical coordinates, or none for an empty stack.
     pub scissor: Option<Rect>,
+    /// All rounded entries in original stack order.
     pub rounded_masks: Vec<ClipEntry>,
+    /// Window-root rounded entry when present, otherwise the first rounded entry.
     pub primary_round_mask: Option<ClipEntry>,
+    /// GPU implementation selected for the primary rounded mask.
     pub clip_mode: ClipRenderMode,
 }
 
 /// Above this draw-command count, prefer stencil over per-fragment shader masking.
+///
+/// The comparison is strict: four commands still use the shader for a non-root
+/// rounded clip, while five select stencil.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::clip::STENCIL_DRAW_CMD_THRESHOLD;
+/// assert_eq!(STENCIL_DRAW_CMD_THRESHOLD, 4);
+/// ```
 pub const STENCIL_DRAW_CMD_THRESHOLD: usize = 4;
 
 /// Shader AA band on stencil edges (on by default).
 /// Set `AILLOLI_UI_STENCIL_AA=0`; `OCTAVUI_STENCIL_AA` is a legacy fallback.
+/// The primary variable wins when both are set; only `0` and case-insensitive
+/// `false` disable the band.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::clip::stencil_aa_enabled;
+/// let enabled: bool = stencil_aa_enabled();
+/// let _ = enabled; // The environment controls the value.
+/// ```
 pub fn stencil_aa_enabled() -> bool {
     !crate::env_control::falsey("AILLOLI_UI_STENCIL_AA", "OCTAVUI_STENCIL_AA")
 }
 
 /// Picks the GPU clip strategy for a layer.
+///
+/// `None` and rectangular clips always use scissor. A window-root rounded clip
+/// always uses stencil unless a force environment variable overrides it. For a
+/// non-root rounded clip, command counts above
+/// [`STENCIL_DRAW_CMD_THRESHOLD`] use stencil and smaller layers use a shader
+/// mask. If both force variables are true, the shader override wins.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::{choose_clip_render_mode, ClipRenderMode};
+/// assert_eq!(choose_clip_render_mode(None, false, 100), ClipRenderMode::Scissor);
+/// ```
 pub fn choose_clip_render_mode(
     clip: Option<&ClipShape>,
     is_window_root: bool,
@@ -64,6 +122,22 @@ pub fn choose_clip_render_mode(
 }
 
 /// Resolves a stack of clips without fusing away root/window metadata.
+///
+/// `draw_cmd_count` influences only the rounded-mask strategy. The returned
+/// scissor remains in logical coordinates; conversion to physical pixels occurs
+/// at pass encoding.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{ClipShape, Rect};
+/// use ailloli_ui_render_wgpu::{resolve_clip_render_plan, ClipRenderMode};
+/// use ailloli_ui_runtime::scene::{ClipEntry, ClipStackSnapshot};
+/// let clip = ClipStackSnapshot::from_entries(vec![ClipEntry::new(
+///     ClipShape::Rect(Rect::new(0.0, 0.0, 20.0, 10.0)), false)]);
+/// let plan = resolve_clip_render_plan(&clip, 1);
+/// assert_eq!(plan.clip_mode, ClipRenderMode::Scissor);
+/// ```
 pub fn resolve_clip_render_plan(clip: &ClipStackSnapshot, draw_cmd_count: usize) -> RenderClipPlan {
     let scissor = clip.scissor_rect();
     let rounded_masks: Vec<ClipEntry> = clip
@@ -90,12 +164,23 @@ pub fn resolve_clip_render_plan(clip: &ClipStackSnapshot, draw_cmd_count: usize)
 }
 
 /// Uniform block for `clip_alpha` in WGSL (32 bytes, 16-byte aligned).
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::clip::ClipParamsGpu;
+/// assert_eq!(std::mem::size_of::<ClipParamsGpu>(), 32);
+/// ```
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ClipParamsGpu {
+    /// Physical `[x, y, width, height]` bounding rectangle.
     pub rect: [f32; 4],
+    /// Rounded-corner radius in physical pixels; zero for rectangles and no clip.
     pub radius: f32,
+    /// Shader discriminator, one of `MODE_NONE`, `MODE_RECT`, or `MODE_ROUND`.
     pub mode: u32,
+    /// Explicit alignment padding; always zero.
     pub _pad: u32,
     /// Struct tail padding (WGSL expects 32 bytes, not 28).
     pub _struct_pad: u32,
@@ -104,10 +189,43 @@ pub struct ClipParamsGpu {
 const _: () = assert!(std::mem::size_of::<ClipParamsGpu>() == 32);
 
 impl ClipParamsGpu {
+    /// Shader mode for an inactive clip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::clip::ClipParamsGpu;
+    /// assert_eq!(ClipParamsGpu::MODE_NONE, 0);
+    /// ```
     pub const MODE_NONE: u32 = 0;
+    /// Shader mode for an axis-aligned rectangle.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::clip::ClipParamsGpu;
+    /// assert_eq!(ClipParamsGpu::MODE_RECT, 1);
+    /// ```
     pub const MODE_RECT: u32 = 1;
+    /// Shader mode for a rounded rectangle.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::clip::ClipParamsGpu;
+    /// assert_eq!(ClipParamsGpu::MODE_ROUND, 2);
+    /// ```
     pub const MODE_ROUND: u32 = 2;
 
+    /// Creates the zeroed inactive uniform block.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::clip::ClipParamsGpu;
+    /// let params = ClipParamsGpu::none();
+    /// assert_eq!((params.mode, params.radius), (ClipParamsGpu::MODE_NONE, 0.0));
+    /// ```
     pub fn none() -> Self {
         Self {
             rect: [0.0; 4],
@@ -118,6 +236,21 @@ impl ClipParamsGpu {
         }
     }
 
+    /// Converts a logical clip shape to its physical-pixel shader parameters.
+    ///
+    /// Every coordinate and the rounded radius are multiplied by `dpr` without
+    /// clamping. Callers are responsible for a finite positive scale.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// use ailloli_ui_render_wgpu::clip::ClipParamsGpu;
+    /// let params = ClipParamsGpu::from_shape(
+    ///     &ClipShape::Rect(Rect::new(1.0, 2.0, 3.0, 4.0)), 2.0);
+    /// assert_eq!(params.rect, [2.0, 4.0, 6.0, 8.0]);
+    /// assert_eq!(params.mode, ClipParamsGpu::MODE_RECT);
+    /// ```
     pub fn from_shape(shape: &ClipShape, dpr: f32) -> Self {
         let bbox = shape.bounding_rect();
         let x = bbox.x * dpr;
@@ -144,18 +277,32 @@ impl ClipParamsGpu {
 }
 
 /// Clip bounding box in physical pixels.
+///
+/// Coordinates are multiplied by `dpr` without clamping or rounding.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{ClipShape, Rect};
+/// use ailloli_ui_render_wgpu::clip::clip_bbox_physical;
+/// let shape = ClipShape::Rect(Rect::new(1.0, 2.0, 3.0, 4.0));
+/// assert_eq!(clip_bbox_physical(&shape, 2.0), Rect::new(2.0, 4.0, 6.0, 8.0));
+/// ```
 pub fn clip_bbox_physical(shape: &ClipShape, dpr: f32) -> Rect {
     let b = shape.bounding_rect();
     Rect::new(b.x * dpr, b.y * dpr, b.w * dpr, b.h * dpr)
 }
 
 #[cfg(test)]
+/// Exercises clip-mode policy, environment overrides, stacks, and root clips.
 mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// Serializes tests that mutate the process-wide clip override variables.
     static CLIP_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Installs temporary legacy clip overrides, runs `f`, then restores state.
     fn with_clip_env(shader: Option<&str>, stencil: Option<&str>, f: impl FnOnce()) {
         let _guard = CLIP_ENV_LOCK.lock().expect("clip env lock");
         let old_shader = std::env::var("OCTAVUI_CLIP_FORCE_SHADER").ok();

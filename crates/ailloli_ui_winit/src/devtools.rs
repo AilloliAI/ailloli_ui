@@ -1,3 +1,8 @@
+//! In-process developer-tools overlay and loopback JSONL remote bridge.
+//!
+//! The visual overlay shares the inspected window's retained runtime and text
+//! resources. Remote commands are wake-coalesced and applied on the UI thread.
+
 use ailloli_ui_core::event::keyboard::{Key, KeyState, NamedKey};
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::{Color, Constraints, ElementId, Event, Rect};
@@ -22,25 +27,67 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+/// Maximum concurrent loopback TCP clients; additional connections are dropped.
 const MAX_DEVTOOLS_CLIENTS: usize = 8;
+/// Maximum bytes before one JSONL newline; oversized clients are disconnected.
 const MAX_DEVTOOLS_MESSAGE_BYTES: usize = 64 * 1024;
 
+/// Per-window devtools interaction, snapshot, overlay-runtime, and remote state.
+///
+/// [`Self::new`] starts disabled unless the modern or legacy remote environment
+/// variable contains a valid loopback socket address. Keyboard shortcuts are
+/// Ctrl+Shift+I for visibility, Ctrl+Shift+C for the picker, and Escape to leave
+/// picker mode or hide the overlay.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devtools_core::DevToolsMode;
+/// let state = ailloli_ui_winit::devtools::DevToolsWindowState::new();
+/// assert_eq!(state.mode, DevToolsMode::Overlay);
+/// assert!(!state.picker_active);
+/// ```
 pub struct DevToolsWindowState {
+    /// Whether the local overlay may render and consume panel input.
     pub enabled: bool,
+    /// Current overlay placement or hidden mode.
     pub mode: DevToolsMode,
+    /// Whether pointer motion/click selects inspected elements.
     pub picker_active: bool,
+    /// Selected inspected element's numeric id, or none.
     pub selected: Option<u64>,
+    /// Picker-hovered inspected element's numeric id, or none.
     pub hovered: Option<u64>,
+    /// Retained runtime dedicated to the overlay controls.
     runtime: Runtime<DevToolsAction>,
+    /// Input router dedicated to the overlay tree.
     input: InputRouter,
+    /// Saturating debug-snapshot sequence number.
     frame_index: u64,
+    /// Most recent inspected-tree snapshot used for picking.
     last_snapshot: Option<DebugSnapshot>,
+    /// Absolute logical bounds used to intercept panel pointer events.
     last_panel_bounds: Option<Rect>,
+    /// Optional loopback remote server channels.
     remote: Option<DevToolsRemote>,
+    /// Late-bound native host wake retained across remote replacement.
     host_wake: Option<Arc<dyn UiWake>>,
 }
 
+/// Window-local devtools lifecycle, event handling, and scene construction.
 impl DevToolsWindowState {
+    /// Creates overlay state and optionally starts the environment-configured remote.
+    ///
+    /// `AILLOLI_UI_DEVTOOLS_REMOTE` wins over `OCTAVUI_DEVTOOLS_REMOTE`. Invalid,
+    /// non-loopback, or unbindable addresses behave as no remote and leave the
+    /// local overlay disabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let state = ailloli_ui_winit::devtools::DevToolsWindowState::new();
+    /// assert!(state.selected.is_none() && state.hovered.is_none());
+    /// ```
     pub fn new() -> Self {
         let remote = DevToolsRemote::from_env();
         Self {
@@ -59,6 +106,20 @@ impl DevToolsWindowState {
         }
     }
 
+    /// Replaces the remote server with an optional loopback address.
+    ///
+    /// `None` drops this handle's channels but does not forcibly disable an
+    /// already-enabled local overlay. A successful server enables the overlay
+    /// and receives the previously installed host wake. Startup failure leaves
+    /// no remote.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut state = ailloli_ui_winit::devtools::DevToolsWindowState::new();
+    /// state.set_remote_addr(None);
+    /// assert_eq!(state.mode, ailloli_ui_devtools_core::DevToolsMode::Overlay);
+    /// ```
     pub fn set_remote_addr(&mut self, addr: Option<SocketAddr>) {
         self.remote = addr.and_then(DevToolsRemote::start);
         if let Some(remote) = self.remote.as_ref() {
@@ -69,6 +130,19 @@ impl DevToolsWindowState {
         }
     }
 
+    /// Stores the native wake and installs it into the current remote bridge.
+    ///
+    /// # Errors
+    ///
+    /// Returns a late-bound wake failure while the remote also latches it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // `WinitHost` installs this wake before entering the native event loop.
+    /// let state = ailloli_ui_winit::devtools::DevToolsWindowState::new();
+    /// assert!(!state.enabled || state.mode == ailloli_ui_devtools_core::DevToolsMode::Overlay);
+    /// ```
     pub(crate) fn install_host_wake(&mut self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         self.host_wake = Some(wake.clone());
         self.remote
@@ -76,18 +150,51 @@ impl DevToolsWindowState {
             .map_or(Ok(()), |remote| remote.install_wake(wake))
     }
 
+    /// Rearms remote wake coalescing and reports whether commands remain queued.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Host service uses the boolean to request a redraw before draining commands.
+    /// let state = ailloli_ui_winit::devtools::DevToolsWindowState::new();
+    /// assert!(!state.picker_active);
+    /// ```
     pub(crate) fn begin_host_service(&self) -> bool {
         self.remote
             .as_ref()
             .is_some_and(DevToolsRemote::begin_host_service)
     }
 
+    /// Consumes the remote bridge's first non-fatal wake error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // No remote means there is no remote wake error.
+    /// let state = ailloli_ui_winit::devtools::DevToolsWindowState::new();
+    /// let _ = state;
+    /// ```
     pub(crate) fn take_wake_error(&self) -> Option<UiWakeError> {
         self.remote
             .as_ref()
             .and_then(DevToolsRemote::take_wake_error)
     }
 
+    /// Applies queued remote commands, shortcuts, panel input, and picker input.
+    ///
+    /// Returns `true` only when devtools consumed the event. Panel pointer input
+    /// is routed before application content; picker motion updates hover, and a
+    /// released primary click selects then disables picking.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Event;
+    /// let mut state = ailloli_ui_winit::devtools::DevToolsWindowState::new();
+    /// let _handler: fn(&mut _, &Event) -> bool =
+    ///     ailloli_ui_winit::devtools::DevToolsWindowState::handle_event;
+    /// let _ = &mut state;
+    /// ```
     pub fn handle_event(&mut self, event: &Event) -> bool {
         self.apply_remote_commands();
         match event {
@@ -156,6 +263,27 @@ impl DevToolsWindowState {
         false
     }
 
+    /// Updates the inspected snapshot and optionally builds the local overlay scene.
+    ///
+    /// Remote-only mode still snapshots and publishes while returning `None`.
+    /// Visible mode reconciles, lays out, and paints a separate overlay runtime,
+    /// then inserts selection/hover rectangles as the first overlay layer. The
+    /// frame index saturates at `u64::MAX`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::{ElementId, Rect};
+    /// use ailloli_ui_core::math::Scale;
+    /// use ailloli_ui_runtime::element::ElementTree;
+    /// use ailloli_ui_text::TextSystem;
+    /// fn build<A: 'static>(state: &mut ailloli_ui_winit::devtools::DevToolsWindowState,
+    ///     tree: &ElementTree<A>, root: ElementId, text: &mut TextSystem) {
+    ///     let scene: Option<ailloli_ui_runtime::scene::Scene> = state.build_scene(
+    ///         tree, root, Rect::new(0.0, 0.0, 800.0, 600.0), Scale::new(1.0), text);
+    ///     let _ = scene;
+    /// }
+    /// ```
     pub fn build_scene<A: 'static>(
         &mut self,
         tree: &ElementTree<A>,
@@ -217,11 +345,13 @@ impl DevToolsWindowState {
         Some(scene)
     }
 
+    /// Tests whether a logical pointer coordinate lies in the last panel bounds.
     fn panel_contains(&self, pos: ailloli_ui_core::Point) -> bool {
         self.last_panel_bounds
             .is_some_and(|bounds| bounds.contains(pos.x, pos.y))
     }
 
+    /// Resolves the panel's retained view key to absolute logical paint bounds.
     fn resolve_panel_bounds(&self) -> Option<Rect> {
         let id = self
             .runtime
@@ -231,12 +361,14 @@ impl DevToolsWindowState {
         absolute_paint_bounds(&self.runtime.tree, id)
     }
 
+    /// Drains overlay-runtime actions in emission order.
     fn apply_runtime_actions(&mut self) {
         for action in self.runtime.runtime.take_actions() {
             self.apply_action(action);
         }
     }
 
+    /// Applies one overlay action to visible mode, picker, or selection state.
     fn apply_action(&mut self, action: DevToolsAction) {
         match action {
             DevToolsAction::Select(id) => {
@@ -260,6 +392,7 @@ impl DevToolsWindowState {
         }
     }
 
+    /// Drains and applies all queued remote commands; pings are server-local no-ops here.
     fn apply_remote_commands(&mut self) {
         let Some(remote) = &self.remote else {
             return;
@@ -281,12 +414,15 @@ impl DevToolsWindowState {
     }
 }
 
+/// Delegates to environment-aware [`Self::new`].
 impl Default for DevToolsWindowState {
+    /// Creates the same state as [`DevToolsWindowState::new`].
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Converts debug geometry to runtime draw commands; text labels are omitted.
 fn debug_draw_to_runtime(cmd: DebugDrawCmd) -> Vec<DrawCmd> {
     match cmd {
         DebugDrawCmd::RectOutline {
@@ -306,6 +442,7 @@ fn debug_draw_to_runtime(cmd: DebugDrawCmd) -> Vec<DrawCmd> {
     }
 }
 
+/// Builds four logical-pixel rectangles, clamping thickness to at least one.
 fn outline_rect(rect: Rect, color: Color, thickness: f32) -> Vec<DrawCmd> {
     let t = thickness.max(1.0);
     vec![
@@ -328,13 +465,44 @@ fn outline_rect(rect: Rect, color: Color, thickness: f32) -> Vec<DrawCmd> {
     ]
 }
 
+/// Handle to a detached loopback JSONL server and its UI-thread command queue.
+///
+/// Server/event and command channels are unbounded. The detached server thread
+/// polls at approximately 60 Hz, accepts at most eight clients, and terminates
+/// only when the process exits or the listener becomes permanently unusable.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::net::SocketAddr;
+/// use ailloli_ui_winit::devtools::DevToolsRemote;
+/// let addr: SocketAddr = "127.0.0.1:9229".parse().unwrap();
+/// let remote: Option<DevToolsRemote> = DevToolsRemote::start(addr);
+/// ```
 pub struct DevToolsRemote {
+    /// Snapshot events sent to the server thread for broadcast.
     events: Sender<RemoteEvent>,
+    /// Commands accepted by the server and drained on the UI thread.
     commands: Receiver<DevToolsClientMessage>,
+    /// Pending-count and late-bound wake coordination shared with the server.
     command_wake: Arc<DevToolsCommandWake>,
 }
 
+/// Environment startup, explicit loopback startup, and channel drains.
 impl DevToolsRemote {
+    /// Starts the configured loopback remote, if the environment value is valid.
+    ///
+    /// `AILLOLI_UI_DEVTOOLS_REMOTE` wins over the legacy variable. Empty,
+    /// non-Unicode, malformed, non-loopback, unbindable, or nonblocking setup
+    /// failures return `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let loader: fn() -> Option<ailloli_ui_winit::devtools::DevToolsRemote> =
+    ///     ailloli_ui_winit::devtools::DevToolsRemote::from_env;
+    /// let _ = loader;
+    /// ```
     pub fn from_env() -> Option<Self> {
         let addr =
             crate::framework_env_var_os("AILLOLI_UI_DEVTOOLS_REMOTE", "OCTAVUI_DEVTOOLS_REMOTE")?;
@@ -342,6 +510,20 @@ impl DevToolsRemote {
         Self::start(addr)
     }
 
+    /// Binds a nonblocking loopback TCP listener and detaches its server thread.
+    ///
+    /// Non-loopback addresses are refused even if locally bindable. Port zero is
+    /// accepted by the OS, but this handle does not expose the selected port.
+    /// Any bind or nonblocking-configuration failure returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::net::SocketAddr;
+    /// let address: SocketAddr = "127.0.0.1:9229".parse().unwrap();
+    /// let remote = ailloli_ui_winit::devtools::DevToolsRemote::start(address);
+    /// let _ = remote;
+    /// ```
     pub fn start(addr: SocketAddr) -> Option<Self> {
         if !addr.ip().is_loopback() {
             eprintln!("ailloli_ui devtools remote refused non-loopback addr {addr}");
@@ -364,10 +546,37 @@ impl DevToolsRemote {
         })
     }
 
+    /// Queues a complete debug snapshot for best-effort broadcast to all clients.
+    ///
+    /// The unbounded channel preserves order. If the detached server has ended,
+    /// the snapshot is silently dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// fn publish(remote: &ailloli_ui_winit::devtools::DevToolsRemote,
+    ///     snapshot: ailloli_ui_devtools_core::DebugSnapshot) {
+    ///     remote.publish_snapshot(snapshot);
+    /// }
+    /// ```
     pub fn publish_snapshot(&self, snapshot: DebugSnapshot) {
         let _ = self.events.send(RemoteEvent::Snapshot(snapshot));
     }
 
+    /// Drains every currently queued client command in FIFO order.
+    ///
+    /// Each drained command decrements the atomic pending count. Commands that
+    /// arrive concurrently after `try_recv` observes empty wait for later service.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// fn drain(remote: &ailloli_ui_winit::devtools::DevToolsRemote) {
+    ///     let commands: Vec<ailloli_ui_devtools_core::DevToolsClientMessage> =
+    ///         remote.drain_commands();
+    ///     let _ = commands;
+    /// }
+    /// ```
     pub fn drain_commands(&self) -> Vec<DevToolsClientMessage> {
         let mut out = Vec::new();
         while let Ok(cmd) = self.commands.try_recv() {
@@ -377,41 +586,58 @@ impl DevToolsRemote {
         out
     }
 
+    /// Installs/replaces the host wake and immediately signals queued commands.
     fn install_wake(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         self.command_wake.install(wake)
     }
 
+    /// Rearms wake coalescing and reports whether the atomic pending count is non-zero.
     fn begin_host_service(&self) -> bool {
         self.command_wake.begin_host_service()
     }
 
+    /// Consumes the first latched wake error.
     fn take_wake_error(&self) -> Option<UiWakeError> {
         self.command_wake.take_error()
     }
 }
 
 #[derive(Default)]
+/// Mutex-protected late-bound wake, coalescing latch, and first failure.
 struct DevToolsCommandWakeState {
+    /// Current native host wake target.
     wake: Option<Arc<dyn UiWake>>,
+    /// Whether this service interval already received a successful wake request.
     signaled: bool,
+    /// First wake failure retained until diagnostic drain.
     error: Option<UiWakeError>,
 }
 
 #[derive(Default)]
+/// Cross-thread pending-command counter paired with mutex-protected wake state.
 struct DevToolsCommandWake {
+    /// Late-bound callback and coalescing/error slots.
     state: Mutex<DevToolsCommandWakeState>,
+    /// Saturating-decremented count of successfully queued, undrained commands.
     pending_commands: AtomicUsize,
 }
 
+/// Command reservation, drain accounting, wake coalescing, and error observation.
 impl DevToolsCommandWake {
+    /// Reserves one pending count before channel submission using release ordering.
+    ///
+    /// The atomic increment wraps at `usize::MAX`; reaching that value requires
+    /// an infeasible number of queued network commands.
     fn reserve_command(&self) {
         self.pending_commands.fetch_add(1, Ordering::Release);
     }
 
+    /// Rolls back a reservation when command channel submission fails.
     fn cancel_command(&self) {
         self.command_drained();
     }
 
+    /// Saturating-decrements the pending count for one drained/cancelled command.
     fn command_drained(&self) {
         let _ =
             self.pending_commands
@@ -420,6 +646,9 @@ impl DevToolsCommandWake {
                 });
     }
 
+    /// Sends at most one wake per host-service interval.
+    ///
+    /// Missing late-bound wakes are successful no-ops and leave `signaled` false.
     fn signal(&self) -> Result<(), UiWakeError> {
         let wake = {
             let mut state = self.state.lock().expect("devtools wake lock poisoned");
@@ -434,6 +663,7 @@ impl DevToolsCommandWake {
         self.invoke(wake)
     }
 
+    /// Replaces the wake and signals immediately when pending commands exist.
     fn install(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         let wake = {
             let mut state = self.state.lock().expect("devtools wake lock poisoned");
@@ -444,6 +674,7 @@ impl DevToolsCommandWake {
         self.invoke(wake)
     }
 
+    /// Clears the coalescing latch and returns whether work remains pending.
     fn begin_host_service(&self) -> bool {
         if let Ok(mut state) = self.state.lock() {
             state.signaled = false;
@@ -451,6 +682,7 @@ impl DevToolsCommandWake {
         self.pending_commands.load(Ordering::Acquire) > 0
     }
 
+    /// Consumes the first stored wake error; poisoning returns `None`.
     fn take_error(&self) -> Option<UiWakeError> {
         self.state
             .lock()
@@ -458,6 +690,7 @@ impl DevToolsCommandWake {
             .and_then(|mut state| state.error.take())
     }
 
+    /// Calls the wake outside the mutex, unlatching and storing its first failure.
     fn invoke(&self, wake: Option<Arc<dyn UiWake>>) -> Result<(), UiWakeError> {
         let Some(wake) = wake else {
             return Ok(());
@@ -473,12 +706,17 @@ impl DevToolsCommandWake {
     }
 }
 
+/// Server-thread command sender paired with pending/wake accounting.
 struct DevToolsCommandSender {
+    /// Unbounded FIFO client-command channel.
     commands: Sender<DevToolsClientMessage>,
+    /// Shared accounting and wake coordinator.
     wake: Arc<DevToolsCommandWake>,
 }
 
+/// Atomic reserve-send-signal operation for accepted client commands.
 impl DevToolsCommandSender {
+    /// Queues a command or rolls back its pending count if the UI receiver closed.
     fn send(&self, command: DevToolsClientMessage) {
         self.wake.reserve_command();
         if self.commands.send(command).is_err() {
@@ -489,15 +727,25 @@ impl DevToolsCommandSender {
     }
 }
 
+/// UI-to-server events broadcast to all currently connected clients.
 enum RemoteEvent {
+    /// Complete inspected-tree snapshot.
     Snapshot(DebugSnapshot),
 }
 
+/// One nonblocking TCP client and its incomplete JSONL input buffer.
 struct Client {
+    /// Connected loopback stream.
     stream: TcpStream,
+    /// UTF-8-lossy decoded bytes received after the last newline.
     read_buf: String,
 }
 
+/// Runs the detached accept/broadcast/read loop with a 16 ms polling interval.
+///
+/// At most eight clients are retained. New clients receive protocol version 1;
+/// write/read failures drop only that client. Snapshot broadcast preserves event
+/// order but slow nonblocking clients may be disconnected on `WouldBlock` writes.
 fn run_remote_server(
     listener: TcpListener,
     events: Receiver<RemoteEvent>,
@@ -536,6 +784,7 @@ fn run_remote_server(
     }
 }
 
+/// Serializes one server message, appends newline, and requires a complete write.
 fn write_jsonl(stream: &mut TcpStream, message: &DevToolsServerMessage) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(message)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
@@ -543,6 +792,12 @@ fn write_jsonl(stream: &mut TcpStream, message: &DevToolsServerMessage) -> std::
     stream.write_all(&line)
 }
 
+/// Drains one nonblocking client and returns whether it should stay connected.
+///
+/// Empty trimmed lines are ignored. Ping receives Pong without entering the UI
+/// queue; invalid JSON receives an Error and remains connected if the write
+/// succeeds. A line longer than 65,536 buffered UTF-8 bytes receives an Error
+/// and is disconnected. Invalid UTF-8 is lossily replaced before parsing.
 fn read_client_commands(client: &mut Client, commands: &DevToolsCommandSender) -> bool {
     let mut buf = [0u8; 4096];
     loop {
@@ -603,6 +858,7 @@ fn read_client_commands(client: &mut Client, commands: &DevToolsCommandSender) -
 }
 
 #[cfg(test)]
+/// Remote protocol, size/security boundary, wake, overlay layout, and input scenarios.
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
@@ -618,23 +874,30 @@ mod tests {
     use ailloli_ui_widgets::text::Text;
 
     #[derive(Default)]
+    /// Wake fixture counting successful callbacks.
     struct CountingWake(AtomicUsize);
 
+    /// Relaxed counter implementation sufficient for single-test observation.
     impl UiWake for CountingWake {
+        /// Increments and succeeds.
         fn wake(&self) -> Result<(), UiWakeError> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
 
+    /// Wake fixture that always reports a closed target.
     struct FailingWake;
 
+    /// Deterministic failure implementation for retry/error diagnostics.
     impl UiWake for FailingWake {
+        /// Returns `TargetClosed` without side effects.
         fn wake(&self) -> Result<(), UiWakeError> {
             Err(UiWakeError::TargetClosed)
         }
     }
 
+    /// Creates an unbounded command channel paired with shared wake accounting.
     fn command_channel() -> (
         DevToolsCommandSender,
         Receiver<DevToolsClientMessage>,
@@ -652,6 +915,7 @@ mod tests {
         )
     }
 
+    /// Builds and lays out a minimal inspected application tree.
     fn app_runtime() -> (Runtime<()>, TextSystem) {
         let mut runtime = Runtime::new(RuntimeHandle::new());
         runtime.reconcile(
@@ -669,6 +933,7 @@ mod tests {
         (runtime, text_system)
     }
 
+    /// Counts text commands emitted across all scene layers.
     fn text_cmd_count(scene: &Scene) -> usize {
         scene
             .layers
@@ -678,6 +943,7 @@ mod tests {
             .count()
     }
 
+    /// Creates a primary left-button pointer event at a logical position.
     fn pointer_button(pos: Point, pressed: bool) -> Event {
         Event::Pointer(PointerEvent::Button {
             pos,
@@ -687,6 +953,7 @@ mod tests {
         })
     }
 
+    /// Resolves a unique overlay key and returns the center of its absolute bounds.
     fn center_of_key(state: &DevToolsWindowState, key: &str) -> Point {
         let id = state
             .runtime
@@ -697,6 +964,7 @@ mod tests {
         Point::new(bounds.x + bounds.w / 2.0, bounds.y + bounds.h / 2.0)
     }
 
+    /// Creates a nonblocking loopback TCP pair and wraps the server side as a client.
     fn connected_client() -> (Client, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("read listener addr");

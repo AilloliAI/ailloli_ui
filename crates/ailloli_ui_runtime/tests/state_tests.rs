@@ -1,6 +1,9 @@
+//! Integration scenarios for component state reads, writes, and updates.
+
 use ailloli_ui_runtime::component::State;
 
 #[test]
+/// Verifies that state reads sets and updates value.
 fn state_reads_sets_and_updates_value() {
     let state = State::new(1);
 
@@ -14,6 +17,7 @@ fn state_reads_sets_and_updates_value() {
 }
 
 #[test]
+/// Verifies that state maps to derived value.
 fn state_maps_to_derived_value() {
     let initial = "ailloli_ui";
     let state = State::new(initial.to_string());

@@ -17,6 +17,7 @@ use ailloli_ui_winit::{CaptureHandle, NoopHostDriver, UiApp, WindowOptions, Wini
 use winit::dpi::LogicalSize;
 use winit::event_loop::ControlFlow;
 
+/// Resolves the repository-local directory used for devtools capture artifacts.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -24,6 +25,7 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Builds the deterministic application-like scene shown behind the inspector.
 fn sample_app_like_root() -> impl IntoView<()> {
     let style = TextStyle::new(FontId::Ui, 18, Color::WHITE);
     Container::new()
@@ -37,6 +39,7 @@ fn sample_app_like_root() -> impl IntoView<()> {
         )
 }
 
+/// Counts RGBA8 pixels accepted by a predicate over red, green, blue, and alpha.
 fn count_pixels(
     rgba: &[u8],
     width: u32,

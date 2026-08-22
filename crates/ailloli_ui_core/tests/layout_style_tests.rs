@@ -1,3 +1,5 @@
+//! Covers fill, fixed/percentage lengths, min/max resolution, and bound normalization.
+
 use ailloli_ui_core::geometry::{Constraints, Size};
 use ailloli_ui_core::style::{LayoutStyle, Length};
 

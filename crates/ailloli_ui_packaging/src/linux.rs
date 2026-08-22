@@ -1,3 +1,11 @@
+//! Deterministic staging and Debian archive generation for Linux applications.
+//!
+//! Consumer configuration is optional and lives at
+//! `packaging/linux/debian.toml`. Configured payloads are confined below the
+//! consumer root and installed only below `usr/libexec/<distribution>/`.
+//! Source paths must contain no symbolic-link component and are attested before
+//! staging, then checked again after copying to detect changes.
+
 use crate::icons::{GeneratedIconSet, LINUX_PNG_SIZES};
 use crate::{PackageContext, PackagingError};
 use flate2::Compression;
@@ -9,19 +17,45 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Monotonic in-process suffix used to avoid collisions between temporary member directories.
+///
+/// Relaxed ordering is sufficient because uniqueness, rather than synchronization
+/// of any other memory, is the only invariant.
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Optional Debian control metadata and architecture-specific extra payloads.
+///
+/// Unknown TOML fields are rejected. Missing fields use [`Default`]; empty
+/// dependency lists omit their corresponding control-file lines.
+///
+/// # Examples
+///
+/// ```
+/// let config: toml::Value = toml::from_str(
+///     "section = \"utils\"\npriority = \"optional\"\ndepends = []\nrecommends = []\n",
+/// )?;
+/// assert_eq!(config["section"].as_str(), Some("utils"));
+/// assert_eq!(config["depends"].as_array().map(Vec::len), Some(0));
+/// # Ok::<(), toml::de::Error>(())
+/// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DebianOptions {
+    /// Debian archive section; defaults to `utils` and is copied verbatim.
     pub section: String,
+    /// Debian package priority; defaults to `optional` and is copied verbatim.
     pub priority: String,
+    /// Required packages joined with comma-space, or empty to omit `Depends`.
     pub depends: Vec<String>,
+    /// Recommended packages joined with comma-space, or empty to omit `Recommends`.
     pub recommends: Vec<String>,
+    /// Extra regular files selected and attested for the target architecture.
     pub payloads: Vec<DebianPayloadOptions>,
 }
 
+/// Supplies the Debian defaults used when configuration is absent or partial.
 impl Default for DebianOptions {
+    /// Uses `utils`, `optional`, and empty dependency, recommendation, and payload lists.
     fn default() -> Self {
         Self {
             section: "utils".to_string(),
@@ -33,38 +67,119 @@ impl Default for DebianOptions {
     }
 }
 
+/// Declarative mapping from a target architecture to one extra Debian payload file.
+///
+/// `destination` must be normalized beneath `usr/libexec/<distribution>/`;
+/// `mode` accepts only the strings `0644` and `0755`; `sources` maps exact
+/// Debian architecture names such as `amd64` to consumer-root-relative files.
+///
+/// # Examples
+///
+/// ```
+/// let config: toml::Value = toml::from_str(r#"
+/// [[payloads]]
+/// destination = "usr/libexec/sample-app/providers/tool"
+/// mode = "0755"
+/// sources = { amd64 = "providers/linux-x64/tool" }
+/// "#)?;
+/// assert_eq!(config["payloads"][0]["mode"].as_str(), Some("0755"));
+/// # Ok::<(), toml::de::Error>(())
+/// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DebianPayloadOptions {
+    /// Normalized archive-relative destination below the distribution's libexec directory.
     destination: String,
+    /// Installed permission string, exactly `0644` or `0755`.
     mode: String,
+    /// Debian architecture to consumer-root-relative source path.
     sources: BTreeMap<String, String>,
 }
 
+/// Serialized evidence binding one resolved payload to its source bytes and destination.
+///
+/// # Examples
+///
+/// ```
+/// let size: u64 = 7;
+/// let mode = "0755";
+/// let digest = "0".repeat(64);
+/// assert_eq!((size, mode, digest.len()), (7, "0755", 64));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct PayloadAttestation {
+    /// Normalized consumer-root-relative source using `/` separators.
     pub source: String,
+    /// Normalized rootfs-relative destination using `/` separators.
     pub destination: String,
+    /// Exact Debian architecture key used to select the source.
     pub architecture: String,
+    /// Source length in bytes at plan-resolution time.
     pub size: u64,
+    /// Installed mode string, exactly `0644` or `0755`.
     pub mode: String,
+    /// Lowercase 64-character SHA-256 of the source bytes.
     pub sha256: String,
 }
 
+/// Validated payload ready to be copied and rechecked during staging.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+/// let source = PathBuf::from("providers/linux-x64/tool");
+/// let mode: u32 = 0o755;
+/// assert!(source.is_relative());
+/// assert_eq!(mode, 493);
+/// ```
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedPayload {
+    /// Stable receipt and manifest representation.
     pub attestation: PayloadAttestation,
+    /// Fully resolved source path below the consumer root.
     source: PathBuf,
+    /// Numeric installed permission bits, either `0o644` or `0o755`.
     mode: u32,
 }
 
+/// Complete deterministic Debian packaging plan.
+///
+/// # Examples
+///
+/// ```
+/// let payload_count: usize = 0;
+/// let config_sha256: Option<String> = None;
+/// assert_eq!(payload_count, 0);
+/// assert!(config_sha256.is_none());
+/// ```
 #[derive(Debug, Clone)]
 pub(crate) struct DebianPlan {
+    /// Parsed configuration, including defaults when the file is absent.
     pub options: DebianOptions,
+    /// Payloads sorted lexicographically by normalized destination.
     pub payloads: Vec<ResolvedPayload>,
+    /// Configuration-file SHA-256, or `None` when the file does not exist.
     pub config_sha256: Option<String>,
 }
 
+/// Loads `packaging/linux/debian.toml`, or returns defaults when it is absent.
+///
+/// Presence is distinct from an empty file: an empty file parses to defaults
+/// but is still hashed by plan resolution.
+///
+/// # Errors
+///
+/// Returns an I/O error when the file cannot be read, or a contextual message
+/// when TOML is malformed or contains unknown fields.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// let config = Path::new("consumer").join("packaging/linux/debian.toml");
+/// assert!(config.ends_with("packaging/linux/debian.toml"));
+/// ```
 pub fn load_debian_options(root: &Path) -> Result<DebianOptions, PackagingError> {
     let path = root.join("packaging/linux/debian.toml");
     if !path.exists() {
@@ -75,6 +190,23 @@ pub fn load_debian_options(root: &Path) -> Result<DebianOptions, PackagingError>
         .map_err(|error| PackagingError::message(format!("{}: {error}", path.display())))
 }
 
+/// Resolves, confines, hashes, and destination-sorts all payloads for one architecture.
+///
+/// # Errors
+///
+/// Rejects duplicate or unconfined destinations, unknown modes, missing
+/// architecture mappings, absolute or parent-traversing sources, any symlink
+/// component, non-regular sources, and filesystem/hash failures.
+///
+/// # Examples
+///
+/// ```
+/// let distribution = "sample-app";
+/// let architecture = "amd64";
+/// let required_prefix = format!("usr/libexec/{distribution}/");
+/// assert_eq!(required_prefix, "usr/libexec/sample-app/");
+/// assert_eq!(architecture, "amd64");
+/// ```
 pub(crate) fn resolve_debian_plan(
     root: &Path,
     distribution_name: &str,
@@ -147,6 +279,7 @@ pub(crate) fn resolve_debian_plan(
     })
 }
 
+/// Validates that a payload destination is normalized and strictly below libexec.
 fn validate_destination(value: &str, distribution_name: &str) -> Result<PathBuf, PackagingError> {
     let destination = validate_relative_path(value, "payload destination")?;
     let required = Path::new("usr").join("libexec").join(distribution_name);
@@ -159,6 +292,9 @@ fn validate_destination(value: &str, distribution_name: &str) -> Result<PathBuf,
     Ok(destination)
 }
 
+/// Accepts a nonempty path containing only normal relative components.
+///
+/// Absolute paths, `.` and `..`, platform prefixes, roots, and empty strings are rejected.
 fn validate_relative_path(value: &str, label: &str) -> Result<PathBuf, PackagingError> {
     let path = Path::new(value);
     if value.is_empty()
@@ -174,6 +310,10 @@ fn validate_relative_path(value: &str, label: &str) -> Result<PathBuf, Packaging
     Ok(path.to_path_buf())
 }
 
+/// Rejects symbolic links in every existing component below `root`.
+///
+/// Traversal stops successfully at the first missing component; the subsequent
+/// metadata lookup reports a missing final source with more context.
 fn reject_symlink_components(root: &Path, relative: &Path) -> Result<(), PackagingError> {
     let mut candidate = root.to_path_buf();
     for component in relative.components() {
@@ -193,6 +333,7 @@ fn reject_symlink_components(root: &Path, relative: &Path) -> Result<(), Packagi
     Ok(())
 }
 
+/// Serializes path components using `/` regardless of the host separator.
 fn path_to_slashes(path: &Path) -> String {
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
@@ -200,6 +341,7 @@ fn path_to_slashes(path: &Path) -> String {
         .join("/")
 }
 
+/// Streams a regular file into a lowercase SHA-256 digest using a 64-KiB buffer.
 fn hash_file(path: &Path) -> Result<String, PackagingError> {
     let mut file = BufReader::new(File::open(path)?);
     let mut digest = Sha256::new();
@@ -218,6 +360,26 @@ fn hash_file(path: &Path) -> Result<String, PackagingError> {
         .collect())
 }
 
+/// Stages an installable Linux root filesystem below `staging/rootfs`.
+///
+/// The executable is installed under `usr/bin`; desktop and AppStream metadata,
+/// source SVG, fixed hicolor PNGs, and validated payloads are then copied. The
+/// returned path is the rootfs directory. Existing files at those paths are
+/// replaced, and an error can leave a partial staging tree.
+///
+/// # Errors
+///
+/// Returns an error for unsafe metadata, missing required Cargo description or
+/// license, missing icon derivatives, changed payloads, or filesystem failures.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// let staging = Path::new("target/ailloli_ui/package/linux");
+/// let rootfs = staging.join("rootfs");
+/// assert_eq!(rootfs.join("usr/bin/sample_app"), staging.join("rootfs/usr/bin/sample_app"));
+/// ```
 pub fn stage_linux_root(
     context: &PackageContext,
     executable: &Path,
@@ -266,6 +428,11 @@ pub fn stage_linux_root(
     Ok(rootfs)
 }
 
+/// Copies one attested payload, applies its mode, and verifies size and digest again.
+///
+/// Rechecking both the source path's symlink components and staged bytes closes
+/// the normal gap between plan resolution and archive construction. This is a
+/// consistency check, not a sandbox against a concurrently hostile filesystem.
 fn stage_payload(
     consumer_root: &Path,
     rootfs: &Path,
@@ -291,6 +458,7 @@ fn stage_payload(
     Ok(())
 }
 
+/// Creates the stable diagnostic used when a payload no longer matches its plan.
 fn payload_changed_error(payload: &ResolvedPayload) -> PackagingError {
     PackagingError::message(format!(
         "Debian payload source changed after validation: {}",
@@ -299,6 +467,7 @@ fn payload_changed_error(payload: &ResolvedPayload) -> PackagingError {
 }
 
 #[cfg(unix)]
+/// Applies the exact Unix permission bits from a validated payload mode.
 fn set_mode(path: &Path, mode: u32) -> Result<(), PackagingError> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
@@ -306,10 +475,16 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), PackagingError> {
 }
 
 #[cfg(not(unix))]
+/// Leaves permissions unchanged on non-Unix hosts.
 fn set_mode(_path: &Path, _mode: u32) -> Result<(), PackagingError> {
     Ok(())
 }
 
+/// Builds the authoritative freedesktop entry for an application identity.
+///
+/// Newlines are rejected to prevent field injection. Backslashes and tabs in
+/// human-readable fields are escaped; the executable and identity are expected
+/// to have already passed their upstream validators.
 fn desktop_entry(context: &PackageContext) -> Result<String, PackagingError> {
     reject_line_breaks(&context.identity.display_name, "application name")?;
     reject_line_breaks(&context.binary_name, "binary name")?;
@@ -322,6 +497,11 @@ fn desktop_entry(context: &PackageContext) -> Result<String, PackagingError> {
     ))
 }
 
+/// Appends consumer desktop fields without allowing authoritative-field changes.
+///
+/// A missing override returns `generated` unchanged. Blank lines, comments, the
+/// section header, and matching authoritative assignments are omitted; all
+/// other trimmed lines retain their original order.
 fn merge_desktop_override(
     context: &PackageContext,
     generated: &str,
@@ -371,6 +551,9 @@ fn merge_desktop_override(
     Ok(merged)
 }
 
+/// Renders minimal AppStream XML from validated identity and Cargo metadata.
+///
+/// Description and license must be present; all dynamic text is XML-escaped.
 fn appstream_metadata(context: &PackageContext) -> Result<String, PackagingError> {
     let description = context.description.as_deref().ok_or_else(|| {
         PackagingError::message("Cargo package.description is required for AppStream metadata")
@@ -388,6 +571,28 @@ fn appstream_metadata(context: &PackageContext) -> Result<String, PackagingError
     ))
 }
 
+/// Builds a reproducible Debian binary package at `destination`.
+///
+/// Archive entries are lexicographically sorted and use fixed owner, group,
+/// timestamp, and modes. Installed size is rounded upward to whole KiB. A
+/// temporary sibling directory holds the control and data members and is
+/// removed on both success and failure.
+///
+/// # Errors
+///
+/// Returns an error for invalid required Debian metadata, unsafe staged entry
+/// types, filesystem failures, or tar/gzip/ar encoding failures. A failed build
+/// may leave a partial destination file; callers normally use the crate's
+/// replacement wrapper.
+///
+/// # Examples
+///
+/// ```
+/// let magic: &[u8] = b"!<arch>\n";
+/// let members = ["debian-binary", "control.tar.gz", "data.tar.gz"];
+/// assert_eq!(magic.len(), 8);
+/// assert_eq!(members.len(), 3);
+/// ```
 pub fn build_deb(
     context: &PackageContext,
     rootfs: &Path,
@@ -418,6 +623,10 @@ pub fn build_deb(
     })
 }
 
+/// Runs an operation in a unique sibling directory and always attempts cleanup.
+///
+/// The operation's error takes precedence over a simultaneous cleanup error;
+/// after success, a cleanup failure becomes the returned error.
 fn with_member_work_dir<T>(
     destination: &Path,
     operation: impl FnOnce(&Path) -> Result<T, PackagingError>,
@@ -432,6 +641,10 @@ fn with_member_work_dir<T>(
     }
 }
 
+/// Renders the Debian `control` member and derives installed size in KiB.
+///
+/// Only regular-file byte sizes contribute, using `div_ceil(1024)`. Dependency
+/// and recommendation fields are omitted for empty lists.
 fn debian_control(
     context: &PackageContext,
     architecture: &str,
@@ -476,25 +689,40 @@ fn debian_control(
     Ok(control)
 }
 
+/// One deterministic tar entry derived from the staged root filesystem.
 #[derive(Debug, Clone)]
 struct ArchiveInventoryEntry {
+    /// Relative archive path prefixed by `.`.
     archive_path: PathBuf,
+    /// Host path from which regular-file bytes are read.
     source_path: PathBuf,
+    /// Regular-file byte length, or zero for directories.
     size: u64,
+    /// Installed Unix permission bits.
     mode: u32,
+    /// Directory or regular-file tar entry kind.
     kind: ArchiveEntryKind,
 }
 
+/// Supported staged filesystem entry kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArchiveEntryKind {
+    /// Directory with deterministic mode `0o755`.
     Directory,
+    /// Regular file with payload, executable, or data mode.
     RegularFile,
 }
 
+/// Recursively inventories a rootfs in deterministic archive-path order.
+///
+/// Directories use `0o755`; payload modes override file defaults, files below
+/// `usr/bin` use `0o755`, and other files use `0o644`. Symbolic links and all
+/// non-directory, non-regular entry kinds are rejected.
 fn collect_files(
     root: &Path,
     payloads: &[ResolvedPayload],
 ) -> Result<Vec<ArchiveInventoryEntry>, PackagingError> {
+    /// Depth-first collector whose callers sort both siblings and final paths.
     fn visit(
         base: &Path,
         current: &Path,
@@ -556,6 +784,10 @@ fn collect_files(
     Ok(entries)
 }
 
+/// Writes a deterministic gzip-compressed tar from an already sorted inventory.
+///
+/// Gzip and tar timestamps are zero, ownership is root, and file contents are
+/// streamed rather than accumulated in memory.
 fn write_gzip_tar(
     entries: &[ArchiveInventoryEntry],
     destination: &Path,
@@ -595,6 +827,11 @@ fn write_gzip_tar(
     Ok(())
 }
 
+/// Allocates a unique process-and-sequence-named sibling directory.
+///
+/// At most 100 collision attempts are made. The counter may wrap after
+/// `u64::MAX`; process identity and exclusive directory creation remain the
+/// final collision guard.
 fn create_member_work_dir(destination: &Path) -> Result<PathBuf, PackagingError> {
     let parent = destination.parent().ok_or_else(|| {
         PackagingError::message(format!(
@@ -619,6 +856,7 @@ fn create_member_work_dir(destination: &Path) -> Result<PathBuf, PackagingError>
     ))
 }
 
+/// Writes the Debian `ar` container with its three required members.
 fn write_deb_archive(
     destination: &Path,
     control_tar: &Path,
@@ -633,6 +871,7 @@ fn write_deb_archive(
     Ok(())
 }
 
+/// Appends an in-memory `ar` member and a newline pad byte for odd lengths.
 fn append_ar_bytes(
     output: &mut impl Write,
     name: &str,
@@ -647,6 +886,7 @@ fn append_ar_bytes(
     Ok(())
 }
 
+/// Streams a file as an `ar` member and adds the required odd-length padding.
 fn append_ar_file(
     output: &mut impl Write,
     name: &str,
@@ -663,6 +903,11 @@ fn append_ar_file(
     Ok(())
 }
 
+/// Writes one portable 60-byte System V `ar` header.
+///
+/// Timestamp, owner, and group are fixed to zero. A name or numeric field that
+/// expands beyond the fixed widths is rejected rather than emitting malformed
+/// output.
 fn write_ar_header(
     output: &mut impl Write,
     name: &str,
@@ -680,6 +925,10 @@ fn write_ar_header(
     Ok(())
 }
 
+/// Returns the trimmed first line of a Debian long description.
+///
+/// Empty input uses the fallback text; a present but blank first line yields an
+/// empty result.
 fn debian_description(description: &str) -> String {
     description
         .lines()
@@ -689,6 +938,7 @@ fn debian_description(description: &str) -> String {
         .to_string()
 }
 
+/// Rejects carriage returns and newlines in a control-field value.
 fn reject_line_breaks(value: &str, label: &str) -> Result<(), PackagingError> {
     if value.contains(['\n', '\r']) {
         return Err(PackagingError::message(format!(
@@ -698,10 +948,12 @@ fn reject_line_breaks(value: &str, label: &str) -> Result<(), PackagingError> {
     Ok(())
 }
 
+/// Escapes backslashes and horizontal tabs for freedesktop desktop entries.
 fn desktop_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('\t', "\\t")
 }
 
+/// Escapes all five XML special characters in dynamic AppStream text.
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -711,6 +963,29 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Maps a Rust target architecture to a Debian architecture name.
+///
+/// When `target` is `None`, the compile-time host architecture is used. For an
+/// explicit target, only the substring before the first `-` is considered.
+/// Accepted mappings are `x86_64` to `amd64`, `aarch64` to `arm64`, `x86`,
+/// `i686`, and `i586` to `i386`, and `arm`, `armv7`, and `armv7l` to `armhf`.
+///
+/// # Errors
+///
+/// Returns an unsupported-architecture message for every other input.
+///
+/// # Examples
+///
+/// ```
+/// let mappings = [
+///     ("x86_64", "amd64"),
+///     ("aarch64", "arm64"),
+///     ("i686", "i386"),
+///     ("armv7", "armhf"),
+/// ];
+/// assert_eq!(mappings[0], ("x86_64", "amd64"));
+/// assert!(!mappings.iter().any(|(rust, _)| *rust == "riscv64"));
+/// ```
 pub fn debian_architecture(target: Option<&str>) -> Result<&'static str, PackagingError> {
     let arch = target
         .and_then(|target| target.split('-').next())
@@ -727,11 +1002,13 @@ pub fn debian_architecture(target: Option<&str>) -> Result<&'static str, Packagi
 }
 
 #[cfg(test)]
+/// Covers confinement, attestation, deterministic archives, and cleanup failures.
 mod tests {
     use super::*;
     use ailloli_ui_core::app_identity::AppIconMetadata;
     use ailloli_ui_core::{AppIdentityMetadata, ApplicationId, APP_IDENTITY_METADATA_VERSION};
 
+    /// Allocates and clears a process-and-sequence-specific test directory.
     fn fixture_root(label: &str) -> PathBuf {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
@@ -743,18 +1020,25 @@ mod tests {
         root
     }
 
+    /// Writes a complete Debian TOML fixture beneath `root`.
     fn write_config(root: &Path, payloads: &str) {
         let path = root.join("packaging/linux/debian.toml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, payloads).unwrap();
     }
 
+    /// Renders one architecture-specific payload table for validation scenarios.
     fn payload_config(destination: &str, mode: &str, source: &str) -> String {
         format!(
             "[[payloads]]\ndestination = \"{destination}\"\nmode = \"{mode}\"\nsources = {{ amd64 = \"{source}\" }}\n"
         )
     }
 
+    /// Extracts a named member from the simple System V `ar` fixture.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the archive is malformed or the expected member is absent.
     fn ar_member<'a>(archive: &'a [u8], expected_name: &str) -> &'a [u8] {
         assert!(archive.starts_with(b"!<arch>\n"));
         let mut offset = 8;
@@ -781,6 +1065,11 @@ mod tests {
         panic!("missing ar member `{expected_name}`");
     }
 
+    /// Decodes `data.tar.gz` and returns each path, kind, and Unix mode.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the Debian fixture cannot be decoded.
     fn data_tar_entries(deb: &[u8]) -> Vec<(PathBuf, tar::EntryType, u32)> {
         let compressed = ar_member(deb, "data.tar.gz");
         let decoder = flate2::read::GzDecoder::new(compressed);

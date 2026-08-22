@@ -1,3 +1,5 @@
+//! Integration scenarios for targeted layout and paint invalidation.
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -11,6 +13,16 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_text::TextSystem;
 
 #[derive(Default)]
+/// Mutable per-phase counters shared by the targeted-invalidation fixture.
+///
+/// # Examples
+///
+/// ```
+/// use std::cell::Cell;
+/// let builds = Cell::new(0_u64);
+/// builds.set(builds.get() + 1);
+/// assert_eq!(builds.get(), 1);
+/// ```
 pub(crate) struct Counters {
     pub(crate) builds: Cell<u64>,
     pub(crate) layouts: Cell<u64>,
@@ -18,13 +30,17 @@ pub(crate) struct Counters {
     pub(crate) reads: Cell<u64>,
 }
 
+/// Test support type for CountingWidget scenarios.
 struct CountingWidget(Rc<Counters>);
 
+/// Implements the Widget<()> test contract for CountingWidget.
 impl Widget<()> for CountingWidget {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "CountingWidget"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -46,19 +62,24 @@ impl Widget<()> for CountingWidget {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    /// Records the committed geometry in the test counters.
     fn layout_committed(&self, _ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
         self.0.commits.set(self.0.commits.get() + 1);
     }
 }
 
+/// Test support type for CountingComponent scenarios.
 struct CountingComponent {
     counters: Rc<Counters>,
     signal: Option<Rc<RefCell<Option<Signal<u64>>>>>,
 }
 
+/// Implements the ComponentNode<()> test contract for CountingComponent.
 impl ComponentNode<()> for CountingComponent {
+    /// Builds the retained test view.
     fn build(&self, context: &mut Context<()>) -> View<()> {
         self.counters.builds.set(self.counters.builds.get() + 1);
         self.counters.reads.set(self.counters.reads.get() + 1);
@@ -69,13 +90,17 @@ impl ComponentNode<()> for CountingComponent {
     }
 }
 
+/// Test support type for HorizontalRoot scenarios.
 struct HorizontalRoot;
 
+/// Implements the Widget<()> test contract for HorizontalRoot.
 impl Widget<()> for HorizontalRoot {
+    /// Returns the stable diagnostic widget name.
     fn debug_name(&self) -> &'static str {
         "HorizontalRoot"
     }
 
+    /// Computes this test widget’s layout result.
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, ()>,
@@ -110,9 +135,19 @@ impl Widget<()> for HorizontalRoot {
         }
     }
 
+    /// Emits this test widget’s paint output.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Three-sibling runtime fixture used to prove invalidation isolation.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+/// let runtime = Runtime::<()>::new(RuntimeHandle::new());
+/// assert!(runtime.tree.root().is_none());
+/// ```
 pub(crate) struct Fixture {
     pub(crate) runtime: Runtime<()>,
     pub(crate) text: TextSystem,
@@ -123,6 +158,15 @@ pub(crate) struct Fixture {
     pub(crate) terminal_signal: Rc<RefCell<Option<Signal<u64>>>>,
 }
 
+/// Builds and initially lays out the file-tree, chat, and terminal siblings.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+/// let runtime = Runtime::<()>::new(RuntimeHandle::new());
+/// assert_eq!(runtime.runtime.element_tree_id().get(), 0);
+/// ```
 pub(crate) fn fixture() -> Fixture {
     let file = Rc::new(Counters::default());
     let chat = Rc::new(Counters::default());
@@ -165,6 +209,7 @@ pub(crate) fn fixture() -> Fixture {
 }
 
 #[test]
+/// Verifies that one thousand chat builds do not touch the file tree sibling.
 fn one_thousand_chat_builds_do_not_touch_the_file_tree_sibling() {
     let mut fixture = fixture();
     let file_before = (
@@ -196,6 +241,7 @@ fn one_thousand_chat_builds_do_not_touch_the_file_tree_sibling() {
 }
 
 #[test]
+/// Verifies that one thousand terminal builds do not touch file tree or chat siblings.
 fn one_thousand_terminal_builds_do_not_touch_file_tree_or_chat_siblings() {
     let mut fixture = fixture();
     let file_before = (
@@ -247,6 +293,7 @@ fn one_thousand_terminal_builds_do_not_touch_file_tree_or_chat_siblings() {
 }
 
 #[test]
+/// Verifies that paint layout and build requests coalesce to the strongest level.
 fn paint_layout_and_build_requests_coalesce_to_the_strongest_level() {
     let fixture = fixture();
     let chat = fixture
@@ -274,6 +321,7 @@ fn paint_layout_and_build_requests_coalesce_to_the_strongest_level() {
 }
 
 #[test]
+/// Verifies that invalidation provenance is bounded and reports coalescing.
 fn invalidation_provenance_is_bounded_and_reports_coalescing() {
     let fixture = fixture();
     let chat = fixture

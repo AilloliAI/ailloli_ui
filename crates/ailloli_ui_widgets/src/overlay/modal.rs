@@ -1,3 +1,5 @@
+//! Immediate-mode fixed-size confirmation modal drawing.
+
 use ailloli_ui_core::{Color, FontId, Rect, TextStyle};
 use ailloli_ui_runtime::{DrawCmd, DrawRRect, DrawRect, DrawText};
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
@@ -8,18 +10,35 @@ use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 /// Generic confirmation modal dialog style.
 ///
 /// Title and button labels are caller-defined; no app-specific copy in this crate.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::overlay::modal::ConfirmDialogStyle;
+/// let style = ConfirmDialogStyle::default();
+/// assert!(style.overlay.a > 0.0);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ConfirmDialogStyle {
+    /// Full-viewport scrim color.
     pub overlay: Color,
+    /// Dialog panel fill.
     pub panel_bg: Color,
+    /// One-logical-pixel top and bottom panel rule color.
     pub panel_border: Color,
+    /// Title glyph color.
     pub title_fg: Color,
+    /// Body glyph color.
     pub body_fg: Color,
+    /// Deny-button fill.
     pub btn_bg: Color,
+    /// Allow-button fill.
     pub btn_bg_primary: Color,
+    /// Shared button-label glyph color.
     pub btn_fg: Color,
 }
 
+/// Supplies the dark fixed-confirmation palette.
 impl Default for ConfirmDialogStyle {
     fn default() -> Self {
         Self {
@@ -36,20 +55,67 @@ impl Default for ConfirmDialogStyle {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Logical-pixel hit rectangles returned with confirmation draw commands.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_widgets::overlay::modal::ConfirmDialogLayout;
+/// let layout = ConfirmDialogLayout { panel: Rect::new(0.0, 0.0, 520.0, 220.0), allow: Rect::new(0.0, 0.0, 84.0, 34.0), deny: Rect::new(0.0, 0.0, 84.0, 34.0) };
+/// assert_eq!(layout.panel.w, 520.0);
+/// ```
 pub struct ConfirmDialogLayout {
+    /// Centered fixed 520×220 panel rectangle.
     pub panel: Rect,
+    /// Rightmost 84×34 allow-button hit rectangle.
     pub allow: Rect,
+    /// 84×34 deny-button hit rectangle immediately left of allow.
     pub deny: Rect,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Borrowed caller-owned copy for a confirmation dialog.
+///
+/// Empty strings are valid; labels are drawn without wrapping or truncation.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::overlay::modal::ConfirmDialogTexts;
+/// let texts = ConfirmDialogTexts { title: "Delete?", body: "This cannot be undone", deny_label: "Cancel", allow_label: "Delete" };
+/// assert_eq!(texts.allow_label, "Delete");
+/// ```
 pub struct ConfirmDialogTexts<'a> {
+    /// UI-font title.
     pub title: &'a str,
+    /// Mono-font body line.
     pub body: &'a str,
+    /// Deny-button label.
     pub deny_label: &'a str,
+    /// Allow-button label.
     pub allow_label: &'a str,
 }
 
+/// Draws a fixed confirmation panel centered in `full`.
+///
+/// The panel remains 520×220 logical pixels even when `full` is smaller, so it
+/// may extend outside the viewport. The function returns ten commands in paint
+/// order (scrim, surfaces, then four text commands) plus button hit geometry.
+/// Text is unwrapped and the function performs shaping allocations/cache access.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_text::TextSystem;
+/// use ailloli_ui_widgets::overlay::modal::{draw_confirm_dialog, ConfirmDialogStyle, ConfirmDialogTexts};
+/// let mut text_system = TextSystem::new();
+/// let texts = ConfirmDialogTexts { title: "Continue?", body: "Review the action", deny_label: "No", allow_label: "Yes" };
+/// let (commands, layout) = draw_confirm_dialog(Rect::new(0.0, 0.0, 800.0, 600.0), texts, ConfirmDialogStyle::default(), &mut text_system);
+/// assert_eq!(commands.len(), 10);
+/// assert_eq!((layout.panel.w, layout.panel.h), (520.0, 220.0));
+/// ```
 pub fn draw_confirm_dialog(
     full: Rect,
     texts: ConfirmDialogTexts<'_>,
@@ -76,6 +142,7 @@ pub fn draw_confirm_dialog(
     );
 
     let mut out = Vec::new();
+    /// Shapes one unwrapped label and appends its baseline-positioned command.
     fn push_text(
         out: &mut Vec<DrawCmd>,
         text: &mut TextSystem,

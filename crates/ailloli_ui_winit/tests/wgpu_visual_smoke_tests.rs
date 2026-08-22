@@ -11,6 +11,7 @@ use ailloli_ui_runtime::{DrawCmd, DrawRect};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
 
+/// Accepts an opaque, strongly red RGBA8 pixel with antialiasing tolerance.
 fn assert_is_red(px: [u8; 4]) {
     // RGBA8 thresholds (tolerant)
     assert!(px[0] > 200, "expected red-ish, got {px:?}");
@@ -19,6 +20,7 @@ fn assert_is_red(px: [u8; 4]) {
     assert!(px[3] > 200, "expected opaque-ish, got {px:?}");
 }
 
+/// Accepts an opaque, strongly blue RGBA8 pixel with antialiasing tolerance.
 fn assert_is_blue(px: [u8; 4]) {
     assert!(px[2] > 200, "expected blue-ish, got {px:?}");
     assert!(px[0] < 80, "expected blue-ish, got {px:?}");
@@ -26,20 +28,25 @@ fn assert_is_blue(px: [u8; 4]) {
     assert!(px[3] > 200, "expected opaque-ish, got {px:?}");
 }
 
+/// Reads one RGBA8 pixel at physical coordinates from a tightly packed frame.
 fn rgba_at(frame: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
     let idx = ((y * w + x) * 4) as usize;
     [frame[idx], frame[idx + 1], frame[idx + 2], frame[idx + 3]]
 }
 
+/// Serializes process-global clip-mode environment overrides across visual tests.
 static CLIP_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+/// Original clip-related environment values restored when the fixture scope ends.
 struct EnvRestore {
     shader: Option<String>,
     stencil: Option<String>,
     stencil_aa: Option<String>,
 }
 
+/// Restores all three environment variables, including their absent state.
 impl Drop for EnvRestore {
+    /// Restores the saved values during normal return or unwinding.
     fn drop(&mut self) {
         restore_env("AILLOLI_UI_CLIP_FORCE_SHADER", self.shader.take());
         restore_env("AILLOLI_UI_CLIP_FORCE_STENCIL", self.stencil.take());
@@ -47,6 +54,7 @@ impl Drop for EnvRestore {
     }
 }
 
+/// Sets an environment variable to `Some` text or removes it for `None`.
 fn restore_env(name: &str, value: Option<String>) {
     match value {
         Some(value) => std::env::set_var(name, value),
@@ -54,6 +62,7 @@ fn restore_env(name: &str, value: Option<String>) {
     }
 }
 
+/// Applies a clip-mode override and returns a guard containing the previous values.
 fn force_clip_env(shader: bool, stencil: bool, stencil_aa: Option<&str>) -> EnvRestore {
     let old = EnvRestore {
         shader: std::env::var("AILLOLI_UI_CLIP_FORCE_SHADER").ok(),
@@ -72,10 +81,12 @@ fn force_clip_env(shader: bool, stencil: bool, stencil_aa: Option<&str>) -> EnvR
     old
 }
 
+/// Accepts a pixel whose alpha is below 16/255.
 fn assert_is_transparent(px: [u8; 4]) {
     assert!(px[3] < 16, "expected transparent-ish, got {px:?}");
 }
 
+/// Accepts an opaque, strongly green RGBA8 pixel with antialiasing tolerance.
 fn assert_is_green(px: [u8; 4]) {
     assert!(px[1] > 180, "expected green-ish, got {px:?}");
     assert!(px[0] < 80, "expected green-ish, got {px:?}");
@@ -83,6 +94,7 @@ fn assert_is_green(px: [u8; 4]) {
     assert!(px[3] > 200, "expected opaque-ish, got {px:?}");
 }
 
+/// Captures one rounded root clip under an explicitly forced renderer mode.
 fn capture_round_clip_with_forced_mode(shader: bool, stencil: bool, stencil_aa: Option<&str>) {
     let _env_guard = CLIP_ENV_LOCK.lock().expect("clip env lock");
     let _restore = force_clip_env(shader, stencil, stencil_aa);

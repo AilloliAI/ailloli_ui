@@ -1,3 +1,5 @@
+//! Equal-width, single-selection segmented controls.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized, LayoutExt};
@@ -14,36 +16,85 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawImage, DrawRRect, DrawRect, Dr
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in segmented-control density choices.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SegmentedSize;
+/// let sizes = [SegmentedSize::Compact, SegmentedSize::Default];
+/// assert_eq!(sizes.len(), 2);
+/// assert_eq!(SegmentedSize::default(), SegmentedSize::Default);
+/// ```
 pub enum SegmentedSize {
+    /// 28-pixel height and 56-pixel minimum segment width.
     Compact,
+    /// 34-pixel height and 72-pixel minimum segment width; the default.
     #[default]
     Default,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved colors, typography, and logical-pixel geometry.
+///
+/// `selected_background_hovered` and `selected_background_pressed` are retained
+/// for compatibility but the current painter always uses `selected_background`.
+/// Other geometry is not validated.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{SegmentedSize, SegmentedStyle};
+/// let style = SegmentedStyle::from_theme(Theme::dark(), SegmentedSize::Compact);
+/// assert_eq!((style.height, style.min_segment_width), (28.0, 56.0));
+/// ```
 pub struct SegmentedStyle {
+    /// Resting outer background.
     pub background: Color,
+    /// Background while the widget is hovered.
     pub background_hovered: Color,
+    /// Background while the widget is pressed.
     pub background_pressed: Color,
+    /// Selected-segment fill.
     pub selected_background: Color,
+    /// Reserved selected-hover fill; currently not read.
     pub selected_background_hovered: Color,
+    /// Reserved selected-pressed fill; currently not read.
     pub selected_background_pressed: Color,
+    /// Outer border.
     pub border: Border,
+    /// Focus border outside widget bounds.
     pub focus_ring: Border,
+    /// Divider color between adjacent segments.
     pub divider_color: Color,
+    /// Unselected label style.
     pub text: TextStyle,
+    /// Selected label style.
     pub selected_text: TextStyle,
+    /// Disabled label style.
     pub disabled_text: TextStyle,
+    /// Unselected icon tint.
     pub icon_tint: Color,
+    /// Selected icon tint.
     pub selected_icon_tint: Color,
+    /// Disabled icon tint.
     pub disabled_icon_tint: Color,
+    /// Intrinsic control height in logical pixels.
     pub height: f32,
+    /// Outer control corner radii.
     pub radius: Radius,
+    /// Horizontal label/icon inset per segment in logical pixels.
     pub segment_padding_x: f32,
+    /// Minimum equal segment width in logical pixels.
     pub min_segment_width: f32,
+    /// Optional leading icon width/height in logical pixels.
     pub icon_size: f32,
+    /// Space between icon and label in logical pixels.
     pub icon_gap: f32,
+    /// Focus-ring inflation beyond widget bounds in logical pixels.
     pub focus_ring_offset: f32,
+    /// Alpha multiplier for globally/individually disabled visuals.
     pub disabled_opacity: f32,
 }
 
@@ -54,6 +105,17 @@ impl Default for SegmentedStyle {
 }
 
 impl SegmentedStyle {
+    /// Resolves control colors and geometry from a theme and built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{SegmentedSize, SegmentedStyle};
+    /// let style = SegmentedStyle::from_theme(Theme::default(), SegmentedSize::Default);
+    /// assert_eq!((style.height, style.segment_padding_x), (34.0, 12.0));
+    /// assert_eq!((style.icon_size, style.icon_gap), (14.0, 6.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: SegmentedSize) -> Self {
         let palette = theme.palette();
         let (height, padding, min_width, icon_size, text_size) = match size {
@@ -89,6 +151,7 @@ impl SegmentedStyle {
         }
     }
 
+    /// Inflates layout visual bounds for a visible focus ring.
     fn visual_bounds(&self, rect: Rect) -> Rect {
         if self.focus_ring.is_visible() {
             let inflate = self.focus_ring_offset + max_border_width(self.focus_ring);
@@ -100,14 +163,40 @@ impl SegmentedStyle {
 }
 
 #[derive(Clone)]
+/// One typed value, label, and optional leading icon in a segmented control.
+///
+/// Values are identity: duplicate values cannot represent distinct selections
+/// because the first equal option is painted selected and selecting another equal
+/// option is treated as unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SegmentedOption;
+/// let option = SegmentedOption::new("grid", "Grid");
+/// let _ = option;
+/// ```
 pub struct SegmentedOption<T> {
+    /// Selection identity and emitted value.
     value: T,
+    /// Unwrapped visible label.
     label: String,
+    /// Optional leading icon.
     icon: Option<IconId>,
+    /// Live per-option disabled state.
     disabled: Binding<bool>,
 }
 
 impl<T> SegmentedOption<T> {
+    /// Creates an enabled text-only option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedOption;
+    /// let option = SegmentedOption::new(1, "One");
+    /// let _ = option;
+    /// ```
     pub fn new(value: T, label: impl Into<String>) -> Self {
         Self {
             value,
@@ -117,31 +206,89 @@ impl<T> SegmentedOption<T> {
         }
     }
 
+    /// Sets the leading icon, replacing any previous icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::SegmentedOption;
+    /// let option = SegmentedOption::new("history", "History").leading_icon(IconId::History);
+    /// let _ = option;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    /// Sets static or reactive per-option disabled state.
+    ///
+    /// Disabled options remain visible and can remain selected but are skipped by
+    /// navigation and cannot activate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedOption;
+    /// let option = SegmentedOption::new(1, "One").disabled(true);
+    /// let _ = option;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets per-option disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::SegmentedOption;
+    /// let option = SegmentedOption::new(1, "One").disabled_signal(Memo::new(|| false));
+    /// let _ = option;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 }
 
+/// Shared typed selection-change callback.
 type ChangeHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
 
+/// An equal-width, typed single-selection control.
+///
+/// Selection can be controlled or two-way bound. Without either a writable
+/// signal or callback, interaction is read-only. Arrow keys wrap and skip
+/// disabled options; Home/End choose first/last. With no matching selection,
+/// Right chooses first, Left chooses last, and Enter/Space chooses first.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SegmentedControl;
+/// let control: SegmentedControl<&str, ()> = SegmentedControl::new()
+///     .option("grid", "Grid")
+///     .option("list", "List")
+///     .selected("grid");
+/// let _ = control;
+/// ```
 pub struct SegmentedControl<T, A = ()> {
+    /// Layout configuration applied to intrinsic equal-width geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Options in display/navigation order.
     options: Vec<SegmentedOption<T>>,
+    /// Optional controlled or bound selection.
     selected: Option<Binding<T>>,
+    /// Writable selection signal in bound mode.
     bound: Option<Signal<T>>,
+    /// Live global disabled state.
     disabled: Binding<bool>,
+    /// Optional selection-change notification.
     on_change: Option<ChangeHandler<T, A>>,
+    /// Resolved paint and geometry.
     style: SegmentedStyle,
 }
 
@@ -158,6 +305,18 @@ impl<T: Clone + PartialEq + 'static, A: 'static> LayoutExt for SegmentedControl<
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedControl<T, A> {
+    /// Creates an enabled empty control with no selection or callback.
+    ///
+    /// Empty controls measure zero width, retain style height, and are not
+    /// focusable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new();
+    /// let _ = control;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -171,22 +330,65 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedControl<T, A> {
         }
     }
 
+    /// Appends an enabled text-only option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().option(1, "One");
+    /// let _ = control;
+    /// ```
     pub fn option(mut self, value: T, label: impl Into<String>) -> Self {
         self.options.push(SegmentedOption::new(value, label));
         self
     }
 
+    /// Appends a fully configured option.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{SegmentedControl, SegmentedOption};
+    /// let option = SegmentedOption::new(1, "One").disabled(true);
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().segmented_option(option);
+    /// let _ = control;
+    /// ```
     pub fn segmented_option(mut self, option: SegmentedOption<T>) -> Self {
         self.options.push(option);
         self
     }
 
+    /// Sets controlled static/reactive selection and clears bound mode.
+    ///
+    /// A value absent from options paints no selection. Change callbacks still
+    /// emit interaction results, but cannot mutate this source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().option(1, "One").selected(1);
+    /// let _ = control;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<T>>) -> Self {
         self.selected = Some(selected.into());
         self.bound = None;
         self
     }
 
+    /// Installs a writable signal for two-way selection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let selected = Signal::new(Rc::new(RefCell::new(1)), Rc::new(|| {}));
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().option(1, "One").bind(selected);
+    /// let _ = control;
+    /// ```
     pub fn bind(mut self, selected: impl Into<Signal<T>>) -> Self {
         let signal = selected.into();
         self.selected = Some(Binding::Signal(signal.clone()));
@@ -194,117 +396,313 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedControl<T, A> {
         self
     }
 
+    /// Sets static or reactive global disabled state.
+    ///
+    /// Disabled controls are not focusable and ignore pointer/keyboard input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().disabled(true);
+    /// let _ = control;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets global disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().disabled_signal(Memo::new(|| false));
+    /// let _ = control;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Replaces complete colors and intrinsic geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{SegmentedControl, SegmentedStyle};
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().segmented_style(SegmentedStyle::default());
+    /// let _ = control;
+    /// ```
     pub fn segmented_style(mut self, style: SegmentedStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{SegmentedControl, SegmentedSize};
+    /// let control: SegmentedControl<i32, ()> = SegmentedControl::new().segmented_size(SegmentedSize::Compact);
+    /// let _ = control;
+    /// ```
     pub fn segmented_size(mut self, size: SegmentedSize) -> Self {
         self.style = SegmentedStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Maps each distinct enabled option selection to an application action.
+    ///
+    /// The callback does not make a controlled source writable; use [`Self::bind`]
+    /// for two-way state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// #[derive(Clone)]
+    /// enum Action { Selected(i32) }
+    /// let control = SegmentedControl::new().option(1, "One").on_change(Action::Selected);
+    /// let _ = control;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(T) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Installs a context-aware selection handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let control = SegmentedControl::<i32, ()>::new()
+    ///     .option(1, "One")
+    ///     .on_change_ctx(|_ctx, value| assert_eq!(value, 1));
+    /// let _ = control;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, T) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 
+    /// Sets preferred width from logical pixels or an explicit `Length`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().width(240.0);
+    /// ```
     pub fn width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.width = value.into();
         self
     }
 
+    /// Sets preferred height from logical pixels or an explicit `Length`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().height(40.0);
+    /// ```
     pub fn height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.height = value.into();
         self
     }
 
+    /// Sets the minimum resolved width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().min_width(120.0);
+    /// ```
     pub fn min_width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.min_width = value.into();
         self
     }
 
+    /// Sets the maximum resolved width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().max_width(400.0);
+    /// ```
     pub fn max_width(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.max_width = value.into();
         self
     }
 
+    /// Sets the minimum resolved height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().min_height(28.0);
+    /// ```
     pub fn min_height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.min_height = value.into();
         self
     }
 
+    /// Sets the maximum resolved height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().max_height(48.0);
+    /// ```
     pub fn max_height(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.layout.max_height = value.into();
         self
     }
 
+    /// Marks both axes as parent-fill.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().fill();
+    /// ```
     pub fn fill(mut self) -> Self {
         self.layout.width = ailloli_ui_core::style::Length::Fill;
         self.layout.height = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Marks width as parent-fill while preserving height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().fill_width();
+    /// ```
     pub fn fill_width(mut self) -> Self {
         self.layout.width = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Marks height as parent-fill while preserving width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().fill_height();
+    /// ```
     pub fn fill_height(mut self) -> Self {
         self.layout.height = ailloli_ui_core::style::Length::Fill;
         self
     }
 
+    /// Sets the same logical-pixel margin on every side.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().margin(8.0);
+    /// ```
     pub fn margin(mut self, value: f32) -> Self {
         self.layout = self.layout.margin(value);
         self
     }
 
+    /// Sets the same logical-pixel layout padding on every side.
+    ///
+    /// This is layout metadata and is separate from per-segment content padding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().padding(4.0);
+    /// ```
     pub fn padding(mut self, value: f32) -> Self {
         self.layout = self.layout.padding(value);
         self
     }
 
+    /// Sets the dimensionless parent flex-grow weight to one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().flex_grow();
+    /// ```
     pub fn flex_grow(mut self) -> Self {
         self.flex_item = self.flex_item.flex_grow(1.0);
         self
     }
 
+    /// Sets the dimensionless parent flex-grow weight.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().flex_grow_by(2.0);
+    /// ```
     pub fn flex_grow_by(mut self, value: f32) -> Self {
         self.flex_item = self.flex_item.flex_grow(value);
         self
     }
 
+    /// Sets the dimensionless parent flex-shrink weight.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().flex_shrink(0.5);
+    /// ```
     pub fn flex_shrink(mut self, value: f32) -> Self {
         self.flex_item = self.flex_item.flex_shrink(value);
         self
     }
 
+    /// Sets the preferred parent main-axis flex basis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().flex_basis(160.0);
+    /// ```
     pub fn flex_basis(mut self, value: impl Into<ailloli_ui_core::style::Length>) -> Self {
         self.flex_item = self.flex_item.flex_basis(value);
         self
     }
 
+    /// Overrides this item's parent cross-axis alignment.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::AlignItems;
+    /// use ailloli_ui_widgets::controls::SegmentedControl;
+    /// let _ = SegmentedControl::<i32, ()>::new().align_self(AlignItems::End);
+    /// ```
     pub fn align_self(mut self, value: ailloli_ui_core::style::AlignItems) -> Self {
         self.flex_item = self.flex_item.align_self(value);
         self
     }
 }
 
+/// Retained widget implementing equal-width measurement, paint, and selection.
 struct SegmentedWidget<T, A> {
     layout: LayoutStyle,
     options: Vec<SegmentedOption<T>>,
@@ -316,8 +714,11 @@ struct SegmentedWidget<T, A> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Selected/disabled flags used to resolve one segment's content colors.
 struct SegmentPaintState {
+    /// Whether this is the first option equal to the selected value.
     selected: bool,
+    /// Whether the control or this option is disabled.
     disabled: bool,
 }
 
@@ -465,10 +866,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for SegmentedWidget<T
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
+    /// Reads the optional controlled or bound selection.
     fn selected_value(&self) -> Option<T> {
         self.selected.as_ref().map(Binding::read)
     }
 
+    /// Finds the first option equal to a selected value.
     fn selected_index(&self, selected: Option<&T>) -> Option<usize> {
         let selected = selected?;
         self.options
@@ -476,6 +879,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
             .position(|option| &option.value == selected)
     }
 
+    /// Hit-tests equal-width segments inside widget bounds.
     fn segment_at(&self, bounds: Rect, x: f32, y: f32) -> Option<usize> {
         if self.options.is_empty() || !bounds.contains(x, y) {
             return None;
@@ -488,6 +892,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
         (index < self.options.len()).then_some(index)
     }
 
+    /// Writes/notifies a distinct enabled option when an output path exists.
     fn select_index(&self, ctx: &mut EventCtx<A>, index: usize) {
         let Some(option) = self.options.get(index) else {
             return;
@@ -517,12 +922,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
         ctx.stop_propagation();
     }
 
+    /// Activates the enabled selection or falls back to the first enabled option.
     fn activation_index(&self, selected: Option<&T>) -> Option<usize> {
         self.selected_index(selected)
             .filter(|idx| self.option_enabled(*idx))
             .or_else(|| self.first_enabled_index())
     }
 
+    /// Wraps forward through enabled options.
     fn next_enabled_index(&self, selected: Option<&T>) -> Option<usize> {
         let len = self.options.len();
         if len == 0 {
@@ -534,6 +941,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
             .find(|idx| self.option_enabled(*idx))
     }
 
+    /// Wraps backward through enabled options.
     fn previous_enabled_index(&self, selected: Option<&T>) -> Option<usize> {
         let len = self.options.len();
         if len == 0 {
@@ -545,6 +953,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
             .find(|idx| self.option_enabled(*idx))
     }
 
+    /// Returns the first enabled option index.
     fn first_enabled_index(&self) -> Option<usize> {
         self.options
             .iter()
@@ -552,6 +961,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
             .find_map(|(idx, _)| self.option_enabled(idx).then_some(idx))
     }
 
+    /// Returns the last enabled option index.
     fn last_enabled_index(&self) -> Option<usize> {
         self.options
             .iter()
@@ -560,6 +970,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedWidget<T, A> {
             .find_map(|(idx, _)| self.option_enabled(idx).then_some(idx))
     }
 
+    /// Reads whether an indexed option exists and is enabled.
     fn option_enabled(&self, index: usize) -> bool {
         self.options
             .get(index)
@@ -585,6 +996,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> IntoView<A> for SegmentedContro
     }
 }
 
+/// Measures every label and gives all segments the longest required width.
 fn segmented_intrinsic_size<T>(
     options: &[SegmentedOption<T>],
     style: &SegmentedStyle,
@@ -606,6 +1018,7 @@ fn segmented_intrinsic_size<T>(
     )
 }
 
+/// Computes label/icon/padding width subject to the minimum segment width.
 fn segment_content_width<T>(
     option: &SegmentedOption<T>,
     label_width: f32,
@@ -619,6 +1032,7 @@ fn segment_content_width<T>(
     (label_width + icon_width + style.segment_padding_x * 2.0).max(style.min_segment_width)
 }
 
+/// Divides bounds equally, assigning rounding remainder to the last segment.
 fn segment_rects(bounds: Rect, count: usize) -> Vec<Rect> {
     if count == 0 {
         return Vec::new();
@@ -637,6 +1051,7 @@ fn segment_rects(bounds: Rect, count: usize) -> Vec<Rect> {
         .collect()
 }
 
+/// Paints the interaction-state outer background with disabled opacity.
 fn paint_background(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -666,6 +1081,7 @@ fn paint_background(
     }));
 }
 
+/// Paints an inset selected segment, dimmed when disabled.
 fn paint_selected_segment(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -688,6 +1104,7 @@ fn paint_selected_segment(
     }));
 }
 
+/// Paints one-pixel dividers between adjacent equal-width segments.
 fn paint_dividers(ctx: &mut PaintCtx<'_>, bounds: Rect, count: usize, style: &SegmentedStyle) {
     if count <= 1 {
         return;
@@ -702,6 +1119,7 @@ fn paint_dividers(ctx: &mut PaintCtx<'_>, bounds: Rect, count: usize, style: &Se
     }
 }
 
+/// Centers and paints one option's optional icon and unwrapped label.
 fn paint_segment_content<T>(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -755,6 +1173,7 @@ fn paint_segment_content<T>(
     paint_label(ctx, &option.label, text_style, x, rect, opacity);
 }
 
+/// Shapes and vertically centers one unwrapped label.
 fn paint_label(
     ctx: &mut PaintCtx<'_>,
     label: &str,
@@ -786,6 +1205,7 @@ fn paint_label(
     }));
 }
 
+/// Measures unwrapped text through the text system or fallback estimate.
 fn measure_text(text_system: Option<&mut TextSystem>, text: &str, style: TextStyle) -> Size {
     if let Some(text_system) = text_system {
         let layout = text_system.layout_cached(TextLayoutParams {
@@ -800,15 +1220,18 @@ fn measure_text(text_system: Option<&mut TextSystem>, text: &str, style: TextSty
     }
 }
 
+/// Estimates width as 0.58 em per Unicode scalar value.
 fn estimate_text_width(text: &str, style: TextStyle) -> f32 {
     text.chars().count() as f32 * style.px_size as f32 * 0.58
 }
 
+/// Multiplies alpha by `opacity` and clamps to `[0, 1]`.
 fn apply_opacity(mut color: Color, opacity: f32) -> Color {
     color.a = (color.a * opacity).clamp(0.0, 1.0);
     color
 }
 
+/// Applies an opacity multiplier independently to all border-edge colors.
 fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border.colors.left = apply_opacity(border.colors.left, opacity);
     border.colors.top = apply_opacity(border.colors.top, opacity);
@@ -817,6 +1240,7 @@ fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border
 }
 
+/// Returns the maximum per-edge border width.
 fn max_border_width(border: Border) -> f32 {
     border
         .widths

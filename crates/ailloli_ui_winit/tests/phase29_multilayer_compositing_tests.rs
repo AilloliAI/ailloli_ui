@@ -18,21 +18,26 @@ use ailloli_ui_runtime::{DrawCmd, DrawRect};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
 
+/// Capture width in physical pixels.
 const W: u32 = 256;
+/// Capture height in physical pixels.
 const H: u32 = 256;
 
+/// Opaque linear red used for unambiguous pixel classification.
 const RED: Color = Color {
     r: 1.0,
     g: 0.0,
     b: 0.0,
     a: 1.0,
 };
+/// Opaque linear blue used for unambiguous pixel classification.
 const BLUE: Color = Color {
     r: 0.0,
     g: 0.0,
     b: 1.0,
     a: 1.0,
 };
+/// Opaque linear green used for unambiguous pixel classification.
 const GREEN: Color = Color {
     r: 0.0,
     g: 1.0,
@@ -50,11 +55,13 @@ const MAGENTA: Color = Color {
     a: 1.0,
 };
 
+/// Reads one RGBA8 pixel at physical coordinates from a tightly packed frame.
 fn rgba_at(frame: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
     let idx = ((y * w + x) * 4) as usize;
     [frame[idx], frame[idx + 1], frame[idx + 2], frame[idx + 3]]
 }
 
+/// Accepts a pixel only when it is opaque and strongly red.
 fn assert_is_red(label: &str, px: [u8; 4]) {
     assert!(px[0] > 200, "{label}: expected red-ish, got {px:?}");
     assert!(px[1] < 80, "{label}: expected red-ish, got {px:?}");
@@ -62,6 +69,7 @@ fn assert_is_red(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts a pixel only when it is opaque and strongly blue.
 fn assert_is_blue(label: &str, px: [u8; 4]) {
     assert!(px[2] > 200, "{label}: expected blue-ish, got {px:?}");
     assert!(px[0] < 80, "{label}: expected blue-ish, got {px:?}");
@@ -69,6 +77,7 @@ fn assert_is_blue(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts a pixel only when it is opaque and strongly green.
 fn assert_is_green(label: &str, px: [u8; 4]) {
     assert!(px[1] > 180, "{label}: expected green-ish, got {px:?}");
     assert!(px[0] < 80, "{label}: expected green-ish, got {px:?}");
@@ -76,6 +85,7 @@ fn assert_is_green(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts a pixel only when it is opaque and strongly magenta.
 fn assert_is_magenta(label: &str, px: [u8; 4]) {
     assert!(px[0] > 200, "{label}: expected magenta-ish, got {px:?}");
     assert!(px[1] < 80, "{label}: expected magenta-ish, got {px:?}");
@@ -83,10 +93,12 @@ fn assert_is_magenta(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts a pixel only when its alpha is below 16/255.
 fn assert_is_transparent(label: &str, px: [u8; 4]) {
     assert!(px[3] < 16, "{label}: expected transparent-ish, got {px:?}");
 }
 
+/// Writes a diagnostic PNG beneath the repository capture-artifact directory.
 fn write_artifact(name: &str, png: &[u8]) {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -105,7 +117,9 @@ struct ScenarioReport {
     failures: Vec<String>,
 }
 
+/// Runs assertions independently and accumulates their panic diagnostics.
 impl ScenarioReport {
+    /// Executes one labeled check without allowing a panic to abort later scenarios.
     fn check(&mut self, scenario: &str, label: &str, f: impl FnOnce() -> Result<(), String>) {
         if let Err(msg) =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
@@ -124,6 +138,7 @@ impl ScenarioReport {
     }
 }
 
+/// Records a red-pixel assertion in the aggregate report.
 fn red_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioReport) {
     rep.check(scenario, label, || {
         assert_is_red(label, px);
@@ -131,6 +146,7 @@ fn red_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioReport)
     });
 }
 
+/// Records a blue-pixel assertion in the aggregate report.
 fn blue_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioReport) {
     rep.check(scenario, label, || {
         assert_is_blue(label, px);
@@ -138,6 +154,7 @@ fn blue_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioReport
     });
 }
 
+/// Records a green-pixel assertion in the aggregate report.
 fn green_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioReport) {
     rep.check(scenario, label, || {
         assert_is_green(label, px);
@@ -145,6 +162,7 @@ fn green_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioRepor
     });
 }
 
+/// Records a magenta-pixel assertion in the aggregate report.
 fn magenta_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioReport) {
     rep.check(scenario, label, || {
         assert_is_magenta(label, px);
@@ -152,6 +170,7 @@ fn magenta_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioRep
     });
 }
 
+/// Records a transparent-pixel assertion in the aggregate report.
 fn transparent_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut ScenarioReport) {
     rep.check(scenario, label, || {
         assert_is_transparent(label, px);
@@ -159,6 +178,7 @@ fn transparent_check(scenario: &str, label: &str, px: [u8; 4], rep: &mut Scenari
     });
 }
 
+/// Verifies that two unclipped layers preserve earlier background and foreground pixels.
 fn scenario_a(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let layer1 = vec![
         DrawCmd::Rect(DrawRect {
@@ -196,6 +216,7 @@ fn scenario_a(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     red_check("A", "red middle", rgba_at(&captured.rgba, w, 128, 128), rep);
 }
 
+/// Verifies that a clipped second layer neither erases nor leaks into the first.
 fn scenario_b(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let layer1 = vec![
         DrawCmd::Rect(DrawRect {
@@ -259,6 +280,7 @@ fn scenario_b(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     );
 }
 
+/// Verifies stencil clipping across multiple layers and transparent boundaries.
 fn scenario_c(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let root_round = ClipShape::RoundRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -343,6 +365,7 @@ fn scenario_c(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     );
 }
 
+/// Verifies that repeated captures do not leak prior-layer GPU state between frames.
 fn scenario_d(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let layer1 = vec![
         DrawCmd::Rect(DrawRect {

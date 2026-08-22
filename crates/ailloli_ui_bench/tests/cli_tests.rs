@@ -1,4 +1,9 @@
 #![cfg(feature = "cli")]
+//! End-to-end scenarios for the optional benchmark command-line interface.
+//!
+//! The suite launches the installed test binary to exercise deterministic
+//! summaries, comparison exit codes, matrix preflight checks, child-process
+//! collection, path confinement, and atomic index publication.
 
 use std::fs;
 use std::io::Write;
@@ -12,11 +17,14 @@ use ailloli_ui_bench::{
 };
 use sha2::{Digest, Sha256};
 
+/// Monotonic suffix used to keep temporary directories distinct within one test process.
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Per-test directory removed on scope exit.
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {
+    /// Creates a process- and sequence-qualified directory for `label`.
     fn new(label: &str) -> Self {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -27,17 +35,20 @@ impl TestDirectory {
         Self(path)
     }
 
+    /// Resolves a fixture path relative to this test's temporary root.
     fn join(&self, path: impl AsRef<Path>) -> PathBuf {
         self.0.join(path)
     }
 }
 
 impl Drop for TestDirectory {
+    /// Best-effort cleanup; test failures retain their original panic.
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
 
+/// Returns a fully populated, comparison-compatible metadata fixture.
 fn base_metadata() -> RunMetadata {
     let mut metadata = RunMetadata::default();
     metadata.scenario = Some("startup".to_string());
@@ -60,6 +71,7 @@ fn base_metadata() -> RunMetadata {
     metadata
 }
 
+/// Publishes `samples` identical metric observations with caller-supplied metadata.
 fn write_metric_run_with_metadata(
     path: &Path,
     name: &str,
@@ -83,14 +95,17 @@ fn write_metric_run_with_metadata(
     session.finish().unwrap();
 }
 
+/// Publishes a metric fixture using [`base_metadata`].
 fn write_metric_run_with_role(path: &Path, name: &str, value: f64, role: MetricRole, samples: u32) {
     write_metric_run_with_metadata(path, name, value, role, samples, base_metadata());
 }
 
+/// Publishes the standard 30-sample steady-state `frame_us` fixture.
 fn write_metric_run(path: &Path, value: f64) {
     write_metric_run_with_role(path, "frame_us", value, MetricRole::GatingSteady, 30);
 }
 
+/// Runs `compare` for two paths and returns its raw status and streams.
 fn compare_paths(
     baseline: &Path,
     candidate: &Path,
@@ -108,6 +123,7 @@ fn compare_paths(
     command.output().unwrap()
 }
 
+/// Builds the common one-scenario matrix command used by publication tests.
 fn matrix_command(directory: &TestDirectory) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ailloli-ui-bench"));
     command
@@ -146,6 +162,10 @@ fn matrix_command(directory: &TestDirectory) -> Command {
 }
 
 #[test]
+/// Acts as the subprocess workload spawned by [`matrix_command`].
+///
+/// Outside the fixture environment it returns immediately so the regular test
+/// harness can still discover and execute it safely.
 fn matrix_fixture_child() {
     if std::env::var("AILLOLI_UI_BENCH_FIXTURE").as_deref() != Ok("1") {
         return;

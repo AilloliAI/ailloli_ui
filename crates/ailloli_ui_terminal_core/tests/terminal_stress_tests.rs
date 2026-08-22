@@ -1,3 +1,9 @@
+//! Opt-in high-volume snapshot, replay, parser, resize, and buffer-switch stress tests.
+//!
+//! These tests are ignored by the ordinary suite because they intentionally
+//! generate hundreds or thousands of events/lines. Run them explicitly with
+//! `cargo test -p ailloli_ui_terminal_core --test terminal_stress_tests -- --ignored`.
+
 use ailloli_ui_terminal_core::{
     TerminalConfig, TerminalEventLog, TerminalParser, TerminalSecurityPolicy, TerminalSize,
     TerminalSnapshot, TerminalSnapshotConfig, TerminalState, VteTerminalParser,

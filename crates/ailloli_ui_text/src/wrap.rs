@@ -1,10 +1,28 @@
+//! Lightweight whitespace-normalizing word wrapping.
+
 use ailloli_ui_core::FontId;
 
 use crate::text_measure::TextMeasure;
 
 /// Word-wraps text without hyphenation.
 ///
-/// Returns at least one line (possibly empty).
+/// `max_w_px` is a non-negative logical-pixel target; negative and NaN values
+/// behave as zero. Runs of Unicode whitespace, including explicit newlines,
+/// are normalized to one ASCII space within an output line. A word wider than
+/// the target is emitted intact, so this is not a hard width bound. The result
+/// always contains at least one line, with an empty string for whitespace-only
+/// input.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::FontId;
+/// use ailloli_ui_text::{wrap_lines, ApproxTextMeasure};
+///
+/// let lines = wrap_lines("one   two three", 41.0, FontId::Ui, 10, &ApproxTextMeasure);
+/// assert_eq!(lines, ["one two", "three"]);
+/// assert_eq!(wrap_lines(" \n ", 20.0, FontId::Ui, 10, &ApproxTextMeasure), [""]);
+/// ```
 pub fn wrap_lines(
     text: &str,
     max_w_px: f32,

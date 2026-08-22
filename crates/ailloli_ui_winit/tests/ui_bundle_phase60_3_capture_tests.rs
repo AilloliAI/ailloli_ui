@@ -12,6 +12,7 @@ use ailloli_ui::prelude::*;
 use ailloli_ui::{App, Window};
 use ailloli_ui_render_wgpu::CapturedFrame;
 
+/// Resolves the repository-local directory used for code-editor captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -19,12 +20,14 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Counts RGBA8 pixels accepted by `pred`; trailing incomplete bytes are ignored.
 fn count_pixels(rgba: &[u8], pred: impl Fn([u8; 4]) -> bool) -> u64 {
     rgba.chunks_exact(4)
         .filter(|px| pred([px[0], px[1], px[2], px[3]]))
         .count() as u64
 }
 
+/// Verifies editor scrollbars, syntax colors, extent, and encoded PNG data.
 fn assert_code_editor_scrollbar_frame(frame: &CapturedFrame, name: &str) {
     let png = frame.png_data.as_ref().expect("png data");
     assert!(!png.is_empty(), "{name}: empty png");
@@ -73,6 +76,7 @@ fn assert_code_editor_scrollbar_frame(frame: &CapturedFrame, name: &str) {
     );
 }
 
+/// Writes a frame's required PNG payload beneath the captures directory.
 fn write_capture(name: &str, frame: &CapturedFrame) {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir).expect("mkdir captures");
@@ -112,6 +116,7 @@ fn ui_bundle_phase60_3_code_editor_scrollbars_capture() {
     write_capture("ui_bundle_phase60_3_code_editor_scrollbars.png", &frame);
 }
 
+/// Builds the constrained editor whose long fixture activates both scrollbars.
 fn code_editor_scrollbar_showcase() -> impl IntoView<()> {
     let theme = Theme::default();
     let palette = theme.palette();
@@ -154,6 +159,7 @@ fn code_editor_scrollbar_showcase() -> impl IntoView<()> {
         .key("phase60-3-code-editor")
 }
 
+/// Builds deterministic long and wide Rust-like source for scrollbar coverage.
 fn code_editor_scrollbar_fixture() -> String {
     (0..96)
         .map(|idx| {

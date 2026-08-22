@@ -1,3 +1,5 @@
+//! Slider/range-slider orientation, snapping, dragging, keyboard, and paint scenarios.
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, NamedKey};
 use ailloli_ui_core::geometry::Constraints;

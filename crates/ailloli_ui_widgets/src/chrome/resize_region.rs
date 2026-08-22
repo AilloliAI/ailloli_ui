@@ -1,7 +1,25 @@
+//! Geometry-only hit testing for client-side resize frames.
+
 use ailloli_ui_core::{Point, Rect};
 use ailloli_ui_runtime::input::ResizeEdge;
 
-/// Detects a resize edge on a `thickness` px frame around `bounds`.
+/// Detects a resize edge on a logical-pixel frame inside `bounds`.
+///
+/// Disabled frames and points outside the inclusive bounds return `None`.
+/// `thickness` is clamped to at least one logical pixel; corners take priority
+/// over individual edges, and zero/negative bounds are not normalized.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Point, Rect};
+/// use ailloli_ui_runtime::input::ResizeEdge;
+/// use ailloli_ui_widgets::chrome::hit_resize_frame;
+/// let bounds = Rect::new(0.0, 0.0, 100.0, 60.0);
+/// assert_eq!(hit_resize_frame(bounds, 8.0, Point::new(2.0, 30.0), true), Some(ResizeEdge::W));
+/// assert_eq!(hit_resize_frame(bounds, 8.0, Point::new(50.0, 30.0), true), None);
+/// assert_eq!(hit_resize_frame(bounds, 8.0, Point::new(2.0, 30.0), false), None);
+/// ```
 pub fn hit_resize_frame(
     bounds: Rect,
     thickness: f32,

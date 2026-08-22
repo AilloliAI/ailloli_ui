@@ -1,3 +1,5 @@
+//! Headless clip-stack intersection scenario for retained UI layout.
+
 use ailloli_ui_core::{ClipShape, Rect};
 use ailloli_ui_runtime::scene::ClipStack;
 

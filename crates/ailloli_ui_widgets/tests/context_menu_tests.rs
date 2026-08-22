@@ -1,3 +1,5 @@
+//! Retained context-menu popup, focus, submenu, viewport, and dismissal scenarios.
+
 use std::time::Duration;
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};

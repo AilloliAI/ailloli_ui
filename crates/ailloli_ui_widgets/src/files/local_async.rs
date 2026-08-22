@@ -1,3 +1,5 @@
+//! Single background worker for non-blocking local directory listings.
+
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
@@ -9,30 +11,84 @@ use super::tree::{
     should_include_file_entry, sort_file_entries, truncate_entries, FileTreeOptions,
 };
 
+/// Command sent to the local filesystem worker.
+///
+/// Requests are processed serially in send order by one background thread.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::FileExplorerIoRequest;
+/// assert!(matches!(FileExplorerIoRequest::Shutdown, FileExplorerIoRequest::Shutdown));
+/// ```
 #[derive(Debug, Clone)]
 pub enum FileExplorerIoRequest {
+    /// Reads and normalizes one directory.
     LoadDirectory {
+        /// Store-local node to correlate with the response.
         node_id: FileTreeNodeId,
+        /// Directory URI passed to the local provider.
         uri: FileUri,
+        /// Optional selected URI preserved through hidden/exclusion filters.
         selected: Option<FileUri>,
+        /// Filtering, sorting, and truncation policy snapshot.
         options: FileTreeOptions,
     },
+    /// Stops the worker after all earlier queued requests.
     Shutdown,
 }
 
+/// Completed local directory request returned by the worker.
+///
+/// `truncated` is meaningful only for a successful result; provider errors set
+/// it to `false`. Responses retain the request's node and URI for stale-result
+/// detection by the owner.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::{FileEntry, FileError, FileUri};
+/// use ailloli_ui_widgets::files::{FileExplorerIoResponse, FileTreeNodeId};
+/// let response = FileExplorerIoResponse {
+///     node_id: FileTreeNodeId(3),
+///     uri: FileUri::parse("file:///tmp")?,
+///     result: Ok::<Vec<FileEntry>, FileError>(Vec::new()),
+///     truncated: false,
+/// };
+/// assert_eq!(response.node_id, FileTreeNodeId(3));
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct FileExplorerIoResponse {
+    /// Store-local node copied from the request.
     pub node_id: FileTreeNodeId,
+    /// Directory URI copied from the request.
     pub uri: FileUri,
+    /// Normalized entries or the provider failure.
     pub result: Result<Vec<FileEntry>, FileError>,
+    /// Whether the configured per-directory cap removed entries.
     pub truncated: bool,
 }
 
+/// Owned request/response channels and worker thread for local listings.
+///
+/// Construction starts one thread and one [`LocalFileProvider`]. Dropping the
+/// handle requests shutdown but does not join the thread; the thread also exits
+/// when all request senders disconnect.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::LocalFileExplorerIoWorker;
+/// let worker = LocalFileExplorerIoWorker::new();
+/// assert!(worker.try_recv_all().is_empty());
+/// ```
 pub struct LocalFileExplorerIoWorker {
     tx: Sender<FileExplorerIoRequest>,
     rx: Receiver<FileExplorerIoResponse>,
 }
 
+/// Starts a worker using [`Self::new`].
 impl Default for LocalFileExplorerIoWorker {
     fn default() -> Self {
         Self::new()
@@ -40,6 +96,18 @@ impl Default for LocalFileExplorerIoWorker {
 }
 
 impl LocalFileExplorerIoWorker {
+    /// Starts a background local-provider request loop.
+    ///
+    /// The channels are unbounded. This function returns immediately after
+    /// spawning and does not perform filesystem I/O on the caller's thread.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorerIoWorker;
+    /// let worker = LocalFileExplorerIoWorker::new();
+    /// assert!(worker.try_recv_all().is_empty());
+    /// ```
     pub fn new() -> Self {
         let (tx, request_rx) = mpsc::channel();
         let (response_tx, rx) = mpsc::channel();
@@ -74,10 +142,38 @@ impl LocalFileExplorerIoWorker {
         Self { tx, rx }
     }
 
+    /// Queues a request without waiting for filesystem completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns the channel error as a string if the worker has disconnected.
+    /// A successful send does not imply that a directory read will succeed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorerIoRequest, LocalFileExplorerIoWorker};
+    /// let worker = LocalFileExplorerIoWorker::new();
+    /// worker.request(FileExplorerIoRequest::Shutdown)?;
+    /// # Ok::<(), String>(())
+    /// ```
     pub fn request(&self, request: FileExplorerIoRequest) -> Result<(), String> {
         self.tx.send(request).map_err(|err| err.to_string())
     }
 
+    /// Drains every response currently available without blocking.
+    ///
+    /// Responses preserve completion order. An empty vector means no result is
+    /// ready or the response channel disconnected; it is not an error signal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorerIoWorker;
+    /// let worker = LocalFileExplorerIoWorker::default();
+    /// let ready = worker.try_recv_all();
+    /// assert!(ready.is_empty());
+    /// ```
     pub fn try_recv_all(&self) -> Vec<FileExplorerIoResponse> {
         let mut out = Vec::new();
         loop {
@@ -97,6 +193,7 @@ impl Drop for LocalFileExplorerIoWorker {
     }
 }
 
+/// Applies inclusion, deterministic directory-first sorting, and size capping.
 fn normalize_entries(
     entries: Vec<FileEntry>,
     selected: Option<&FileUri>,
@@ -112,6 +209,7 @@ fn normalize_entries(
 }
 
 #[cfg(test)]
+/// Exercises the real background thread against a bounded temporary directory.
 mod tests {
     use std::fs;
     use std::path::PathBuf;
@@ -121,11 +219,13 @@ mod tests {
 
     use super::*;
 
+    /// Per-test directory removed on drop.
     struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
+        /// Creates a process/time-namespaced directory under the OS temp root.
         fn new(name: &str) -> Self {
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

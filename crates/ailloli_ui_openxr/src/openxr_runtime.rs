@@ -97,13 +97,32 @@ use crate::input::{map_ray_to_openxr_input_events, OpenXrInputMapper, OpenXrPoin
 ///
 /// `VrApp` does not own an OpenXR session; it only provides stable stateful
 /// input conversion entry points for any loop that emits `OpenXrPointerSource`s.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::openxr_runtime::VrApp;
+///
+/// let app = VrApp::<()>::new();
+/// assert!(format!("{:?}", app.input_mapper).contains("source_state"));
+/// ```
 #[derive(Debug)]
 pub struct VrApp<A> {
+    /// Associates the facade with the host's action type without storing it.
     phantom: PhantomData<A>,
+    /// Stateful pointer-transition mapper shared across frames.
     pub input_mapper: OpenXrInputMapper,
 }
 
 impl<A> VrApp<A> {
+    /// Creates a facade with no remembered pointer state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::openxr_runtime::VrApp;
+    /// let _: VrApp<String> = VrApp::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             phantom: PhantomData,
@@ -111,7 +130,23 @@ impl<A> VrApp<A> {
         }
     }
 
-    /// Convert one XR input frame (as trait-based sources) into runtime events.
+    /// Converts one ordered source slice into runtime events.
+    ///
+    /// The mapper retains hover and pressed transitions for subsequent calls.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::event::Modifiers;
+    /// use ailloli_ui_openxr::{OpenXrPointerHit, OpenXrPointerSample};
+    /// use ailloli_ui_openxr::openxr_runtime::VrApp;
+    /// let mut app = VrApp::<()>::new();
+    /// let events = app.map_pointer_sources(
+    ///     &[OpenXrPointerSample::new(1, OpenXrPointerHit::Miss, false)],
+    ///     Modifiers::default(),
+    /// );
+    /// assert!(events.is_empty());
+    /// ```
     pub fn map_pointer_sources<T>(&mut self, sources: &[T], modifiers: Modifiers) -> Vec<Event>
     where
         T: OpenXrPointerSource,
@@ -119,7 +154,17 @@ impl<A> VrApp<A> {
         map_ray_to_openxr_input_events(&mut self.input_mapper, sources, modifiers)
     }
 
-    /// Reset pointer state (e.g. on app hide / app focus reset).
+    /// Resets all pointer state without synthesizing releases.
+    ///
+    /// Call this on app hide or focus loss before accepting a fresh source set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::openxr_runtime::VrApp;
+    /// let mut app = VrApp::<()>::new();
+    /// app.clear_pointer_state();
+    /// ```
     pub fn clear_pointer_state(&mut self) {
         self.input_mapper.clear();
     }

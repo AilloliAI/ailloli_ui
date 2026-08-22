@@ -1,3 +1,5 @@
+//! Single- and dual-thumb sliders with controlled or two-way bound values.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -16,43 +18,102 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawRect};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in slider geometry sizes.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SliderSize;
+/// let sizes = [SliderSize::Compact, SliderSize::Default];
+/// assert_eq!(sizes.len(), 2);
+/// assert_eq!(SliderSize::default(), SliderSize::Default);
+/// ```
 pub enum SliderSize {
+    /// 180×22 horizontal or 22×120 vertical logical pixels.
     Compact,
+    /// 260×28 horizontal or 28×160 vertical logical pixels; the default.
     #[default]
     Default,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Slider axis and increasing-value direction.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::SliderOrientation;
+/// let orientations = [SliderOrientation::Horizontal, SliderOrientation::Vertical];
+/// assert_eq!(orientations.len(), 2);
+/// assert_eq!(SliderOrientation::default(), SliderOrientation::Horizontal);
+/// ```
 pub enum SliderOrientation {
+    /// Minimum at left and maximum at right; the default.
     #[default]
     Horizontal,
+    /// Minimum at bottom and maximum at top.
     Vertical,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved slider colors, borders, and logical-pixel geometry.
+///
+/// Geometry is not validated. `disabled_opacity` is retained for compatibility
+/// but is not currently read; disabled colors already encode their alpha.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{SliderSize, SliderStyle};
+/// let style = SliderStyle::from_theme(Theme::dark(), SliderSize::Compact);
+/// assert_eq!((style.horizontal_width, style.vertical_height), (180.0, 120.0));
+/// assert_eq!(style.thumb_size, 14.0);
+/// ```
 pub struct SliderStyle {
+    /// Resting inactive track fill.
     pub track: Color,
+    /// Hovered inactive track fill.
     pub track_hovered: Color,
+    /// Resting active-range fill.
     pub active_track: Color,
+    /// Hovered or dragged active-range fill.
     pub active_track_hovered: Color,
+    /// Resting thumb fill.
     pub thumb: Color,
+    /// Hovered thumb fill.
     pub thumb_hovered: Color,
+    /// Pressed or dragged thumb fill.
     pub thumb_pressed: Color,
+    /// Disabled inactive-track fill.
     pub disabled_track: Color,
+    /// Disabled active-range fill.
     pub disabled_active_track: Color,
+    /// Disabled thumb fill.
     pub disabled_thumb: Color,
+    /// Tick-mark color.
     pub tick: Color,
+    /// Border painted around each thumb.
     pub border: Border,
+    /// Border painted around complete widget bounds while focused.
     pub focus_ring: Border,
+    /// Horizontal intrinsic width in logical pixels.
     pub horizontal_width: f32,
+    /// Horizontal intrinsic height in logical pixels.
     pub horizontal_height: f32,
+    /// Vertical intrinsic width in logical pixels.
     pub vertical_width: f32,
+    /// Vertical intrinsic height in logical pixels.
     pub vertical_height: f32,
+    /// Track thickness in logical pixels.
     pub track_thickness: f32,
+    /// Square thumb width/height in logical pixels.
     pub thumb_size: f32,
-    /// Gap between the thumb fill and its border ring. The border width is added on top.
+    /// Gap between thumb fill and border ring; border width is added on top.
     pub thumb_border_offset: f32,
+    /// Focus-ring inflation beyond widget bounds in logical pixels.
     pub focus_ring_offset: f32,
+    /// Reserved compatibility value; the current painter does not read it.
     pub disabled_opacity: f32,
 }
 
@@ -63,6 +124,17 @@ impl Default for SliderStyle {
 }
 
 impl SliderStyle {
+    /// Resolves slider colors and geometry from a theme and built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{SliderSize, SliderStyle};
+    /// let style = SliderStyle::from_theme(Theme::default(), SliderSize::Default);
+    /// assert_eq!((style.horizontal_width, style.horizontal_height), (260.0, 28.0));
+    /// assert_eq!((style.track_thickness, style.thumb_size), (4.0, 16.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: SliderSize) -> Self {
         let palette = theme.palette();
         let (horizontal_width, horizontal_height, vertical_width, vertical_height, thumb_size) =
@@ -96,6 +168,7 @@ impl SliderStyle {
         }
     }
 
+    /// Returns horizontal or vertical intrinsic size.
     fn intrinsic_size(&self, orientation: SliderOrientation) -> Size {
         match orientation {
             SliderOrientation::Horizontal => {
@@ -105,6 +178,7 @@ impl SliderStyle {
         }
     }
 
+    /// Inflates layout visual bounds for a visible focus ring.
     fn visual_bounds(&self, rect: Rect) -> Rect {
         if self.focus_ring.is_visible() {
             let inflate = self.focus_ring_offset + max_border_width(self.focus_ring);
@@ -115,18 +189,43 @@ impl SliderStyle {
     }
 }
 
+/// Shared single-value change callback.
 type SliderChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, f32)>;
+/// Shared ordered-range change callback.
 type RangeChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, SliderRangeValue)>;
 
+/// A single-thumb slider over a sanitized [`SliderSpec`].
+///
+/// `value` configures controlled input: user interaction only becomes observable
+/// through `on_change` and the consumer must rebuild/update its source. `bind`
+/// additionally writes a signal. Display and emitted values are clamped/snapped.
+/// Horizontal values increase rightward; vertical values increase upward.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Slider;
+/// let slider: Slider<()> = Slider::new().range(0.0, 1.0).step(0.1).value(0.5);
+/// let _ = slider;
+/// ```
 pub struct Slider<A = ()> {
+    /// Layout configuration applied to intrinsic slider geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Static or reactive controlled value.
     value: Binding<f32>,
+    /// Writable value signal in bound mode.
     bound: Option<Signal<f32>>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Sanitized numeric domain and optional step.
     spec: SliderSpec,
+    /// Axis and value direction.
     orientation: SliderOrientation,
+    /// Optional change notification.
     on_change: Option<SliderChangeHandler<A>>,
+    /// Resolved paint and geometry.
     style: SliderStyle,
 }
 
@@ -139,6 +238,17 @@ impl<A: 'static> Default for Slider<A> {
 }
 
 impl<A: 'static> Slider<A> {
+    /// Creates a horizontal continuous `0.0..=100.0` slider at zero.
+    ///
+    /// It is enabled but read-only until bound or given a change callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::new();
+    /// let _ = slider;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -153,16 +263,51 @@ impl<A: 'static> Slider<A> {
         }
     }
 
+    /// Creates a default slider whose value increases bottom-to-top.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::vertical();
+    /// let _ = slider;
+    /// ```
     pub fn vertical() -> Self {
         Self::new().orientation(SliderOrientation::Vertical)
     }
 
+    /// Sets static or reactive controlled value and clears bound mode.
+    ///
+    /// Painting clamps/snaps the value; this method does not mutate its source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::new().value(150.0);
+    /// let _ = slider;
+    /// ```
     pub fn value(mut self, value: impl Into<Binding<f32>>) -> Self {
         self.value = value.into();
         self.bound = None;
         self
     }
 
+    /// Installs a writable signal for two-way interaction.
+    ///
+    /// Values written by the widget are clamped/snapped and only written when
+    /// they differ by more than [`f32::EPSILON`] from the displayed value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let value = Signal::new(Rc::new(RefCell::new(50.0)), Rc::new(|| {}));
+    /// let slider: Slider<()> = Slider::new().bind(value);
+    /// let _ = slider;
+    /// ```
     pub fn bind(mut self, value: impl Into<Signal<f32>>) -> Self {
         let signal = value.into();
         self.value = Binding::Signal(signal.clone());
@@ -170,15 +315,48 @@ impl<A: 'static> Slider<A> {
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled sliders are not focusable and ignore pointer/keyboard input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::new().disabled(true);
+    /// let _ = slider;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::new().disabled_signal(Memo::new(|| false));
+    /// let _ = slider;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets and sanitizes inclusive minimum/maximum bounds.
+    ///
+    /// Reversed bounds swap; any non-finite bound resets both to `0..=100`;
+    /// equal bounds are widened upward by one when representable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::new().range(-1.0, 1.0);
+    /// let _ = slider;
+    /// ```
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.spec.min = min;
         self.spec.max = max;
@@ -186,52 +364,153 @@ impl<A: 'static> Slider<A> {
         self
     }
 
+    /// Sets and sanitizes the snapping interval.
+    ///
+    /// A non-positive or non-finite step becomes continuous (`None`). Valid
+    /// values round to the nearest step relative to the minimum.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::new().step(5.0);
+    /// let _ = slider;
+    /// ```
     pub fn step(mut self, step: f32) -> Self {
         self.spec.step = Some(step);
         self.spec = self.spec.sanitized();
         self
     }
 
+    /// Replaces and sanitizes the complete numeric specification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::SliderSpec;
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider: Slider<()> = Slider::new().slider_spec(SliderSpec::new(0.0, 10.0).with_step(2.0));
+    /// let _ = slider;
+    /// ```
     pub fn slider_spec(mut self, spec: SliderSpec) -> Self {
         self.spec = spec.sanitized();
         self
     }
 
+    /// Sets horizontal or bottom-to-top vertical orientation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Slider, SliderOrientation};
+    /// let slider: Slider<()> = Slider::new().orientation(SliderOrientation::Vertical);
+    /// let _ = slider;
+    /// ```
     pub fn orientation(mut self, orientation: SliderOrientation) -> Self {
         self.orientation = orientation;
         self
     }
 
+    /// Replaces complete colors and geometry without changing layout size.
+    ///
+    /// Unlike [`Self::slider_size`], this does not rewrite explicit layout
+    /// dimensions; intrinsic values apply when layout remains automatic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Slider, SliderStyle};
+    /// let slider: Slider<()> = Slider::new().slider_style(SliderStyle::default());
+    /// let _ = slider;
+    /// ```
     pub fn slider_style(mut self, style: SliderStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Slider, SliderSize};
+    /// let slider: Slider<()> = Slider::new().slider_size(SliderSize::Compact);
+    /// let _ = slider;
+    /// ```
     pub fn slider_size(mut self, size: SliderSize) -> Self {
         self.style = SliderStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Maps each changed, clamped/snapped value to an application action.
+    ///
+    /// The callback does not make a controlled value writable; use [`Self::bind`]
+    /// for two-way state. A later callback builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// #[derive(Clone)]
+    /// enum Action { Changed(f32) }
+    /// let slider = Slider::new().on_change(Action::Changed);
+    /// let _ = slider;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(f32) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Installs a context-aware changed-value handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Slider;
+    /// let slider = Slider::<()>::new().on_change_ctx(|_ctx, value| assert!(value.is_finite()));
+    /// let _ = slider;
+    /// ```
     pub fn on_change_ctx(mut self, f: impl Fn(&mut EventCtx<A>, f32) + 'static) -> Self {
         self.on_change = Some(Rc::new(f));
         self
     }
 }
 
+/// A two-thumb slider representing an ordered inclusive subrange.
+///
+/// Source values are clamped, snapped, and ordered for display. Moving a thumb
+/// cannot cross the other; both may meet at a zero-width range. Pointer presses
+/// choose the nearest thumb (ties choose the end), while keyboard input defaults
+/// to the end thumb until another thumb becomes active.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::SliderRangeValue;
+/// use ailloli_ui_widgets::controls::RangeSlider;
+/// let slider: RangeSlider<()> = RangeSlider::new()
+///     .range(0.0, 100.0)
+///     .values(SliderRangeValue::new(20.0, 80.0));
+/// let _ = slider;
+/// ```
 pub struct RangeSlider<A = ()> {
+    /// Layout configuration applied to intrinsic slider geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Static or reactive controlled ordered range.
     values: Binding<SliderRangeValue>,
+    /// Writable range signal in bound mode.
     bound: Option<Signal<SliderRangeValue>>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Sanitized numeric domain and optional step.
     spec: SliderSpec,
+    /// Axis and value direction.
     orientation: SliderOrientation,
+    /// Optional ordered-range change notification.
     on_change: Option<RangeChangeHandler<A>>,
+    /// Resolved paint and geometry.
     style: SliderStyle,
 }
 
@@ -244,6 +523,17 @@ impl<A: 'static> Default for RangeSlider<A> {
 }
 
 impl<A: 'static> RangeSlider<A> {
+    /// Creates a horizontal `0..=100` slider selecting `25..=75`.
+    ///
+    /// It is enabled but read-only until bound or given a change callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::new();
+    /// let _ = slider;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -258,16 +548,50 @@ impl<A: 'static> RangeSlider<A> {
         }
     }
 
+    /// Creates a default range slider increasing bottom-to-top.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::vertical();
+    /// let _ = slider;
+    /// ```
     pub fn vertical() -> Self {
         Self::new().orientation(SliderOrientation::Vertical)
     }
 
+    /// Sets static or reactive controlled values and clears bound mode.
+    ///
+    /// Display clamps, snaps, and orders endpoints without mutating this source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::SliderRangeValue;
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::new().values(SliderRangeValue::new(80.0, 20.0));
+    /// let _ = slider;
+    /// ```
     pub fn values(mut self, values: impl Into<Binding<SliderRangeValue>>) -> Self {
         self.values = values.into();
         self.bound = None;
         self
     }
 
+    /// Installs a writable signal for two-way ordered-range interaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_core::SliderRangeValue;
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let values = Signal::new(Rc::new(RefCell::new(SliderRangeValue::new(20.0, 80.0))), Rc::new(|| {}));
+    /// let slider: RangeSlider<()> = RangeSlider::new().bind(values);
+    /// let _ = slider;
+    /// ```
     pub fn bind(mut self, values: impl Into<Signal<SliderRangeValue>>) -> Self {
         let signal = values.into();
         self.values = Binding::Signal(signal.clone());
@@ -275,15 +599,48 @@ impl<A: 'static> RangeSlider<A> {
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled sliders are not focusable and ignore pointer/keyboard input.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::new().disabled(true);
+    /// let _ = slider;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::new().disabled_signal(Memo::new(|| false));
+    /// let _ = slider;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets and sanitizes inclusive minimum/maximum bounds.
+    ///
+    /// Reversed bounds swap; any non-finite bound resets both to `0..=100`;
+    /// equal bounds are widened upward by one when representable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::new().range(-50.0, 50.0);
+    /// let _ = slider;
+    /// ```
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.spec.min = min;
         self.spec.max = max;
@@ -291,37 +648,110 @@ impl<A: 'static> RangeSlider<A> {
         self
     }
 
+    /// Sets and sanitizes the snapping interval.
+    ///
+    /// A non-positive or non-finite step restores continuous behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::new().step(10.0);
+    /// let _ = slider;
+    /// ```
     pub fn step(mut self, step: f32) -> Self {
         self.spec.step = Some(step);
         self.spec = self.spec.sanitized();
         self
     }
 
+    /// Replaces and sanitizes the complete numeric specification.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::SliderSpec;
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider: RangeSlider<()> = RangeSlider::new().slider_spec(SliderSpec::new(0.0, 1.0));
+    /// let _ = slider;
+    /// ```
     pub fn slider_spec(mut self, spec: SliderSpec) -> Self {
         self.spec = spec.sanitized();
         self
     }
 
+    /// Sets horizontal or bottom-to-top vertical orientation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RangeSlider, SliderOrientation};
+    /// let slider: RangeSlider<()> = RangeSlider::new().orientation(SliderOrientation::Vertical);
+    /// let _ = slider;
+    /// ```
     pub fn orientation(mut self, orientation: SliderOrientation) -> Self {
         self.orientation = orientation;
         self
     }
 
+    /// Replaces complete colors and intrinsic geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RangeSlider, SliderStyle};
+    /// let slider: RangeSlider<()> = RangeSlider::new().slider_style(SliderStyle::default());
+    /// let _ = slider;
+    /// ```
     pub fn slider_style(mut self, style: SliderStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces style with a default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{RangeSlider, SliderSize};
+    /// let slider: RangeSlider<()> = RangeSlider::new().slider_size(SliderSize::Compact);
+    /// let _ = slider;
+    /// ```
     pub fn slider_size(mut self, size: SliderSize) -> Self {
         self.style = SliderStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Maps each changed ordered range to an application action.
+    ///
+    /// The callback does not make a controlled source writable; use [`Self::bind`]
+    /// for two-way state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::SliderRangeValue;
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// #[derive(Clone)]
+    /// enum Action { Changed(SliderRangeValue) }
+    /// let slider = RangeSlider::new().on_change(Action::Changed);
+    /// let _ = slider;
+    /// ```
     pub fn on_change(mut self, f: impl Fn(SliderRangeValue) -> A + 'static) -> Self {
         self.on_change = Some(Rc::new(move |ctx, next| ctx.dispatch(f(next))));
         self
     }
 
+    /// Installs a context-aware ordered-range handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::RangeSlider;
+    /// let slider = RangeSlider::<()>::new()
+    ///     .on_change_ctx(|_ctx, range| assert!(range.start <= range.end));
+    /// let _ = slider;
+    /// ```
     pub fn on_change_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, SliderRangeValue) + 'static,
@@ -331,6 +761,7 @@ impl<A: 'static> RangeSlider<A> {
     }
 }
 
+/// Component properties used to allocate single-thumb drag state.
 struct SliderComponent<A> {
     layout: LayoutStyle,
     value: Binding<f32>,
@@ -342,6 +773,7 @@ struct SliderComponent<A> {
     style: SliderStyle,
 }
 
+/// Component properties used to allocate active range-thumb state.
 struct RangeSliderComponent<A> {
     layout: LayoutStyle,
     values: Binding<SliderRangeValue>,
@@ -385,6 +817,7 @@ impl<A: 'static> ComponentNode<A> for RangeSliderComponent<A> {
     }
 }
 
+/// Retained single-thumb widget implementing paint and interaction.
 struct SliderWidget<A> {
     layout: LayoutStyle,
     value: Binding<f32>,
@@ -397,6 +830,7 @@ struct SliderWidget<A> {
     dragging: Signal<bool>,
 }
 
+/// Retained range widget implementing nearest-thumb interaction.
 struct RangeSliderWidget<A> {
     layout: LayoutStyle,
     values: Binding<SliderRangeValue>,
@@ -504,11 +938,13 @@ impl<A: 'static> Widget<A> for SliderWidget<A> {
 }
 
 impl<A: 'static> SliderWidget<A> {
+    /// Maps a pointer position to the numeric domain and applies it.
     fn set_from_point(&self, ctx: &mut EventCtx<A>, bounds: Rect, x: f32, y: f32) {
         let fraction = fraction_at_point(bounds, self.orientation, &self.style, x, y);
         self.set_value(ctx, self.spec.value_for_fraction(fraction));
     }
 
+    /// Writes/notifies a distinct snapped value when an output path exists.
     fn set_value(&self, ctx: &mut EventCtx<A>, next: f32) {
         if self.bound.is_none() && self.on_change.is_none() {
             return;
@@ -642,6 +1078,7 @@ impl<A: 'static> Widget<A> for RangeSliderWidget<A> {
 }
 
 impl<A: 'static> RangeSliderWidget<A> {
+    /// Moves one thumb without crossing and writes/notifies a distinct range.
     fn set_thumb_value(&self, ctx: &mut EventCtx<A>, thumb: SliderThumb, next: f32) {
         if self.bound.is_none() && self.on_change.is_none() {
             return;
@@ -702,6 +1139,7 @@ impl<A: 'static> IntoView<A> for RangeSlider<A> {
     }
 }
 
+/// Builds childless layout and focus-ring-aware visual bounds.
 fn slider_layout_result(
     intrinsic: Size,
     layout: LayoutStyle,
@@ -722,6 +1160,7 @@ fn slider_layout_result(
     }
 }
 
+/// Maps arrows/pages/Home/End to small, large, minimum, or maximum changes.
 fn slider_key_value(spec: SliderSpec, value: f32, key: &Key) -> Option<f32> {
     match key {
         Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowDown) => {
@@ -739,11 +1178,15 @@ fn slider_key_value(spec: SliderSpec, value: f32, key: &Key) -> Option<f32> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Single value or ordered range passed to the shared painter.
 enum SliderPaintValue {
+    /// One thumb with active track from minimum.
     Single(f32),
+    /// Two thumbs with active track between them.
     Range(SliderRangeValue),
 }
 
+/// Complete borrowed parameter set for shared slider painting.
 struct SliderPaintParams<'a> {
     bounds: Rect,
     orientation: SliderOrientation,
@@ -754,6 +1197,7 @@ struct SliderPaintParams<'a> {
     style: &'a SliderStyle,
 }
 
+/// Paints track, active range, optional ticks, thumbs, and focus ring.
 fn paint_slider(ctx: &mut PaintCtx<'_>, params: SliderPaintParams<'_>) {
     let SliderPaintParams {
         bounds,
@@ -843,6 +1287,7 @@ fn paint_slider(ctx: &mut PaintCtx<'_>, params: SliderPaintParams<'_>) {
     }
 }
 
+/// Insets track endpoints by half a thumb and centers its thickness.
 fn track_rect(bounds: Rect, orientation: SliderOrientation, style: &SliderStyle) -> Rect {
     match orientation {
         SliderOrientation::Horizontal => Rect::new(
@@ -860,6 +1305,7 @@ fn track_rect(bounds: Rect, orientation: SliderOrientation, style: &SliderStyle)
     }
 }
 
+/// Maps a pointer to a clamped fraction, reversing the vertical axis.
 fn fraction_at_point(
     bounds: Rect,
     orientation: SliderOrientation,
@@ -874,6 +1320,7 @@ fn fraction_at_point(
     }
 }
 
+/// Maps a clamped domain value to the appropriate track-axis coordinate.
 fn point_for_value(
     bounds: Rect,
     orientation: SliderOrientation,
@@ -889,6 +1336,7 @@ fn point_for_value(
     }
 }
 
+/// Returns active track from the minimum endpoint to a single value.
 fn active_rect_single(
     bounds: Rect,
     orientation: SliderOrientation,
@@ -908,6 +1356,7 @@ fn active_rect_single(
     }
 }
 
+/// Returns active track between the two ordered/clamped range values.
 fn active_rect_range(
     bounds: Rect,
     orientation: SliderOrientation,
@@ -929,6 +1378,7 @@ fn active_rect_range(
     }
 }
 
+/// Centers a square thumb on the track coordinate for a value.
 fn thumb_rect(
     bounds: Rect,
     orientation: SliderOrientation,
@@ -953,6 +1403,7 @@ fn thumb_rect(
     }
 }
 
+/// Paints interaction-state thumb fill and its optionally offset border.
 fn paint_thumb(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -986,6 +1437,7 @@ fn paint_thumb(
     }
 }
 
+/// Paints step ticks only when the rounded interval count is `1..=32`.
 fn paint_ticks(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -1022,14 +1474,17 @@ fn paint_ticks(
     }
 }
 
+/// Compares two values using absolute [`f32::EPSILON`] tolerance.
 fn values_equal(a: f32, b: f32) -> bool {
     (a - b).abs() <= f32::EPSILON
 }
 
+/// Applies epsilon equality independently to both ordered endpoints.
 fn range_values_equal(a: SliderRangeValue, b: SliderRangeValue) -> bool {
     values_equal(a.start, b.start) && values_equal(a.end, b.end)
 }
 
+/// Returns the maximum of four per-edge border widths.
 fn max_border_width(border: Border) -> f32 {
     border
         .widths

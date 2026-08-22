@@ -11,6 +11,7 @@ use ailloli_ui::prelude::*;
 use ailloli_ui::{App, Window};
 use ailloli_ui_render_wgpu::CapturedFrame;
 
+/// Resolves the repository-local directory used for gutter-clipping captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -18,6 +19,7 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Counts frame pixels accepted by a coordinate-aware RGBA8 predicate.
 fn count_pixels(frame: &CapturedFrame, pred: impl Fn(usize, usize, [u8; 4]) -> bool) -> u64 {
     let width = frame.width as usize;
     frame
@@ -32,6 +34,7 @@ fn count_pixels(frame: &CapturedFrame, pred: impl Fn(usize, usize, [u8; 4]) -> b
         .count() as u64
 }
 
+/// Verifies gutter clipping, editor content, extent, and encoded PNG data.
 fn assert_gutter_clip_frame(frame: &CapturedFrame, name: &str) {
     let png = frame.png_data.as_ref().expect("png data");
     assert!(!png.is_empty(), "{name}: empty png");
@@ -74,6 +77,7 @@ fn assert_gutter_clip_frame(frame: &CapturedFrame, name: &str) {
     );
 }
 
+/// Writes a frame's required PNG payload beneath the captures directory.
 fn write_capture(name: &str, frame: &CapturedFrame) {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir).expect("mkdir captures");
@@ -113,6 +117,7 @@ fn ui_bundle_phase60_4_code_editor_gutter_clip_capture() {
     write_capture("ui_bundle_phase60_4_code_editor_gutter_clip.png", &frame);
 }
 
+/// Builds a constrained code editor that exposes gutter and content clipping.
 fn gutter_clip_showcase() -> impl IntoView<()> {
     let document = State::new(
         Document::new(
@@ -137,6 +142,7 @@ fn gutter_clip_showcase() -> impl IntoView<()> {
         )
 }
 
+/// Builds deterministic source with enough rows and width to overflow the viewport.
 fn gutter_clip_fixture() -> String {
     (0..56)
         .map(|idx| {

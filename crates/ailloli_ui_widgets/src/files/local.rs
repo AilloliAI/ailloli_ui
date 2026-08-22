@@ -1,3 +1,5 @@
+//! Local-filesystem convenience wrapper around the provider-neutral explorer.
+
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -26,26 +28,67 @@ use super::tree::{
     FileTreeOptions,
 };
 
+/// Shared retained callback for high-level explorer actions.
 type ActionHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileExplorerAction)>;
+/// Shared retained callback for a selected/opened URI.
 type UriHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileUri)>;
 
+/// Local runtime directory-request strategy.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::LocalFileExplorerLoadingMode;
+/// assert_ne!(LocalFileExplorerLoadingMode::LazyReload, LocalFileExplorerLoadingMode::LazyCached);
+/// assert_eq!(LocalFileExplorerLoadingMode::ControlledDepth(2), LocalFileExplorerLoadingMode::ControlledDepth(2));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalFileExplorerLoadingMode {
+    /// Loads on demand and forces a fresh read each time a directory opens.
     LazyReload,
+    /// Loads on demand and reuses already loaded directory state.
     LazyCached,
+    /// Proactively loads directory nodes through the inclusive zero-based depth.
     ControlledDepth(usize),
+    /// Proactively loads through [`FileTreeOptions::max_depth`].
     FullLoad,
 }
 
+/// Cache behavior applied when a user toggles a local directory.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::LocalFileExplorerCacheMode;
+/// assert_ne!(LocalFileExplorerCacheMode::ReloadOnToggle, LocalFileExplorerCacheMode::LoadOnceSnapshot);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalFileExplorerCacheMode {
+    /// Forces a provider request on every open transition.
     ReloadOnToggle,
+    /// Reuses clean loaded directories and watches opened directories.
     CacheLoadedDirectories,
+    /// Never starts a toggle-driven request after initial policy loading.
     LoadOnceSnapshot,
 }
 
+/// File explorer that resolves a native root and owns a background local worker.
+///
+/// Paths may be absolute or relative to the process working directory/root. The
+/// default uses lazy cached loading, virtualization, scrolling, retained watcher
+/// updates, and enabled interaction. `A` is the application action type.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::LocalFileExplorer;
+/// let explorer = LocalFileExplorer::<()>::new(".");
+/// let _ = explorer;
+/// ```
 pub struct LocalFileExplorer<A = ()> {
+    /// Standard logical-pixel size and position constraints.
     pub(crate) layout: LayoutStyle,
+    /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
     root_path: PathBuf,
     selected_path: Option<PathBuf>,
@@ -66,6 +109,19 @@ pub struct LocalFileExplorer<A = ()> {
 crate::impl_layout_builders!(LocalFileExplorer);
 
 impl<A: 'static> LocalFileExplorer<A> {
+    /// Creates a local explorer rooted at an absolute working-directory path.
+    ///
+    /// Relative paths are joined to the current directory, falling back to `/`
+    /// only if the current directory cannot be queried. The path is not
+    /// canonicalized and need not exist until the component begins loading.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new("src");
+    /// let _ = explorer;
+    /// ```
     pub fn new(root_path: impl Into<PathBuf>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -87,11 +143,35 @@ impl<A: 'static> LocalFileExplorer<A> {
         }
     }
 
+    /// Sets the selected path used for row selection and ancestor reveal.
+    ///
+    /// A relative path is joined to the explorer root; an absolute path is kept
+    /// verbatim. The path is not canonicalized or required to exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").selected_path("src/lib.rs");
+    /// let _ = explorer;
+    /// ```
     pub fn selected_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.selected_path = Some(make_path_absolute_to_root(&self.root_path, path.into()));
         self
     }
 
+    /// Appends one initially expanded path if not already present.
+    ///
+    /// Relative resolution matches [`Self::selected_path`]. On build, every
+    /// root-to-path ancestor is also expanded; paths outside the root add none.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").default_expanded_path("src");
+    /// let _ = explorer;
+    /// ```
     pub fn default_expanded_path(mut self, path: impl Into<PathBuf>) -> Self {
         let path = make_path_absolute_to_root(&self.root_path, path.into());
         if !self.default_expanded_paths.iter().any(|item| item == &path) {
@@ -100,6 +180,17 @@ impl<A: 'static> LocalFileExplorer<A> {
         self
     }
 
+    /// Replaces initial expansion paths, deduplicating while preserving order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".")
+    ///     .default_expanded_paths([PathBuf::from("src"), PathBuf::from("tests")]);
+    /// let _ = explorer;
+    /// ```
     pub fn default_expanded_paths(mut self, paths: impl IntoIterator<Item = PathBuf>) -> Self {
         self.default_expanded_paths.clear();
         for path in paths {
@@ -108,11 +199,39 @@ impl<A: 'static> LocalFileExplorer<A> {
         self
     }
 
+    /// Replaces the complete provider-neutral filtering/loading policy snapshot.
+    ///
+    /// This does not resynchronize [`LocalFileExplorerLoadingMode`] from
+    /// `options.load_mode`; call [`Self::load_mode`] or [`Self::local_loading_mode`]
+    /// afterward when both must agree.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileTreeOptions, LocalFileExplorer};
+    /// let options = FileTreeOptions { include_hidden: true, ..FileTreeOptions::default() };
+    /// let explorer = LocalFileExplorer::<()>::new(".").file_tree_options(options);
+    /// let _ = explorer;
+    /// ```
     pub fn file_tree_options(mut self, options: FileTreeOptions) -> Self {
         self.options = options;
         self
     }
 
+    /// Sets provider-neutral load mode and maps it to a local runtime mode.
+    ///
+    /// `Lazy` maps to [`LocalFileExplorerLoadingMode::LazyReload`], not the
+    /// builder's default lazy-cached behavior. This method does not change
+    /// [`LocalFileExplorerCacheMode`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileTreeLoadMode, LocalFileExplorer};
+    /// let explorer = LocalFileExplorer::<()>::new(".")
+    ///     .load_mode(FileTreeLoadMode::Controlled { preload_depth: 2 });
+    /// let _ = explorer;
+    /// ```
     pub fn load_mode(mut self, load_mode: FileTreeLoadMode) -> Self {
         self.options.load_mode = load_mode;
         self.loading_mode = match load_mode {
@@ -125,10 +244,30 @@ impl<A: 'static> LocalFileExplorer<A> {
         self
     }
 
+    /// Selects lazy reload-on-open loading via [`Self::load_mode`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").lazy_loading();
+    /// let _ = explorer;
+    /// ```
     pub fn lazy_loading(self) -> Self {
         self.load_mode(FileTreeLoadMode::Lazy)
     }
 
+    /// Selects lazy loading that reuses loaded directory state.
+    ///
+    /// This synchronizes local mode, cache mode, and provider-neutral mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").lazy_cached();
+    /// let _ = explorer;
+    /// ```
     pub fn lazy_cached(mut self) -> Self {
         self.loading_mode = LocalFileExplorerLoadingMode::LazyCached;
         self.cache_mode = LocalFileExplorerCacheMode::CacheLoadedDirectories;
@@ -136,14 +275,48 @@ impl<A: 'static> LocalFileExplorer<A> {
         self
     }
 
+    /// Proactively loads through the inclusive directory `preload_depth`.
+    ///
+    /// Depth zero includes the root request but not its child directories.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").controlled_loading(1);
+    /// let _ = explorer;
+    /// ```
     pub fn controlled_loading(self, preload_depth: usize) -> Self {
         self.load_mode(FileTreeLoadMode::Controlled { preload_depth })
     }
 
+    /// Proactively loads directories through the configured maximum depth.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").max_depth(4).full_load();
+    /// let _ = explorer;
+    /// ```
     pub fn full_load(self) -> Self {
         self.load_mode(FileTreeLoadMode::Full)
     }
 
+    /// Sets the local strategy and synchronizes provider-neutral load mode.
+    ///
+    /// Both lazy variants map to [`FileTreeLoadMode::Lazy`]. Cache mode remains
+    /// independent, so use [`Self::cache_mode`] when a specific toggle policy is
+    /// required.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{LocalFileExplorer, LocalFileExplorerLoadingMode};
+    /// let explorer = LocalFileExplorer::<()>::new(".")
+    ///     .local_loading_mode(LocalFileExplorerLoadingMode::FullLoad);
+    /// let _ = explorer;
+    /// ```
     pub fn local_loading_mode(mut self, mode: LocalFileExplorerLoadingMode) -> Self {
         self.loading_mode = mode;
         self.options.load_mode = match mode {
@@ -158,71 +331,229 @@ impl<A: 'static> LocalFileExplorer<A> {
         self
     }
 
+    /// Sets toggle-driven reload/cache behavior independently of load depth.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{LocalFileExplorer, LocalFileExplorerCacheMode};
+    /// let explorer = LocalFileExplorer::<()>::new(".")
+    ///     .cache_mode(LocalFileExplorerCacheMode::LoadOnceSnapshot);
+    /// let _ = explorer;
+    /// ```
     pub fn cache_mode(mut self, mode: LocalFileExplorerCacheMode) -> Self {
         self.cache_mode = mode;
         self
     }
 
+    /// Enables or disables visible-row virtualization in the inner explorer.
+    ///
+    /// Virtualization is enabled by default and changes rendering cost, not the
+    /// retained filesystem tree or callback semantics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").virtualized(false);
+    /// let _ = explorer;
+    /// ```
     pub fn virtualized(mut self, virtualized: bool) -> Self {
         self.virtualized = virtualized;
         self
     }
 
+    /// Enables or disables the inner explorer's scroll viewport.
+    ///
+    /// Disabling scrolling does not disable virtualization automatically.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").scrollable(false);
+    /// let _ = explorer;
+    /// ```
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
         self
     }
 
+    /// Retains the legacy asynchronous-loading preference.
+    ///
+    /// The current retained local implementation always uses its background
+    /// [`FileTreeRuntime`]; this compatibility flag has no behavioral effect.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").async_loading(true);
+    /// let _ = explorer;
+    /// ```
     pub fn async_loading(mut self, async_loading: bool) -> Self {
         self.async_loading = async_loading;
         self
     }
 
+    /// Includes dot-prefixed entries when true.
+    ///
+    /// A selected hidden entry and its ancestors remain visible when
+    /// [`Self::reveal_selected`] is enabled, even when this is false.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").include_hidden(true);
+    /// let _ = explorer;
+    /// ```
     pub fn include_hidden(mut self, include_hidden: bool) -> Self {
         self.options.include_hidden = include_hidden;
         self
     }
 
+    /// Sets the hard recursion/preload depth; root is depth zero.
+    ///
+    /// Zero permits loading the root listing but not descending into child
+    /// directories in the synchronous snapshot helper.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").max_depth(3);
+    /// let _ = explorer;
+    /// ```
     pub fn max_depth(mut self, max_depth: usize) -> Self {
         self.options.max_depth = max_depth;
         self
     }
 
+    /// Controls whether selected ancestors bypass filters and load lazily.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").reveal_selected(false);
+    /// let _ = explorer;
+    /// ```
     pub fn reveal_selected(mut self, reveal_selected: bool) -> Self {
         self.options.reveal_selected = reveal_selected;
         self
     }
 
+    /// Excludes the fixed common heavy/generated directory set when true.
+    ///
+    /// Selected ancestors still survive when reveal-selected is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").exclude_defaults(true);
+    /// let _ = explorer;
+    /// ```
     pub fn exclude_defaults(mut self, exclude_defaults: bool) -> Self {
         self.options.exclude_defaults = exclude_defaults;
         self
     }
 
+    /// Sets a per-directory retained entry cap, including zero.
+    ///
+    /// The retained local runtime truncates whenever this is `Some` and adds a
+    /// placeholder. The synchronous [`local_file_tree_nodes`] helper additionally
+    /// follows [`FileTreeOptions::large_directory_policy`]. Replace the complete
+    /// options with `None` to clear an earlier cap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").max_entries_per_directory(500);
+    /// let _ = explorer;
+    /// ```
     pub fn max_entries_per_directory(mut self, max_entries: usize) -> Self {
         self.options.max_entries_per_directory = Some(max_entries);
         self
     }
 
+    /// Binds whether inner explorer interaction is disabled.
+    ///
+    /// Disabled state affects row actions but does not stop background loads,
+    /// watches, or model refreshes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").disabled(State::new(true));
+    /// let _ = explorer;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Replaces the complete inner explorer style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorerStyle, LocalFileExplorer};
+    /// let explorer = LocalFileExplorer::<()>::new(".").file_style(FileExplorerStyle::default());
+    /// let _ = explorer;
+    /// ```
     pub fn file_style(mut self, style: FileExplorerStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Applies a size preset using the default theme.
+    ///
+    /// This replaces the entire prior style; call it before [`Self::file_style`]
+    /// when combining a preset with custom colors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorerSize, LocalFileExplorer};
+    /// let explorer = LocalFileExplorer::<()>::new(".").file_size(FileExplorerSize::Compact);
+    /// let _ = explorer;
+    /// ```
     pub fn file_size(mut self, size: FileExplorerSize) -> Self {
         self.style = FileExplorerStyle::from_theme(ailloli_ui_core::Theme::default(), size);
         self
     }
 
+    /// Maps every inner explorer action into an application action.
+    ///
+    /// Specialized select/open callbacks may also run for the same interaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::{FileExplorerAction, LocalFileExplorer};
+    /// enum Action { Explorer(FileExplorerAction) }
+    /// let explorer = LocalFileExplorer::<Action>::new(".").on_action(Action::Explorer);
+    /// let _ = explorer;
+    /// ```
     pub fn on_action(mut self, f: impl Fn(FileExplorerAction) -> A + 'static) -> Self {
         self.on_action = Some(Rc::new(move |ctx, action| ctx.dispatch(f(action))));
         self
     }
 
+    /// Handles every inner explorer action with event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").on_action_ctx(|_ctx, _action| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_action_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, FileExplorerAction) + 'static,
@@ -231,27 +562,70 @@ impl<A: 'static> LocalFileExplorer<A> {
         self
     }
 
+    /// Maps a row-selection URI into an application action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// enum Action { Select(FileUri) }
+    /// let explorer = LocalFileExplorer::<Action>::new(".").on_select(Action::Select);
+    /// let _ = explorer;
+    /// ```
     pub fn on_select(mut self, f: impl Fn(FileUri) -> A + 'static) -> Self {
         self.on_select = Some(Rc::new(move |ctx, uri| ctx.dispatch(f(uri))));
         self
     }
 
+    /// Handles selection with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").on_select_ctx(|_ctx, _uri| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_select_ctx(mut self, f: impl Fn(&mut EventCtx<A>, FileUri) + 'static) -> Self {
         self.on_select = Some(Rc::new(f));
         self
     }
 
+    /// Maps a leaf open/activation URI into an application action.
+    ///
+    /// Directory toggle events are not open callbacks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::FileUri;
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// enum Action { Open(FileUri) }
+    /// let explorer = LocalFileExplorer::<Action>::new(".").on_open(Action::Open);
+    /// let _ = explorer;
+    /// ```
     pub fn on_open(mut self, f: impl Fn(FileUri) -> A + 'static) -> Self {
         self.on_open = Some(Rc::new(move |ctx, uri| ctx.dispatch(f(uri))));
         self
     }
 
+    /// Handles leaf opening with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::files::LocalFileExplorer;
+    /// let explorer = LocalFileExplorer::<()>::new(".").on_open_ctx(|_ctx, _uri| {});
+    /// let _ = explorer;
+    /// ```
     pub fn on_open_ctx(mut self, f: impl Fn(&mut EventCtx<A>, FileUri) + 'static) -> Self {
         self.on_open = Some(Rc::new(f));
         self
     }
 }
 
+/// Converts builder inputs into a retained runtime-backed explorer component.
 impl<A: 'static> IntoView<A> for LocalFileExplorer<A> {
     fn into_view(self) -> View<A> {
         finish_view_sized(
@@ -278,6 +652,7 @@ impl<A: 'static> IntoView<A> for LocalFileExplorer<A> {
     }
 }
 
+/// Component boundary that persists one local runtime across rebuilds.
 struct LocalFileExplorerComponent<A> {
     layout: LayoutStyle,
     root_path: PathBuf,
@@ -296,6 +671,7 @@ struct LocalFileExplorerComponent<A> {
     on_open: Option<UriHandler<A>>,
 }
 
+/// Resolves native paths, services worker results, and builds the generic explorer.
 impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let selected = self
@@ -383,6 +759,7 @@ impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
     }
 }
 
+/// Retained filesystem store, worker, watchers, and UI-service registration.
 struct LocalFileExplorerRuntime<A> {
     store: RetainedFileTreeStore,
     worker: Option<FileTreeRuntime>,
@@ -400,6 +777,7 @@ struct LocalFileExplorerRuntime<A> {
 }
 
 impl<A: 'static> LocalFileExplorerRuntime<A> {
+    /// Creates the root store and attempts to spawn its provider worker.
     fn new(
         root: FileUri,
         selected: Option<FileUri>,
@@ -427,6 +805,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         }
     }
 
+    /// Borrows the invariant root node URI.
     fn root_uri(&self) -> &FileUri {
         self.store
             .node(self.store.root())
@@ -434,6 +813,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
             .uri()
     }
 
+    /// Updates policy inputs, bootstraps root watch/load once, and drives preload.
     fn configure(
         &mut self,
         selected: Option<FileUri>,
@@ -458,6 +838,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         self.drive_load_policy();
     }
 
+    /// Installs worker wake integration and one retained UI drain callback.
     fn ensure_service(
         &mut self,
         owner: &Rc<RefCell<Self>>,
@@ -488,6 +869,10 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         self.service_registration = Some(registration);
     }
 
+    /// Drains all ready worker/watch responses and advances requested load policy.
+    ///
+    /// Returns whether model-visible state changed. Worker/store failures are
+    /// retained as a synthetic root error instead of escaping the UI service.
     fn service_pending(&mut self) -> bool {
         let Some(worker) = self.worker.as_mut() else {
             return false;
@@ -531,6 +916,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         changed | self.drive_load_policy()
     }
 
+    /// Filters/sorts one worker listing and records post-sort truncation state.
     fn filter_entries(
         &mut self,
         parent: RetainedFileTreeNodeId,
@@ -567,6 +953,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         entries
     }
 
+    /// Expands desired URIs and schedules controlled/full breadth candidates.
     fn drive_load_policy(&mut self) -> bool {
         let mut changed = false;
         for uri in self.desired_expanded.clone() {
@@ -609,6 +996,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         changed
     }
 
+    /// Begins/coalesces one eligible request and stores enqueue failures as errors.
     fn request_load(&mut self, id: RetainedFileTreeNodeId, force: bool) -> bool {
         let should_load = self
             .store
@@ -647,6 +1035,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         }
     }
 
+    /// Deduplicates watch state and forwards enable/disable to the worker.
     fn watch(&mut self, id: RetainedFileTreeNodeId, enabled: bool) {
         if enabled && !self.watched.insert(id) {
             return;
@@ -670,6 +1059,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         }
     }
 
+    /// Updates expansion/watch state and optionally requests a toggle-driven load.
     fn toggle(&mut self, uri: &FileUri, open: bool) {
         let Some(id) = self.store.node_id(uri) else {
             return;
@@ -683,6 +1073,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         }
     }
 
+    /// Snapshots the root and appends any runtime-wide error placeholder.
     fn nodes(&self) -> Vec<FileExplorerNode> {
         let mut nodes = vec![self.node_snapshot(self.store.root())];
         if let Some(error) = &self.error {
@@ -693,6 +1084,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         nodes
     }
 
+    /// Recursively converts retained store nodes and transient state placeholders.
     fn node_snapshot(&self, id: RetainedFileTreeNodeId) -> FileExplorerNode {
         let node = self.store.node(id).expect("snapshot node exists");
         let mut entry = FileEntry::new(node.uri().clone(), node.metadata().clone());
@@ -725,6 +1117,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
         snapshot
     }
 
+    /// Iteratively collects expanded URIs from the currently attached store tree.
     fn expanded_uris(&self) -> Vec<FileUri> {
         let mut expanded = Vec::new();
         let mut pending = vec![self.store.root()];
@@ -741,6 +1134,28 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
     }
 }
 
+/// Synchronously snapshots a native directory with provider-neutral policies.
+///
+/// Relative root paths use the process working directory; relative expanded and
+/// selected paths use the resolved root. Root, expansion ancestors, and selected
+/// ancestors are deduplicated before depth-first provider traversal.
+///
+/// # Errors
+///
+/// Returns [`FileError`] for native-path URI conversion, root metadata, directory
+/// listing, or canonicalization failures. I/O runs synchronously on the caller.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::PathBuf;
+/// use ailloli_ui_fs::FileError;
+/// use ailloli_ui_widgets::files::{local_file_tree_nodes, FileExplorerNode, FileTreeOptions};
+/// fn snapshot(path: PathBuf) -> Result<Vec<FileExplorerNode>, FileError> {
+///     local_file_tree_nodes(path, std::iter::empty(), None, FileTreeOptions::default())
+/// }
+/// # let _ = snapshot;
+/// ```
 pub fn local_file_tree_nodes(
     root_path: impl Into<PathBuf>,
     expanded_paths: impl IntoIterator<Item = PathBuf>,
@@ -766,6 +1181,7 @@ pub fn local_file_tree_nodes(
     )
 }
 
+/// Builds one disabled synthetic root for invalid local path configuration.
 fn error_nodes(message: impl Into<String>) -> Vec<FileExplorerNode> {
     vec![FileExplorerNode::named(
         FileUri::new("file", None::<String>, "/ailloli_ui-file-error").expect("error uri"),
@@ -775,10 +1191,12 @@ fn error_nodes(message: impl Into<String>) -> Vec<FileExplorerNode> {
     .disabled(true)]
 }
 
+/// Converts a native path to the local URI namespace without swallowing errors.
 fn local_uri_or_error(path: &Path) -> Result<FileUri, FileError> {
     FileUri::local(path)
 }
 
+/// Expands root, configured paths, and selected ancestors in stable unique order.
 fn default_expanded_uris(
     root: &FileUri,
     expanded_paths: &[PathBuf],
@@ -799,6 +1217,7 @@ fn default_expanded_uris(
     dedupe_file_uris(uris)
 }
 
+/// Keeps absolute paths and joins relative paths beneath the explorer root.
 fn make_path_absolute_to_root(root: &Path, path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         path
@@ -807,6 +1226,7 @@ fn make_path_absolute_to_root(root: &Path, path: PathBuf) -> PathBuf {
     }
 }
 
+/// Keeps absolute paths or joins them to cwd, falling back to `/` on cwd failure.
 fn make_absolute(path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         path
@@ -818,17 +1238,20 @@ fn make_absolute(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(test)]
+/// Real-filesystem scenarios for path expansion and all synchronous load modes.
 mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
 
+    /// Process/time-namespaced directory removed after each scenario.
     struct TempDir {
         path: PathBuf,
     }
 
     impl TempDir {
+        /// Creates one unique OS-temporary fixture directory.
         fn new(name: &str) -> Self {
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -943,6 +1366,7 @@ mod tests {
             .any(|node| node.name() == "mod.rs"));
     }
 
+    /// Finds a named child or panics with parent context.
     fn child<'a>(node: &'a FileExplorerNode, name: &str) -> &'a FileExplorerNode {
         node.children
             .iter()

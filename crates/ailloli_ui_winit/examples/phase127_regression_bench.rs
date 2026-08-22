@@ -1,3 +1,5 @@
+//! Phase 127 retained-runtime regression benchmark with process and frame metrics.
+
 use std::cell::{Cell, RefCell};
 use std::error::Error;
 use std::path::PathBuf;
@@ -21,11 +23,16 @@ use ailloli_ui_widgets::controls::{
 };
 use ailloli_ui_widgets::layout::ScrollView;
 
+/// Exact number of non-gating samples required before measurement.
 const LOCKED_WARMUPS: u32 = 3;
+/// Minimum number of measured samples accepted by the regression contract.
 const MIN_MEASURED: u32 = 30;
+/// Maximum virtual rows that layout or paint may visit in one frame.
 const TREE_ROW_LIMIT: u64 = 53;
+/// Maximum accepted 95th-percentile tree frame time, in microseconds.
 const TREE_FRAME_P95_LIMIT_US: f64 = 33_000.0;
 
+/// Validates the locked sample contract and runs the selected Phase 127 scenario.
 fn main() -> Result<(), Box<dyn Error>> {
     let scenario = bench_scenario_from_env().ok_or("AILLOLI_UI_BENCH_SCENARIO is required")?;
     let initial_metadata = metadata_from_env();
@@ -58,6 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Publishes the exact, headless harness metadata used to interpret a run.
 fn update_metadata(
     session: &BenchSession,
     initial: &RunMetadata,
@@ -89,6 +97,7 @@ fn update_metadata(
     Ok(())
 }
 
+/// Builds a per-process fallback JSONL path for `scenario`.
 fn default_bench_path(scenario: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -99,6 +108,7 @@ fn default_bench_path(scenario: &str) -> PathBuf {
         .join(format!("{scenario}-{}.jsonl", std::process::id()))
 }
 
+/// Records one timestamped metric with an explicit role and sample phase.
 fn record_metric(
     session: &BenchSession,
     name: &str,
@@ -118,6 +128,7 @@ fn record_metric(
     Ok(())
 }
 
+/// Records an integer correctness counter as a measured, non-timing metric.
 fn record_correctness(
     session: &BenchSession,
     name: &str,
@@ -132,6 +143,7 @@ fn record_correctness(
     )
 }
 
+/// Samples RSS, PSS, threads, and file descriptors for the current process.
 fn record_process_sample(session: &BenchSession, phase: SamplePhase) -> Result<(), Box<dyn Error>> {
     let sample = sample_current_process()?;
     record_metric(
@@ -165,19 +177,27 @@ fn record_process_sample(session: &BenchSession, phase: SamplePhase) -> Result<(
 }
 
 #[derive(Default)]
+/// Saturating work counters shared by the component-isolation fixtures.
 struct WorkCounters {
+    /// Component builds observed since fixture creation.
     builds: Cell<u64>,
+    /// Leaf layout calls observed since fixture creation.
     layouts: Cell<u64>,
+    /// Synthetic data reads observed during component builds.
     data_reads: Cell<u64>,
 }
 
+/// Leaf widget that increments the shared layout counter.
 struct CountingLeaf(Rc<WorkCounters>);
 
+/// Implements the fixed-size, paint-free leaf used to isolate retained work.
 impl Widget<()> for CountingLeaf {
+    /// Returns a stable diagnostics label for the benchmark tree.
     fn debug_name(&self) -> &'static str {
         "Phase127CountingLeaf"
     }
 
+    /// Counts one layout and constrains the fixture's 120x40 logical size.
     fn layout(
         &self,
         _engine: &mut LayoutEngine<'_, ()>,
@@ -199,15 +219,21 @@ impl Widget<()> for CountingLeaf {
         }
     }
 
+    /// Performs no drawing so the scenario measures retained build and layout work.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Component fixture that publishes an invalidation signal and builds a counting leaf.
 struct CountingComponent {
+    /// Counters attributed only to this component subtree.
     counters: Rc<WorkCounters>,
+    /// Optional output slot receiving the component-owned signal.
     signal_slot: Option<Rc<RefCell<Option<Signal<u64>>>>>,
 }
 
+/// Builds the leaf and exposes a signal used to invalidate only this component.
 impl ComponentNode<()> for CountingComponent {
+    /// Counts build/data access, installs a zero-valued signal, and returns the leaf.
     fn build(&self, context: &mut Context<()>) -> View<()> {
         self.counters
             .builds
@@ -222,13 +248,17 @@ impl ComponentNode<()> for CountingComponent {
     }
 }
 
+/// Root widget that lays its benchmark children out left-to-right without painting.
 struct HorizontalRoot;
 
+/// Provides deterministic horizontal layout for the three isolated components.
 impl Widget<()> for HorizontalRoot {
+    /// Returns a stable diagnostics label for the benchmark root.
     fn debug_name(&self) -> &'static str {
         "Phase127HorizontalRoot"
     }
 
+    /// Lays out every child loosely and sums their logical widths.
     fn layout(
         &self,
         engine: &mut LayoutEngine<'_, ()>,
@@ -263,9 +293,11 @@ impl Widget<()> for HorizontalRoot {
         }
     }
 
+    /// Performs no drawing because this scenario measures retained runtime work.
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Measures whether chat and terminal updates avoid rebuilding the file subtree.
 fn run_component_isolation(
     session: &BenchSession,
     warmups: u32,
@@ -364,6 +396,7 @@ fn run_component_isolation(
     )
 }
 
+/// Measures bounded work for a 100,000-row virtualized tree around its midpoint.
 fn run_tree_virtualization(
     session: &BenchSession,
     warmups: u32,
@@ -483,6 +516,7 @@ fn run_tree_virtualization(
     )
 }
 
+/// Returns milliseconds since the Unix epoch, falling back to zero before it.
 fn unix_time_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -491,6 +525,7 @@ fn unix_time_ms() -> u128 {
 }
 
 #[cfg(test)]
+/// Contract tests for the fixed Phase 127 sampling and latency thresholds.
 mod tests {
     use super::*;
 

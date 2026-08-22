@@ -1,3 +1,5 @@
+//! Retained tree-model atomicity, indexing, revisions, subscriptions, and scale scenarios.
+
 use std::rc::Rc;
 
 use ailloli_ui_widgets::controls::{

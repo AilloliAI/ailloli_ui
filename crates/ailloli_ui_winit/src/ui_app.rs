@@ -79,14 +79,29 @@ use crate::capture::{
 };
 
 /// Errors surfaced while creating windows, renderers, or during render.
+///
+/// The host retains only the first fatal error until [`UiApp::take_error`].
+/// Platform and renderer source errors are flattened to diagnostic strings.
+///
+/// # Examples
+///
+/// ```
+/// let error = ailloli_ui_winit::UiAppError::Render("device lost".into());
+/// assert!(error.to_string().contains("render failed"));
+/// ```
 #[derive(Debug)]
 pub enum UiAppError {
+    /// Native window creation failed with platform diagnostic text.
     WindowCreate(String),
+    /// Renderer/device/surface initialization failed.
     RendererCreate(String),
+    /// A fatal frame render or capture operation failed.
     Render(String),
 }
 
+/// Prefixes each category with the winit adapter identity.
 impl fmt::Display for UiAppError {
+    /// Formats the originating window, renderer, runtime, capture, or storage failure.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WindowCreate(err) => write!(f, "ailloli_ui_winit: create window failed: {err}"),
@@ -98,9 +113,20 @@ impl fmt::Display for UiAppError {
     }
 }
 
+/// Marks fatal UI host failures as standard errors without a chained source.
 impl Error for UiAppError {}
 
 /// Presentation failure injected on the event-loop thread by native tests.
+///
+/// Faults are queued by logical window and run at the next safe host boundary;
+/// they never execute synchronously in the caller.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::PresentationTestFault;
+/// assert_ne!(PresentationTestFault::Lost, PresentationTestFault::Outdated);
+/// ```
 #[cfg(feature = "test_support")]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,24 +147,49 @@ pub enum PresentationTestFault {
 }
 
 /// Observable lifecycle state for deterministic native tests.
+///
+/// All counters are cumulative and saturating within the lifetime of the
+/// retained logical window. `attached` distinguishes live native presentation
+/// state from suspended retained state.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::PresentationTestState;
+/// fn inspect(state: &PresentationTestState) {
+///     let generation: u64 = state.generation.get();
+///     let _ = (state.attached, generation, state.state);
+/// }
+/// ```
 #[cfg(feature = "test_support")]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationTestState {
+    /// Stable logical window identity.
     pub logical_window_id: ailloli_ui_core::LogicalWindowId,
+    /// Provider-neutral presentation lifecycle state.
     pub state: PresentationState,
+    /// Current attachment generation; stale envelopes use older values.
     pub generation: PresentationGeneration,
+    /// Whether a native presentation currently owns this retained state.
     pub attached: bool,
+    /// Number of completed native detach operations.
     pub detach_count: u64,
+    /// Number of acquisition-recovery sequences requested.
     pub recovery_count: u64,
     /// Reattachments that retained the existing GPU context and caches.
     pub gpu_context_reuse_count: u64,
     /// Reattachments that required a new adapter/device/pipeline context.
     pub gpu_context_rebuild_count: u64,
+    /// Number of injected or observed lost-surface paths.
     pub lost_count: u64,
+    /// Number of injected or observed outdated-surface paths.
     pub outdated_count: u64,
+    /// Number of injected zero-extent round trips.
     pub zero_extent_count: u64,
+    /// Number of generation-mismatched injected envelopes rejected.
     pub rejected_stale_event_count: u64,
+    /// Number of queued faults not yet serviced for this logical window.
     pub pending_fault_count: usize,
     /// Successful native frames rendered for this retained presentation.
     ///
@@ -150,17 +201,27 @@ pub struct PresentationTestState {
 
 #[cfg(feature = "test_support")]
 #[derive(Debug, Default, Clone, Copy)]
+/// Saturating internal counters copied into [`PresentationTestState`].
 struct PresentationTestCounters {
+    /// Completed native detach operations.
     detach_count: u64,
+    /// Requested recovery sequences.
     recovery_count: u64,
+    /// Compatible-surface reattachments.
     gpu_context_reuse_count: u64,
+    /// Full GPU context rebuilds.
     gpu_context_rebuild_count: u64,
+    /// Lost-surface paths.
     lost_count: u64,
+    /// Outdated-surface paths.
     outdated_count: u64,
+    /// Zero-extent round trips.
     zero_extent_count: u64,
+    /// Rejected stale-generation events.
     rejected_stale_event_count: u64,
 }
 
+/// Returns the concrete winit backend name used in diagnostics/bench metadata.
 fn observed_winit_backend(event_loop: &ActiveEventLoop) -> &'static str {
     #[cfg(target_os = "linux")]
     {
@@ -184,6 +245,10 @@ fn observed_winit_backend(event_loop: &ActiveEventLoop) -> &'static str {
 }
 
 #[cfg(feature = "native_overlay")]
+/// Establishes and verifies X11 overlay invariants after winit window creation.
+///
+/// Exact physical placement and size are derived from the target logical rect
+/// and current scale. Wayland is rejected because it requires layer-shell.
 fn configure_x11_overlay(
     event_loop: &ActiveEventLoop,
     window: &Window,
@@ -249,22 +314,34 @@ fn configure_x11_overlay(
     }
 }
 
+/// Declarative window registration awaiting conversion to retained state on resume.
 struct PendingWindow<A> {
+    /// Native and logical window configuration.
     options: WindowOptions,
+    /// Unreconciled retained root view.
     root: View<A>,
+    /// Exact per-window render clear color.
     clear: Color,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Native file-hover batch kind; only consecutive same-window/same-kind events merge.
 enum PendingFileBatchKind {
+    /// One or more files entered the window.
     Entered,
+    /// Hover was cancelled; carries no files.
     Left,
+    /// One or more files were dropped.
     Dropped,
 }
 
+/// Consecutive native file callbacks coalesced until the next host boundary.
 struct PendingFileBatch {
+    /// Ephemeral native destination window.
     window_id: WindowId,
+    /// Enter, leave, or drop category.
     kind: PendingFileBatchKind,
+    /// Files in native callback order; empty for leave.
     files: Vec<ailloli_ui_core::UploadFile>,
 }
 
@@ -276,11 +353,18 @@ struct PendingFileBatch {
 /// contacts is promoted; the next sequence begins once all contacts end.
 #[derive(Debug, Default)]
 struct TouchPrimaryTracker {
+    /// Active native touch ids.
     active_ids: HashSet<u64>,
+    /// First id in the current sequence, cleared when it ends.
     primary_id: Option<u64>,
 }
 
+/// Deterministic primary-contact classification and lifecycle reset.
 impl TouchPrimaryTracker {
+    /// Updates the active set and returns whether this event belongs to the first contact.
+    ///
+    /// Duplicate `Started` ids do not begin a new sequence. Ending the primary
+    /// never promotes an already-active secondary contact.
     fn classify(&mut self, id: u64, phase: TouchPhase) -> bool {
         match phase {
             TouchPhase::Started => {
@@ -303,6 +387,7 @@ impl TouchPrimaryTracker {
         }
     }
 
+    /// Forgets all contacts when a native presentation detaches.
     fn clear(&mut self) {
         self.active_ids.clear();
         self.primary_id = None;
@@ -317,139 +402,236 @@ impl TouchPrimaryTracker {
 /// GPU context and the element tree, signals, focus/input router, text system, and
 /// pending presentation intents.
 struct RetainedWindowState<A> {
+    /// Declarative/native configuration updated by replayed presentation intents.
     options: WindowOptions,
+    /// Stable logical id, possibly empty when the caller omitted one.
     logical_window_id: String,
+    /// Provider-neutral attachment state machine.
     lifecycle: PresentationLifecycle,
+    /// Generation copied into every accepted event envelope.
     presentation_generation: PresentationGeneration,
+    /// Coalescing intents accumulated while no native presentation exists.
     presentation_intents: PendingPresentationIntents,
+    /// Detached GPU context/caches available for surface reattachment.
     renderer: Option<Renderer>,
+    /// Whether client-side edge-resize hit testing is active.
     client_edge_resize: bool,
+    /// Whether client title-row drag gestures are permitted.
     client_titlebar_drag: bool,
+    /// Optional exact view key delimiting the title row.
     client_titlebar_key: Option<String>,
+    /// Renderer clear color.
     clear: Color,
+    /// Per-window shaping/font state retained across presentation loss.
     text_system: TextSystem,
+    /// Retained element tree and per-window runtime.
     runtime: Runtime<A>,
+    /// Current device-pixel ratio, normalized by [`Scale`].
     scale: Scale,
+    /// Latest logical mouse position; touch does not overwrite it.
     cursor_pos: Option<Point>,
+    /// Active-touch primary classification.
     touch_primary: TouchPrimaryTracker,
+    /// Last provider-neutral cursor intent.
     current_cursor: PresentationCursor,
+    /// Latest keyboard modifier state.
     modifiers: Modifiers,
+    /// Focus, hover, capture, click, and text-input router.
     input: InputRouter,
+    /// Mounted popup runtimes and focus ownership.
     popup_mounts: PopupOverlayMounts<A>,
+    /// Whether native IME is currently allowed for the focus target.
     ime_allowed: bool,
+    /// Last integer physical IME cursor area sent to winit.
     last_ime_cursor_area: Option<PhysicalRectI32>,
+    /// Earliest text-caret/animation wake deadline.
     next_text_blink: Option<Instant>,
+    /// Earliest retry after a transient render timeout.
     render_retry_at: Option<Instant>,
+    /// Consecutive timeout count used for bounded exponential backoff.
     render_timeout_streak: u32,
+    /// Optional one-second input benchmark aggregation.
     input_bench: InputBenchCounters,
+    /// Whether the first successful frame has already been presented.
     rendered_once: bool,
     #[cfg(feature = "test_support")]
+    /// Cumulative successful native frame count, saturating.
     rendered_frame_count: u64,
+    /// Whether the native window starts hidden and must reveal after first frame.
     reveal_after_first_frame: bool,
     #[cfg(feature = "devtools")]
+    /// Window-local developer-tools overlay and remote state.
     devtools: DevToolsWindowState,
 }
 
+/// Live winit presentation attached to retained logical state.
+///
+/// Field order is safety-relevant: the renderer/surface drops before the
+/// `Arc<Window>` that owns its raw handles.
 struct WindowState<A> {
     // `renderer` holds a strong ref to the window via the wgpu `Surface`; declare it
     // before `window` so drop order releases the surface first, then the window.
+    /// Attached renderer whose surface strongly owns the window.
     renderer: Renderer,
+    /// Shared native window owner.
     window: Arc<Window>,
+    /// Coalesced physical resize and recovery state.
     resize: ResizeController,
     #[cfg(feature = "native_overlay")]
+    /// Verified X11 overlay invariants, absent for normal windows.
     native_overlay_capabilities: Option<NativeOverlayCapabilities>,
+    /// Provider-neutral state surviving this attachment.
     retained: RetainedWindowState<A>,
 }
 
+/// Makes retained state fields available to live-window helpers.
 impl<A> Deref for WindowState<A> {
+    /// Retained state target.
     type Target = RetainedWindowState<A>;
 
+    /// Borrows provider-neutral retained state.
     fn deref(&self) -> &Self::Target {
         &self.retained
     }
 }
 
+/// Makes retained state fields mutably available to live-window helpers.
 impl<A> DerefMut for WindowState<A> {
+    /// Mutably borrows provider-neutral retained state.
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.retained
     }
 }
 
+/// Platform-specific successful attachment waiting to enter the live collections.
 enum AttachedWindow<A> {
+    /// Ordinary winit/X11 presentation keyed by ephemeral native id.
     Native(WindowId, WindowState<A>),
     #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+    /// Direct Wayland layer-shell presentation without a winit window.
     WaylandOverlay(WaylandOverlayState<A>),
 }
 
+/// Allocation-boxed retained state paired with a failed attachment error.
+///
+/// Boxing keeps the result's error variant small while returning ownership for retry.
 type AttachmentError<A> = Box<(RetainedWindowState<A>, UiAppError)>;
 
 #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+/// Live direct Wayland layer-shell presentation attached to retained state.
+///
+/// Field order drops the renderer surface before the raw-handle owner.
 struct WaylandOverlayState<A> {
     // Drop the WGPU surface before the layer-shell surface.
+    /// Attached renderer and Wayland surface.
     renderer: Renderer,
+    /// Raw-window-handle owner retained until after renderer drop/detach.
     _surface: Arc<WaylandOverlaySurface>,
+    /// Unbounded configure/closed event receiver.
     events: std::sync::mpsc::Receiver<WaylandOverlayEvent>,
+    /// Most recent positive logical configure and integer scale.
     configured: WaylandOverlayConfigured,
+    /// Verified layer-shell invariants.
     capabilities: NativeOverlayCapabilities,
+    /// Interior-mutable redraw latch set from shared host APIs.
     needs_redraw: std::cell::Cell<bool>,
+    /// Provider-neutral state surviving overlay recreation.
     retained: RetainedWindowState<A>,
 }
 
 #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+/// Makes retained state fields available to live Wayland-overlay helpers.
 impl<A> Deref for WaylandOverlayState<A> {
+    /// Retained state target.
     type Target = RetainedWindowState<A>;
 
+    /// Borrows provider-neutral retained state.
     fn deref(&self) -> &Self::Target {
         &self.retained
     }
 }
 
 #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+/// Makes retained state fields mutably available to live Wayland-overlay helpers.
 impl<A> DerefMut for WaylandOverlayState<A> {
+    /// Mutably borrows provider-neutral retained state.
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.retained
     }
 }
 
+/// Initial delay for transient surface-timeout retries.
 const RENDER_TIMEOUT_RETRY_BASE_DELAY: Duration = Duration::from_millis(16);
+/// Inclusive cap for exponential surface-timeout retry delay.
 const RENDER_TIMEOUT_RETRY_MAX_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Host response selected for a renderer error category.
 enum RenderErrorAction {
+    /// Retain presentation and retry the frame after the supplied delay.
     RetryFrame(Duration),
+    /// Force configure, then escalate to full attachment recreation if repeated.
     ReconfigureSurface,
+    /// Store a fatal [`UiAppError`] and exit the native loop.
     Fatal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Diagnostic reason recorded when a native presentation must be recreated.
 enum PresentationRecreationCause {
+    /// Surface acquisition reported lost.
     Lost,
+    /// Surface acquisition reported outdated.
     Outdated,
+    /// Forced reconfiguration failed or repeated.
     ReconfigureFailed,
 }
 
 #[derive(Debug)]
+/// One-second optional input/IME counters and accumulated microsecond durations.
+///
+/// Collection is completely bypassed unless benchmark mode is enabled. Counts
+/// use ordinary `u64` increments; duration sums saturate at `u128::MAX`.
 struct InputBenchCounters {
+    /// Raw winit empty-preedit callback count.
     ime_preedit_empty: u64,
+    /// Raw winit non-empty-preedit callback count.
     ime_preedit_nonempty: u64,
+    /// Raw winit commit callback count.
     ime_commit: u64,
+    /// Raw winit disabled/end callback count.
     ime_end: u64,
+    /// Routed provider-neutral keyboard event count.
     event_keyboard: u64,
+    /// Routed empty-preedit event count.
     event_ime_preedit_empty: u64,
+    /// Routed non-empty-preedit event count.
     event_ime_preedit_nonempty: u64,
+    /// Routed IME commit event count.
     event_ime_commit: u64,
+    /// Routed IME end event count.
     event_ime_end: u64,
+    /// Native IME cursor rectangles actually changed/set.
     ime_cursor_area_set: u64,
+    /// Native IME cursor updates skipped because quantized state was unchanged.
     ime_cursor_area_skipped: u64,
+    /// Routed events explicitly requesting redraw.
     route_redraw: u64,
+    /// Routed events followed by dirty retained elements.
     dirty_redraw: u64,
+    /// Sum of input routing time in whole microseconds.
     route_event_us: u128,
+    /// Sum of IME cursor quantize/native-update time in whole microseconds.
     ime_cursor_rect_us: u128,
+    /// Sum of layout-before-input time in whole microseconds.
     layout_before_event_us: u128,
+    /// Timestamp of construction or last reset.
     last_flush: Instant,
 }
 
+/// Gated recording and one-second/reset-boundary metric emission.
 impl InputBenchCounters {
+    /// Creates zeroed counters with `last_flush = now`.
     fn new(now: Instant) -> Self {
         Self {
             ime_preedit_empty: 0,
@@ -477,6 +659,9 @@ impl InputBenchCounters {
         ailloli_ui_bench::bench_enabled()
     }
 
+    /// Classifies a raw winit IME callback into raw and routed-event buckets.
+    ///
+    /// `Enabled` has no counter; empty preedit remains distinct from end/disabled.
     fn record_ime(&mut self, ime: &Ime) {
         if !Self::metrics_enabled() {
             return;
@@ -502,42 +687,51 @@ impl InputBenchCounters {
         }
     }
 
+    /// Increments the routed keyboard-event count when metrics are enabled.
     fn record_keyboard(&mut self) {
         if Self::metrics_enabled() {
             self.event_keyboard += 1;
         }
     }
 
+    /// Saturating-adds one whole-microsecond route duration sample.
     fn record_route_event_us(&mut self, value: u128) {
         if Self::metrics_enabled() {
             self.route_event_us = self.route_event_us.saturating_add(value);
         }
     }
 
+    /// Saturating-adds one whole-microsecond IME cursor update sample.
     fn record_ime_cursor_rect_us(&mut self, value: u128) {
         if Self::metrics_enabled() {
             self.ime_cursor_rect_us = self.ime_cursor_rect_us.saturating_add(value);
         }
     }
 
+    /// Saturating-adds one whole-microsecond pre-input layout sample.
     fn record_layout_before_event_us(&mut self, value: u128) {
         if Self::metrics_enabled() {
             self.layout_before_event_us = self.layout_before_event_us.saturating_add(value);
         }
     }
 
+    /// Increments the route-requested-redraw count when enabled.
     fn record_route_redraw(&mut self) {
         if Self::metrics_enabled() {
             self.route_redraw += 1;
         }
     }
 
+    /// Increments the dirty-after-routing redraw count when enabled.
     fn record_dirty_redraw(&mut self) {
         if Self::metrics_enabled() {
             self.dirty_redraw += 1;
         }
     }
 
+    /// Emits and resets counters once at least one second elapsed.
+    ///
+    /// A `now` earlier than `last_flush` behaves as zero elapsed.
     fn flush_if_due(&mut self, now: Instant) {
         if !Self::metrics_enabled() {
             return;
@@ -556,6 +750,10 @@ impl InputBenchCounters {
         }
     }
 
+    /// Emits each non-zero value and resets every counter and the flush origin.
+    ///
+    /// Conversion to `f64` may lose integer precision above `2^53`, which is
+    /// unreachable for ordinary one-second event counts but possible in theory.
     fn flush_values(&mut self, now: Instant) {
         Self::metric_count("input.ime_preedit_empty", self.ime_preedit_empty);
         Self::metric_count("input.ime_preedit_nonempty", self.ime_preedit_nonempty);
@@ -601,12 +799,14 @@ impl InputBenchCounters {
         self.last_flush = now;
     }
 
+    /// Emits a non-zero integer counter as one benchmark metric.
     fn metric_count(name: &'static str, value: u64) {
         if value > 0 {
             ailloli_ui_bench::metric(name, value as f64);
         }
     }
 
+    /// Emits a non-zero whole-microsecond duration sum as one benchmark metric.
     fn metric_duration(name: &'static str, value: u128) {
         if value > 0 {
             ailloli_ui_bench::metric(name, value as f64);
@@ -619,42 +819,98 @@ impl InputBenchCounters {
 /// MVP flow:
 /// - reconcile runs once at startup per window,
 /// - each redraw: `layout → paint → ailloli_ui_render_wgpu`.
+///
+/// The application starts with no windows and uses [`ControlFlow::Wait`]. Each
+/// registered logical window retains its runtime, input, popup, text, and
+/// presentation intents across native suspend/resume cycles.
+///
+/// # Examples
+///
+/// ```
+/// let app = ailloli_ui_winit::UiApp::<()>::new();
+/// assert!(app.window_snapshots().is_empty());
+/// assert!(app.error().is_none());
+/// ```
 pub struct UiApp<A> {
+    /// Shared application action, clipboard, URL, scheduling, and chrome handle.
     runtime: RuntimeHandle<A>,
+    /// Declared windows awaiting the first creation-authorized resume.
     pending: Vec<PendingWindow<A>>,
+    /// Native winit presentations keyed by ephemeral platform window id.
     windows: HashMap<WindowId, WindowState<A>>,
+    /// Logical window state detached across host suspension/recovery.
     retained_windows: Vec<RetainedWindowState<A>>,
+    /// Consecutive native file-hover/drop callbacks awaiting batch flush.
     pending_file_batches: Vec<PendingFileBatch>,
     #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+    /// Direct layer-shell presentations that do not own a winit window.
     wayland_overlays: Vec<WaylandOverlayState<A>>,
+    /// Last known persisted snapshot per logical window id.
     window_snapshots: HashMap<String, WindowSnapshot>,
+    /// Monotonic origin for provider-neutral event timestamps.
     event_origin: Instant,
+    /// Saturating event-id counter; initialized to one.
     next_event_id: u64,
+    /// Default native loop policy applied during construction.
     control_flow: ControlFlow,
+    /// First fatal host error retained until taken.
     error: Option<UiAppError>,
+    /// Optional declarative capture queue.
     capture: Option<crate::capture::CaptureHandle>,
+    /// Shared late-bound wake for non-winit presentation sources.
     host_wake: Option<Arc<dyn UiWake>>,
     #[cfg(feature = "test_support")]
+    /// FIFO deterministic faults keyed by logical window.
     presentation_test_faults: Vec<(ailloli_ui_core::LogicalWindowId, PresentationTestFault)>,
     #[cfg(feature = "test_support")]
+    /// Cumulative counters retained after detach/recreation.
     presentation_test_counters: HashMap<ailloli_ui_core::LogicalWindowId, PresentationTestCounters>,
     #[cfg(feature = "devtools")]
+    /// Explicit remote address copied into each newly retained window.
     devtools_remote_addr: Option<std::net::SocketAddr>,
     #[cfg(feature = "devtools")]
+    /// First devtools wake error across all presentations.
     devtools_wake_error: Option<UiWakeError>,
 }
 
+/// Creates an empty wait-mode application with native clipboard and URL providers.
 impl<A: 'static> Default for UiApp<A> {
+    /// Delegates to [`UiApp::new`].
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Declarative configuration, host wake wiring, diagnostics, and retained state access.
 impl<A: 'static> UiApp<A> {
+    /// Creates an empty application using [`ControlFlow::Wait`].
+    ///
+    /// Installs lazy native clipboard and validated system URL providers. No
+    /// native event loop, window, renderer, or remote server is created yet.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let app = ailloli_ui_winit::UiApp::<u32>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub fn new() -> Self {
         Self::with_control_flow(ControlFlow::Wait)
     }
 
+    /// Creates an empty application with an explicit winit control-flow policy.
+    ///
+    /// The policy is copied into the event loop during presentation creation;
+    /// host wait service may temporarily choose a deadline needed by resize,
+    /// text, render-retry, or scheduled-repaint work.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use winit::event_loop::ControlFlow;
+    /// let app = ailloli_ui_winit::UiApp::<()>::with_control_flow(ControlFlow::Poll);
+    /// assert!(app.window_snapshots().is_empty());
+    /// ```
     pub fn with_control_flow(control_flow: ControlFlow) -> Self {
         let runtime = RuntimeHandle::new();
         runtime.set_clipboard_provider(Rc::new(NativeClipboard::new()));
@@ -686,16 +942,51 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Attaches a capture handle processed during redraw.
+    ///
+    /// Repeated builder calls replace the previous handle. Clones held by the
+    /// caller continue to share the newly attached queue state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_winit::{CaptureHandle, UiApp};
+    /// let captures = CaptureHandle::new();
+    /// let app = UiApp::<()>::new().capture_handle(captures.clone());
+    /// captures.request_window("main");
+    /// let _ = app;
+    /// ```
     pub fn capture_handle(mut self, handle: crate::capture::CaptureHandle) -> Self {
         self.capture = Some(handle);
         self
     }
 
     /// Capture queue attached to this host, when configured.
+    ///
+    /// The returned clone shares request and result state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Public configuration uses `capture_handle`; the host clones it internally.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.window_snapshots().is_empty());
+    /// ```
     pub(crate) fn capture_handle_for_host(&self) -> Option<crate::capture::CaptureHandle> {
         self.capture.clone()
     }
 
+    /// Installs one shared host wake into runtime and every current devtools state.
+    ///
+    /// Devtools installation failures are latched without preventing other
+    /// presentations from receiving the callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // `run_winit_host` performs this wiring immediately before loop entry.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub(crate) fn install_host_wake(&mut self, wake: Arc<dyn UiWake>) {
         self.host_wake = Some(wake.clone());
         self.runtime.install_ui_wake(wake.clone());
@@ -725,6 +1016,17 @@ impl<A: 'static> UiApp<A> {
     }
 
     #[cfg(feature = "devtools")]
+    /// Rearms all devtools wake latches and reports whether any commands remain.
+    ///
+    /// The first observed per-window wake error is promoted to the application slot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // The host uses the result to request redraw before sleeping.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub(crate) fn begin_devtools_host_service(&mut self) -> bool {
         let mut pending = false;
         let mut first_error = None;
@@ -754,12 +1056,35 @@ impl<A: 'static> UiApp<A> {
     }
 
     #[cfg(feature = "devtools")]
+    /// Consumes the first devtools wake failure across all presentations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // A fresh application has no latched remote wake failure.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub(crate) fn take_devtools_wake_error(&mut self) -> Option<UiWakeError> {
         self.devtools_wake_error.take()
     }
 
     /// Queues a deterministic presentation failure for the next safe
     /// event-loop boundary.
+    ///
+    /// Returns `true` and appends the fault when the id is pending, attached,
+    /// retained, or a live Wayland overlay; unknown ids return `false` without
+    /// mutation. Faults for one id retain FIFO order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::LogicalWindowId;
+    /// use ailloli_ui_winit::{PresentationTestFault, UiApp};
+    /// let mut app = UiApp::<()>::new();
+    /// assert!(!app.inject_presentation_fault(
+    ///     &LogicalWindowId::new("missing"), PresentationTestFault::Lost));
+    /// ```
     #[cfg(feature = "test_support")]
     pub fn inject_presentation_fault(
         &mut self,
@@ -799,6 +1124,21 @@ impl<A: 'static> UiApp<A> {
 
     /// Routes one provider-neutral event through a currently attached and
     /// generation-matching presentation.
+    ///
+    /// Returns `false` for an unknown logical window or stale generation. A
+    /// stale known envelope increments the saturating rejection counter. An
+    /// accepted event ensures initial layout, routes input, and schedules redraw
+    /// when routing or retained dirtiness requires it.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// fn inject(app: &mut ailloli_ui_winit::UiApp<()>,
+    ///     envelope: ailloli_ui_runtime::input::EventEnvelope) {
+    ///     let accepted: bool = app.inject_event_envelope(envelope);
+    ///     let _ = accepted;
+    /// }
+    /// ```
     #[cfg(feature = "test_support")]
     pub fn inject_event_envelope(&mut self, envelope: EventEnvelope) -> bool {
         let logical_window_id = envelope.meta().logical_window_id().clone();
@@ -835,6 +1175,18 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Returns deterministic presentation state/counters for native tests.
+    ///
+    /// Returns `None` for unknown and still-pending windows. Live winit and
+    /// Wayland presentations set `attached`; suspended retained windows do not.
+    /// Missing counter history is reported as all zeros.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::LogicalWindowId;
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.presentation_test_state(&LogicalWindowId::new("missing")).is_none());
+    /// ```
     #[cfg(feature = "test_support")]
     pub fn presentation_test_state(
         &self,
@@ -911,6 +1263,17 @@ impl<A: 'static> UiApp<A> {
     /// Native input benchmarks use this readiness signal before injecting a
     /// focus-sensitive sequence. In particular, X11 can deliver its initial
     /// `Focused(false)`/`Focused(true)` pair after the first rendered frame.
+    /// `None` means no attached winit window with that logical id; direct
+    /// Wayland overlays deliberately do not report native focus here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::LogicalWindowId;
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert_eq!(app.presentation_test_window_has_native_focus(
+    ///     &LogicalWindowId::new("missing")), None);
+    /// ```
     #[cfg(feature = "test_support")]
     pub fn presentation_test_window_has_native_focus(
         &self,
@@ -924,6 +1287,20 @@ impl<A: 'static> UiApp<A> {
 
     /// Reports whether a retained popup registration is mounted in the
     /// requested live presentation and whether that popup tree owns focus.
+    ///
+    /// Returns `None` for non-live/unknown winit windows, otherwise
+    /// `Some((mounted, owns_focus))`. Focus ownership implies the same popup id.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// fn inspect(app: &ailloli_ui_winit::UiApp<()>,
+    ///     id: &ailloli_ui_core::LogicalWindowId,
+    ///     popup: ailloli_ui_runtime::popup::PopupId) {
+    ///     let state: Option<(bool, bool)> = app.presentation_test_popup_mount_state(id, popup);
+    ///     let _ = state;
+    /// }
+    /// ```
     #[cfg(feature = "test_support")]
     pub fn presentation_test_popup_mount_state(
         &self,
@@ -947,6 +1324,18 @@ impl<A: 'static> UiApp<A> {
 
     /// Returns the absolute layout bounds of one keyed view in a live native
     /// presentation. This is available only to the event-loop test driver.
+    ///
+    /// Bounds use logical window coordinates. Unknown windows, missing or
+    /// ambiguous keys, and elements without absolute paint bounds return `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::LogicalWindowId;
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.presentation_test_element_bounds(
+    ///     &LogicalWindowId::new("missing"), "button").is_none());
+    /// ```
     #[cfg(feature = "test_support")]
     pub fn presentation_test_element_bounds(
         &self,
@@ -963,6 +1352,18 @@ impl<A: 'static> UiApp<A> {
 
     /// Reports whether a keyed view contains the current focus target in one
     /// live native presentation.
+    ///
+    /// `Some(false)` means the window and unique key exist but focus is absent
+    /// or outside that subtree. Unknown windows and unresolved keys return `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::LogicalWindowId;
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.presentation_test_focus_within_key(
+    ///     &LogicalWindowId::new("missing"), "editor").is_none());
+    /// ```
     #[cfg(feature = "test_support")]
     pub fn presentation_test_focus_within_key(
         &self,
@@ -983,17 +1384,53 @@ impl<A: 'static> UiApp<A> {
     }
 
     #[cfg(feature = "devtools")]
+    /// Configures the loopback devtools address for subsequently created windows.
+    ///
+    /// This builder stores the address but does not bind immediately. Each
+    /// window attempts its own remote server when retained state is created.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let address = "127.0.0.1:9229".parse().unwrap();
+    /// let app = ailloli_ui_winit::UiApp::<()>::new().devtools_remote_addr(address);
+    /// assert!(app.error().is_none());
+    /// ```
     pub fn devtools_remote_addr(mut self, addr: std::net::SocketAddr) -> Self {
         self.devtools_remote_addr = Some(addr);
         self
     }
 
     /// Shared runtime handle (windows, focus, clipboard, chrome ops).
+    ///
+    /// Clones share the same action queue and providers; this does not clone
+    /// per-window retained trees or renderers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let app = ailloli_ui_winit::UiApp::<u32>::new();
+    /// let runtime: ailloli_ui_runtime::app::RuntimeHandle<u32> = app.runtime();
+    /// assert!(runtime.take_actions().is_empty());
+    /// ```
     pub fn runtime(&self) -> RuntimeHandle<A> {
         self.runtime.clone()
     }
 
     /// Registers a window to open on `resumed` (hidden until first frame is drawn).
+    ///
+    /// The clear color defaults to transparent for transparent windows and
+    /// `#1a1a1f` otherwise. Registration is append-only and performs no native
+    /// work. The caller-provided visibility flag is overridden to hidden.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::text::Text;
+    /// use ailloli_ui_winit::{UiApp, WindowOptions};
+    /// let app = UiApp::<()>::new().window(WindowOptions::default(), Text::new("Hello"));
+    /// assert!(app.window_snapshots().is_empty());
+    /// ```
     pub fn window(mut self, mut options: WindowOptions, root: impl IntoView<A>) -> Self {
         options.start_hidden_until_first_frame = true;
         let clear = if options.transparent {
@@ -1009,6 +1446,21 @@ impl<A: 'static> UiApp<A> {
         self
     }
 
+    /// Registers a hidden-until-first-frame window with an explicit clear color.
+    ///
+    /// Unlike [`Self::window`], transparency does not replace `clear`; the exact
+    /// supplied color is retained. Native work remains deferred until resume.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::text::Text;
+    /// use ailloli_ui_winit::{UiApp, WindowOptions};
+    /// let app = UiApp::<()>::new().window_with_clear(
+    ///     WindowOptions::default(), Color::TRANSPARENT, Text::new("Overlay"));
+    /// assert!(app.error().is_none());
+    /// ```
     pub fn window_with_clear(
         mut self,
         mut options: WindowOptions,
@@ -1024,6 +1476,19 @@ impl<A: 'static> UiApp<A> {
         self
     }
 
+    /// Requests redraw for every live or retained presentation.
+    ///
+    /// Live winit windows receive native redraw requests; retained windows queue
+    /// a coalescible presentation intent. Direct Wayland overlays mark their
+    /// redraw bit and best-effort wake the host. An empty application is a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut app = ailloli_ui_winit::UiApp::<()>::new();
+    /// app.request_redraw_all();
+    /// assert!(app.error().is_none());
+    /// ```
     pub fn request_redraw_all(&mut self) {
         for state in self.windows.values() {
             state.window.request_redraw();
@@ -1045,6 +1510,17 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Requests a redraw for one stable logical window when it is attached.
+    ///
+    /// Suspended retained windows queue the intent for replay after attachment.
+    /// Returns `false` only when no live or retained presentation has the id.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::LogicalWindowId;
+    /// let mut app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(!app.request_window_redraw(&LogicalWindowId::new("missing")));
+    /// ```
     pub fn request_window_redraw(
         &mut self,
         logical_window_id: &ailloli_ui_core::LogicalWindowId,
@@ -1082,6 +1558,10 @@ impl<A: 'static> UiApp<A> {
         false
     }
 
+    /// Drains global chrome operations and applies or retains them by logical id.
+    ///
+    /// Live operations target the first matching window and request redraw.
+    /// Suspended targets retain the chrome operation plus redraw; unknown ids are dropped.
     fn drain_window_chrome_ops(&mut self) {
         let ops = self.runtime.take_window_chrome_ops();
         if ops.is_empty() {
@@ -1121,6 +1601,8 @@ impl<A: 'static> UiApp<A> {
         }
     }
 
+    /// Appends one native file callback, merging only the immediately preceding
+    /// batch when both ephemeral window id and event kind match.
     fn queue_file_batch(
         &mut self,
         window_id: WindowId,
@@ -1142,6 +1624,10 @@ impl<A: 'static> UiApp<A> {
         });
     }
 
+    /// Converts queued native file batches to generation-stamped runtime envelopes.
+    ///
+    /// Batches for vanished windows are dropped. Event ids saturate; missing
+    /// initial layout is performed before routing and redraw follows route/dirty state.
     fn flush_pending_file_batches(&mut self) {
         let batches = std::mem::take(&mut self.pending_file_batches);
         for batch in batches {
@@ -1177,14 +1663,44 @@ impl<A: 'static> UiApp<A> {
         }
     }
 
+    /// Consumes the first fatal host error.
+    ///
+    /// A second call returns `None` unless a later fatal error was recorded.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.take_error().is_none());
+    /// ```
     pub fn take_error(&mut self) -> Option<UiAppError> {
         self.error.take()
     }
 
+    /// Borrows the first fatal host error without consuming it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub fn error(&self) -> Option<&UiAppError> {
         self.error.as_ref()
     }
 
+    /// Returns the latest persisted/logical snapshot for every known window id.
+    ///
+    /// Live attached state overrides an older retained snapshot with the same
+    /// logical id. The returned `HashMap` values have unspecified order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// let snapshots: Vec<ailloli_ui_app_storage::WindowSnapshot> = app.window_snapshots();
+    /// assert!(snapshots.is_empty());
+    /// ```
     pub fn window_snapshots(&self) -> Vec<WindowSnapshot> {
         let mut snapshots = self.window_snapshots.clone();
         for state in self.windows.values() {
@@ -1194,6 +1710,16 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Effective overlay capabilities for a live logical window.
+    ///
+    /// Returns `None` for normal windows, unknown ids, retained/detached
+    /// overlays, or native overlay setup that did not establish every invariant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.native_overlay_capabilities("missing").is_none());
+    /// ```
     #[cfg(feature = "native_overlay")]
     pub fn native_overlay_capabilities(
         &self,
@@ -1218,6 +1744,19 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Services deferred UI work before the native loop sleeps.
+    ///
+    /// Flushes file batches and test/Wayland work, consumes Linux shutdown,
+    /// promotes scheduled repaints, arms due resize/text/render retries, applies
+    /// chrome operations, then chooses the earliest internal or external wake
+    /// deadline. Immediate work prevents sleeping.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // `WinitHost::about_to_wait` supplies the active event loop and driver deadline.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.window_snapshots().is_empty());
+    /// ```
     pub(crate) fn host_about_to_wait(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1351,6 +1890,11 @@ impl<A: 'static> UiApp<A> {
     }
 
     #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+    /// Drains direct Wayland overlay events and renders each latched redraw once.
+    ///
+    /// Configure changes update integer scale and resize the surface. Closed
+    /// overlays clear presentation scope and are removed. Capture replaces the
+    /// ordinary render for that frame; fatal renderer errors exit the loop.
     fn service_wayland_overlays(&mut self, event_loop: &ActiveEventLoop) {
         let capture = self.capture.clone();
         let mut failure = None;
@@ -1452,6 +1996,10 @@ impl<A: 'static> UiApp<A> {
         }
     }
 
+    /// Reconciles one pending root and initializes provider-neutral retained state.
+    ///
+    /// Client edge/title gestures are disabled for native overlays. Scale starts
+    /// at one until attachment; renderer is absent; generation is initial.
     fn retain_pending_window(&mut self, pending: PendingWindow<A>) -> RetainedWindowState<A> {
         #[cfg(feature = "native_overlay")]
         let is_native_overlay = pending.options.native_overlay.is_some();
@@ -1514,6 +2062,10 @@ impl<A: 'static> UiApp<A> {
         }
     }
 
+    /// Advances declared/suspended/unavailable lifecycle state to creation-allowed.
+    ///
+    /// Already-ready, destroyed, and future unsupported states become typed
+    /// window-creation errors; an already-allowed state is unchanged.
     fn allow_presentation_creation(
         retained: &mut RetainedWindowState<A>,
     ) -> Result<(), UiAppError> {
@@ -1553,6 +2105,10 @@ impl<A: 'static> UiApp<A> {
         Ok(())
     }
 
+    /// Best-effort lifecycle transition to an unavailable reason.
+    ///
+    /// Rejection is intentionally ignored because the original attachment error
+    /// remains the actionable diagnostic.
     fn mark_attachment_unavailable(
         retained: &mut RetainedWindowState<A>,
         reason: PresentationUnavailableReason,
@@ -1589,6 +2145,10 @@ impl<A: 'static> UiApp<A> {
             })
     }
 
+    /// Applies attachment, copies its new generation, and resets native-only state.
+    ///
+    /// Every new attachment must render once before reveal, even if retained GPU
+    /// context and element state were reused.
     fn complete_attachment(retained: &mut RetainedWindowState<A>) -> Result<(), UiAppError> {
         let reduction = retained
             .lifecycle
@@ -1609,6 +2169,7 @@ impl<A: 'static> UiApp<A> {
         Ok(())
     }
 
+    /// Traces a surface reattachment and updates saturating test counters.
     fn record_gpu_reattach_outcome(
         &mut self,
         logical_window_id: &str,
@@ -1637,6 +2198,12 @@ impl<A: 'static> UiApp<A> {
         }
     }
 
+    /// Attaches retained state through Wayland layer-shell or winit plus WGPU.
+    ///
+    /// A detached renderer is reattached when compatible and fully rebuilt by
+    /// renderer fallback when necessary. Every failure returns ownership of the
+    /// retained state inside [`AttachmentError`] after marking why it is
+    /// unavailable. Successful intent replay precedes insertion into live state.
     fn attach_retained_window(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1865,6 +2432,7 @@ impl<A: 'static> UiApp<A> {
         ))
     }
 
+    /// Inserts a successful attachment into its platform-specific live collection.
     fn store_attached_window(&mut self, attached: AttachedWindow<A>) {
         match attached {
             AttachedWindow::Native(id, state) => {
@@ -1876,6 +2444,11 @@ impl<A: 'static> UiApp<A> {
     }
 
     #[cfg(feature = "test_support")]
+    /// Drains deterministic test faults at a safe event-loop boundary.
+    ///
+    /// Detached zero-extent faults are requeued. Other faults detach and attempt
+    /// immediate reattachment, preserving retained state on failure and updating
+    /// only counters corresponding to completed lifecycle operations.
     fn service_presentation_test_faults(&mut self, event_loop: &ActiveEventLoop) {
         let faults = std::mem::take(&mut self.presentation_test_faults);
         for (logical_window_id, fault) in faults {
@@ -2016,12 +2589,14 @@ impl<A: 'static> UiApp<A> {
         }
     }
 
+    /// Emits one startup/lifecycle diagnostic only when winit tracing is present.
     fn trace_startup(message: impl fmt::Display) {
         if crate::winit_trace_enabled() {
             eprintln!("ailloli_ui_winit: {message}");
         }
     }
 
+    /// Prints/stores a fatal error and requests native loop exit.
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: UiAppError) {
         eprintln!("{error}");
         self.error = Some(error);
@@ -2029,6 +2604,7 @@ impl<A: 'static> UiApp<A> {
     }
 }
 
+/// Maps supported provider-neutral cursors to winit, defaulting future variants.
 fn cursor_icon_from_presentation_cursor(cursor: PresentationCursor) -> CursorIcon {
     match cursor {
         PresentationCursor::Default => CursorIcon::Default,
@@ -2040,6 +2616,11 @@ fn cursor_icon_from_presentation_cursor(cursor: PresentationCursor) -> CursorIco
     }
 }
 
+/// Drains coalesced presentation intents into retained options and an optional window.
+///
+/// Size components clamp to one logical pixel. Chrome operations remain queued
+/// when no native window exists. The return value requests at least one redraw;
+/// it currently defaults to `true` even when the drained queue is empty.
 fn replay_retained_intents<A>(
     retained: &mut RetainedWindowState<A>,
     window: Option<&Window>,
@@ -2092,6 +2673,7 @@ fn replay_retained_intents<A>(
     redraw
 }
 
+/// Best-effort records fixed winit version and current adapter/driver metadata.
 fn record_renderer_bench_metadata(renderer: &Renderer) {
     let adapter_info = renderer.adapter_info();
     let mut bench_metadata = ailloli_ui_bench::RunMetadata::default();
@@ -2106,6 +2688,10 @@ fn record_renderer_bench_metadata(renderer: &Renderer) {
     let _ = ailloli_ui_bench::try_update_metadata(bench_metadata);
 }
 
+/// Flushes metrics, retains current size/cursor/redraw intents, and clears native input state.
+///
+/// Logical size components clamp to one; lifecycle suspension rejection is
+/// ignored because callers already own a live attachment.
 fn prepare_retained_for_detach<A>(retained: &mut RetainedWindowState<A>, logical_size: Size) {
     retained.input_bench.flush();
     retained.options.inner_size = Some(LogicalSize::new(
@@ -2131,6 +2717,7 @@ fn prepare_retained_for_detach<A>(retained: &mut RetainedWindowState<A>, logical
     let _ = retained.lifecycle.apply(PresentationEvent::Suspend);
 }
 
+/// Detaches a winit surface before dropping its raw-handle owner and retains GPU context.
 fn detach_native_window<A>(state: WindowState<A>) -> RetainedWindowState<A> {
     let physical_size = state.window.inner_size();
     let logical_size = Size::new(
@@ -2155,6 +2742,7 @@ fn detach_native_window<A>(state: WindowState<A>) -> RetainedWindowState<A> {
 }
 
 #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+/// Detaches a direct Wayland surface before dropping its raw-handle owner.
 fn detach_wayland_overlay<A>(state: WaylandOverlayState<A>) -> RetainedWindowState<A> {
     let logical_size = Size::new(
         state.configured.logical_width as f32,
@@ -2176,8 +2764,22 @@ fn detach_wayland_overlay<A>(state: WaylandOverlayState<A>) -> RetainedWindowSta
     retained
 }
 
+/// Native callback implementation used exclusively by [`crate::WinitHost`].
 impl<A: 'static> UiApp<A> {
     /// Handles the native resume callback delegated by [`crate::WinitHost`].
+    ///
+    /// Converts pending declarations to retained state, attempts attachment of
+    /// every retained presentation, preserves previously attached state on a
+    /// reattach failure, treats first attachment failure as fatal, services test
+    /// faults, and requests initial redraw.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // `WinitHost::resumed` delegates the active loop to this internal callback.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.window_snapshots().is_empty());
+    /// ```
     pub(crate) fn host_resumed(&mut self, event_loop: &ActiveEventLoop) {
         Self::trace_startup(format_args!(
             "resumed with {} new and {} retained window(s)",
@@ -2219,6 +2821,19 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Handles the native suspend callback delegated by [`crate::WinitHost`].
+    ///
+    /// Flushes pending file batches, snapshots each live winit window, detaches
+    /// renderer surfaces before native handles, preserves retained runtime/GPU
+    /// state, and resets control flow to wait. Direct Wayland overlays follow
+    /// the same retained lifecycle.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Suspension may leave a logical application alive with no native windows.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub(crate) fn host_suspended(&mut self, _event_loop: &ActiveEventLoop) {
         Self::trace_startup(format_args!(
             "suspending {} native window(s)",
@@ -2247,6 +2862,19 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Handles one native window callback delegated by [`crate::WinitHost`].
+    ///
+    /// File hover/drop callbacks are batched; resize and scale update lifecycle;
+    /// redraw applies resize/retry, layout, focus, paint, devtools, capture, and
+    /// render in order; input is translated to generation-stamped envelopes.
+    /// Unknown ephemeral window ids are ignored after chrome operations drain.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // The public host owns ephemeral `WindowId` routing.
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub(crate) fn host_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -2700,6 +3328,17 @@ impl<A: 'static> UiApp<A> {
     }
 
     /// Handles the payload-free native wake callback delegated by [`crate::WinitHost`].
+    ///
+    /// The unit payload carries no work itself. On Linux Wayland it drains
+    /// overlay configure/close/redraw state; other queued subsystems are serviced
+    /// by the host immediately after this callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let app = ailloli_ui_winit::UiApp::<()>::new();
+    /// assert!(app.error().is_none());
+    /// ```
     pub(crate) fn host_user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         self.service_wayland_overlays(_event_loop);
@@ -2707,6 +3346,11 @@ impl<A: 'static> UiApp<A> {
 }
 
 /// Runs one GPU capture pass; returns `true` if capture render succeeded (already presented).
+///
+/// All same-window requests share one full-frame GPU readback; PNG generation is
+/// enabled if any request needs it, then stripped per request. Element bounds
+/// snap outward to physical pixels. A readback failure fails every request and
+/// returns `false`, allowing the ordinary render path to run.
 fn process_capture_requests<A: 'static>(
     state: &mut WindowState<A>,
     cap: &CaptureHandle,
@@ -2810,6 +3454,10 @@ fn process_capture_requests<A: 'static>(
 }
 
 #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+/// Direct-Wayland counterpart of [`process_capture_requests`].
+///
+/// One scaled full-frame readback serves all pending full/element requests with
+/// identical lookup, crop, PNG, listener, and failure semantics.
 fn process_wayland_overlay_capture_requests<A: 'static>(
     state: &mut WaylandOverlayState<A>,
     cap: &CaptureHandle,
@@ -2903,6 +3551,9 @@ fn process_wayland_overlay_capture_requests<A: 'static>(
     true
 }
 
+/// Lays out the retained tree against the current non-zero logical client extent.
+///
+/// Zero or negative logical dimensions skip layout without clearing prior geometry.
 fn layout_window<A: 'static>(state: &mut WindowState<A>) {
     let physical = state.window.inner_size();
     let logical_w = to_logical_f32(physical.width as f32, state.scale);
@@ -2919,6 +3570,11 @@ fn layout_window<A: 'static>(state: &mut WindowState<A>) {
         .layout(constraints, scale, &mut retained.text_system);
 }
 
+/// Paints owner and popup trees for one presentation-scoped frame.
+///
+/// Pending popup/input intents are applied before owner paint, procedural popup
+/// geometry is resolved afterward, and owner paint repeats only when resulting
+/// focus/mount changes require it. Popup layers are appended last.
 fn paint_retained_window<A: 'static>(
     retained: &mut RetainedWindowState<A>,
     popup_viewport: Rect,
@@ -2977,6 +3633,7 @@ fn paint_retained_window<A: 'static>(
     scene
 }
 
+/// Blurs owner-tree focus when a mounted popup owns focus; returns whether state changed.
 fn blur_owner_for_focused_popup<A: 'static>(retained: &mut RetainedWindowState<A>) -> bool {
     if !retained.popup_mounts.has_focus() {
         return false;
@@ -2986,6 +3643,7 @@ fn blur_owner_for_focused_popup<A: 'static>(retained: &mut RetainedWindowState<A
         .blur_tree(&retained.runtime.tree, retained.runtime.runtime.clone())
 }
 
+/// Converts the current physical client extent to a zero-origin logical viewport.
 fn window_viewport_logical<A>(state: &WindowState<A>) -> Rect {
     let physical = state.window.inner_size();
     Rect::new(
@@ -2996,6 +3654,10 @@ fn window_viewport_logical<A>(state: &WindowState<A>) -> Rect {
     )
 }
 
+/// Samples a persistable logical window snapshot from native state.
+///
+/// Scale factor is floored to one. Unsupported outer-position queries yield
+/// `None`; client size is always present, including zero dimensions.
 fn window_snapshot<A>(state: &WindowState<A>) -> WindowSnapshot {
     let physical = state.window.inner_size();
     let scale_factor = state.window.scale_factor().max(1.0);
@@ -3022,6 +3684,10 @@ fn window_snapshot<A>(state: &WindowState<A>) -> WindowSnapshot {
     }
 }
 
+/// Counts text commands across all layers for benchmark metadata.
+///
+/// Per-layer `usize` counts truncate to `u32` and the final debug sum may
+/// overflow only for infeasibly large scenes.
 fn count_draw_text_cmds(scene: &ailloli_ui_runtime::Scene) -> u32 {
     scene
         .layers
@@ -3036,6 +3702,7 @@ fn count_draw_text_cmds(scene: &ailloli_ui_runtime::Scene) -> u32 {
         .sum()
 }
 
+/// Borrows every scene layer into renderer passes while preserving order and effects.
 fn scene_to_layer_passes(scene: &ailloli_ui_runtime::Scene) -> Vec<LayerPass<'_>> {
     scene
         .layers
@@ -3052,6 +3719,7 @@ fn scene_to_layer_passes(scene: &ailloli_ui_runtime::Scene) -> Vec<LayerPass<'_>
         .collect()
 }
 
+/// Classifies timeout as retry, recoverable surface errors as reconfigure, and all else fatal.
 fn render_error_action(error: &RendererError) -> RenderErrorAction {
     match error {
         RendererError::SurfaceAcquireTimeout => {
@@ -3068,6 +3736,7 @@ fn render_error_action(error: &RendererError) -> RenderErrorAction {
     }
 }
 
+/// Preserves lost/outdated diagnosis and groups every other recreate path as configure failure.
 fn presentation_recreation_cause(error: &RendererError) -> PresentationRecreationCause {
     match error {
         RendererError::SurfaceAcquireLost => PresentationRecreationCause::Lost,
@@ -3076,12 +3745,16 @@ fn presentation_recreation_cause(error: &RendererError) -> PresentationRecreatio
     }
 }
 
+/// Saturating-increments the timeout streak and arms a bounded retry from now.
 fn schedule_render_retry<A>(state: &mut WindowState<A>, min_delay: Duration) {
     state.render_timeout_streak = state.render_timeout_streak.saturating_add(1);
     let delay = render_timeout_retry_delay(state.render_timeout_streak, min_delay);
     state.render_retry_at = Some(Instant::now() + delay);
 }
 
+/// Computes `min_delay * 2^(min(streak-1, 4))`, capped at 250 ms.
+///
+/// A zero streak uses factor one; [`Duration::saturating_mul`] prevents overflow.
 fn render_timeout_retry_delay(streak: u32, min_delay: Duration) -> Duration {
     let shift = streak.saturating_sub(1).min(4);
     let factor = 1u32 << shift;
@@ -3089,6 +3762,10 @@ fn render_timeout_retry_delay(streak: u32, min_delay: Duration) -> Duration {
     delay.min(RENDER_TIMEOUT_RETRY_MAX_DELAY)
 }
 
+/// Best-effort emits one frame timing event with window/surface/generation context.
+///
+/// Disabled benchmarking, frame-id exhaustion, and writer failures silently skip
+/// recording so instrumentation never changes presentation behavior.
 fn record_ui_frame_metrics(
     logical_window_id: &str,
     presentation_generation: PresentationGeneration,
@@ -3122,6 +3799,7 @@ fn record_ui_frame_metrics(
     );
 }
 
+/// Returns whether the current root exists and has committed layout geometry.
 fn runtime_has_root_layout<A>(runtime: &Runtime<A>) -> bool {
     runtime
         .root
@@ -3130,6 +3808,7 @@ fn runtime_has_root_layout<A>(runtime: &Runtime<A>) -> bool {
         .is_some()
 }
 
+/// Combines presentation invalidation, missing initial layout, and runtime work plan.
 fn frame_requires_layout(
     plan: FrameWorkPlan,
     presentation_requires_layout: bool,
@@ -3144,12 +3823,17 @@ fn quantize_ime_cursor_area(rect: Rect, scale: Scale) -> PhysicalRectI32 {
 }
 
 #[derive(Clone, Copy, Default)]
+/// Aggregates redraw need and its route-versus-dirty benchmark attribution.
 struct RouteWindowRedraw {
+    /// Whether native redraw should be requested.
     request: bool,
+    /// Whether routing explicitly requested redraw.
     from_route: bool,
+    /// Whether retained dirtiness required redraw.
     from_dirty: bool,
 }
 
+/// Returns laid-out root paint bounds or the full logical client rectangle fallback.
 fn root_client_bounds_logical<A>(state: &WindowState<A>) -> Rect {
     let physical = state.window.inner_size();
     let logical_w = to_logical_f32(physical.width as f32, state.scale);
@@ -3162,6 +3846,7 @@ fn root_client_bounds_logical<A>(state: &WindowState<A>) -> Rect {
         .unwrap_or(fallback)
 }
 
+/// Maps retained hover roles to winit cursors; inherit/default share native default.
 fn cursor_icon_for_hover_role(role: HoverCursorRole) -> CursorIcon {
     match role {
         HoverCursorRole::Pointer => CursorIcon::Pointer,
@@ -3172,6 +3857,7 @@ fn cursor_icon_for_hover_role(role: HoverCursorRole) -> CursorIcon {
     }
 }
 
+/// Chooses a client resize-edge cursor before the retained hovered role.
 fn cursor_icon_for_hover_state(
     resize_edge: Option<ResizeEdge>,
     hovered_role: HoverCursorRole,
@@ -3182,6 +3868,7 @@ fn cursor_icon_for_hover_state(
         .unwrap_or_else(|| cursor_icon_for_hover_role(hovered_role))
 }
 
+/// Resolves native cursor priority: popup, client resize frame, then owner tree.
 fn cursor_icon_for_pointer_state<A: 'static>(state: &WindowState<A>, pos: Point) -> CursorIcon {
     if let Some(role) = state
         .retained
@@ -3202,6 +3889,9 @@ fn cursor_icon_for_pointer_state<A: 'static>(state: &WindowState<A>, pos: Point)
     )
 }
 
+/// Resolves retained cursor intent with the same popup/resize/owner priority.
+///
+/// Provider-neutral v1 has no diagonal resize cursor, so diagonals become default.
 fn presentation_cursor_for_pointer_state<A: 'static>(
     state: &WindowState<A>,
     pos: Point,
@@ -3228,6 +3918,7 @@ fn presentation_cursor_for_pointer_state<A: 'static>(
     presentation_cursor_for_hover_role(state.input.hovered_cursor_role_at(&state.runtime.tree, pos))
 }
 
+/// Maps a retained hover role into the provider-neutral cursor contract.
 fn presentation_cursor_for_hover_role(role: HoverCursorRole) -> PresentationCursor {
     match role {
         HoverCursorRole::Pointer => PresentationCursor::Pointer,
@@ -3268,6 +3959,10 @@ fn popup_blocks_native_window_gesture<A: 'static>(state: &WindowState<A>, event:
     blocked
 }
 
+/// Starts native client-edge resize for a primary press in the five-pixel frame.
+///
+/// Popup-owning presses are filtered by the caller. Native gesture errors are
+/// trace-only; the event is considered handled once an edge matched.
 fn handle_client_edge_resize_input<A: 'static>(
     state: &mut WindowState<A>,
     event: &Event,
@@ -3302,10 +3997,12 @@ fn handle_client_edge_resize_input<A: 'static>(
     }
 }
 
+/// Requires undecorated client title row and explicit draggable policy.
 fn client_titlebar_drag_enabled(options: &WindowOptions) -> bool {
     !options.decorations && options.has_client_title_row && options.titlebar_draggable
 }
 
+/// Resolves configured/legacy title-row bounds for one live window.
 fn titlebar_row_bounds_logical<A>(state: &WindowState<A>) -> Option<Rect> {
     client_titlebar_bounds_logical(
         &state.runtime.tree,
@@ -3314,6 +4011,9 @@ fn titlebar_row_bounds_logical<A>(state: &WindowState<A>) -> Option<Rect> {
     )
 }
 
+/// Resolves an exact keyed title row, falling back to legacy structure only when missing.
+///
+/// Duplicate configured keys disable dragging rather than choosing ambiguously.
 fn client_titlebar_bounds_logical<A>(
     tree: &ElementTree<A>,
     root_id: Option<ElementId>,
@@ -3331,6 +4031,7 @@ fn client_titlebar_bounds_logical<A>(
     absolute_paint_bounds(tree, title_id)
 }
 
+/// Finds the first title child, skipping a single-child window-root clip wrapper.
 fn legacy_client_titlebar_id<A>(tree: &ElementTree<A>, root_id: ElementId) -> Option<ElementId> {
     let root = tree.get(root_id)?;
     if root
@@ -3345,6 +4046,7 @@ fn legacy_client_titlebar_id<A>(tree: &ElementTree<A>, root_id: ElementId) -> Op
     root.children.first().copied()
 }
 
+/// Returns whether the hit or any ancestor is focusable or owns a non-empty input role.
 fn hit_ancestor_blocks_titlebar_drag<A: 'static>(
     tree: &ailloli_ui_runtime::element::ElementTree<A>,
     mut id: ElementId,
@@ -3364,6 +4066,10 @@ fn hit_ancestor_blocks_titlebar_drag<A: 'static>(
     }
 }
 
+/// Starts a native window drag for an unobstructed primary title-row press.
+///
+/// Interactive descendants block the gesture. Native drag failure is trace-only;
+/// once eligible, the event returns a redraw decision based on retained dirtiness.
 fn handle_client_titlebar_drag_press<A: 'static>(
     state: &mut WindowState<A>,
     event: &Event,
@@ -3404,6 +4110,11 @@ fn handle_client_titlebar_drag_press<A: 'static>(
     })
 }
 
+/// Routes a generation-scoped event through popup portals before the owner tree.
+///
+/// Popup mounts and focus intents synchronize both before and after routing.
+/// Popup consumption suppresses owner routing while preserving interaction and
+/// dispatch flags. Any mount/focus change contributes to `interaction_changed`.
 fn route_retained_envelope<A: 'static>(
     retained: &mut RetainedWindowState<A>,
     envelope: &EventEnvelope,
@@ -3459,6 +4170,10 @@ fn route_retained_envelope<A: 'static>(
     outcome
 }
 
+/// Translates and routes one supported winit input event, returning redraw attribution.
+///
+/// Devtools has first refusal. Initial layout precedes hit testing; popup gestures
+/// precede native resize/title drag; IME and cursor state update after retained routing.
 fn route_window_event<A: 'static>(
     state: &mut WindowState<A>,
     event: &WindowEvent,
@@ -3542,6 +4257,10 @@ fn route_window_event<A: 'static>(
     }
 }
 
+/// Updates IME after interaction changes or non-keyboard/non-IME events.
+///
+/// Keyboard and IME events without focus/interaction changes defer cursor-area
+/// work, avoiding redundant native calls on every keystroke.
 fn should_update_ime_after_event(
     event: &Event,
     outcome: &ailloli_ui_runtime::input::RouteOutcome,
@@ -3552,6 +4271,10 @@ fn should_update_ime_after_event(
     !matches!(event, Event::Keyboard(_) | Event::Ime(_))
 }
 
+/// Converts supported winit input/file/focus events to provider-neutral form.
+///
+/// Modifier updates mutate state but emit no event. Mouse button/wheel events
+/// before any cursor position are dropped. Unsupported window events return `None`.
 fn translate_window_event<A>(
     state: &mut WindowState<A>,
     event: &WindowEvent,
@@ -3640,10 +4363,16 @@ fn translate_window_event<A>(
     }
 }
 
+/// Builds the always-primary reserved mouse pointer sample.
 fn mouse_pointer_sample(pos: Point) -> Option<PointerSample> {
     PointerSample::new_with_primary(PointerId::MOUSE, PointerSource::Mouse, pos, true).ok()
 }
 
+/// Converts one native touch to a left-button/move/cancel event plus touch sample.
+///
+/// Touch ids are offset by one with saturation to avoid the reserved mouse id;
+/// the two largest native ids therefore collide at `u64::MAX`. Finite normalized
+/// pressure clamps to `[0, 1]`; invalid pointer/sample data drops the event.
 fn translate_touch_event(
     touch: &winit::event::Touch,
     scale: Scale,
@@ -3680,6 +4409,7 @@ fn translate_touch_event(
     Some((Event::Pointer(pointer), sample))
 }
 
+/// Converts physical `f64` coordinates through lossy `f32` and the normalized scale.
 fn physical_position_to_logical(position: PhysicalPosition<f64>, scale: Scale) -> Point {
     Point::new(
         to_logical_f32(position.x as f32, scale),
@@ -3687,6 +4417,7 @@ fn physical_position_to_logical(position: PhysicalPosition<f64>, scale: Scale) -
     )
 }
 
+/// Maps control, alt, shift, and platform super to provider-neutral booleans.
 fn convert_modifiers(modifiers: ModifiersState) -> Modifiers {
     Modifiers {
         ctrl: modifiers.control_key(),
@@ -3696,6 +4427,7 @@ fn convert_modifiers(modifiers: ModifiersState) -> Modifiers {
     }
 }
 
+/// Preserves logical key, press/release, repeat, text, modifiers, and last mouse position.
 fn convert_key_event(
     event: &winit::event::KeyEvent,
     modifiers: Modifiers,
@@ -3715,6 +4447,7 @@ fn convert_key_event(
     }
 }
 
+/// Converts named, character, dead, and unidentified logical keys without physical codes.
 fn convert_key(key: &WinitKey) -> Key {
     match key {
         WinitKey::Named(named) => Key::Named(convert_named_key(named)),
@@ -3724,6 +4457,7 @@ fn convert_key(key: &WinitKey) -> Key {
     }
 }
 
+/// Maps editing/navigation and F1-F24 keys; all other names use debug-text `Other`.
 fn convert_named_key(key: &WinitNamedKey) -> NamedKey {
     match key {
         WinitNamedKey::Backspace => NamedKey::Backspace,
@@ -3769,6 +4503,9 @@ fn convert_named_key(key: &WinitNamedKey) -> NamedKey {
     }
 }
 
+/// Preserves explicit IME lifecycle, empty preedit, commit text, and UTF-8 selection.
+///
+/// A preedit with an invalid UTF-8 byte selection is dropped rather than repaired.
 fn convert_ime_event(ime: &Ime) -> Option<Event> {
     match ime {
         Ime::Enabled => Some(Event::Ime(ImeEvent::Enabled)),
@@ -3781,6 +4518,7 @@ fn convert_ime_event(ime: &Ime) -> Option<Event> {
     }
 }
 
+/// Preserves line deltas and converts physical pixel deltas to logical pixels.
 fn convert_wheel_delta(
     delta: &MouseScrollDelta,
     scale: Scale,
@@ -3796,6 +4534,11 @@ fn convert_wheel_delta(
     }
 }
 
+/// Synchronizes native IME permission and quantized cursor area with focused input.
+///
+/// Popup focus takes precedence over owner focus. Permission changes reset blink
+/// and cached cursor geometry. Missing cursor geometry clears the cache; identical
+/// physical quantization skips native update. Native logical width/height clamp to one.
 fn update_ime_state<A: 'static>(state: &mut WindowState<A>) {
     let popup_has_focus = state.retained.popup_mounts.has_focus();
     let role = if popup_has_focus {
@@ -3847,6 +4590,7 @@ fn update_ime_state<A: 'static>(state: &mut WindowState<A>) {
     }
 }
 
+/// Returns Unix epoch time truncated to whole milliseconds, or zero before the epoch.
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3854,6 +4598,7 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// Maps standard buttons, assigning back/forward conventional other ids 4/5.
 fn convert_mouse_button(button: winit::event::MouseButton) -> MouseButton {
     match button {
         winit::event::MouseButton::Left => MouseButton::Left,
@@ -3866,6 +4611,7 @@ fn convert_mouse_button(button: winit::event::MouseButton) -> MouseButton {
 }
 
 #[cfg(test)]
+/// Input conversion, IME, retry, cursor/chrome, scene, persistence, and lifecycle scenarios.
 mod tests {
     use super::*;
 
@@ -3890,6 +4636,7 @@ mod tests {
         assert!(frame_requires_layout(FrameWorkPlan::none(), false, false));
     }
 
+    /// Creates a pressure-free physical touch fixture with a dummy device id.
     fn touch(id: u64, phase: TouchPhase, x: f64, y: f64) -> winit::event::Touch {
         winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
@@ -4293,6 +5040,7 @@ mod tests {
         assert!(hit_ancestor_blocks_titlebar_drag(&runtime.tree, button));
     }
 
+    /// Builds and lays out keyed/legacy title-row fixtures with optional focusable child.
     fn layout_titlebar_fixture(
         titlebar_key: Option<&str>,
         rounded_root: bool,
@@ -4427,9 +5175,11 @@ mod tests {
         assert_eq!(read.snapshot_for("main"), Some(&snapshot));
     }
 
+    /// Provider-neutral suspend/resume, recovery, intent, batching, and test-fault scenarios.
     mod surface_lifecycle {
         use super::*;
 
+        /// Creates a reconciled but unattached retained window named `main`.
         fn retained_fixture() -> RetainedWindowState<u32> {
             let mut app = UiApp::<u32>::new();
             app.retain_pending_window(PendingWindow {

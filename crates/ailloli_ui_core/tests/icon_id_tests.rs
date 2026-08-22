@@ -1,3 +1,5 @@
+//! Verifies equality and hashing invariants for curated, Lucide, Devicon, and SVG IDs.
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -5,6 +7,7 @@ use std::sync::Arc;
 use ailloli_ui_core::{IconId, SvgSource};
 use lucide_icons::Icon;
 
+/// Hashes a value with the same fresh deterministic test hasher for comparisons.
 fn hash_of<T: Hash>(v: &T) -> u64 {
     let mut h = DefaultHasher::new();
     v.hash(&mut h);

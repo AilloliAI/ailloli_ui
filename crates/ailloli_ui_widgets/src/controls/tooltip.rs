@@ -1,3 +1,5 @@
+//! Retained text tooltips hosted through the shared popup portal.
+
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
@@ -36,11 +38,14 @@ const DEFAULT_GAP: f32 = 6.0;
 /// the tooltip interaction state machine.
 #[derive(Clone)]
 enum TooltipContent {
+    /// No popup content; the tooltip remains unavailable.
     Empty,
+    /// Static or reactive label; an empty current value remains unavailable.
     Label(Binding<String>),
 }
 
 impl TooltipContent {
+    /// Reads and clones the current label, or returns `None` for empty content.
     fn text(&self) -> Option<String> {
         match self {
             Self::Empty => None,
@@ -48,10 +53,12 @@ impl TooltipContent {
         }
     }
 
+    /// Returns whether the current content contains at least one byte.
     fn has_text(&self) -> bool {
         self.text().is_some_and(|text| !text.is_empty())
     }
 
+    /// Builds the retained popup subtree from the current binding and style.
     fn retained<A: 'static>(&self, style: TooltipStyle) -> PopupContent<A> {
         match self {
             Self::Empty => PopupContent::new(View::empty),
@@ -89,17 +96,39 @@ impl TooltipContent {
 /// Hover opens after 500 ms and closes after a 100 ms grace period. Keyboard
 /// focus opens immediately; blur and `Escape` close immediately. Delays can be
 /// customized with [`Tooltip::open_delay`] and [`Tooltip::close_delay`].
+/// Empty content, missing/zero-sized triggers, and disabled state make the
+/// tooltip unavailable and close any mounted popup.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{Button, Tooltip};
+/// let tooltip = Tooltip::with_label("Save changes")
+///     .child(Button::<()>::with_label("Save"));
+/// let _ = tooltip;
+/// ```
 pub struct Tooltip<A = ()> {
+    /// Layout configuration applied around the trigger.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Empty or reactive text content.
     content: TooltipContent,
+    /// Optional sole trigger view; a later child replaces it.
     child: Option<View<A>>,
+    /// Preferred side relative to the trigger.
     placement: PopupPlacement,
+    /// Cross-axis alignment relative to the trigger.
     alignment: PopupAlignment,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Hover duration required before opening.
     open_delay: Duration,
+    /// Hover-exit grace duration before closing an open tooltip.
     close_delay: Duration,
+    /// Separation from the trigger in logical pixels.
     gap: f32,
+    /// Bubble paint, padding, typography, and wrap bound.
     style: TooltipStyle,
 }
 
@@ -114,6 +143,17 @@ impl<A: 'static> Default for Tooltip<A> {
 impl<A: 'static> Tooltip<A> {
     /// Creates an empty tooltip. Add text with [`Self::content`] and a trigger
     /// with [`Self::child`].
+    ///
+    /// Defaults are top/center placement, 500 ms hover-open delay, 100 ms
+    /// hover-close grace, and a 6-logical-pixel gap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> = Tooltip::new();
+    /// let _ = tooltip;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -131,6 +171,17 @@ impl<A: 'static> Tooltip<A> {
     }
 
     /// Creates a tooltip with retained text content.
+    ///
+    /// A trigger must still be supplied with [`Self::child`]. Empty current
+    /// content makes the tooltip unavailable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> = Tooltip::with_label("Keyboard shortcut");
+    /// let _ = tooltip;
+    /// ```
     pub fn with_label(content: impl Into<Binding<String>>) -> Self {
         Self::new().content(content)
     }
@@ -141,57 +192,176 @@ impl<A: 'static> Tooltip<A> {
     /// accepted through [`Binding`]. Arbitrary public view content remains
     /// intentionally deferred while the shared portal already mounts this
     /// specialized text subtree in the top-level overlay.
+    ///
+    /// A later call replaces the previous binding. `""` does not mount an empty
+    /// bubble; it disables and closes the tooltip until the binding is nonempty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> = Tooltip::new().content(Memo::new(|| "Help".to_string()));
+    /// let _ = tooltip;
+    /// ```
     pub fn content(mut self, content: impl Into<Binding<String>>) -> Self {
         self.content = TooltipContent::Label(content.into());
         self
     }
 
     /// Sets or replaces the trigger view.
+    ///
+    /// A trigger must resolve to nonzero width and height. Focusable children
+    /// keep normal focus routing; the tooltip shell is only a fallback focus
+    /// target for a non-focusable trigger.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Button, Tooltip};
+    /// let tooltip = Tooltip::with_label("Create").child(Button::<()>::with_label("New"));
+    /// let _ = tooltip;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 
+    /// Sets the preferred side of the popup relative to its trigger.
+    ///
+    /// When a window viewport is available, placement may flip and clamps to
+    /// remain visible; headless fallback uses the requested placement directly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{PopupPlacement, Tooltip};
+    /// let tooltip: Tooltip<()> = Tooltip::with_label("Details").placement(PopupPlacement::Bottom);
+    /// let _ = tooltip;
+    /// ```
     pub fn placement(mut self, placement: PopupPlacement) -> Self {
         self.placement = placement;
         self
     }
 
+    /// Sets popup alignment along the side selected by [`Self::placement`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{PopupAlignment, Tooltip};
+    /// let tooltip: Tooltip<()> = Tooltip::with_label("Details").alignment(PopupAlignment::Start);
+    /// let _ = tooltip;
+    /// ```
     pub fn alignment(mut self, alignment: PopupAlignment) -> Self {
         self.alignment = alignment;
         self
     }
 
+    /// Sets a static or reactive disabled binding.
+    ///
+    /// Disabled state closes the popup, cancels pending phases, and removes the
+    /// tooltip shell from focus traversal; it does not disable the child itself.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> = Tooltip::with_label("Unavailable").disabled(true);
+    /// let _ = tooltip;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Convenience alias for [`Self::disabled`] with a reactive memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> = Tooltip::with_label("Help").disabled_signal(Memo::new(|| false));
+    /// let _ = tooltip;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Sets the hover-open delay.
+    ///
+    /// [`Duration::ZERO`] opens on the same phase resolution without scheduling
+    /// a timer. Keyboard focus still opens immediately regardless of this value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> = Tooltip::with_label("Instant").open_delay(Duration::ZERO);
+    /// let _ = tooltip;
+    /// ```
     pub fn open_delay(mut self, delay: Duration) -> Self {
         self.open_delay = delay;
         self
     }
 
+    /// Sets the grace period after hover leaves an already painted tooltip.
+    ///
+    /// This delay does not apply to blur, Escape, disabling, empty content, or
+    /// leaving during the opening phase. Zero closes on the same phase update.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> =
+    ///     Tooltip::with_label("Help").close_delay(Duration::from_millis(250));
+    /// let _ = tooltip;
+    /// ```
     pub fn close_delay(mut self, delay: Duration) -> Self {
         self.close_delay = delay;
         self
     }
 
+    /// Sets trigger-to-popup separation in logical pixels, clamped to zero.
+    ///
+    /// `NaN` is treated as zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Tooltip;
+    /// let tooltip: Tooltip<()> = Tooltip::with_label("Help").gap(8.0);
+    /// let _ = tooltip;
+    /// ```
     pub fn gap(mut self, gap: f32) -> Self {
         self.gap = gap.max(0.0);
         self
     }
 
+    /// Replaces bubble colors, typography, padding, radius, and wrap width.
+    ///
+    /// The maximum text width is clamped to zero when measured; padding and
+    /// radius are otherwise accepted as-is.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Tooltip, TooltipStyle};
+    /// let tooltip: Tooltip<()> =
+    ///     Tooltip::with_label("Help").tooltip_style(TooltipStyle::default());
+    /// let _ = tooltip;
+    /// ```
     pub fn tooltip_style(mut self, style: TooltipStyle) -> Self {
         self.style = style;
         self
     }
 }
 
+/// Component properties used to allocate one retained tooltip state machine.
 struct TooltipComponent<A> {
     layout: LayoutStyle,
     content: TooltipContent,
@@ -260,29 +430,42 @@ impl<A: 'static> IntoView<A> for Tooltip<A> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Timing phase for hover-driven tooltip visibility.
 enum TooltipPhase {
+    /// Not painted and with no active deadline.
     #[default]
     Hidden,
+    /// Waiting until the stored instant before opening.
     Opening(Instant),
+    /// Painted with no active deadline.
     Open,
+    /// Still painted until the stored close deadline.
     Closing(Instant),
 }
 
 impl TooltipPhase {
+    /// Returns whether popup geometry should currently be published.
     fn is_painted(self) -> bool {
         matches!(self, Self::Open | Self::Closing(_))
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Retained focus, hover, dismissal, and timing state.
 struct TooltipState {
+    /// Current hover-driven timing phase.
     phase: TooltipPhase,
+    /// Whether the trigger subtree is currently hovered.
     hovered: bool,
+    /// Whether focus is currently within the trigger subtree.
     focused: bool,
+    /// Suppresses reopening until hover leaves after explicit dismissal.
     dismissed_until_hover_exit: bool,
+    /// Suppresses reopening until focus leaves after explicit dismissal.
     dismissed_until_focus_exit: bool,
 }
 
+/// Retained portal owner and interaction state machine around the trigger child.
 struct TooltipWidget<A> {
     layout: LayoutStyle,
     content: TooltipContent,
@@ -411,10 +594,12 @@ impl<A: 'static> Widget<A> for TooltipWidget<A> {
 }
 
 impl<A: 'static> TooltipWidget<A> {
+    /// Returns whether content, trigger geometry, and enabled state permit opening.
     fn is_available(&self) -> bool {
         !self.disabled.read() && self.has_trigger.get() && self.content.has_text()
     }
 
+    /// Mirrors a host-side portal dismissal into local suppression state.
     fn consume_portal_dismissal(&self) -> bool {
         if !self.portal_presented.read() || self.popup.is_open() {
             return false;
@@ -428,6 +613,7 @@ impl<A: 'static> TooltipWidget<A> {
         true
     }
 
+    /// Applies immediate focus-open and blur-close transitions.
     fn sync_focus_within(&self, focused: bool) {
         let focused = focused && self.is_available();
         let mut state = self.state.read();
@@ -450,6 +636,7 @@ impl<A: 'static> TooltipWidget<A> {
         self.update_state(state);
     }
 
+    /// Applies hover transitions, resolves deadlines, and schedules repaint.
     fn sync_hover(&self, hovered: bool, now: Instant) {
         let mut state = self.state.read();
         let before = state;
@@ -485,6 +672,7 @@ impl<A: 'static> TooltipWidget<A> {
         self.schedule_phase(state.phase, now);
     }
 
+    /// Resolves a due deadline and returns the current phase.
     fn resolve_phase(&self, now: Instant) -> TooltipPhase {
         let mut state = self.state.read();
         let phase = resolve_deadline(state.phase, now);
@@ -496,6 +684,7 @@ impl<A: 'static> TooltipWidget<A> {
         phase
     }
 
+    /// Requests owner repaint at a pending phase's deadline.
     fn schedule_phase(&self, phase: TooltipPhase, now: Instant) {
         let due = match phase {
             TooltipPhase::Opening(due) | TooltipPhase::Closing(due) => due,
@@ -505,12 +694,14 @@ impl<A: 'static> TooltipWidget<A> {
             .request_repaint_after(self.owner, due.saturating_duration_since(now));
     }
 
+    /// Commits state only when it changed, avoiding redundant invalidation.
     fn update_state(&self, state: TooltipState) {
         if self.state.read() != state {
             self.state.set(state);
         }
     }
 
+    /// Hides the portal and optionally suppresses reopen until input exits.
     fn hide(&self, dismiss_until_hover_exit: bool, reason: PopupDismissReason) {
         let mut state = self.state.read();
         state.dismissed_until_focus_exit = dismiss_until_hover_exit && state.focused;
@@ -526,7 +717,7 @@ impl<A: 'static> TooltipWidget<A> {
 
     /// Measures the retained content and publishes its resolved host geometry.
     ///
-    /// Drawing is deliberately absent here: [`PopupOverlayMounts`] owns the
+    /// Drawing is deliberately absent here: [`ailloli_ui_runtime::popup_mount::PopupOverlayMounts`] owns the
     /// one retained paint of the bubble and its text.
     fn publish_label_geometry(&self, ctx: &mut PaintCtx<'_>, trigger: Rect, label: &str) {
         let text_style = TextStyle::new(FontId::Ui, self.style.font_px, self.style.fg);
@@ -567,6 +758,7 @@ impl<A: 'static> TooltipWidget<A> {
     }
 }
 
+/// Creates an immediate or deadline-bearing open/close phase.
 fn delayed_phase(now: Instant, delay: Duration, opening: bool) -> TooltipPhase {
     if delay.is_zero() {
         if opening {
@@ -581,6 +773,7 @@ fn delayed_phase(now: Instant, delay: Duration, opening: bool) -> TooltipPhase {
     }
 }
 
+/// Converts due opening/closing phases to their terminal phase.
 fn resolve_deadline(phase: TooltipPhase, now: Instant) -> TooltipPhase {
     match phase {
         TooltipPhase::Opening(due) if due <= now => TooltipPhase::Open,
@@ -591,6 +784,9 @@ fn resolve_deadline(phase: TooltipPhase, now: Instant) -> TooltipPhase {
 
 #[cfg(test)]
 mod tests {
+    //! Scenario coverage for defaults, zero-delay phases, close grace, and the
+    //! distinction between the window-root viewport and nested clips.
+
     use super::*;
     use ailloli_ui_core::ClipShape;
 

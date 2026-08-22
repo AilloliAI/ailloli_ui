@@ -12,14 +12,18 @@ use ailloli_ui_runtime::{DrawCmd, DrawRect, IsolatedEffects};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
 
+/// Capture width in physical pixels.
 const W: u32 = 256;
+/// Capture height in physical pixels.
 const H: u32 = 256;
 
+/// Reads one RGBA8 pixel at physical coordinates from a tightly packed frame.
 fn rgba_at(frame: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
     let idx = ((y * w + x) * 4) as usize;
     [frame[idx], frame[idx + 1], frame[idx + 2], frame[idx + 3]]
 }
 
+/// Best-effort writes a diagnostic PNG beneath the repository artifacts tree.
 fn write_artifact(name: &str, png: &[u8]) {
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -32,6 +36,7 @@ fn write_artifact(name: &str, png: &[u8]) {
     let _ = std::fs::write(&out, png);
 }
 
+/// Builds isolated effects; opacity is normalized and blur is in physical pixels.
 fn iso(opacity: f32, blur: f32) -> IsolatedEffects {
     IsolatedEffects {
         opacity,
@@ -41,11 +46,14 @@ fn iso(opacity: f32, blur: f32) -> IsolatedEffects {
 }
 
 #[derive(Default)]
+/// Aggregates independently evaluated failures across all hardening scenarios.
 struct ScenarioReport {
     failures: Vec<String>,
 }
 
+/// Runs checks without allowing one panic to hide later failures.
 impl ScenarioReport {
+    /// Executes one labeled check and stores any error or panic text.
     fn check(&mut self, id: &str, label: &str, f: impl FnOnce() -> Result<(), String>) {
         if let Err(e) =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|p| {
@@ -61,6 +69,7 @@ impl ScenarioReport {
     }
 }
 
+/// Verifies eight isolated siblings stay visible within the pass budget.
 fn scenario_n_siblings(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -111,6 +120,7 @@ fn scenario_n_siblings(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
+/// Verifies repeated equal-size frames reuse pooled offscreen surfaces.
 fn scenario_o_pool_reuse(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let cmds = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(64.0, 64.0, 128.0, 128.0),
@@ -135,6 +145,7 @@ fn scenario_o_pool_reuse(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
+/// Verifies isolated rendering survives a 128/256/512-pixel resize sweep.
 fn scenario_p_resize(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let cmds = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(32.0, 32.0, 64.0, 64.0),
@@ -156,6 +167,7 @@ fn scenario_p_resize(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
+/// Verifies a 200-pixel blur request records the configured clamp downgrade.
 fn scenario_q_blur_clamp(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let cmds = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(80.0, 80.0, 96.0, 96.0),
@@ -181,6 +193,7 @@ fn scenario_q_blur_clamp(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
+/// Verifies an intentionally tiny offscreen budget degrades or skips isolation.
 fn scenario_r_tight_budget(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     renderer.set_isolated_budget_config(IsolatedBudgetConfig {
         max_isolated_nesting_depth: 3,

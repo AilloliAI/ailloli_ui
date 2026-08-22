@@ -1,6 +1,13 @@
+//! Build-time GLSL-to-SPIR-V compiler for the Vulkan backend.
+//!
+//! Every shader is compiled for Vulkan 1.1 and emitted as deterministic Rust
+//! `u32` slices in `OUT_DIR/compiled_shaders.rs`. Failures stop the build with
+//! the source path and compiler error.
+
 use std::io::Write;
 use std::path::Path;
 
+/// Tracks, compiles, and emits every renderer shader consumed at runtime.
 fn main() {
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let out_path = out_dir.join("compiled_shaders.rs");
@@ -50,6 +57,12 @@ fn main() {
     write_spv_const(&mut file, "TEXTURED_TEXT_FRAG_SPV", &text_frag);
 }
 
+/// Compiles one UTF-8 GLSL file whose entry point is `main` into SPIR-V words.
+///
+/// # Panics
+///
+/// Panics when the source cannot be read, `shaderc` cannot initialize, the path
+/// cannot be compiled, or the shader is invalid for the requested stage.
 fn compile_glsl(kind: shaderc::ShaderKind, path: &Path) -> Vec<u32> {
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
@@ -72,7 +85,25 @@ fn compile_glsl(kind: shaderc::ShaderKind, path: &Path) -> Vec<u32> {
         .to_vec()
 }
 
+/// Writes one public hexadecimal `&[u32]` constant, eight words per source line.
+///
+/// # Panics
+///
+/// Panics if any write to the generated Rust file fails.
 fn write_spv_const(file: &mut std::fs::File, name: &str, words: &[u32]) {
+    writeln!(
+        file,
+        "/// Build-generated Vulkan 1.1 SPIR-V words for the `{name}` shader."
+    )
+    .expect("write shader documentation");
+    writeln!(file, "///").expect("write shader documentation");
+    writeln!(file, "/// # Examples").expect("write shader documentation");
+    writeln!(file, "///").expect("write shader documentation");
+    writeln!(file, "/// ```").expect("write shader documentation");
+    writeln!(file, "/// use ailloli_ui_render_vulkan::shaders::{name};")
+        .expect("write shader documentation");
+    writeln!(file, "/// assert!(!{name}.is_empty());").expect("write shader documentation");
+    writeln!(file, "/// ```").expect("write shader documentation");
     writeln!(file, "pub const {name}: &[u32] = &[").expect("write shader const");
     for chunk in words.chunks(8) {
         write!(file, "    ").expect("write shader indent");

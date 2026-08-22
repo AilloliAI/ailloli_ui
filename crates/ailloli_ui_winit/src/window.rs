@@ -13,18 +13,37 @@ use winit::window::{Window, WindowAttributes};
 #[cfg(feature = "native_overlay")]
 use crate::native_overlay::NativeOverlayOptions;
 
-/// Common options when opening a window (title, size, decorations).
+/// Host-neutral options used to build a native winit window.
+///
+/// [`Default`] creates a visible, decorated, resizable window titled
+/// `"Ailloli UI"`, with no requested size, application identity, icon, client
+/// title row, or native overlay. Logical sizes and radii use Ailloli UI logical
+/// pixels; the operating system chooses physical pixels from the monitor scale.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::WindowOptions;
+/// let options = WindowOptions::default();
+/// assert_eq!(options.title, "Ailloli UI");
+/// assert!(options.resizable && options.decorations);
+/// assert!(options.inner_size.is_none());
+/// ```
 #[derive(Debug, Clone)]
 pub struct WindowOptions {
-    /// Stable Ailloli UI id (e.g. `Window::new("main")`) for targeted capture.
+    /// Stable Ailloli UI id for targeted capture; empty means unspecified.
     pub logical_window_id: String,
+    /// Native title-bar text; defaults to `"Ailloli UI"`.
     pub title: String,
-    /// Reverse-DNS application id used for native grouping where supported.
+    /// Reverse-DNS application id used for native grouping; `None` omits it.
     pub application_id: Option<String>,
-    /// Effective app/window icon descriptor.
+    /// Effective app/window icon descriptor; `None` keeps the platform default.
     pub app_icon: Option<AppIcon>,
+    /// Requested logical client size; `None` lets the window manager choose.
     pub inner_size: Option<LogicalSize<f64>>,
+    /// Whether the operating system supplies native window decorations.
     pub decorations: bool,
+    /// Whether the user may resize the window through native affordances.
     pub resizable: bool,
     /// `true` when the Ailloli UI root is title row + content (`AilloliUi` / `Custom` chrome).
     pub has_client_title_row: bool,
@@ -32,16 +51,20 @@ pub struct WindowOptions {
     pub client_titlebar_key: Option<String>,
     /// Drag the window from the client title bar (`Window::titlebar_draggable`).
     pub titlebar_draggable: bool,
-    /// Logical corner radius (points), from `ailloli_ui::Window::radius`.
+    /// Logical corner radius from `ailloli_ui::Window::radius`; zero is square.
     pub corner_radius: f32,
     /// Transparent winit window background (rounded corners + client chrome).
     pub transparent: bool,
+    /// Whether native visibility is deferred until the first rendered frame.
     pub start_hidden_until_first_frame: bool,
     #[cfg(feature = "native_overlay")]
+    /// Native overlay geometry and platform policy; `None` creates a normal window.
     pub native_overlay: Option<NativeOverlayOptions>,
 }
 
+/// Supplies conservative normal-window defaults without native side effects.
 impl Default for WindowOptions {
+    /// Returns decorated opaque defaults with an empty logical ID and title.
     fn default() -> Self {
         Self {
             logical_window_id: String::new(),
@@ -63,9 +86,25 @@ impl Default for WindowOptions {
     }
 }
 
+/// Builder-style host-neutral window configuration.
 impl WindowOptions {
     /// Sets the initial logical client size without exposing a winit DPI type to
     /// provider-neutral callers.
+    ///
+    /// Each component is clamped to at least `1.0` logical pixel. `NaN` also
+    /// becomes `1.0`; positive infinity remains infinite and may later be
+    /// rejected by the platform.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Size;
+    /// use ailloli_ui_winit::WindowOptions;
+    /// let options = WindowOptions::default()
+    ///     .with_logical_inner_size(Size::new(0.0, 480.0));
+    /// let size = options.inner_size.unwrap();
+    /// assert_eq!((size.width, size.height), (1.0, 480.0));
+    /// ```
     pub fn with_logical_inner_size(mut self, size: Size) -> Self {
         self.inner_size = Some(LogicalSize::new(
             size.w.max(1.0) as f64,
@@ -75,7 +114,25 @@ impl WindowOptions {
     }
 }
 
-/// Builds winit [`WindowAttributes`] from Ailloli UI options.
+/// Builds winit [`WindowAttributes`] from Ailloli UI options without creating a window.
+///
+/// Native overlays override transparency, decorations, resizing, activation,
+/// z-level, position, and size so their geometry remains authoritative. On
+/// Linux, `application_id` is forwarded to both Wayland and X11 attributes.
+/// Invalid icon rasterization is ignored and leaves the platform icon unset.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_winit::{window_attributes, WindowOptions};
+/// let attributes = window_attributes(&WindowOptions {
+///     title: "Inspector".into(),
+///     start_hidden_until_first_frame: true,
+///     ..WindowOptions::default()
+/// });
+/// assert_eq!(attributes.title, "Inspector");
+/// assert!(!attributes.visible);
+/// ```
 pub fn window_attributes(options: &WindowOptions) -> WindowAttributes {
     let mut a = WindowAttributes::default()
         .with_title(options.title.clone())
@@ -138,17 +195,28 @@ pub fn window_attributes(options: &WindowOptions) -> WindowAttributes {
 }
 
 #[cfg(not(target_os = "macos"))]
+/// Rasterizes an application icon at `px` square physical pixels.
+///
+/// Rasterization and winit RGBA validation errors are deliberately collapsed
+/// to `None`, allowing window creation to continue with the platform default.
 fn native_icon(icon: &AppIcon, px: u32) -> Option<winit::window::Icon> {
     let raster = ailloli_ui_icon::rasterize_app_icon(icon, px).ok()?;
     winit::window::Icon::from_rgba(raster.rgba.to_vec(), raster.width, raster.height).ok()
 }
 
+/// Emits a diagnostic line only when either supported trace variable is present.
 fn trace_window(message: impl std::fmt::Display) {
     if crate::winit_trace_enabled() {
         eprintln!("ailloli_ui_winit: {message}");
     }
 }
 
+/// Restricts an initial logical size to 70% of a known monitor work area.
+///
+/// `scale_factor` is floored to `1.0` before converting physical monitor pixels
+/// to logical pixels. A zero monitor dimension is an unavailable sentinel and
+/// preserves the request. Components are otherwise independently capped and
+/// never reduced below one logical pixel.
 fn constrain_logical_size_for_monitor(
     size: LogicalSize<f64>,
     monitor_physical: PhysicalSize<u32>,
@@ -195,6 +263,9 @@ fn constrain_logical_size_for_monitor(
     constrained
 }
 
+/// Applies the monitor clamp using the primary or first available monitor.
+///
+/// If winit reports no monitor, the requested logical size is returned unchanged.
 fn constrain_initial_size(
     event_loop: &ActiveEventLoop,
     size: LogicalSize<f64>,
@@ -210,7 +281,25 @@ fn constrain_initial_size(
     constrain_logical_size_for_monitor(size, monitor_size, monitor.scale_factor())
 }
 
-/// Creates a window from an [`ActiveEventLoop`] (normal path: `ApplicationHandler::resumed`).
+/// Creates a window from an [`ActiveEventLoop`] during normal application resume.
+///
+/// Normal windows with requested sizes are capped to 70% of the primary (or
+/// first available) monitor in logical pixels. Native overlays retain their
+/// exact target rectangle and skip this clamp.
+///
+/// # Errors
+///
+/// Returns winit's platform error when native creation fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_winit::{create_window, WindowOptions};
+/// use winit::event_loop::ActiveEventLoop;
+/// fn open(loop_: &ActiveEventLoop) -> Result<winit::window::Window, winit::error::OsError> {
+///     create_window(loop_, WindowOptions::default())
+/// }
+/// ```
 pub fn create_window(
     event_loop: &ActiveEventLoop,
     mut options: WindowOptions,
@@ -230,7 +319,22 @@ pub fn create_window(
 /// For tests / tools that need a window before `run_app`.
 ///
 /// Uses deprecated [`EventLoop::create_window`]; centralized here to limit warnings
-/// and keep a single framework layer.
+/// and keep a single framework layer. Unlike [`create_window`], this path does
+/// not constrain a requested initial size to the current monitor.
+///
+/// # Errors
+///
+/// Returns winit's platform error when native creation fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_winit::{create_window_before_run, WindowOptions};
+/// use winit::event_loop::EventLoop;
+/// fn open(loop_: &EventLoop<()>) -> Result<winit::window::Window, winit::error::OsError> {
+///     create_window_before_run(loop_, WindowOptions::default())
+/// }
+/// ```
 #[allow(deprecated)]
 pub fn create_window_before_run(
     event_loop: &EventLoop<()>,
@@ -240,6 +344,7 @@ pub fn create_window_before_run(
 }
 
 #[cfg(test)]
+/// Logical-size, attribute forwarding, icon, and overlay invariant scenarios.
 mod tests {
     use super::*;
 

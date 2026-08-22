@@ -1,5 +1,8 @@
+//! Scrollable 200-line editor demonstration in one 900x620 logical window.
+
 use ailloli_ui::prelude::*;
 
+/// Builds the seeded editor window and runs it until the user exits.
 fn main() -> ailloli_ui::Result<()> {
     let doc: String = (0..200)
         .map(|i| format!("{i:04}  The quick brown fox jumps over the lazy dog.\n"))

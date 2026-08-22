@@ -1,3 +1,5 @@
+//! Incremental projection from the filesystem store into the retained tree model.
+
 use ailloli_ui_fs::{
     DirectoryLoadState, FileEntry, FileTreeDelta, FileTreeNode, FileTreeNodeId, FileTreeStore,
     FileTreeStoreDelta,
@@ -7,22 +9,72 @@ use crate::controls::{TreeItem, TreeModel, TreeModelError, TreeModelHandle, Tree
 
 use super::file_icon_for_entry;
 
+/// Failure while constructing or updating a [`FileTreeModelBridge`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::{FileKind, FileMetadata, FileTreeStore, FileUri};
+/// use ailloli_ui_widgets::files::FileTreeModelBridgeError;
+/// let store = FileTreeStore::new(FileUri::parse("file:///")?, FileMetadata::new(FileKind::Directory))?;
+/// let error = FileTreeModelBridgeError::MissingNode(store.root());
+/// assert!(error.to_string().contains("missing node"));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum FileTreeModelBridgeError {
+    /// A store delta or traversal referenced an absent filesystem node.
     #[error("filesystem delta references missing node {0:?}")]
     MissingNode(FileTreeNodeId),
+    /// The retained tree model rejected a structural mutation batch.
     #[error(transparent)]
     Model(#[from] TreeModelError<FileTreeNodeId>),
 }
 
 /// Applies precise filesystem deltas to a retained UI model without exporting
 /// or cloning a recursive tree snapshot.
+///
+/// Node identifiers are preserved exactly. Construction performs an iterative
+/// depth-first projection of the complete retained store; later updates mutate
+/// one shared [`TreeModelHandle`] in place.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::{FileKind, FileMetadata, FileTreeStore, FileUri};
+/// use ailloli_ui_widgets::files::FileTreeModelBridge;
+/// let store = FileTreeStore::new(FileUri::parse("file:///")?, FileMetadata::new(FileKind::Directory))?;
+/// let bridge = FileTreeModelBridge::from_store(&store)?;
+/// assert!(bridge.model().read(|model| model.item(&store.root()).is_some()));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug, Clone)]
 pub struct FileTreeModelBridge {
     model: TreeModelHandle<FileTreeNodeId>,
 }
 
 impl FileTreeModelBridge {
+    /// Projects every current store node into a new retained model.
+    ///
+    /// Store child order becomes model child order, and expanded
+    /// directory-like nodes remain expanded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeModelBridgeError::MissingNode`] for an inconsistent
+    /// child index, or [`FileTreeModelBridgeError::Model`] when the resulting
+    /// mutation batch violates retained-tree invariants.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::{FileKind, FileMetadata, FileTreeStore, FileUri};
+    /// use ailloli_ui_widgets::files::FileTreeModelBridge;
+    /// let store = FileTreeStore::new(FileUri::parse("file:///workspace")?, FileMetadata::new(FileKind::Directory))?;
+    /// let bridge = FileTreeModelBridge::from_store(&store)?;
+    /// assert!(bridge.model().read(|model| model.item(&store.root()).is_some()));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn from_store(store: &FileTreeStore) -> Result<Self, FileTreeModelBridgeError> {
         let mut model = TreeModel::new();
         let mut mutations = Vec::with_capacity(store.len().saturating_mul(2));
@@ -33,10 +85,49 @@ impl FileTreeModelBridge {
         })
     }
 
+    /// Clones the handle to the bridge's shared retained tree model.
+    ///
+    /// Cloning the handle does not clone the tree: updates applied through this
+    /// bridge are immediately visible through every returned handle.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::{FileKind, FileMetadata, FileTreeStore, FileUri};
+    /// use ailloli_ui_widgets::files::FileTreeModelBridge;
+    /// let store = FileTreeStore::new(FileUri::parse("file:///")?, FileMetadata::new(FileKind::Directory))?;
+    /// let bridge = FileTreeModelBridge::from_store(&store)?;
+    /// let model = bridge.model();
+    /// assert!(model.read(|tree| tree.item(&store.root()).is_some()));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn model(&self) -> TreeModelHandle<FileTreeNodeId> {
         self.model.clone()
     }
 
+    /// Applies an ordered filesystem-store delta to the shared UI model.
+    ///
+    /// Inserts, removals, moves, metadata updates, and directory-state updates
+    /// are batched atomically. Updates for a node already absent from the final
+    /// store remove any stale model row; unsupported delta variants are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeModelBridgeError::Model`] if the translated batch would
+    /// violate retained-tree identity, parent, or ordering invariants.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_fs::{FileKind, FileMetadata, FileTreeStore, FileUri};
+    /// use ailloli_ui_widgets::files::FileTreeModelBridge;
+    /// let mut store = FileTreeStore::new(FileUri::parse("file:///")?, FileMetadata::new(FileKind::Directory))?;
+    /// let bridge = FileTreeModelBridge::from_store(&store)?;
+    /// let delta = store.set_expanded(store.root(), true)?;
+    /// bridge.apply_delta(&store, &delta)?;
+    /// assert!(bridge.model().read(|model| model.is_expanded(&store.root())));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn apply_delta(
         &self,
         store: &FileTreeStore,
@@ -108,6 +199,7 @@ impl FileTreeModelBridge {
     }
 }
 
+/// Iteratively emits parent-before-child insertions without recursion depth risk.
 fn collect_subtree(
     store: &FileTreeStore,
     id: FileTreeNodeId,
@@ -143,6 +235,7 @@ fn collect_subtree(
     Ok(())
 }
 
+/// Converts one filesystem node into its retained UI label and decorations.
 fn tree_item(node: &FileTreeNode) -> TreeItem<FileTreeNodeId> {
     let label = node
         .uri()

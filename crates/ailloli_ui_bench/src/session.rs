@@ -1,3 +1,10 @@
+//! Bounded asynchronous benchmark sessions and atomic JSONL publication.
+//!
+//! Producers never block on file I/O: records enter a bounded `sync_channel`
+//! with `try_send`. Queue overflow permanently invalidates the run. A dedicated
+//! writer periodically flushes staging data, then finalization writes `run_end`,
+//! syncs, and renames the staging file without overwriting a destination.
+
 use std::fs::{create_dir_all, rename, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::num::NonZeroUsize;
@@ -17,6 +24,7 @@ use crate::model::{
     RunId, RunMetadata, RunStartRecord, WireRecord, SCHEMA_VERSION,
 };
 
+/// Process-local sequence mixed into generated run identifiers.
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Bounds the amount of valid staging data held only in userspace buffers.
@@ -27,6 +35,14 @@ static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const WRITER_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Result of environment-driven benchmark initialization.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::BenchInit;
+/// let init = BenchInit::Disabled;
+/// assert!(init.path().is_none());
+/// ```
 #[derive(Debug)]
 pub enum BenchInit {
     /// Benchmark collection was not requested.
@@ -37,6 +53,19 @@ pub enum BenchInit {
 
 impl BenchInit {
     /// Finishes an enabled session. Disabled collection returns `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates writer, flush, sync, validity, and publication failures from
+    /// an enabled session.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::BenchInit;
+    /// assert_eq!(BenchInit::Disabled.finish()?, None);
+    /// # Ok::<(), ailloli_ui_bench::BenchWriteError>(())
+    /// ```
     pub fn finish(self) -> Result<Option<CompletedRun>, BenchWriteError> {
         match self {
             Self::Disabled => Ok(None),
@@ -45,6 +74,13 @@ impl BenchInit {
     }
 
     /// Returns the final output path when collection is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::BenchInit;
+    /// assert!(BenchInit::Disabled.path().is_none());
+    /// ```
     pub fn path(&self) -> Option<&Path> {
         match self {
             Self::Disabled => None,
@@ -53,6 +89,13 @@ impl BenchInit {
     }
 
     /// Borrows the active session when collection is enabled.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::BenchInit;
+    /// assert!(BenchInit::Disabled.session().is_none());
+    /// ```
     pub fn session(&self) -> Option<&BenchSession> {
         match self {
             Self::Disabled => None,
@@ -62,89 +105,164 @@ impl BenchInit {
 }
 
 /// Failure while creating a benchmark session.
+///
+/// # Examples
+///
+/// ```
+/// let error = ailloli_ui_bench::BenchInitError::InvalidOutputPath;
+/// assert!(error.to_string().contains("must name a file"));
+/// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BenchInitError {
     #[error("benchmark output path must name a file")]
+    /// Output path has no UTF-8 file name component.
     InvalidOutputPath,
     #[error("benchmark metadata field {0} must be finite")]
+    /// Initial floating-point metadata was invalid.
     InvalidMetadata(&'static str),
     #[error("benchmark destination already exists: {0}")]
+    /// Final destination existed before session creation.
     DestinationExists(PathBuf),
     #[error("benchmark staging file already exists: {0}")]
+    /// Collision with the generated partial-file path.
     StagingExists(PathBuf),
     #[error("another global benchmark recorder is already active")]
+    /// Global initialization would replace another session or legacy recorder.
     AlreadyInitialized,
     #[error("failed to create benchmark output directory")]
+    /// Parent directory creation failed.
     CreateDirectory(#[source] std::io::Error),
     #[error("failed to create benchmark staging file")]
+    /// Exclusive staging-file creation failed.
     CreateStaging(#[source] std::io::Error),
     #[error("failed to serialize or write run_start")]
+    /// Initial `run_start` serialization or write failed.
     WriteRunStart(#[source] BenchWriteError),
     #[error("failed to spawn benchmark writer")]
+    /// Dedicated writer thread could not be spawned.
     SpawnWriter(#[source] std::io::Error),
 }
 
 /// Failure while recording or finalizing a benchmark run.
+///
+/// Queue overflow and non-finite input increment `dropped_records`, so the
+/// staging artifact remains diagnostic but cannot be published as gate-valid.
+///
+/// # Examples
+///
+/// ```
+/// let error = ailloli_ui_bench::BenchWriteError::QueueFull;
+/// assert!(error.to_string().contains("run is invalid"));
+/// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BenchWriteError {
     #[error("benchmark session is closed")]
+    /// The session no longer accepts records or was already finished.
     Closed,
     #[error("benchmark writer queue is full; the run is invalid")]
+    /// Nonblocking enqueue found the bounded queue full.
     QueueFull,
     #[error("benchmark writer stopped before accepting the record")]
+    /// Writer channel disconnected or the writer previously failed.
     WriterStopped,
     #[error("benchmark numeric field {field} must be finite; the run is invalid")]
-    NonFiniteValue { field: &'static str },
+    /// A finite-number invariant failed before JSON serialization.
+    NonFiniteValue {
+        /// Stable field path identifying the invalid value.
+        field: &'static str,
+    },
     #[error("failed to serialize a benchmark record")]
+    /// JSON serialization failed.
     Serialize(#[source] serde_json::Error),
     #[error("failed to write benchmark data")]
+    /// Staging-file write failed.
     Write(#[source] std::io::Error),
     #[error("failed to flush benchmark data")]
+    /// Periodic or final buffer flush failed.
     Flush(#[source] std::io::Error),
     #[error("failed to sync benchmark data")]
+    /// Final staging-file `sync_all` failed.
     Sync(#[source] std::io::Error),
     #[error("benchmark writer thread panicked")]
+    /// Joining the writer observed a panic.
     WriterPanicked,
     #[error("benchmark destination appeared before publication: {0}")]
+    /// Another actor created the destination during the run.
     DestinationExists(PathBuf),
     #[error("failed to publish benchmark output atomically")]
+    /// Final staging-file rename failed.
     Publish(#[source] std::io::Error),
+    /// One or more records were dropped, so only the diagnostic staging artifact remains.
     #[error("benchmark run is invalid because {dropped_records} record(s) were dropped; diagnostics remain at {staging_path}")]
     InvalidRun {
+        /// Partial artifact retained for diagnostics.
         staging_path: PathBuf,
+        /// Total queue drops plus a missing finish message.
         dropped_records: u64,
     },
 }
 
 /// Successfully published benchmark artifact.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{CompletedRun, RunId};
+/// let run = CompletedRun {
+///     path: "run.jsonl".into(),
+///     run_id: RunId::new("run"),
+///     sha256: "00".repeat(32),
+///     records_written: 2,
+/// };
+/// assert_eq!(run.sha256.len(), 64);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletedRun {
+    /// Final atomically published artifact path.
     pub path: PathBuf,
+    /// Run identifier serialized into every wire record.
     pub run_id: RunId,
+    /// Lowercase SHA-256 of every published JSONL byte, including newlines.
     pub sha256: String,
+    /// Total wire records including `run_start` and `run_end`.
     pub records_written: u64,
 }
 
+/// Shared producer state retained by the session and global weak reference.
 #[derive(Debug)]
 struct SessionCore {
+    /// Stable identity shared by all wire records.
     run_id: RunId,
+    /// Reserved final destination.
     path: PathBuf,
+    /// Unique diagnostic partial-file path.
     staging_path: PathBuf,
+    /// Monotonic origin for record `elapsed_us`.
     started: Instant,
+    /// Bounded nonblocking producer channel.
     sender: SyncSender<WriterMessage>,
     /// Serializes identifier allocation with queue insertion so the on-disk
     /// event sequence is deterministic even when producers run concurrently.
     record_order: Mutex<()>,
+    /// Next event ID; starts at one and uses atomic fetch-add.
     next_event_id: AtomicU64,
+    /// Next frame ID; starts at one and uses atomic fetch-add.
     next_frame_id: AtomicU64,
+    /// Rejected records that make publication invalid.
     dropped_records: AtomicU64,
+    /// Whether producers may still enqueue work.
     accepting: AtomicBool,
+    /// Sticky signal that the writer failed or disconnected.
     writer_failed: AtomicBool,
 }
 
 impl SessionCore {
+    /// Validates, identifies, serializes, and nonblockingly queues one event.
+    ///
+    /// Identifier allocation and enqueue are serialized across producers so
+    /// accepted records remain sequential on disk.
     fn record(&self, event: Event, context: EventContext) -> Result<EventId, BenchWriteError> {
         let _order = self
             .record_order
@@ -171,6 +289,7 @@ impl SessionCore {
         Ok(event_id)
     }
 
+    /// Validates and queues a sparse metadata overlay in producer order.
     fn update_metadata(&self, metadata: RunMetadata) -> Result<(), BenchWriteError> {
         let _order = self
             .record_order
@@ -192,10 +311,12 @@ impl SessionCore {
         self.enqueue(WireRecord::MetadataUpdate(record))
     }
 
+    /// Allocates a run-local frame identifier without queueing a record.
     fn allocate_frame_id(&self) -> FrameId {
         FrameId::new(self.next_frame_id.fetch_add(1, Ordering::Relaxed))
     }
 
+    /// Attempts one nonblocking queue insertion and records sticky failures.
     fn enqueue(&self, record: WireRecord) -> Result<(), BenchWriteError> {
         if !self.accepting.load(Ordering::Acquire) {
             return Err(BenchWriteError::Closed);
@@ -221,21 +342,68 @@ impl SessionCore {
     }
 }
 
+/// Commands accepted by the dedicated writer thread.
 #[derive(Debug)]
 enum WriterMessage {
+    /// Serialize one boxed record in channel order.
     Record(Box<WireRecord>),
+    /// Write the terminal record, sync, and publish.
     Finish,
 }
 
 /// Guard for a single, explicitly finalized benchmark run.
+///
+/// Dropping an unfinished session performs best-effort finalization but discards
+/// errors. Gate integrations should always call [`Self::finish`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::num::NonZeroUsize;
+/// use ailloli_ui_bench::{BenchSession, RunMetadata};
+/// let session = BenchSession::start(
+///     "artifacts/bench/run.jsonl",
+///     RunMetadata::default(),
+///     NonZeroUsize::new(4096).unwrap(),
+/// )?;
+/// let completed = session.finish()?;
+/// assert_eq!(completed.sha256.len(), 64);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Debug)]
 pub struct BenchSession {
+    /// Shared producer state; global registration retains only a weak reference.
     core: Arc<SessionCore>,
+    /// Join handle consumed exactly once during finalization.
     worker: Option<JoinHandle<Result<CompletedRun, BenchWriteError>>>,
 }
 
 impl BenchSession {
     /// Starts a local session which does not replace the global compatibility sink.
+    ///
+    /// The destination must not exist. Parent directories are created, while a
+    /// unique `.partial-<run-id>` file is created exclusively. `capacity` bounds
+    /// pending writer messages and cannot be zero by type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchInitError`] for invalid/non-finite metadata, invalid or
+    /// occupied paths, filesystem failures, initial write failure, or thread
+    /// spawn failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::num::NonZeroUsize;
+    /// use ailloli_ui_bench::{BenchSession, RunMetadata};
+    /// let session = BenchSession::start(
+    ///     "artifacts/bench/local.jsonl",
+    ///     RunMetadata::default(),
+    ///     NonZeroUsize::new(128).unwrap(),
+    /// )?;
+    /// # session.finish()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn start(
         path: impl AsRef<Path>,
         metadata: RunMetadata,
@@ -244,6 +412,16 @@ impl BenchSession {
         Self::start_inner(path.as_ref(), metadata, capacity)
     }
 
+    /// Starts a session and installs a weak reference in the process-global sink.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// // Environment-driven initialization uses the same exclusive global slot.
+    /// let init = ailloli_ui_bench::try_init_from_env("run.jsonl")?;
+    /// let _ = init.path();
+    /// # Ok::<(), ailloli_ui_bench::BenchInitError>(())
+    /// ```
     pub(crate) fn start_global(
         path: impl AsRef<Path>,
         metadata: RunMetadata,
@@ -281,6 +459,7 @@ impl BenchSession {
         Ok(session)
     }
 
+    /// Validates paths/metadata, writes `run_start`, and spawns the writer.
     fn start_inner(
         path: &Path,
         metadata: RunMetadata,
@@ -358,11 +537,47 @@ impl BenchSession {
     }
 
     /// Records an uncorrelated payload, returning its assigned event identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Closed`, `QueueFull`, `WriterStopped`, `NonFiniteValue`, or a
+    /// serialization error. Queue/full-value rejection invalidates the run.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::{BenchSession, Event};
+    /// fn mark(session: &BenchSession) -> Result<(), ailloli_ui_bench::BenchWriteError> {
+    ///     let id = session.record(Event::Marker { ts_ms: 1, name: "ready".into() })?;
+    ///     assert_eq!(id.get(), 1);
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn record(&self, event: Event) -> Result<EventId, BenchWriteError> {
         self.record_with_context(event, EventContext::default())
     }
 
     /// Records a payload and its provider-neutral correlation context.
+    ///
+    /// Accepted event IDs are allocated in on-disk order, starting at one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation, queue, lifecycle, and serialization errors
+    /// as [`Self::record`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::{BenchSession, Event, EventContext, FrameId};
+    /// fn mark(session: &BenchSession) -> Result<(), ailloli_ui_bench::BenchWriteError> {
+    ///     session.record_with_context(
+    ///         Event::Marker { ts_ms: 1, name: "paint".into() },
+    ///         EventContext::default().with_frame(FrameId::new(1)),
+    ///     )?;
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn record_with_context(
         &self,
         event: Event,
@@ -372,35 +587,106 @@ impl BenchSession {
     }
 
     /// Publishes a partial metadata update discovered after startup.
+    ///
+    /// `None` fields do not erase prior metadata when read back.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-finite scale metadata and propagates queue/lifecycle errors.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::{BenchSession, RunMetadata};
+    /// fn update(session: &BenchSession) -> Result<(), ailloli_ui_bench::BenchWriteError> {
+    ///     let mut metadata = RunMetadata::default();
+    ///     metadata.gpu = Some("adapter".into());
+    ///     session.update_metadata(metadata)
+    /// }
+    /// ```
     pub fn update_metadata(&self, metadata: RunMetadata) -> Result<(), BenchWriteError> {
         self.core.update_metadata(metadata)
     }
 
     /// Allocates a frame identifier unique within this run.
+    ///
+    /// IDs start at one and allocation itself does not write a record.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::{BenchSession, FrameId};
+    /// fn allocate(session: &BenchSession) -> FrameId {
+    ///     session.allocate_frame_id()
+    /// }
+    /// ```
     pub fn allocate_frame_id(&self) -> FrameId {
         self.core.allocate_frame_id()
     }
 
     /// Returns the final path. It does not exist until successful finalization.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::BenchSession;
+    /// fn path(session: &BenchSession) -> &std::path::Path { session.path() }
+    /// ```
     pub fn path(&self) -> &Path {
         &self.core.path
     }
 
     /// Returns the diagnostic staging path.
+    ///
+    /// The staging file exists during the run and is retained on an invalid
+    /// run. Successful publication renames it to [`Self::path`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::BenchSession;
+    /// fn path(session: &BenchSession) -> &std::path::Path { session.staging_path() }
+    /// ```
     pub fn staging_path(&self) -> &Path {
         &self.core.staging_path
     }
 
     /// Returns this session's run identifier.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::{BenchSession, RunId};
+    /// fn id(session: &BenchSession) -> &RunId { session.run_id() }
+    /// ```
     pub fn run_id(&self) -> &RunId {
         &self.core.run_id
     }
 
     /// Flushes, syncs, and atomically publishes the run.
+    ///
+    /// The method consumes the session, stops acceptance, writes a terminal
+    /// record, joins the writer, and renames the partial file only when no record
+    /// was dropped. The destination is never overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed writer/join/flush/sync/invalid-run/destination/publication
+    /// errors. Invalid runs retain their staging path.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::{BenchSession, CompletedRun};
+    /// fn finish(session: BenchSession) -> Result<CompletedRun, ailloli_ui_bench::BenchWriteError> {
+    ///     session.finish()
+    /// }
+    /// ```
     pub fn finish(mut self) -> Result<CompletedRun, BenchWriteError> {
         self.finish_inner()
     }
 
+    /// Shared explicit/drop finalization path; may be called only once.
     fn finish_inner(&mut self) -> Result<CompletedRun, BenchWriteError> {
         let Some(worker) = self.worker.take() else {
             return Err(BenchWriteError::Closed);
@@ -431,6 +717,11 @@ impl Drop for BenchSession {
     }
 }
 
+/// Drains records, periodically flushes, writes `run_end`, and publishes.
+///
+/// A disconnected channel without `Finish` counts as one dropped record. Counts
+/// saturate rather than wrap. `sync_all` precedes the non-overwriting rename;
+/// invalid runs return with staging data intact.
 fn writer_loop(
     mut writer: BufWriter<File>,
     mut hasher: Sha256,
@@ -506,6 +797,7 @@ fn writer_loop(
     })
 }
 
+/// Serializes one compact JSON object plus newline, then hashes identical bytes.
 fn write_wire_record(
     writer: &mut BufWriter<File>,
     hasher: &mut Sha256,
@@ -518,7 +810,9 @@ fn write_wire_record(
     Ok(())
 }
 
+/// Encodes arbitrary bytes as two lowercase hexadecimal characters each.
 fn hex_digest(bytes: &[u8]) -> String {
+    /// Lowercase hexadecimal digit table.
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -528,6 +822,10 @@ fn hex_digest(bytes: &[u8]) -> String {
     output
 }
 
+/// Generates a process/time/sequence run ID unique within practical process use.
+///
+/// The sequence prevents collisions within one process at identical nanoseconds;
+/// wall clocks before the epoch contribute zero.
 fn generate_run_id() -> RunId {
     let sequence = RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
@@ -537,6 +835,7 @@ fn generate_run_id() -> RunId {
     RunId::new(format!("{}-{nanos}-{sequence}", std::process::id()))
 }
 
+/// Returns wall-clock milliseconds since Unix epoch, mapping pre-epoch to zero.
 fn unix_time_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -544,6 +843,10 @@ fn unix_time_ms() -> u128 {
         .as_millis()
 }
 
+/// Returns the first invalid floating-point metadata field.
+///
+/// Requested scale rejects non-finite values; observed scale additionally must
+/// be strictly positive.
 fn non_finite_metadata_field(metadata: &RunMetadata) -> Option<&'static str> {
     if metadata
         .scale_factor
@@ -557,6 +860,7 @@ fn non_finite_metadata_field(metadata: &RunMetadata) -> Option<&'static str> {
         .then_some("observed_scale_factor")
 }
 
+/// Returns the first event field that would serialize as non-finite JSON.
 fn non_finite_event_field(event: &Event) -> Option<&'static str> {
     match event {
         Event::Metric { value, .. } if !value.is_finite() => Some("metric.value"),
@@ -568,12 +872,37 @@ fn non_finite_event_field(event: &Event) -> Option<&'static str> {
 }
 
 #[derive(Debug)]
+/// Mutable state protected by [`Recorder`]'s mutex.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Public callers access this state through the locking `Recorder` facade.
+/// let recorder = ailloli_ui_bench::Recorder::new("legacy.jsonl")?;
+/// assert_eq!(recorder.path(), std::path::PathBuf::from("legacy.jsonl"));
+/// # Ok::<(), std::io::Error>(())
+/// ```
 pub(crate) struct RecorderInner {
+    /// Append-only destination path.
     path: PathBuf,
+    /// Buffered append writer.
     writer: BufWriter<File>,
 }
 
 /// Legacy append-only JSONL writer.
+///
+/// This compatibility type is intentionally non-gating: record/flush/lock
+/// failures are discarded, events have no run envelope or correlation IDs, and
+/// existing files are appended rather than protected from overwrite.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_bench::Recorder;
+/// let recorder = Recorder::new("artifacts/bench/legacy.jsonl")?;
+/// assert!(recorder.path().ends_with("legacy.jsonl"));
+/// # Ok::<(), std::io::Error>(())
+/// ```
 #[derive(Debug)]
 pub struct Recorder {
     inner: Mutex<RecorderInner>,
@@ -581,6 +910,20 @@ pub struct Recorder {
 
 impl Recorder {
     /// Opens or creates `path` for append.
+    ///
+    /// Parent directories are created when needed.
+    ///
+    /// # Errors
+    ///
+    /// Propagates directory creation or append-open failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let recorder = ailloli_ui_bench::Recorder::new("artifacts/bench/legacy.jsonl")?;
+    /// let _ = recorder.path();
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn new(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path
@@ -599,6 +942,17 @@ impl Recorder {
     }
 
     /// Appends one legacy event. Errors remain non-gating for compatibility.
+    ///
+    /// A successful event is immediately newline-terminated and flushed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_bench::{Event, Recorder};
+    /// let recorder = Recorder::new("legacy.jsonl")?;
+    /// recorder.record(&Event::Marker { ts_ms: 1, name: "ready".into() });
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn record(&self, event: &Event) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
@@ -610,6 +964,16 @@ impl Recorder {
     }
 
     /// Output file path.
+    ///
+    /// Returns an empty path if the mutex is poisoned.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// let recorder = ailloli_ui_bench::Recorder::new("legacy.jsonl")?;
+    /// assert_eq!(recorder.path(), std::path::PathBuf::from("legacy.jsonl"));
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
     pub fn path(&self) -> PathBuf {
         self.inner
             .lock()
@@ -618,29 +982,46 @@ impl Recorder {
     }
 }
 
+/// Process-global recorder lifecycle state protected by [`GLOBAL`].
 #[derive(Debug, Default)]
 enum GlobalSink {
     #[default]
+    /// No global recorder is installed.
     Empty,
+    /// A global session is being created outside the mutex.
     Initializing,
+    /// Weak reference that does not keep a gating session alive.
     Session(Weak<SessionCore>),
+    /// Historical append-only recorder.
     Legacy(Recorder),
 }
 
 impl GlobalSink {
+    /// Reclaims a session slot whose last strong reference was dropped.
     fn clear_dead_session(&mut self) {
         if matches!(self, Self::Session(session) if session.strong_count() == 0) {
             *self = Self::Empty;
         }
     }
 
+    /// Returns whether any initialization/session/legacy state owns the slot.
     fn is_active(&self) -> bool {
         !matches!(self, Self::Empty)
     }
 }
 
+/// Single process-global recorder slot.
 static GLOBAL: Lazy<Mutex<GlobalSink>> = Lazy::new(|| Mutex::new(GlobalSink::Empty));
 
+/// Installs the append-only compatibility recorder if the global slot is empty.
+///
+/// # Examples
+///
+/// ```no_run
+/// #![allow(deprecated)]
+/// // `init_from_env` creates and installs the same legacy sink when enabled.
+/// let _path = ailloli_ui_bench::init_from_env("legacy.jsonl");
+/// ```
 pub(crate) fn install_legacy(recorder: Recorder) -> Result<(), BenchInitError> {
     let mut global = GLOBAL
         .lock()
@@ -653,13 +1034,29 @@ pub(crate) fn install_legacy(recorder: Recorder) -> Result<(), BenchInitError> {
     Ok(())
 }
 
+/// Dispatches an event to the active gating session or legacy/global no-op.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_bench::{try_record, Event, EventContext};
+/// let _id = try_record(
+///     Event::Marker { ts_ms: 1, name: "ready".into() },
+///     EventContext::default(),
+/// )?;
+/// # Ok::<(), ailloli_ui_bench::BenchWriteError>(())
+/// ```
 pub(crate) fn record_global(
     event: Event,
     context: EventContext,
 ) -> Result<Option<EventId>, BenchWriteError> {
+    /// Owned dispatch decision used after releasing the global mutex.
     enum Sink {
+        /// Active gating session.
         Session(Arc<SessionCore>),
+        /// A legacy recorder already accepted the event.
         Legacy,
+        /// No active correlation-capable sink.
         Empty,
     }
 
@@ -682,6 +1079,17 @@ pub(crate) fn record_global(
     }
 }
 
+/// Queues a metadata overlay on the active global gating session.
+///
+/// # Examples
+///
+/// ```no_run
+/// let accepted = ailloli_ui_bench::try_update_metadata(
+///     ailloli_ui_bench::RunMetadata::default(),
+/// )?;
+/// let _ = accepted;
+/// # Ok::<(), ailloli_ui_bench::BenchWriteError>(())
+/// ```
 pub(crate) fn update_global_metadata(metadata: RunMetadata) -> Result<bool, BenchWriteError> {
     let session = active_global_session()?;
     match session {
@@ -693,10 +1101,21 @@ pub(crate) fn update_global_metadata(metadata: RunMetadata) -> Result<bool, Benc
     }
 }
 
+/// Allocates a frame ID from the active global gating session.
+///
+/// # Examples
+///
+/// ```no_run
+/// let id: Option<ailloli_ui_bench::FrameId> =
+///     ailloli_ui_bench::try_allocate_frame_id()?;
+/// let _ = id;
+/// # Ok::<(), ailloli_ui_bench::BenchWriteError>(())
+/// ```
 pub(crate) fn allocate_global_frame_id() -> Result<Option<FrameId>, BenchWriteError> {
     Ok(active_global_session()?.map(|session| session.allocate_frame_id()))
 }
 
+/// Upgrades and returns the active global session without holding the mutex.
 fn active_global_session() -> Result<Option<Arc<SessionCore>>, BenchWriteError> {
     let mut global = GLOBAL.lock().map_err(|_| BenchWriteError::WriterStopped)?;
     global.clear_dead_session();
@@ -706,6 +1125,7 @@ fn active_global_session() -> Result<Option<Arc<SessionCore>>, BenchWriteError> 
     }
 }
 
+/// Clears the global slot only when it still points to `core`.
 fn clear_global_session(core: &Arc<SessionCore>) {
     let Ok(mut global) = GLOBAL.lock() else {
         return;
@@ -722,6 +1142,7 @@ fn clear_global_session(core: &Arc<SessionCore>) {
 }
 
 #[cfg(test)]
+/// Verifies digest/run IDs plus queue and non-finite invalidation behavior.
 mod tests {
     use super::*;
 

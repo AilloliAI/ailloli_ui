@@ -1,3 +1,5 @@
+//! CPU vertex builders and scissor encoding for renderer primitives.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,6 +14,18 @@ use crate::vertices::{
     BorderRRectVertex, BoxShadowVertex, RRectVertex, RingProgressVertex, TexVertex, Vertex,
 };
 
+/// Returns Unix epoch time in whole milliseconds.
+///
+/// Times before the epoch and system-clock errors conservatively return zero.
+/// The value is wall-clock time and is not monotonic.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::passes::now_ms;
+/// let timestamp: u128 = now_ms();
+/// assert!(timestamp > 0);
+/// ```
 pub fn now_ms() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -20,12 +34,25 @@ pub fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// Converts top-left-origin physical pixels to wgpu normalized device coordinates.
+///
+/// `(0, 0)` maps to `(-1, 1)` and `(w, h)` maps to `(1, -1)`. Zero dimensions
+/// produce IEEE infinities or NaN rather than being clamped.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::passes::to_ndc;
+/// assert_eq!(to_ndc(100.0, 50.0, 0.0, 0.0), [-1.0, 1.0]);
+/// assert_eq!(to_ndc(100.0, 50.0, 100.0, 50.0), [1.0, -1.0]);
+/// ```
 pub fn to_ndc(w: f32, h: f32, x: f32, y: f32) -> [f32; 2] {
     let nx = (x / w) * 2.0 - 1.0;
     let ny = 1.0 - (y / h) * 2.0;
     [nx, ny]
 }
 
+/// Multiplies logical rectangle coordinates and size by device-pixel ratio.
 fn scale_rect_to_physical(r: Rect, scale: Scale) -> Rect {
     Rect::new(
         r.x * scale.dpr,
@@ -35,10 +62,38 @@ fn scale_rect_to_physical(r: Rect, scale: Scale) -> Rect {
     )
 }
 
+/// Appends a solid logical-pixel rectangle at DPR 1.
+///
+/// Six vertices (two triangles) are appended, even for empty or negative
+/// rectangles.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, Rect};
+/// use ailloli_ui_render_wgpu::passes::push_rect;
+/// let mut vertices = Vec::new();
+/// push_rect(&mut vertices, 100.0, 50.0, Rect::new(0.0, 0.0, 10.0, 5.0), Color::WHITE);
+/// assert_eq!(vertices.len(), 6);
+/// ```
 pub fn push_rect(out: &mut Vec<Vertex>, w: f32, h: f32, r: Rect, c: Color) {
     push_rect_scaled(out, w, h, Scale::new(1.0), r, c);
 }
 
+/// Appends a solid rectangle after scaling logical geometry to physical pixels.
+///
+/// `w` and `h` are the physical render-target extent used for NDC conversion.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{math::Scale, Color, Rect};
+/// use ailloli_ui_render_wgpu::passes::push_rect_scaled;
+/// let mut vertices = Vec::new();
+/// push_rect_scaled(&mut vertices, 20.0, 20.0, Scale::new(2.0),
+///     Rect::new(0.0, 0.0, 10.0, 10.0), Color::WHITE);
+/// assert_eq!(vertices[2].pos, [1.0, -1.0]);
+/// ```
 pub fn push_rect_scaled(out: &mut Vec<Vertex>, w: f32, h: f32, scale: Scale, r: Rect, c: Color) {
     let r = scale_rect_to_physical(r, scale);
     let x0 = r.x;
@@ -61,10 +116,34 @@ pub fn push_rect_scaled(out: &mut Vec<Vertex>, w: f32, h: f32, scale: Scale, r: 
     out.push(Vertex { pos: p3, color });
 }
 
+/// Builds a full-UV image quad at DPR 1.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_wgpu::passes::make_tex_rect;
+/// use ailloli_ui_runtime::DrawImage;
+/// fn build(image: DrawImage) { assert_eq!(make_tex_rect(100.0, 100.0, image).len(), 6); }
+/// ```
 pub fn make_tex_rect(w: f32, h: f32, img: DrawImage) -> [TexVertex; 6] {
     make_tex_rect_scaled(w, h, Scale::new(1.0), img)
 }
 
+/// Builds a full-UV image quad after scaling logical bounds to physical pixels.
+///
+/// Tint components pass through unchanged and UVs cover the entire texture.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::passes::make_tex_rect_scaled;
+/// use ailloli_ui_runtime::DrawImage;
+/// fn build(image: DrawImage) {
+///     let quad = make_tex_rect_scaled(200.0, 100.0, Scale::new(2.0), image);
+///     assert_eq!(quad[0].uv, [0.0, 0.0]);
+/// }
+/// ```
 pub fn make_tex_rect_scaled(w: f32, h: f32, scale: Scale, img: DrawImage) -> [TexVertex; 6] {
     let mut img = img;
     img.rect = scale_rect_to_physical(img.rect, scale);
@@ -119,10 +198,32 @@ pub fn make_tex_rect_scaled(w: f32, h: f32, scale: Scale, img: DrawImage) -> [Te
     ]
 }
 
+/// Appends a rounded-rectangle SDF quad at DPR 1.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_wgpu::passes::push_rrect;
+/// use ailloli_ui_runtime::DrawRRect;
+/// fn build(shape: DrawRRect) { let mut out = Vec::new(); push_rrect(&mut out, 10.0, 10.0, shape); assert_eq!(out.len(), 6); }
+/// ```
 pub fn push_rrect(out: &mut Vec<RRectVertex>, w: f32, h: f32, rr: DrawRRect) {
     push_rrect_scaled(out, w, h, Scale::new(1.0), rr);
 }
 
+/// Appends a rounded-rectangle SDF quad in physical-pixel geometry.
+///
+/// Logical bounds and radius are multiplied by DPR; size is clamped to at least
+/// one and radius to at least zero before being copied to all six vertices.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::passes::push_rrect_scaled;
+/// use ailloli_ui_runtime::DrawRRect;
+/// fn build(shape: DrawRRect) { let mut out = Vec::new(); push_rrect_scaled(&mut out, 20.0, 20.0, Scale::new(2.0), shape); assert_eq!(out.len(), 6); }
+/// ```
 pub fn push_rrect_scaled(
     out: &mut Vec<RRectVertex>,
     w: f32,
@@ -195,6 +296,19 @@ pub fn push_rrect_scaled(
     });
 }
 
+/// Appends a rounded-border SDF quad in physical-pixel geometry.
+///
+/// The current shader uses the top-left radius for all corners. Width and radius
+/// are clamped nonnegative; bounds still append six vertices when empty.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::{math::Scale, Color};
+/// use ailloli_ui_render_wgpu::passes::push_border_rrect_scaled;
+/// use ailloli_ui_runtime::DrawBorder;
+/// fn build(border: DrawBorder) { let mut out = Vec::new(); push_border_rrect_scaled(&mut out, 100.0, 100.0, Scale::new(1.0), border, 1.0, Color::WHITE); assert_eq!(out.len(), 6); }
+/// ```
 pub fn push_border_rrect_scaled(
     out: &mut Vec<BorderRRectVertex>,
     w: f32,
@@ -275,6 +389,20 @@ pub fn push_border_rrect_scaled(
     });
 }
 
+/// Appends a paint-only outer box-shadow SDF quad.
+///
+/// Inset shadows, transparent colors, and nonpositive paint/shape bounds append
+/// nothing. Radius includes spread, is scaled to physical pixels, and is capped
+/// at half the smaller shape axis; blur is clamped nonnegative.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::passes::push_box_shadow_scaled;
+/// use ailloli_ui_runtime::DrawBoxShadow;
+/// fn build(shadow: DrawBoxShadow) { let mut out = Vec::new(); push_box_shadow_scaled(&mut out, 100.0, 100.0, Scale::new(1.0), shadow); assert!(out.is_empty() || out.len() == 6); }
+/// ```
 pub fn push_box_shadow_scaled(
     out: &mut Vec<BoxShadowVertex>,
     w: f32,
@@ -377,6 +505,19 @@ pub fn push_box_shadow_scaled(
     });
 }
 
+/// Appends a circular-progress SDF quad in physical-pixel geometry.
+///
+/// Empty bounds append nothing. Thickness is clamped to half the smaller axis,
+/// fraction to `[0, 1]`, and the start angle is preserved in radians.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::passes::push_ring_progress_scaled;
+/// use ailloli_ui_runtime::DrawRingProgress;
+/// fn build(ring: DrawRingProgress) { let mut out = Vec::new(); push_ring_progress_scaled(&mut out, 100.0, 100.0, Scale::new(1.0), ring); assert!(out.is_empty() || out.len() == 6); }
+/// ```
 pub fn push_ring_progress_scaled(
     out: &mut Vec<RingProgressVertex>,
     w: f32,
@@ -476,6 +617,25 @@ pub fn push_ring_progress_scaled(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Appends textured glyph quads at DPR 1 using a complete atlas frame cycle.
+///
+/// This convenience path calls `start_frame` and `finish_frame` itself. Missing
+/// faces and unrasterizable glyphs are skipped. `text_draws` receives contiguous
+/// half-open vertex ranges grouped by atlas page.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::{collections::HashMap, sync::Arc};
+/// use ailloli_ui_render_wgpu::{passes::push_text, text::TextAtlas};
+/// use ailloli_ui_runtime::DrawText;
+/// fn build(atlas: &mut TextAtlas, device: &wgpu::Device, queue: &wgpu::Queue,
+///     layout: &wgpu::BindGroupLayout, text: &DrawText) {
+///     let mut vertices = Vec::new(); let mut draws = Vec::new();
+///     let faces: HashMap<u64, Arc<[u8]>> = HashMap::new();
+///     push_text(&mut vertices, &mut draws, 100.0, 50.0, atlas, device, queue, layout, &faces, text);
+/// }
+/// ```
 pub fn push_text(
     out: &mut Vec<TexVertex>,
     text_draws: &mut Vec<(u8, std::ops::Range<u32>)>,
@@ -505,6 +665,27 @@ pub fn push_text(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Appends textured glyph quads for an already-started atlas frame.
+///
+/// Glyph sizes are rounded and clamped to `8..=128` physical pixels. Positions
+/// are snapped to whole physical pixels. Callers must finish the atlas frame
+/// after encoding all text that relies on pinned pages.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::{collections::HashMap, sync::Arc};
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::{passes::push_text_scaled, text::TextAtlas};
+/// use ailloli_ui_runtime::DrawText;
+/// fn build(atlas: &mut TextAtlas, device: &wgpu::Device, queue: &wgpu::Queue,
+///     layout: &wgpu::BindGroupLayout, text: &DrawText) {
+///     let mut vertices = Vec::new(); let mut draws = Vec::new();
+///     let faces: HashMap<u64, Arc<[u8]>> = HashMap::new(); atlas.start_frame();
+///     push_text_scaled(&mut vertices, &mut draws, [100.0, 50.0], Scale::new(1.0), atlas, device, queue, layout, &faces, text);
+///     atlas.finish_frame();
+/// }
+/// ```
 pub fn push_text_scaled(
     out: &mut Vec<TexVertex>,
     text_draws: &mut Vec<(u8, std::ops::Range<u32>)>,
@@ -617,15 +798,49 @@ pub fn push_text_scaled(
 }
 
 /// Contract: `DrawText.pos` is expressed in baseline coordinates (pos.y = baseline).
+///
+/// The returned origin subtracts the first layout line's baseline from `pos.y`;
+/// an empty line list uses a zero baseline.
+///
+/// # Examples
+///
+/// ```
+/// let pos_y = 30.0_f32;
+/// let first_baseline = 12.0_f32;
+/// assert_eq!(pos_y - first_baseline, 18.0);
+/// ```
 pub(crate) fn text_origin_from_baseline(dt: &DrawText) -> (f32, f32) {
     let first_baseline = dt.layout.lines.first().map(|l| l.baseline_y).unwrap_or(0.0);
     (dt.pos[0], dt.pos[1] - first_baseline)
 }
 
+/// Applies one logical scissor rectangle at DPR 1.
+///
+/// An empty rectangle leaves the current render-pass scissor unchanged.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::passes::set_scissor_rect;
+/// fn set(pass: &mut wgpu::RenderPass<'_>) { set_scissor_rect(pass, 100.0, 50.0, Rect::new(1.0, 2.0, 10.0, 10.0)); }
+/// ```
 pub fn set_scissor_rect(rpass: &mut wgpu::RenderPass<'_>, w: f32, h: f32, clip: Rect) {
     set_scissor_rect_scaled(rpass, w, h, Scale::new(1.0), clip);
 }
 
+/// Snaps a logical scissor outward at DPR and applies its nonempty intersection.
+///
+/// Surface dimensions are truncated to `u32`. An empty intersection leaves the
+/// existing scissor unchanged.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::{math::Scale, Rect};
+/// use ailloli_ui_render_wgpu::passes::set_scissor_rect_scaled;
+/// fn set(pass: &mut wgpu::RenderPass<'_>) { set_scissor_rect_scaled(pass, 200.0, 100.0, Scale::new(2.0), Rect::new(1.0, 2.0, 3.0, 4.0)); }
+/// ```
 pub fn set_scissor_rect_scaled(
     rpass: &mut wgpu::RenderPass<'_>,
     w_px: f32,
@@ -645,6 +860,14 @@ pub fn set_scissor_rect_scaled(
 /// WGPU can retain scissor state across render passes in the same encoder on some
 /// backends; always setting an explicit rect avoids a narrow scissor leaking to
 /// later layers (e.g. window chrome after an editor viewport pass).
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::math::Scale;
+/// use ailloli_ui_render_wgpu::passes::apply_layer_scissor;
+/// fn reset(pass: &mut wgpu::RenderPass<'_>) { apply_layer_scissor(pass, 100.0, 50.0, Scale::new(1.0), None); }
+/// ```
 pub fn apply_layer_scissor(
     rpass: &mut wgpu::RenderPass<'_>,
     w_px: f32,
@@ -663,6 +886,7 @@ pub fn apply_layer_scissor(
     rpass.set_scissor_rect(0, 0, surface_w.max(1), surface_h.max(1));
 }
 
+/// Converts a snapped logical rectangle to a bounded nonempty wgpu scissor.
 fn scissor_rect_u32(
     surface_w_px: u32,
     surface_h_px: u32,
@@ -687,6 +911,7 @@ fn scissor_rect_u32(
 }
 
 #[cfg(test)]
+/// Verifies baseline placement, logical scaling, scissor snapping, and radii.
 mod tests {
     use super::*;
 

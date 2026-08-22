@@ -7,21 +7,62 @@ use ailloli_ui_core::Rect;
 use crate::offscreen_pool::{LeasedOffscreen, OffscreenSurfacePool, PoolKey};
 
 /// Blurred backdrop textures keyed by isolated pass id (keeps pool leases alive).
+///
+/// Bind groups and leases are retained together until compositing finishes, so
+/// pooled textures cannot be reused while sampled by the frame.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::BackdropTable;
+/// let table = BackdropTable::empty();
+/// assert!(table.bind_groups.is_empty());
+/// ```
 #[derive(Default)]
 pub struct BackdropTable {
+    /// Sample bindings indexed by the frame-local `u16` pass identifier.
     pub bind_groups: HashMap<u16, wgpu::BindGroup>,
     leases: Vec<LeasedOffscreen>,
 }
 
 impl BackdropTable {
+    /// Creates a table with no bindings or live pool leases.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::BackdropTable;
+    /// assert!(BackdropTable::empty().get(0).is_none());
+    /// ```
     pub fn empty() -> Self {
         Self::default()
     }
 
+    /// Returns the backdrop sample binding for `pass_id`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::BackdropTable;
+    /// assert!(BackdropTable::empty().get(7).is_none());
+    /// ```
     pub fn get(&self, pass_id: u16) -> Option<&wgpu::BindGroup> {
         self.bind_groups.get(&pass_id)
     }
 
+    /// Inserts or replaces a binding and retains the associated pool lease.
+    ///
+    /// Replacing a binding does not remove the earlier lease; both remain live
+    /// until the table is dropped, preventing premature pool reuse.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{BackdropTable, offscreen_pool::LeasedOffscreen};
+    /// fn retain(table: &mut BackdropTable, lease: LeasedOffscreen, binding: wgpu::BindGroup) {
+    ///     table.insert(1, lease, binding);
+    /// }
+    /// ```
     pub fn insert(&mut self, pass_id: u16, lease: LeasedOffscreen, bind_group: wgpu::BindGroup) {
         self.bind_groups.insert(pass_id, bind_group);
         self.leases.push(lease);
@@ -29,6 +70,25 @@ impl BackdropTable {
 }
 
 /// Physical-pixel copy from swapchain texture into a pooled offscreen target.
+///
+/// The origin is floored and clamped nonnegative. Extent is ceiled, forced to at
+/// least one pixel, and bounded by the lease dimensions. The caller must ensure
+/// the source texture also contains the resulting region and that `format`
+/// matches the lease; wgpu validation reports violations.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::{backdrop_capture::copy_swapchain_region_to_offscreen,
+///     offscreen_pool::{LeasedOffscreen, OffscreenSurfacePool}};
+/// fn copy(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder,
+///     source: &wgpu::Texture, lease: &LeasedOffscreen, pool: &OffscreenSurfacePool) {
+///     copy_swapchain_region_to_offscreen(device, encoder, source,
+///         Rect::new(0.0, 0.0, 32.0, 32.0), lease, pool,
+///         wgpu::TextureFormat::Rgba8Unorm);
+/// }
+/// ```
 pub fn copy_swapchain_region_to_offscreen(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
@@ -71,6 +131,22 @@ pub fn copy_swapchain_region_to_offscreen(
 }
 
 /// Lease sized for a backdrop capture (no stencil).
+///
+/// Fractional width and height are ceiled and each axis is at least one physical
+/// pixel.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_render_wgpu::{backdrop_capture::lease_backdrop_slot,
+///     offscreen_pool::OffscreenSurfacePool};
+/// fn lease(pool: &mut OffscreenSurfacePool, device: &wgpu::Device) {
+///     let slot = lease_backdrop_slot(pool, device, Rect::new(0.0, 0.0, 10.2, 4.1),
+///         wgpu::TextureFormat::Rgba8Unorm);
+///     assert_eq!((slot.width, slot.height), (11, 5));
+/// }
+/// ```
 pub fn lease_backdrop_slot(
     pool: &mut OffscreenSurfacePool,
     device: &wgpu::Device,

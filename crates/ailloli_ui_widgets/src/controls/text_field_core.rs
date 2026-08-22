@@ -1,3 +1,8 @@
+//! Shared retained editing, layout, scrolling, and IME machinery for text fields.
+//!
+//! These helpers are crate-visible so controls can share one editing contract;
+//! consumers use [`super::text_input::TextInput`] rather than calling them.
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, ImeEvent, ImePreedit};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
@@ -18,10 +23,52 @@ use super::text_input::TextInputStyle;
 use crate::layout::layout_ext::apply_layout_size;
 
 #[derive(Debug, Clone, Copy, Default)]
+/// Event-routing policy supplied by a public text control.
+///
+/// `consume_handled_events` defaults to `false`. Multi-line pointer and changed
+/// wheel paths already consume their events directly; the option additionally
+/// consumes every path the shared handler reports as handled.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let input: TextInput<()> = TextInput::new();
+/// let _ = input; // public TextInput uses the default propagation policy
+/// ```
 pub(crate) struct TextFieldEventOptions {
+    /// Whether the shared handler stops propagation after any handled event.
     pub consume_handled_events: bool,
 }
 
+/// Builds the display string and display caret for an optional IME preedit.
+///
+/// Without preedit, the original text is cloned and the caret is length-clamped.
+/// With preedit, its text is inserted at the clamped byte offset and its
+/// optional selection end determines the display caret. Offsets must be UTF-8
+/// character boundaries when insertion occurs.
+///
+/// # Panics
+///
+/// Panics when non-empty preedit is inserted at a clamped caret offset that is
+/// not a UTF-8 character boundary.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::event::ImePreedit;
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_text::TextSystem;
+/// use ailloli_ui_widgets::controls::text_input::draw_text_input;
+/// use ailloli_ui_widgets::controls::TextInputStyle;
+/// let mut text = TextSystem::new();
+/// let preedit = ImePreedit::new("é");
+/// let commands = draw_text_input(
+///     Rect::new(0.0, 0.0, 160.0, 36.0), "caf", 3, None, Some(&preedit),
+///     true, 0, TextInputStyle::default(), &mut text,
+/// );
+/// assert!(!commands.is_empty());
+/// ```
 pub(crate) fn display_text_for_edit(
     text: &str,
     caret_byte: usize,
@@ -45,6 +92,20 @@ pub(crate) fn display_text_for_edit(
     }
 }
 
+/// Insets bounds by horizontal and vertical style padding.
+///
+/// Negative remaining width or height is clamped to zero; negative padding is
+/// otherwise accepted and expands the returned rectangle.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_widgets::controls::TextInputStyle;
+/// let style = TextInputStyle::default();
+/// let bounds = Rect::new(0.0, 0.0, 100.0, 40.0);
+/// assert!(bounds.w - style.pad_x * 2.0 <= bounds.w);
+/// ```
 pub(crate) fn text_input_content_rect(bounds: Rect, style: TextInputStyle) -> Rect {
     Rect::new(
         bounds.x + style.pad_x,
@@ -55,6 +116,23 @@ pub(crate) fn text_input_content_rect(bounds: Rect, style: TextInputStyle) -> Re
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Measures single-line content and returns an optional reusable text artifact.
+///
+/// The public value takes precedence over a stale buffer. Empty display text
+/// measures the placeholder, or one space when no placeholder exists. Width
+/// resolves from layout against constraints; height follows text plus padding.
+/// Without a text system, height falls back to `1.2 × font_px + 2 × pad_y`.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new(String::new())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).placeholder("Search");
+/// let _ = input; // single-line layout measures the placeholder while empty
+/// ```
 pub(crate) fn layout_single_line_text(
     ctx: &mut LayoutCtx<'_>,
     constraints: Constraints,
@@ -103,6 +181,27 @@ pub(crate) fn layout_single_line_text(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Paints clipped single-line text, selection, and blinking caret.
+///
+/// A matching layout artifact is reused; otherwise text is reshaped during
+/// paint when a text system exists. Horizontal scroll shifts the baseline.
+/// Placeholder color is used only when value and preedit are empty. Selection
+/// is hidden during preedit, and a non-positive blink cadence hides the caret.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_text::TextSystem;
+/// use ailloli_ui_widgets::controls::text_input::draw_text_input;
+/// use ailloli_ui_widgets::controls::TextInputStyle;
+/// let mut text = TextSystem::new();
+/// let commands = draw_text_input(
+///     Rect::new(0.0, 0.0, 180.0, 36.0), "abc", 3, None, None,
+///     true, 0, TextInputStyle::default(), &mut text,
+/// );
+/// assert!(commands.len() >= 3);
+/// ```
 pub(crate) fn paint_single_line_text(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -203,6 +302,22 @@ pub(crate) fn paint_single_line_text(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Measures wrapped multi-line content and returns a reusable text artifact.
+///
+/// Text wraps by word or, when needed, anywhere within the padded content
+/// width. Empty display text measures the placeholder or one space. Width is
+/// layout-resolved; height grows from wrapped content plus vertical padding.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("one two three".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input;
+/// ```
 pub(crate) fn layout_multi_line_text(
     ctx: &mut LayoutCtx<'_>,
     constraints: Constraints,
@@ -252,6 +367,22 @@ pub(crate) fn layout_multi_line_text(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Paints clipped wrapped text, per-line selection, caret, and scrollbar.
+///
+/// Both scroll axes offset the text. A vertical scrollbar is emitted only when
+/// content exceeds the viewport by more than one logical pixel; its thumb ratio
+/// is clamped to `0.08..=1.0` and its height has an 18-pixel floor.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("first\nsecond".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input; // retained painting clips wrapped text to padded bounds
+/// ```
 pub(crate) fn paint_multi_line_text(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -365,6 +496,10 @@ pub(crate) fn paint_multi_line_text(
     });
 }
 
+/// Paints the selected intersection of every shaped line.
+///
+/// Byte bounds are clamped to layout text; each non-empty intersection has at
+/// least one logical pixel of width.
 fn paint_multi_line_selection(
     ctx: &mut PaintCtx<'_>,
     layout: &TextLayoutHandle,
@@ -412,6 +547,7 @@ fn paint_multi_line_selection(
     }
 }
 
+/// Paints the two-pixel vertical scrollbar thumb when content overflows.
 fn paint_multi_line_scrollbar(
     ctx: &mut PaintCtx<'_>,
     content_rect: Rect,
@@ -434,6 +570,23 @@ fn paint_multi_line_scrollbar(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Routes one single-line keyboard, IME, wheel, or pointer event.
+///
+/// Keyboard mapping uses [`TextInputMode::SingleLine`]. Wheel input scrolls only
+/// horizontally. A left press places/extends the selection and starts a drag;
+/// release or cancellation ends it. The return value is `true` exactly for a
+/// handled path. Propagation is stopped only when requested by `options`.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new(String::new())), Rc::new(|| {}));
+/// let input = TextInput::new().bind(value).on_change(|text| text);
+/// let _ = input; // the public widget delegates events to the single-line router
+/// ```
 pub(crate) fn handle_single_line_text_event<A>(
     ctx: &mut EventCtx<A>,
     event: &Event,
@@ -574,6 +727,23 @@ pub(crate) fn handle_single_line_text_event<A>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Routes one multi-line keyboard, IME, two-axis wheel, or pointer event.
+///
+/// Keyboard mapping uses [`TextInputMode::MultiLine`]. Changed wheel scrolling
+/// and handled pointer paths always stop propagation. Keyboard/IME paths follow
+/// `options`. Edits request a deferred post-layout caret reveal when the current
+/// artifact cannot resolve it.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new(String::new())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input; // newline keys and two-axis wheel input use the multi-line router
+/// ```
 pub(crate) fn handle_multi_line_text_event<A>(
     ctx: &mut EventCtx<A>,
     event: &Event,
@@ -732,6 +902,24 @@ pub(crate) fn handle_multi_line_text_event<A>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Applies one single-line edit action and synchronizes all observable state.
+///
+/// A paste request reads the context clipboard and becomes a paste only when
+/// text is available. Clipboard writes are best-effort. Changed text updates
+/// buffer then public value; any text or edit-state change reveals the caret,
+/// commits edit state, and requests repaint. No-op outcomes do none of these.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("a".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value.clone());
+/// assert_eq!(value.read(), "a");
+/// let _ = input; // accepted edit actions update this same signal
+/// ```
 pub(crate) fn apply_edit_action<A>(
     ctx: &mut EventCtx<A>,
     value: &Signal<String>,
@@ -767,6 +955,22 @@ pub(crate) fn apply_edit_action<A>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Applies one multi-line edit action and schedules reliable caret reveal.
+///
+/// Clipboard and value synchronization match [`apply_edit_action`]. If the
+/// current text artifact matches, both scroll axes reveal the caret immediately;
+/// otherwise `pending_reveal` is set for the post-layout callback.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("a\nb".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input; // a stale artifact defers reveal until committed layout
+/// ```
 pub(crate) fn apply_multi_line_edit_action<A>(
     ctx: &mut EventCtx<A>,
     value: &Signal<String>,
@@ -806,6 +1010,23 @@ pub(crate) fn apply_multi_line_edit_action<A>(
     }
 }
 
+/// Maps a pointer position to a single-line UTF-8 byte offset.
+///
+/// Coordinates include horizontal scroll and content padding. A matching text
+/// artifact performs shaped hit testing. Without one, the fallback estimates
+/// `0.6 × font_px` per byte and length-clamps the result; that approximation is
+/// not guaranteed to land on a Unicode character boundary.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("hello".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value);
+/// let _ = input; // pointer placement uses shaped layout when available
+/// ```
 pub(crate) fn byte_at_point(
     bounds: Rect,
     pos: ailloli_ui_core::Point,
@@ -834,6 +1055,22 @@ pub(crate) fn byte_at_point(
         .min(value_text.len())
 }
 
+/// Maps a pointer position to a multi-line UTF-8 byte offset.
+///
+/// Both scroll offsets and content padding are applied. Matching shaped layout
+/// performs two-dimensional hit testing. The no-artifact fallback estimates
+/// from x only and may return a non-character-boundary byte for Unicode text.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("one\ntwo".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input;
+/// ```
 pub(crate) fn byte_at_point_multi_line(
     bounds: Rect,
     pos: ailloli_ui_core::Point,
@@ -863,6 +1100,23 @@ pub(crate) fn byte_at_point_multi_line(
         .min(value_text.len())
 }
 
+/// Adjusts single-line horizontal scroll so the display caret is visible.
+///
+/// The current IME preedit is included in display/caret mapping. Matching layout
+/// supplies shaped caret geometry; otherwise width is estimated as
+/// `0.6 × font_px` per byte. The updated edit state is written to both the
+/// mutable argument and its signal, even when the offset is unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("a long value".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value);
+/// let _ = input; // edits reveal the caret horizontally
+/// ```
 pub(crate) fn reveal_caret(
     edit: &Signal<TextEditState>,
     edit_state: &mut TextEditState,
@@ -890,6 +1144,22 @@ pub(crate) fn reveal_caret(
     edit.set(edit_state.clone());
 }
 
+/// Reveals a multi-line display caret using a matching layout artifact.
+///
+/// Returns `false` when no artifact contains exactly the composed display text;
+/// in that case the caller should retry after layout. Returns `true` when the
+/// reveal was resolved, even if neither scroll offset changed.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("first\nsecond".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input; // reveal is deferred when the current artifact is stale
+/// ```
 pub(crate) fn reveal_caret_multi_line(
     edit_state: &mut TextEditState,
     bounds: Rect,
@@ -909,6 +1179,21 @@ pub(crate) fn reveal_caret_multi_line(
     true
 }
 
+/// Re-reads current signals and attempts a multi-line caret reveal.
+///
+/// Returns whether a matching layout artifact was available. When available,
+/// the edit signal is written back even if its scroll offsets remain equal.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("text".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input; // committed layout retries any pending caret reveal
+/// ```
 pub(crate) fn reveal_caret_multi_line_from_current_layout(
     bounds: Rect,
     layout: &LayoutResult,
@@ -927,6 +1212,22 @@ pub(crate) fn reveal_caret_multi_line_from_current_layout(
     changed
 }
 
+/// Reveals a shaped multi-line caret across both scroll axes.
+///
+/// The target caret rectangle is inflated by four logical pixels before reveal.
+/// Returns `true` only if either stored scroll offset changed by more than
+/// [`f32::EPSILON`]; it always writes the resolved offsets to `edit_state`.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("many\nlines".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input;
+/// ```
 pub(crate) fn reveal_caret_multi_line_with_layout(
     edit_state: &mut TextEditState,
     bounds: Rect,
@@ -952,6 +1253,22 @@ pub(crate) fn reveal_caret_multi_line_with_layout(
     changed
 }
 
+/// Resolves single-line horizontal viewport and content extents.
+///
+/// Padded bounds define the viewport. A matching artifact supplies shaped text
+/// width; otherwise UTF-8 byte length times `0.6 × font_px` is used. Content
+/// width is never smaller than viewport width, and content height equals it.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("scroll horizontally".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value);
+/// let _ = input;
+/// ```
 pub(crate) fn scroll_metrics(
     bounds: Rect,
     layout: &LayoutResult,
@@ -968,6 +1285,22 @@ pub(crate) fn scroll_metrics(
     )
 }
 
+/// Resolves multi-line viewport and two-axis content extents.
+///
+/// Matching layout supplies shaped width and height. Without it, width is
+/// approximated per UTF-8 byte and height as `1.2 × font_px`. Each content axis
+/// is floored at the corresponding padded viewport extent.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("wrapped content".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input;
+/// ```
 pub(crate) fn multi_line_scroll_metrics(
     bounds: Rect,
     layout: &LayoutResult,
@@ -989,6 +1322,24 @@ pub(crate) fn multi_line_scroll_metrics(
     )
 }
 
+/// Returns a buffer representing the public value without mutating stored state.
+///
+/// When the persistent buffer already equals the external string it is cloned,
+/// preserving its representation. Otherwise a temporary buffer is rebuilt from
+/// the external value, which therefore wins for layout and painting.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("external".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value.clone());
+/// value.set("new external".into());
+/// assert_eq!(value.read(), "new external");
+/// let _ = input;
+/// ```
 pub(crate) fn read_display_buffer(
     value: &Signal<String>,
     buffer: &Signal<TextBuffer>,
@@ -1002,6 +1353,23 @@ pub(crate) fn read_display_buffer(
     }
 }
 
+/// Returns a buffer representing the public value and repairs stale storage.
+///
+/// Equal state returns the existing buffer clone without invalidation. A stale
+/// buffer is rebuilt from the external string, stored through its signal, and
+/// returned. Editing paths call this before applying actions.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("initial".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value.clone());
+/// value.set("replacement".into());
+/// let _ = input; // the next edit rebuilds its persistent buffer first
+/// ```
 pub(crate) fn sync_buffer_from_value(
     value: &Signal<String>,
     buffer: &Signal<TextBuffer>,
@@ -1017,6 +1385,21 @@ pub(crate) fn sync_buffer_from_value(
     }
 }
 
+/// Borrows a text artifact only when its exact source equals `expected_text`.
+///
+/// Non-text artifacts, absent artifacts, and even one-byte text differences
+/// return `None`, preventing stale caret/hit geometry from being reused.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("exact".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value);
+/// let _ = input; // layout artifacts are reused only while their text matches
+/// ```
 pub(crate) fn text_layout_from_artifact<'a>(
     layout: &'a LayoutResult,
     expected_text: &str,
@@ -1027,6 +1410,23 @@ pub(crate) fn text_layout_from_artifact<'a>(
     }
 }
 
+/// Resolves the single-line system IME candidate-window anchor.
+///
+/// Returns `None` without an exact text layout artifact. X follows the composed
+/// display caret minus horizontal scroll. The rectangle uses a fixed six-pixel
+/// vertical inset; bounds shorter than 12 pixels can therefore produce a
+/// negative height and should be avoided by callers.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new(String::new())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value);
+/// let _ = input; // the runtime asks the widget for this IME anchor
+/// ```
 pub(crate) fn ime_cursor_rect(
     bounds: Rect,
     layout: &LayoutResult,
@@ -1049,6 +1449,22 @@ pub(crate) fn ime_cursor_rect(
     Some(Rect::new(x, bounds.y + 6.0, 1.0, bounds.h.max(1.0) - 12.0))
 }
 
+/// Resolves the multi-line system IME candidate-window anchor.
+///
+/// Returns `None` without an exact display-text artifact. Both scroll offsets
+/// are subtracted from shaped caret geometry. Width is the configured caret
+/// width; height is clamped to at least one logical pixel.
+///
+/// # Examples
+///
+/// ```
+/// use std::{cell::RefCell, rc::Rc};
+/// use ailloli_ui_runtime::component::Signal;
+/// use ailloli_ui_widgets::controls::TextInput;
+/// let value = Signal::new(Rc::new(RefCell::new("one\ntwo".into())), Rc::new(|| {}));
+/// let input: TextInput<()> = TextInput::new().bind(value).multiline();
+/// let _ = input;
+/// ```
 pub(crate) fn ime_cursor_rect_multi_line(
     bounds: Rect,
     layout: &LayoutResult,

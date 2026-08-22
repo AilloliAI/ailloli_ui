@@ -1,3 +1,5 @@
+//! Icon intrinsic/fill sizing, tint, rotation, and paint scenarios.
+
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::{Color, IconId, Size};

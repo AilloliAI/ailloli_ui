@@ -1,3 +1,5 @@
+//! Search highlights and diagnostic underline paint construction.
+
 use ailloli_ui_core::Color;
 
 use crate::code::{CodeTheme, Diagnostic, DiagnosticSeverity, SearchState};
@@ -6,6 +8,26 @@ use crate::layout::EditorTextRun;
 use crate::paint::EditorPaintItem;
 use crate::EditorStyle;
 
+/// Builds background items for search matches intersecting one text run.
+///
+/// Search ranges are source-buffer byte offsets and are clipped to the run.
+/// Each visual-line segment becomes one item. The match whose slice index equals
+/// [`SearchState::active_index`] uses the active color and flag.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_editor::{layout::EditorTextRun, paint::code_decorations_painter::search_highlight_items_for_run, CodeTheme, DocumentVersion, EditorStyle, SearchQuery, SearchState};
+/// use ailloli_ui_text::{TextLayoutParams, TextSystem};
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("abc", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 0..3, baseline_y: 12.0, layout };
+/// let mut search = SearchState::new(SearchQuery::new("b"));
+/// search.refresh("abc", DocumentVersion(1));
+/// let items = search_highlight_items_for_run(0.0, 0.0, &run, &search, EditorStyle::default(), CodeTheme::default());
+/// assert_eq!(items.len(), 1);
+/// ```
 pub fn search_highlight_items_for_run(
     content_x: f32,
     content_y: f32,
@@ -39,6 +61,26 @@ pub fn search_highlight_items_for_run(
         .collect()
 }
 
+/// Builds underline and optional active-fill items for run diagnostics.
+///
+/// Diagnostic ranges are half-open for painting and clipped to the run. Each
+/// selected visual segment gets a two-logical-pixel underline. An active
+/// diagnostic additionally emits a highlight before every underline; that
+/// highlight uses the first selected visual segment returned for the range.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_editor::{layout::EditorTextRun, paint::code_decorations_painter::diagnostic_underline_items_for_run, CodeTheme, Diagnostic, DiagnosticSeverity, EditorStyle};
+/// use ailloli_ui_text::{TextLayoutParams, TextSystem};
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("abc", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 0..3, baseline_y: 12.0, layout };
+/// let diagnostics = [Diagnostic::new(1..2, DiagnosticSeverity::Error, "bad")];
+/// let items = diagnostic_underline_items_for_run(0.0, 0.0, &run, &diagnostics, None, EditorStyle::default(), CodeTheme::default());
+/// assert_eq!(items.len(), 1);
+/// ```
 pub fn diagnostic_underline_items_for_run(
     content_x: f32,
     content_y: f32,
@@ -86,6 +128,7 @@ pub fn diagnostic_underline_items_for_run(
         .collect()
 }
 
+/// Clips a source-buffer range to run-local byte offsets.
 fn clipped_local_range(
     run: &EditorTextRun,
     range: std::ops::Range<usize>,
@@ -102,6 +145,21 @@ fn clipped_local_range(
     (hi > lo).then_some((lo, hi))
 }
 
+/// Maps diagnostic severity to its configured semantic color.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_editor::{layout::EditorTextRun, paint::{code_decorations_painter::diagnostic_underline_items_for_run, EditorPaintItem}, CodeTheme, Diagnostic, DiagnosticSeverity, EditorStyle};
+/// use ailloli_ui_text::{TextLayoutParams, TextSystem};
+/// let theme = CodeTheme::default();
+/// let mut system = TextSystem::new();
+/// let layout = system.layout_cached(TextLayoutParams::new("x", TextStyle::new(FontId::Mono, 13, Color::WHITE)));
+/// let run = EditorTextRun { index: 0, byte_range: 0..1, baseline_y: 12.0, layout };
+/// let items = diagnostic_underline_items_for_run(0.0, 0.0, &run, &[Diagnostic::new(0..1, DiagnosticSeverity::Warning, "warn")], None, EditorStyle::default(), theme);
+/// assert!(matches!(items[0], EditorPaintItem::DiagnosticUnderline { color, .. } if color == theme.diagnostic_warning));
+/// ```
 pub(crate) fn diagnostic_color(theme: CodeTheme, severity: DiagnosticSeverity) -> Color {
     match severity {
         DiagnosticSeverity::Error => theme.diagnostic_error,

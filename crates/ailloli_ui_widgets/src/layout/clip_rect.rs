@@ -1,3 +1,5 @@
+//! Single-child rectangular clipping wrapper.
+
 use ailloli_ui_core::geometry::{ClipShape, Constraints, Rect, Size};
 use ailloli_ui_core::Offset;
 use ailloli_ui_runtime::component::{IntoView, View, Widget};
@@ -5,10 +7,23 @@ use ailloli_ui_runtime::layout::LayoutEngine;
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 
+/// Clips one child to this wrapper's resolved logical-pixel bounds.
+///
+/// The child uses the incoming constraints. With no child, the wrapper resolves
+/// constrained zero size. The clip is not a window-root clip.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::{layout::ClipRect, text::Text};
+/// let clip: ClipRect<()> = ClipRect::new().child(Text::new("visible portion"));
+/// let _ = clip;
+/// ```
 pub struct ClipRect<A = ()> {
     child: Option<View<A>>,
 }
 
+/// Creates the same empty clip as [`ClipRect::new`].
 impl<A: 'static> Default for ClipRect<A> {
     fn default() -> Self {
         Self::new()
@@ -16,18 +31,38 @@ impl<A: 'static> Default for ClipRect<A> {
 }
 
 impl<A: 'static> ClipRect<A> {
+    /// Creates an empty rectangular clip wrapper.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ClipRect;
+    /// let clip: ClipRect<()> = ClipRect::new();
+    /// let _ = clip;
+    /// ```
     pub fn new() -> Self {
         Self { child: None }
     }
 
+    /// Sets the single clipped child, replacing any previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::ClipRect, text::Text};
+    /// let clip: ClipRect<()> = ClipRect::new().child(Text::new("child"));
+    /// let _ = clip;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Stateless retained rectangular clip implementation.
 struct ClipRectWidget;
 
+/// Resolves child size and publishes an exact rectangular clip shape.
 impl<A: 'static> Widget<A> for ClipRectWidget {
     fn debug_name(&self) -> &'static str {
         "ClipRect"
@@ -70,6 +105,7 @@ impl<A: 'static> Widget<A> for ClipRectWidget {
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
+/// Converts the builder into a retained node containing zero or one child.
 impl<A: 'static> IntoView<A> for ClipRect<A> {
     fn into_view(self) -> View<A> {
         let mut children = Vec::new();

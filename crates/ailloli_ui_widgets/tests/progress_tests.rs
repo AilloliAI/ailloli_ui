@@ -1,3 +1,5 @@
+//! Linear/circular progress style, sizing, clamping, paint, and input scenarios.
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Modifiers};
 use ailloli_ui_core::geometry::Constraints;

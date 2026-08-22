@@ -1,3 +1,5 @@
+//! Large retained-tree virtualization, invalidation, and deep-scroll scenarios.
+
 use ailloli_ui_core::{Constraints, Scale};
 use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::IntoView;

@@ -1,10 +1,14 @@
+//! Static dependency-boundary scenarios for public framework and sandbox sources.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Resolves the framework workspace root from the winit crate manifest.
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Recursively collects Rust sources while skipping build-output directories.
 fn visit_rust_files(path: &Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(path) else {
         return;
@@ -19,6 +23,7 @@ fn visit_rust_files(path: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
+/// Detects direct `winit` imports, paths, and extern declarations in source text.
 fn has_direct_winit_dependency(source: &str) -> bool {
     let mut dependency_section = false;
     for line in source.lines() {
@@ -41,6 +46,7 @@ fn has_direct_winit_dependency(source: &str) -> bool {
     false
 }
 
+/// Detects a token-delimited `winit::` path without matching longer identifiers.
 fn has_winit_path(source: &str) -> bool {
     source.match_indices("winit::").any(|(index, _)| {
         source[..index]

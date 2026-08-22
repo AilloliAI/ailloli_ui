@@ -24,14 +24,35 @@ fn blend_mode_shader_id(mode: BlendMode) -> u32 {
 }
 
 /// Pipelines for compositing an isolated fg texture over a captured dst region.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::composite_blend::CompositeBlendPipelines;
+/// let _: usize = std::mem::size_of::<CompositeBlendPipelines>();
+/// ```
 pub struct CompositeBlendPipelines {
+    /// Render pipeline implementing normal, multiply, and screen equations.
     pub pipeline: wgpu::RenderPipeline,
+    /// Uniform layout for shader mode and clamped opacity.
     pub params_layout: wgpu::BindGroupLayout,
+    /// Shared texture-plus-sampler layout for foreground and background.
     pub tex_layout: wgpu::BindGroupLayout,
+    /// Linear sampler used for both captured textures.
     pub sampler: wgpu::Sampler,
 }
 
 impl CompositeBlendPipelines {
+    /// Builds blend resources for one exact output format.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::composite_blend::CompositeBlendPipelines;
+    /// fn build(device: &wgpu::Device) -> CompositeBlendPipelines {
+    ///     CompositeBlendPipelines::new(device, wgpu::TextureFormat::Bgra8UnormSrgb)
+    /// }
+    /// ```
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let params_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("composite blend params layout"),
@@ -116,6 +137,24 @@ impl CompositeBlendPipelines {
 }
 
 /// Draw fg over captured bg into the main pass (`view` must use `Load`).
+///
+/// Opacity is clamped to `[0, 1]`. The function creates transient uniform and
+/// background bind groups, preserves existing main-frame color, and draws the
+/// composite's half-open vertex range. All views and the pipeline must share a
+/// compatible format and device.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_wgpu::{composite_blend::{draw_composite_blend,
+///     CompositeBlendPipelines}, isolated_plan::PlannedIsolatedComposite};
+/// fn draw(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder,
+///     pipelines: &CompositeBlendPipelines, fg: &wgpu::BindGroup,
+///     bg: &wgpu::TextureView, comp: &PlannedIsolatedComposite,
+///     vertices: &wgpu::Buffer, main: &wgpu::TextureView) {
+///     draw_composite_blend(device, encoder, pipelines, fg, bg, comp, vertices, main, None);
+/// }
+/// ```
 #[allow(clippy::too_many_arguments)]
 pub fn draw_composite_blend(
     device: &wgpu::Device,

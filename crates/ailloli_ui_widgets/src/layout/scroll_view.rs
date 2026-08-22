@@ -1,3 +1,5 @@
+//! Single-child clipped scrolling, virtualization hints, follow-end, and bars.
+
 use ailloli_ui_core::event::{Event, PointerEvent};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
@@ -13,16 +15,36 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawCmd, DrawRRect, Invalidation};
 
 /// Visual style for [`ScrollView`] scrollbars.
+///
+/// All dimensions are logical pixels. The default is a six-pixel bar inset by
+/// three pixels with a minimum 24-pixel thumb. Custom values are not normalized
+/// globally; unusable track geometry simply suppresses that scrollbar.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::layout::ScrollbarStyle;
+/// let style = ScrollbarStyle::default();
+/// assert_eq!(style.thickness, 6.0);
+/// assert_eq!(style.min_thumb_len, 24.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollbarStyle {
+    /// Scrollbar track fill.
     pub track_color: Color,
+    /// Scrollbar thumb fill.
     pub thumb_color: Color,
+    /// Track/thumb cross-axis thickness in logical pixels.
     pub thickness: f32,
+    /// Minimum main-axis thumb length in logical pixels, capped to the track.
     pub min_thumb_len: f32,
+    /// Distance from viewport edges in logical pixels.
     pub inset: f32,
+    /// Track and thumb corner radius in logical pixels.
     pub radius: f32,
 }
 
+/// Supplies the standard neutral scrollbar palette and geometry.
 impl Default for ScrollbarStyle {
     fn default() -> Self {
         Self {
@@ -37,6 +59,19 @@ impl Default for ScrollbarStyle {
 }
 
 /// Single-child viewport for content larger than its visible bounds.
+///
+/// The default scrolls vertically, begins at zero, shows scrollbars, maps one
+/// wheel line to 48 logical pixels, and does not follow the content end. The
+/// content is clipped and receives a virtual viewport hint containing the
+/// current offset. Only wheel input is handled by this widget.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::{layout::ScrollView, text::Text};
+/// let scroll: ScrollView<()> = ScrollView::vertical().child(Text::new("content"));
+/// let _ = scroll;
+/// ```
 pub struct ScrollView<A = ()> {
     axes: ScrollAxes,
     initial_offset: Offset,
@@ -47,6 +82,7 @@ pub struct ScrollView<A = ()> {
     child: Option<View<A>>,
 }
 
+/// Creates the same vertical viewport as [`ScrollView::new`].
 impl<A: 'static> Default for ScrollView<A> {
     fn default() -> Self {
         Self::new()
@@ -54,10 +90,30 @@ impl<A: 'static> Default for ScrollView<A> {
 }
 
 impl<A: 'static> ScrollView<A> {
+    /// Creates a vertical viewport.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::new();
+    /// let _ = scroll;
+    /// ```
     pub fn new() -> Self {
         Self::vertical()
     }
 
+    /// Creates a vertical-only viewport.
+    ///
+    /// Horizontal initial/wheel offsets are filtered to zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::vertical();
+    /// let _ = scroll;
+    /// ```
     pub fn vertical() -> Self {
         Self {
             axes: ScrollAxes::VERTICAL,
@@ -70,6 +126,17 @@ impl<A: 'static> ScrollView<A> {
         }
     }
 
+    /// Creates a horizontal-only viewport.
+    ///
+    /// Vertical initial/wheel offsets are filtered to zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::horizontal();
+    /// let _ = scroll;
+    /// ```
     pub fn horizontal() -> Self {
         Self {
             axes: ScrollAxes::HORIZONTAL,
@@ -82,6 +149,15 @@ impl<A: 'static> ScrollView<A> {
         }
     }
 
+    /// Creates a viewport scrollable on both axes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::both();
+    /// let _ = scroll;
+    /// ```
     pub fn both() -> Self {
         Self {
             axes: ScrollAxes::BOTH,
@@ -94,47 +170,138 @@ impl<A: 'static> ScrollView<A> {
         }
     }
 
+    /// Sets the initial non-persisted logical-pixel content offset.
+    ///
+    /// Disabled axes are filtered to zero. The first bounded layout clamps the
+    /// retained state to content limits.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Offset;
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::both().initial_offset(Offset::new(10.0, 20.0));
+    /// let _ = scroll;
+    /// ```
     pub fn initial_offset(mut self, offset: Offset) -> Self {
         self.initial_offset = self.axes.filter_offset(offset);
         self
     }
 
+    /// Sets a non-negative initial vertical offset in logical pixels.
+    ///
+    /// Negative and `NaN` inputs become zero via floating-point `max`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::vertical().initial_scroll_y(120.0);
+    /// let _ = scroll;
+    /// ```
     pub fn initial_scroll_y(self, scroll_y: f32) -> Self {
         self.initial_offset(Offset::new(0.0, scroll_y.max(0.0)))
     }
 
     /// Legacy builder kept for old tests/apps where this value represented child paint offset.
+    ///
+    /// The legacy value is negated: `-40.0` becomes a retained y offset of
+    /// `40.0`, while positive and `NaN` values become zero. Prefer
+    /// [`Self::initial_scroll_y`] for new code.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let legacy: ScrollView<()> = ScrollView::vertical().scroll_y(-40.0);
+    /// let _ = legacy;
+    /// ```
     pub fn scroll_y(mut self, scroll_y: f32) -> Self {
         self.initial_offset.y = (-scroll_y).max(0.0);
         self
     }
 
+    /// Sets logical pixels represented by one wheel line.
+    ///
+    /// Values are clamped to at least one; `NaN` and negative infinity become
+    /// one, while positive infinity remains infinite.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::vertical().wheel_line_px(24.0);
+    /// let _ = scroll;
+    /// ```
     pub fn wheel_line_px(mut self, line_px: f32) -> Self {
         self.behavior = self.behavior.with_line_px(line_px);
         self
     }
 
+    /// Enables or disables sticky scrolling at the enabled-axis end.
+    ///
+    /// When enabled, content growth follows the end until a manual wheel scroll
+    /// moves farther than one logical pixel away. Reaching the end reactivates it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let log: ScrollView<()> = ScrollView::vertical().follow_end(true);
+    /// let _ = log;
+    /// ```
     pub fn follow_end(mut self, enabled: bool) -> Self {
         self.follow_end = enabled;
         self
     }
 
+    /// Shows or hides non-interactive overflow indicators.
+    ///
+    /// Wheel scrolling and clipping remain active when hidden.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::ScrollView;
+    /// let scroll: ScrollView<()> = ScrollView::vertical().scrollbars(false);
+    /// let _ = scroll;
+    /// ```
     pub fn scrollbars(mut self, enabled: bool) -> Self {
         self.scrollbars = enabled;
         self
     }
 
+    /// Replaces scrollbar colors and geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::layout::{ScrollbarStyle, ScrollView};
+    /// let style = ScrollbarStyle { thickness: 8.0, ..Default::default() };
+    /// let scroll: ScrollView<()> = ScrollView::vertical().scrollbar_style(style);
+    /// let _ = scroll;
+    /// ```
     pub fn scrollbar_style(mut self, style: ScrollbarStyle) -> Self {
         self.scrollbar_style = style;
         self
     }
 
+    /// Sets the single scroll content child, replacing any previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::ScrollView, text::Text};
+    /// let scroll: ScrollView<()> = ScrollView::vertical().child(Text::new("content"));
+    /// let _ = scroll;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Retained builder snapshot used to allocate scroll/follow signals.
 struct ScrollViewComponent<A> {
     axes: ScrollAxes,
     initial_offset: Offset,
@@ -145,6 +312,7 @@ struct ScrollViewComponent<A> {
     child: Option<View<A>>,
 }
 
+/// Builds the viewport widget and preserves its optional content child.
 impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let state = context.signal_with_invalidation(
@@ -173,6 +341,7 @@ impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
     }
 }
 
+/// Stateful retained viewport implementation.
 struct ScrollViewWidget {
     axes: ScrollAxes,
     state: Signal<ScrollState>,
@@ -183,6 +352,7 @@ struct ScrollViewWidget {
     scrollbar_style: ScrollbarStyle,
 }
 
+/// Implements bounded/unbounded layout passes, clipping, bars, and wheel input.
 impl<A: 'static> Widget<A> for ScrollViewWidget {
     fn debug_name(&self) -> &'static str {
         "ScrollView"
@@ -294,6 +464,7 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
     }
 }
 
+/// Converts the builder into a component with default flex-shrink weight one.
 impl<A: 'static> IntoView<A> for ScrollView<A> {
     fn into_view(self) -> View<A> {
         View::component(ScrollViewComponent {
@@ -312,6 +483,7 @@ impl<A: 'static> IntoView<A> for ScrollView<A> {
     }
 }
 
+/// Scroll-state synchronization, follow-end policy, and child constraints.
 impl ScrollViewWidget {
     fn has_bounded_scroll_viewport(&self, viewport: Size) -> bool {
         (!self.axes.horizontal || viewport.w.is_finite())
@@ -379,17 +551,21 @@ impl ScrollViewWidget {
     }
 }
 
+/// Maximum logical-pixel distance considered to be at the scroll end.
 const FOLLOW_END_EPSILON: f32 = 1.0;
 
+/// Tests enabled axes against their maximum offsets within the end epsilon.
 fn offset_at_end(offset: Offset, max_offset: Offset, axes: ScrollAxes) -> bool {
     (!axes.horizontal || offset.x >= max_offset.x - FOLLOW_END_EPSILON)
         && (!axes.vertical || offset.y >= max_offset.y - FOLLOW_END_EPSILON)
 }
 
+/// Compares offsets with a strict 0.001 logical-pixel per-axis tolerance.
 fn same_offset(a: Offset, b: Offset) -> bool {
     (a.x - b.x).abs() < 0.001 && (a.y - b.y).abs() < 0.001
 }
 
+/// Replaces each non-finite extent with zero independently.
 fn finite_or_zero_size(size: Size) -> Size {
     Size::new(
         if size.w.is_finite() { size.w } else { 0.0 },
@@ -397,6 +573,7 @@ fn finite_or_zero_size(size: Size) -> Size {
     )
 }
 
+/// Uses finite maximum constraints or falls back to content extent per axis.
 fn viewport_size(constraints_max: Size, content: Size) -> Size {
     Size::new(
         finite_or_content(constraints_max.w, content.w),
@@ -404,6 +581,7 @@ fn viewport_size(constraints_max: Size, content: Size) -> Size {
     )
 }
 
+/// Selects a finite maximum or the corresponding content extent.
 fn finite_or_content(max: f32, content: f32) -> f32 {
     if max.is_finite() {
         max
@@ -412,6 +590,7 @@ fn finite_or_content(max: f32, content: f32) -> f32 {
     }
 }
 
+/// Paints bars only for enabled axes with more than 0.5 pixels of overflow.
 fn paint_scrollbars(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -451,6 +630,7 @@ fn paint_scrollbars(
     }
 }
 
+/// Appends track then thumb rounded-rectangle commands.
 fn push_scrollbar(ctx: &mut PaintCtx<'_>, track: Rect, thumb: Rect, style: ScrollbarStyle) {
     ctx.push(DrawCmd::RRect(DrawRRect {
         rect: track,
@@ -464,6 +644,7 @@ fn push_scrollbar(ctx: &mut PaintCtx<'_>, track: Rect, thumb: Rect, style: Scrol
     }));
 }
 
+/// Resolves vertical track/thumb geometry or rejects an unusable track/content.
 fn vertical_scrollbar_rects(
     bounds: Rect,
     metrics: ScrollMetrics,
@@ -496,6 +677,7 @@ fn vertical_scrollbar_rects(
     Some((track, thumb))
 }
 
+/// Resolves horizontal track/thumb geometry or rejects an unusable track/content.
 fn horizontal_scrollbar_rects(
     bounds: Rect,
     metrics: ScrollMetrics,

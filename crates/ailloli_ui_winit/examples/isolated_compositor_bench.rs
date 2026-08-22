@@ -22,10 +22,12 @@ use ailloli_ui_winit::{
 };
 use winit::event_loop::EventLoop;
 
+/// Resolves the framework workspace root from this example crate.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Builds a per-process fallback JSONL path beneath the benchmark artifacts tree.
 fn default_bench_path() -> PathBuf {
     repo_root()
         .join("artifacts")
@@ -35,6 +37,7 @@ fn default_bench_path() -> PathBuf {
         .join(format!("isolated-compositor-{}.jsonl", std::process::id()))
 }
 
+/// Reads the first non-empty backend override, defaulting to automatic selection.
 fn requested_winit_backend() -> String {
     std::env::var("AILLOLI_UI_BENCH_BACKEND")
         .ok()
@@ -45,6 +48,7 @@ fn requested_winit_backend() -> String {
         .to_ascii_lowercase()
 }
 
+/// Reads the warmup sample count from compatible environment names, defaulting to three.
 fn warmup_frames_from_env() -> u32 {
     std::env::var("AILLOLI_UI_BENCH_WARMUP_SAMPLES")
         .ok()
@@ -54,6 +58,7 @@ fn warmup_frames_from_env() -> u32 {
         .unwrap_or(3)
 }
 
+/// Returns milliseconds since the Unix epoch, or zero when the clock predates it.
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -61,6 +66,7 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// Records one frame duration as warmup or gating-steady benchmark data.
 fn record_frame_metric(
     scenario: &str,
     frame_index: u32,
@@ -84,6 +90,7 @@ fn record_frame_metric(
     .map(|_| ())
 }
 
+/// Creates the requested platform event loop and returns its observed backend name.
 fn create_bench_event_loop(requested: &str) -> Result<(EventLoop<()>, String), Box<dyn Error>> {
     #[cfg(target_os = "linux")]
     {
@@ -128,6 +135,7 @@ fn create_bench_event_loop(requested: &str) -> Result<(EventLoop<()>, String), B
     }
 }
 
+/// Builds isolated opacity and blur effects whose radii are measured in physical pixels.
 fn iso_effects(opacity: f32, blur: f32, backdrop: f32) -> IsolatedEffects {
     IsolatedEffects {
         opacity,
@@ -137,6 +145,7 @@ fn iso_effects(opacity: f32, blur: f32, backdrop: f32) -> IsolatedEffects {
     }
 }
 
+/// Builds isolated content effects with an explicit compositing blend mode.
 fn iso_effects_blend(opacity: f32, blur: f32, blend: BlendMode) -> IsolatedEffects {
     IsolatedEffects {
         opacity,
@@ -146,6 +155,7 @@ fn iso_effects_blend(opacity: f32, blur: f32, blend: BlendMode) -> IsolatedEffec
     }
 }
 
+/// Produces deterministic draw-command buffers for a named compositor scenario.
 fn build_layers(scenario: &str) -> Vec<Vec<DrawCmd>> {
     match scenario {
         "single_opacity" => {
@@ -298,6 +308,7 @@ fn build_layers(scenario: &str) -> Vec<Vec<DrawCmd>> {
     }
 }
 
+/// Maps scenario buffers to borrowed layer passes with the intended isolation effects.
 fn layer_passes<'a>(bufs: &'a [Vec<DrawCmd>], scenario: &str) -> Vec<LayerPass<'a>> {
     let mut out = Vec::new();
     match scenario {
@@ -437,11 +448,15 @@ fn layer_passes<'a>(bufs: &'a [Vec<DrawCmd>], scenario: &str) -> Vec<LayerPass<'
     out
 }
 
+/// Minimal summary emitted after a benchmark scenario completes.
 struct ScenarioStats {
+    /// Scenario selector used to build the draw layers.
     scenario: String,
+    /// Total rendered frames, including warmup frames.
     frames: u32,
 }
 
+/// Renders `frames` copies of one scenario and records every frame duration.
 fn run_scenario(
     renderer: &mut Renderer,
     scenario: &str,
@@ -472,13 +487,22 @@ fn run_scenario(
     Ok(stats)
 }
 
+/// Assigns a frame to one of five square extents spread across the total budget.
+///
+/// `frame_index` is expected to be smaller than `total_frames`.
+///
+/// # Panics
+///
+/// Panics when `total_frames` is zero.
 fn resize_sweep_size(frame_index: u32, total_frames: u32) -> u32 {
+    /// Physical side lengths, in pixels, visited by the resize sweep.
     const SIZES: [u32; 5] = [128, 256, 512, 256, 128];
     let segment = (u64::from(frame_index) * SIZES.len() as u64 / u64::from(total_frames))
         .min((SIZES.len() - 1) as u64) as usize;
     SIZES[segment]
 }
 
+/// Configures the surface-backed renderer and executes the selected benchmark scenario.
 fn run_benchmark() -> Result<(), Box<dyn Error>> {
     let cfg = ailloli_ui_bench::config_from_env();
     let scenario = cfg.scenario.clone();
@@ -592,6 +616,7 @@ fn run_benchmark() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Initializes the benchmark writer and finalizes it even when rendering fails.
 fn execute() -> Result<(), Box<dyn Error>> {
     let default_path = default_bench_path();
     let bench = try_init_ailloli_ui_bench_from_env(&default_path.to_string_lossy())?;
@@ -618,6 +643,7 @@ fn execute() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Converts the benchmark result into a process exit status with diagnostic output.
 fn main() -> ExitCode {
     match execute() {
         Ok(()) => ExitCode::SUCCESS,
@@ -629,6 +655,7 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
+/// Deterministic unit scenarios for benchmark scheduling helpers.
 mod tests {
     use super::*;
 

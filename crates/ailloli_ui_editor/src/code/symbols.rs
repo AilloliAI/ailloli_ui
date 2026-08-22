@@ -1,3 +1,5 @@
+//! Local lexical, Tree-sitter, and optional universal-ctags symbol indexing.
+
 use std::ops::Range;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -5,114 +7,309 @@ use std::time::{Duration, Instant};
 
 use crate::code::{Document, DocumentId, DocumentVersion, EditorLanguage};
 
-/// Stable symbol id inside one indexed summary.
+/// Stable symbol ID inside one indexed summary.
+///
+/// Zero is reserved by built-in indexers as the synthetic document root; real
+/// symbols receive one-based IDs. The type itself accepts every `u64`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::SymbolId;
+/// assert_eq!(SymbolId(1).0, 1);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SymbolId(pub u64);
 
+/// Language-neutral symbol record for one code document.
+///
+/// Ranges are half-open UTF-8 byte offsets. Built-in indexers keep them within
+/// the document, but this public value type performs no validation.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{CodeSymbol, EditorLanguage, SymbolId, SymbolKind, SymbolSource};
+/// let symbol = CodeSymbol { id: SymbolId(1), name: "run".into(), kind: SymbolKind::Function, language: EditorLanguage::Rust, range: 0..10, selection_range: 3..6, parent: None, signature: Some("fn run()".into()), docs: None, source: SymbolSource::Lexical };
+/// assert_eq!(symbol.selection_range, 3..6);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeSymbol {
+    /// Summary-local identifier; zero conventionally denotes the document root.
     pub id: SymbolId,
+    /// Human-readable symbol name.
     pub name: String,
+    /// Language-neutral category.
     pub kind: SymbolKind,
+    /// Language inherited from the indexed document.
     pub language: EditorLanguage,
+    /// Half-open full declaration extent in UTF-8 bytes.
     pub range: Range<usize>,
+    /// Half-open name/selection extent in UTF-8 bytes.
     pub selection_range: Range<usize>,
+    /// Optional containing symbol ID; `None` means document root.
     pub parent: Option<SymbolId>,
+    /// Optional compact declaration signature.
     pub signature: Option<String>,
+    /// Optional extracted documentation text.
     pub docs: Option<String>,
+    /// Indexer/enrichment provenance.
     pub source: SymbolSource,
 }
 
+/// Language-neutral symbol categories serialized by exact variant name.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::SymbolKind;
+/// assert_ne!(SymbolKind::Method, SymbolKind::Function);
+/// assert_eq!(serde_json::to_string(&SymbolKind::TypeAlias).unwrap(), "\"TypeAlias\"");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SymbolKind {
+    /// Language module.
     Module,
+    /// Namespace or ctags module-like scope.
     Namespace,
+    /// Generic type/class not represented more specifically.
     Type,
+    /// Implementation block.
     Impl,
+    /// Structure declaration.
     Struct,
+    /// Enumeration declaration.
     Enum,
+    /// Enumeration variant.
     EnumVariant,
+    /// Trait declaration.
     Trait,
+    /// Interface declaration.
     Interface,
+    /// Free function.
     Function,
+    /// Function contained by an impl or trait.
     Method,
+    /// Constructor.
     Constructor,
+    /// Structure/class field.
     Field,
+    /// Variable.
     Variable,
+    /// Constant or static item.
     Constant,
+    /// Type alias.
     TypeAlias,
+    /// Macro definition.
     Macro,
+    /// Import/use declaration.
     Import,
+    /// Unrecognized producer category.
     Unknown,
 }
 
+/// Provenance of a symbol record.
+///
+/// Merge preference is Tree-sitter, LSP, SCIP, ctags, then lexical.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::SymbolSource;
+/// assert_ne!(SymbolSource::TreeSitter, SymbolSource::Lexical);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SymbolSource {
+    /// Parsed from a Tree-sitter syntax tree.
     TreeSitter,
+    /// Detected by the lightweight line-oriented fallback.
     Lexical,
+    /// Imported from universal ctags JSON Lines.
     Ctags,
+    /// Enriched by a language server.
     Lsp,
+    /// Imported from SCIP JSON.
     Scip,
 }
 
+/// Complete symbol graph for one document version.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{CodeFileSummary, DocumentId, DocumentVersion, EditorLanguage};
+/// let summary = CodeFileSummary { document_id: DocumentId(1), path: None, language: EditorLanguage::Rust, version: DocumentVersion(0), symbols: vec![], edges: vec![] };
+/// assert!(summary.symbols.is_empty() && summary.edges.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CodeFileSummary {
+    /// Document identity copied from the indexed document or supplied by caller.
     pub document_id: DocumentId,
+    /// Optional document path.
     pub path: Option<PathBuf>,
+    /// Document language.
     pub language: EditorLanguage,
+    /// Document version represented by the graph.
     pub version: DocumentVersion,
+    /// Symbols in stable indexer-defined order.
     pub symbols: Vec<CodeSymbol>,
+    /// Directed, normally normalized graph edges.
     pub edges: Vec<SymbolEdge>,
 }
 
+/// Serializes symbol summaries for storage and inspection.
 impl CodeFileSummary {
+    /// Returns pretty-printed JSON containing every summary field.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a Serde JSON serialization error. Current fields are ordinary
+    /// serializable values, so errors are not expected in normal use.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::{CodeFileSummary, DocumentId, DocumentVersion, EditorLanguage};
+    /// let summary = CodeFileSummary { document_id: DocumentId(1), path: None, language: EditorLanguage::Rust, version: DocumentVersion(0), symbols: vec![], edges: vec![] };
+    /// let json = summary.to_json_pretty().unwrap();
+    /// assert!(json.contains("\"symbols\": []"));
+    /// ```
     pub fn to_json_pretty(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
     }
 }
 
+/// Directed relation between two summary-local symbol IDs.
+///
+/// ID zero conventionally denotes the document root for containment/import
+/// edges, but the value type does not enforce endpoint existence.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{SymbolEdge, SymbolEdgeKind, SymbolId};
+/// let edge = SymbolEdge { from: SymbolId(0), to: SymbolId(1), kind: SymbolEdgeKind::Contains };
+/// assert_eq!(edge.to, SymbolId(1));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolEdge {
+    /// Source symbol ID or synthetic root zero.
     pub from: SymbolId,
+    /// Target symbol ID.
     pub to: SymbolId,
+    /// Directed relation category.
     pub kind: SymbolEdgeKind,
 }
 
+/// Language-neutral directed edge categories.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::SymbolEdgeKind;
+/// assert_ne!(SymbolEdgeKind::Calls, SymbolEdgeKind::References);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SymbolEdgeKind {
+    /// Parent/root contains a declaration.
     Contains,
+    /// Caller invokes a function, method, or macro.
     Calls,
+    /// Root/import scope imports a declaration.
     Imports,
+    /// Source occurrence references a target.
     References,
+    /// Source type extends a target.
     Extends,
+    /// Source type implements a target.
     Implements,
 }
 
+/// Synchronous interface for indexing one document into a complete summary.
+///
+/// Implementations decide error handling; built-in ctags' trait implementation
+/// is intentionally infallible and returns an empty summary on runner failures.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{Document, DocumentId, EditorLanguage, LexicalRustSymbolIndexer, SymbolIndexer};
+/// use ailloli_ui_text::TextBuffer;
+/// let document = Document::new(DocumentId(1), TextBuffer::from_string("fn run() {}")) .with_language(EditorLanguage::Rust);
+/// assert_eq!(LexicalRustSymbolIndexer.index_document(&document).symbols[0].name, "run");
+/// ```
 pub trait SymbolIndexer {
+    /// Indexes the document snapshot synchronously.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::{Document, DocumentId, EditorLanguage, LexicalRustSymbolIndexer, SymbolIndexer};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let document = Document::new(DocumentId(1), TextBuffer::from_string("struct App;")) .with_language(EditorLanguage::Rust);
+    /// let summary = LexicalRustSymbolIndexer.index_document(&document);
+    /// assert_eq!(summary.symbols.len(), 1);
+    /// ```
     fn index_document(&mut self, document: &Document) -> CodeFileSummary;
 }
 
+/// Deterministic line-oriented Rust fallback indexer.
+///
+/// It performs no parsing or I/O and recognizes only trimmed lines beginning
+/// exactly with `use `, `fn `, `struct `, `enum `, or `trait `.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{Document, DocumentId, EditorLanguage, LexicalRustSymbolIndexer, SymbolIndexer};
+/// use ailloli_ui_text::TextBuffer;
+/// let document = Document::new(DocumentId(1), TextBuffer::from_string("fn run() {}")) .with_language(EditorLanguage::Rust);
+/// assert_eq!(LexicalRustSymbolIndexer.index_document(&document).symbols.len(), 1);
+/// ```
 #[derive(Debug, Default)]
 pub struct LexicalRustSymbolIndexer;
 
+/// Delegates to the lexical Rust summarizer.
 impl SymbolIndexer for LexicalRustSymbolIndexer {
+    /// Returns [`summarize_rust_lexical`] without failure.
     fn index_document(&mut self, document: &Document) -> CodeFileSummary {
         summarize_rust_lexical(document)
     }
 }
 
+/// Symbol indexer backed by fixture JSON Lines or a ctags subprocess.
+///
+/// The [`SymbolIndexer`] implementation suppresses every [`CtagsError`] into an
+/// empty metadata-preserving summary. Use [`Self::try_index_document`] when the
+/// caller needs diagnostics.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{CtagsSymbolIndexer, Document, DocumentId, EditorLanguage, SymbolIndexer};
+/// use ailloli_ui_text::TextBuffer;
+/// let document = Document::new(DocumentId(1), TextBuffer::from_string("fn run() {}")) .with_language(EditorLanguage::Rust);
+/// let mut indexer = CtagsSymbolIndexer::from_json_lines(r#"{"name":"run","kind":"function","line":1}"#);
+/// assert_eq!(indexer.index_document(&document).symbols[0].name, "run");
+/// ```
 #[derive(Debug, Clone)]
 pub struct CtagsSymbolIndexer {
+    /// In-memory JSON Lines or external-runner source.
     source: CtagsSymbolSource,
 }
 
+/// Input source used by a ctags indexer.
 #[derive(Debug, Clone)]
 enum CtagsSymbolSource {
+    /// Exact JSON Lines fixture/content parsed without I/O.
     JsonLines(String),
+    /// External subprocess configuration.
     Runner(CtagsRunnerConfig),
 }
 
+/// Selects the default external ctags runner configuration.
 impl Default for CtagsSymbolIndexer {
+    /// Creates a runner-backed indexer using [`CtagsRunnerConfig::default`].
     fn default() -> Self {
         Self {
             source: CtagsSymbolSource::Runner(CtagsRunnerConfig::default()),
@@ -120,19 +317,66 @@ impl Default for CtagsSymbolIndexer {
     }
 }
 
+/// Constructs and executes ctags indexing sources.
 impl CtagsSymbolIndexer {
+    /// Creates an indexer that parses supplied JSON Lines without subprocess I/O.
+    ///
+    /// Invalid JSON lines and entries with absent/empty names are silently
+    /// skipped at indexing time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::{CtagsSymbolIndexer, Document, DocumentId, SymbolIndexer};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let document = Document::new(DocumentId(1), TextBuffer::from_string("fn f() {}"));
+    /// let mut indexer = CtagsSymbolIndexer::from_json_lines("not json\n{\"name\":\"f\",\"kind\":\"function\",\"line\":1}");
+    /// assert_eq!(indexer.index_document(&document).symbols.len(), 1);
+    /// ```
     pub fn from_json_lines(json_lines: impl Into<String>) -> Self {
         Self {
             source: CtagsSymbolSource::JsonLines(json_lines.into()),
         }
     }
 
+    /// Creates an indexer that spawns the configured ctags binary per document.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::{CtagsRunnerConfig, CtagsSymbolIndexer};
+    /// let indexer = CtagsSymbolIndexer::from_runner_config(CtagsRunnerConfig::default());
+    /// assert!(format!("{indexer:?}").contains("Runner"));
+    /// ```
     pub fn from_runner_config(config: CtagsRunnerConfig) -> Self {
         Self {
             source: CtagsSymbolSource::Runner(config),
         }
     }
 
+    /// Indexes a document while preserving external runner failures.
+    ///
+    /// Fixture mode parses in memory and currently cannot return an error.
+    /// Runner mode writes a predictable temp path based on document ID/version,
+    /// spawns ctags with JSON output, polls every 5 ms until the configured
+    /// timeout, then captures stdout/stderr. The stdout limit is checked only
+    /// after capture; stderr is unbounded. Concurrent identical documents can
+    /// collide, and write/spawn failure may leave the temp file behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed spawn, timeout, status, output-size, I/O, or UTF-8 errors.
+    /// Invalid individual JSON lines are still skipped rather than returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::{CtagsSymbolIndexer, Document, DocumentId};
+    /// use ailloli_ui_text::TextBuffer;
+    /// let document = Document::new(DocumentId(1), TextBuffer::from_string("fn f() {}"));
+    /// let mut indexer = CtagsSymbolIndexer::from_json_lines(r#"{"name":"f","kind":"function","line":1}"#);
+    /// assert_eq!(indexer.try_index_document(&document).unwrap().symbols.len(), 1);
+    /// ```
     pub fn try_index_document(
         &mut self,
         document: &Document,
@@ -145,13 +389,31 @@ impl CtagsSymbolIndexer {
     }
 }
 
+/// Produces an empty metadata-preserving summary on any ctags runner error.
 impl SymbolIndexer for CtagsSymbolIndexer {
+    /// Indexes infallibly, suppressing [`CtagsError`] into zero symbols/edges.
     fn index_document(&mut self, document: &Document) -> CodeFileSummary {
         self.try_index_document(document)
             .unwrap_or_else(|_| empty_summary(document))
     }
 }
 
+/// Indexes with Tree-sitter-first Rust fallback when available.
+///
+/// With `tree_sitter`, Rust first uses its parser and returns immediately if at
+/// least one symbol was found; parser failure or an empty result falls back to
+/// ctags. Other languages, and all builds without that feature, use ctags
+/// directly. Ctags errors are suppressed by its trait implementation.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{index_symbols_with_fallback, CtagsSymbolIndexer, Document, DocumentId, EditorLanguage, SymbolSource};
+/// use ailloli_ui_text::TextBuffer;
+/// let document = Document::new(DocumentId(1), TextBuffer::from_string("function run() {}")) .with_language(EditorLanguage::JavaScript);
+/// let mut ctags = CtagsSymbolIndexer::from_json_lines(r#"{"name":"run","kind":"function","line":1}"#);
+/// assert_eq!(index_symbols_with_fallback(&document, &mut ctags).symbols[0].source, SymbolSource::Ctags);
+/// ```
 pub fn index_symbols_with_fallback(
     document: &Document,
     ctags: &mut CtagsSymbolIndexer,
@@ -167,6 +429,7 @@ pub fn index_symbols_with_fallback(
     ctags.index_document(document)
 }
 
+/// Executes one external ctags process and returns UTF-8 JSON Lines.
 fn run_ctags(document: &Document, config: &CtagsRunnerConfig) -> Result<String, CtagsError> {
     let temp_path = ctags_temp_path(document);
     std::fs::write(&temp_path, document.buffer.as_str())
@@ -230,6 +493,7 @@ fn run_ctags(document: &Document, config: &CtagsRunnerConfig) -> Result<String, 
     String::from_utf8(output.stdout).map_err(|err| CtagsError::Utf8(err.to_string()))
 }
 
+/// Builds the predictable process temp path for a document snapshot.
 fn ctags_temp_path(document: &Document) -> PathBuf {
     let ext = document
         .path
@@ -243,14 +507,35 @@ fn ctags_temp_path(document: &Document) -> PathBuf {
     ))
 }
 
+/// External universal-ctags process limits and executable.
+///
+/// The default command is `ctags`, timeout is two seconds, and accepted stdout
+/// is at most 512 KiB. The limit does not cover stderr and is enforced after the
+/// child exits rather than while streaming.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use ailloli_ui_editor::CtagsRunnerConfig;
+/// let config = CtagsRunnerConfig::default();
+/// assert_eq!(config.binary.to_str(), Some("ctags"));
+/// assert_eq!(config.timeout, Duration::from_secs(2));
+/// assert_eq!(config.max_stdout_bytes, 512 * 1024);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CtagsRunnerConfig {
+    /// Executable path or command name passed directly to [`Command::new`].
     pub binary: PathBuf,
+    /// Maximum wall time polled in five-millisecond intervals.
     pub timeout: Duration,
+    /// Maximum captured stdout bytes accepted after process completion.
     pub max_stdout_bytes: usize,
 }
 
+/// Supplies the standard `ctags` command and conservative process limits.
 impl Default for CtagsRunnerConfig {
+    /// Returns `ctags`, two seconds, and 512 KiB stdout.
     fn default() -> Self {
         Self {
             binary: PathBuf::from("ctags"),
@@ -260,22 +545,69 @@ impl Default for CtagsRunnerConfig {
     }
 }
 
+/// Typed failure from the external ctags runner.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use ailloli_ui_editor::CtagsError;
+/// assert_eq!(CtagsError::Timeout { timeout: Duration::from_millis(10) }, CtagsError::Timeout { timeout: Duration::from_millis(10) });
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CtagsError {
+    /// Executable lookup failed; contains the configured binary text.
     MissingBinary(String),
-    Timeout { timeout: Duration },
-    OutputTooLarge { len: usize, max: usize },
-    NonZeroStatus { code: Option<i32>, stderr: String },
+    /// Child exceeded the configured wall-time limit.
+    Timeout {
+        /// Configured duration reached before observing process exit.
+        timeout: Duration,
+    },
+    /// Captured stdout exceeded the configured byte limit.
+    OutputTooLarge {
+        /// Actual captured stdout byte length.
+        len: usize,
+        /// Configured accepted stdout byte limit.
+        max: usize,
+    },
+    /// Child exited unsuccessfully; signal exits have `code = None`.
+    NonZeroStatus {
+        /// Platform exit code, or `None` when unavailable (for example a signal).
+        code: Option<i32>,
+        /// Lossy UTF-8 decoding of complete captured stderr.
+        stderr: String,
+    },
+    /// Temp-file, spawn, wait, or process-control I/O failure.
     Io(String),
+    /// Successful stdout was not valid UTF-8.
     Utf8(String),
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Rust parser-backed symbol and call-graph indexer.
+///
+/// It extracts modules, imports, structs/fields, enums/variants, traits, impls,
+/// functions/methods, constants/statics, type aliases, macros, documentation,
+/// signatures, containment, and resolved call edges. Parser setup/parse failure
+/// falls back to the lexical Rust summary.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{code::TreeSitterRustSymbolIndexer, Document, DocumentId, EditorLanguage, SymbolIndexer, SymbolKind};
+/// use ailloli_ui_text::TextBuffer;
+/// let document = Document::new(DocumentId(1), TextBuffer::from_string("struct App { value: usize }")) .with_language(EditorLanguage::Rust);
+/// let summary = TreeSitterRustSymbolIndexer.index_document(&document);
+/// assert!(summary.symbols.iter().any(|symbol| symbol.kind == SymbolKind::Struct && symbol.name == "App"));
+/// assert!(summary.symbols.iter().any(|symbol| symbol.kind == SymbolKind::Field && symbol.name == "value"));
+/// ```
 #[derive(Debug, Default)]
 pub struct TreeSitterRustSymbolIndexer;
 
 #[cfg(feature = "tree_sitter")]
+/// Parses Rust and returns a deterministic local symbol graph.
 impl SymbolIndexer for TreeSitterRustSymbolIndexer {
+    /// Uses Tree-sitter, falling back lexically only on parser setup/parse failure.
     fn index_document(&mut self, document: &Document) -> CodeFileSummary {
         let text = document.buffer.as_str();
         let mut parser = tree_sitter::Parser::new();
@@ -304,6 +636,25 @@ impl SymbolIndexer for TreeSitterRustSymbolIndexer {
     }
 }
 
+/// Builds a deterministic, line-oriented Rust symbol summary.
+///
+/// Only trimmed lines beginning exactly with `use `, `fn `, `struct `, `enum `,
+/// or `trait ` are recognized, so visibility/modifier prefixes are ignored.
+/// Symbols have no parents/signatures/docs and use one-based IDs. One root
+/// containment/import edge is emitted per symbol. Calls are textually detected
+/// as `name(` outside the symbol's own name range, at most once per function,
+/// with root ID zero as caller; comments/strings can cause false positives.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{code::symbols::summarize_rust_lexical, Document, DocumentId, EditorLanguage, SymbolEdgeKind, SymbolKind};
+/// use ailloli_ui_text::TextBuffer;
+/// let document = Document::new(DocumentId(1), TextBuffer::from_string("struct App;\nfn run() {}\nfn main() { run(); }")) .with_language(EditorLanguage::Rust);
+/// let summary = summarize_rust_lexical(&document);
+/// assert!(summary.symbols.iter().any(|s| s.kind == SymbolKind::Struct && s.name == "App"));
+/// assert!(summary.edges.iter().any(|e| e.kind == SymbolEdgeKind::Calls));
+/// ```
 pub fn summarize_rust_lexical(document: &Document) -> CodeFileSummary {
     let text = document.buffer.as_str();
     let mut symbols = Vec::new();
@@ -383,6 +734,7 @@ pub fn summarize_rust_lexical(document: &Document) -> CodeFileSummary {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Traverses a Rust syntax tree and returns symbols in preorder.
 fn collect_tree_sitter_rust_symbols(
     root: tree_sitter::Node<'_>,
     text: &str,
@@ -398,14 +750,20 @@ fn collect_tree_sitter_rust_symbols(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Stateful preorder collector that assigns positional symbol IDs.
 struct TreeSitterSymbolCollector<'a> {
+    /// Exact parsed source text.
     text: &'a str,
+    /// Language copied into every produced symbol.
     language: EditorLanguage,
+    /// Symbols accumulated in preorder.
     symbols: Vec<CodeSymbol>,
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Recursively converts supported Rust nodes into symbols.
 impl<'a> TreeSitterSymbolCollector<'a> {
+    /// Visits one node and descendants under the nearest container parent.
     fn collect(&mut self, node: tree_sitter::Node<'_>, parent: Option<SymbolId>) {
         let mut next_parent = parent;
         if let Some(symbol) = self.symbol_for_node(node, parent) {
@@ -419,6 +777,7 @@ impl<'a> TreeSitterSymbolCollector<'a> {
         }
     }
 
+    /// Converts one supported syntax node into the next positional symbol.
     fn symbol_for_node(
         &self,
         node: tree_sitter::Node<'_>,
@@ -451,6 +810,7 @@ impl<'a> TreeSitterSymbolCollector<'a> {
         })
     }
 
+    /// Looks up a previously collected symbol category by ID.
     fn kind_for_id(&self, id: SymbolId) -> Option<SymbolKind> {
         self.symbols
             .iter()
@@ -460,13 +820,18 @@ impl<'a> TreeSitterSymbolCollector<'a> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Classification and name extraction recipe for one Rust syntax node.
 struct RustSymbolSpec<'tree> {
+    /// Resulting local symbol category.
     kind: SymbolKind,
+    /// Node whose bytes define the selection range.
     name_node: Option<tree_sitter::Node<'tree>>,
+    /// Optional derived name replacing raw name-node text.
     name_override: Option<String>,
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Classifies supported Rust declaration nodes and selects their names.
 fn tree_sitter_rust_symbol_spec<'tree>(
     text: &str,
     node: tree_sitter::Node<'tree>,
@@ -549,6 +914,7 @@ fn tree_sitter_rust_symbol_spec<'tree>(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Reports whether a symbol can become the parent of descendant declarations.
 fn symbol_container_parent(kind: SymbolKind) -> bool {
     matches!(
         kind,
@@ -561,6 +927,7 @@ fn symbol_container_parent(kind: SymbolKind) -> bool {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Finds the implemented type node in an impl declaration.
 fn impl_type_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
     node.child_by_field_name("type").or_else(|| {
         let mut cursor = node.walk();
@@ -579,17 +946,20 @@ fn impl_type_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> 
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Returns valid source text for a syntax node, or empty on an invalid range.
 fn node_text<'a>(text: &'a str, node: tree_sitter::Node<'_>) -> &'a str {
     text.get(node.start_byte()..node.end_byte())
         .unwrap_or_default()
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Collapses all whitespace runs to single ASCII spaces.
 fn compact_node_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Derives the final imported component from a Rust use declaration.
 fn import_name(text: &str) -> String {
     text.trim()
         .trim_start_matches("pub")
@@ -605,6 +975,7 @@ fn import_name(text: &str) -> String {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Clamps range endpoints down to valid UTF-8 boundaries inside source length.
 fn valid_range(text: &str, range: Range<usize>) -> Range<usize> {
     let mut start = range.start.min(text.len());
     while start > 0 && !text.is_char_boundary(start) {
@@ -618,6 +989,7 @@ fn valid_range(text: &str, range: Range<usize>) -> Range<usize> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Extracts a compact declaration header or field/import signature.
 fn signature_for_symbol(
     text: &str,
     node: tree_sitter::Node<'_>,
@@ -647,6 +1019,7 @@ fn signature_for_symbol(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Collects contiguous preceding Rust doc comments and `#[doc = "..."]` lines.
 fn docs_for_symbol(text: &str, node: tree_sitter::Node<'_>) -> Option<String> {
     let prefix = &text[..node.start_byte().min(text.len())];
     let mut docs = Vec::new();
@@ -677,6 +1050,25 @@ fn docs_for_symbol(text: &str, node: tree_sitter::Node<'_>) -> Option<String> {
     (!docs.is_empty()).then_some(docs.join("\n"))
 }
 
+/// Parses universal-ctags JSON Lines into local symbol records.
+///
+/// Invalid JSON lines and entries with missing/empty names are skipped. IDs are
+/// assigned after filtering, ranges derive from one-based `line`/`end` fields,
+/// kinds use a fixed mapping, signature falls back through pattern then typeref,
+/// and parents resolve only to earlier scope-matching entries. No errors are
+/// returned and containment edges are not included in this symbol-only result.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_editor::{parse_ctags_json_lines, Document, DocumentId, EditorLanguage, SymbolKind, SymbolSource};
+/// use ailloli_ui_text::TextBuffer;
+/// let document = Document::new(DocumentId(1), TextBuffer::from_string("struct App;\n")) .with_language(EditorLanguage::Rust);
+/// let symbols = parse_ctags_json_lines(&document, "not json\n{\"name\":\"App\",\"kind\":\"struct\",\"line\":1}");
+/// assert_eq!(symbols.len(), 1);
+/// assert_eq!((symbols[0].kind, symbols[0].source), (SymbolKind::Struct, SymbolSource::Ctags));
+/// assert_eq!(symbols[0].selection_range, 7..10);
+/// ```
 pub fn parse_ctags_json_lines(document: &Document, json_lines: &str) -> Vec<CodeSymbol> {
     parse_ctags_entries(document, json_lines)
         .into_iter()
@@ -684,6 +1076,7 @@ pub fn parse_ctags_json_lines(document: &Document, json_lines: &str) -> Vec<Code
         .collect()
 }
 
+/// Parses ctags symbols and adds normalized containment/import edges.
 fn summary_from_ctags_json_lines(document: &Document, json_lines: &str) -> CodeFileSummary {
     let symbols = parse_ctags_json_lines(document, json_lines);
     let mut edges = containment_edges(&symbols);
@@ -695,6 +1088,7 @@ fn summary_from_ctags_json_lines(document: &Document, json_lines: &str) -> CodeF
     }
 }
 
+/// Parses, filters, converts, and parent-links ctags entries.
 fn parse_ctags_entries(document: &Document, json_lines: &str) -> Vec<CtagsParsedSymbol> {
     let entries: Vec<CtagsParsedSymbol> = json_lines
         .lines()
@@ -706,14 +1100,19 @@ fn parse_ctags_entries(document: &Document, json_lines: &str) -> Vec<CtagsParsed
     attach_ctags_parents(entries)
 }
 
+/// Converted ctags symbol plus unresolved scope metadata.
 #[derive(Debug, Clone)]
 struct CtagsParsedSymbol {
+    /// Local symbol record.
     symbol: CodeSymbol,
+    /// Optional producer scope string.
     scope: Option<String>,
+    /// Optional producer scope-kind string.
     scope_kind: Option<String>,
 }
 
 #[allow(dead_code)]
+/// Legacy symbol-only ctags parser retained for regression comparison.
 fn parse_ctags_json_lines_legacy(document: &Document, json_lines: &str) -> Vec<CodeSymbol> {
     json_lines
         .lines()
@@ -724,6 +1123,7 @@ fn parse_ctags_json_lines_legacy(document: &Document, json_lines: &str) -> Vec<C
         .collect()
 }
 
+/// Builds a zero-symbol, zero-edge summary preserving document metadata.
 fn empty_summary(document: &Document) -> CodeFileSummary {
     CodeFileSummary {
         document_id: document.id,
@@ -735,22 +1135,35 @@ fn empty_summary(document: &Document) -> CodeFileSummary {
     }
 }
 
+/// Deserializable subset of universal-ctags JSON output.
 #[derive(Debug, serde::Deserialize)]
 struct CtagsEntry {
+    /// Symbol name; absent/empty entries are discarded.
     name: Option<String>,
+    /// Long or short ctags kind name.
     kind: Option<String>,
+    /// One-based starting line.
     line: Option<usize>,
+    /// One-based inclusive ending line.
     end: Option<usize>,
+    /// Source-pattern fallback for signature text.
     pattern: Option<String>,
+    /// Preferred signature text.
     signature: Option<String>,
+    /// Type-reference fallback for signature text.
     typeref: Option<String>,
+    /// Optional containing scope string.
     scope: Option<String>,
+    /// Optional containing scope category.
     #[serde(rename = "scopeKind")]
     scope_kind: Option<String>,
+    /// Producer language, currently parsed then ignored.
     language: Option<String>,
+    /// Producer roles, currently parsed then ignored.
     roles: Option<String>,
 }
 
+/// Converts one filtered ctags entry to a positional local symbol.
 fn ctags_entry_to_symbol(document: &Document, idx: usize, entry: CtagsEntry) -> CtagsParsedSymbol {
     let name = entry.name.unwrap_or_default();
     let text = document.buffer.as_str();
@@ -782,6 +1195,7 @@ fn ctags_entry_to_symbol(document: &Document, idx: usize, entry: CtagsEntry) -> 
     }
 }
 
+/// Resolves each ctags scope against the nearest earlier matching entry.
 fn attach_ctags_parents(mut entries: Vec<CtagsParsedSymbol>) -> Vec<CtagsParsedSymbol> {
     for idx in 0..entries.len() {
         let Some(scope) = entries[idx].scope.clone() else {
@@ -807,6 +1221,7 @@ fn attach_ctags_parents(mut entries: Vec<CtagsParsedSymbol>) -> Vec<CtagsParsedS
     entries
 }
 
+/// Maps supported long/short ctags kinds to local categories.
 fn ctags_kind_to_symbol_kind(kind: Option<&str>) -> SymbolKind {
     match kind.unwrap_or_default() {
         "function" | "f" => SymbolKind::Function,
@@ -829,6 +1244,7 @@ fn ctags_kind_to_symbol_kind(kind: Option<&str>) -> SymbolKind {
     }
 }
 
+/// Converts optional one-based ctags line bounds to a document byte range.
 fn ctags_full_range(text: &str, line: Option<usize>, end: Option<usize>) -> Range<usize> {
     let start = line
         .and_then(|line| line_start_offset(text, line.saturating_sub(1)))
@@ -841,6 +1257,7 @@ fn ctags_full_range(text: &str, line: Option<usize>, end: Option<usize>) -> Rang
     start..end.max(start)
 }
 
+/// Narrows a full ctags range to its first matching name occurrence.
 fn ctags_selection_range(text: &str, name: &str, range: Range<usize>) -> Range<usize> {
     if let Some(name_start) = text[range.clone()].find(name) {
         let absolute = range.start + name_start;
@@ -851,10 +1268,12 @@ fn ctags_selection_range(text: &str, name: &str, range: Range<usize>) -> Range<u
 }
 
 #[allow(dead_code)]
+/// Legacy combined full/selection range helper retained for regression use.
 fn ctags_range(text: &str, name: &str, line: Option<usize>, end: Option<usize>) -> Range<usize> {
     ctags_selection_range(text, name, ctags_full_range(text, line, end))
 }
 
+/// Resolves a zero-based logical line to its starting byte, if present.
 fn line_start_offset(text: &str, zero_based_line: usize) -> Option<usize> {
     if zero_based_line == 0 {
         return Some(0);
@@ -871,6 +1290,7 @@ fn line_start_offset(text: &str, zero_based_line: usize) -> Option<usize> {
     None
 }
 
+/// Returns the next newline byte or EOF after a valid starting byte.
 fn line_end_offset(text: &str, start: usize) -> usize {
     text[start..]
         .find('\n')
@@ -878,6 +1298,7 @@ fn line_end_offset(text: &str, start: usize) -> usize {
         .unwrap_or(text.len())
 }
 
+/// Emits one root/parent containment or import edge per symbol.
 fn containment_edges(symbols: &[CodeSymbol]) -> Vec<SymbolEdge> {
     symbols
         .iter()
@@ -893,11 +1314,13 @@ fn containment_edges(symbols: &[CodeSymbol]) -> Vec<SymbolEdge> {
         .collect()
 }
 
+/// Sorts edges by category/from/to and removes exact duplicates.
 fn normalize_edges(edges: &mut Vec<SymbolEdge>) {
     edges.sort_by_key(|edge| (symbol_edge_rank(edge.kind), edge.from.0, edge.to.0));
     edges.dedup_by_key(|edge| (edge.from, edge.to, edge.kind));
 }
 
+/// Returns deterministic edge-category ordering rank.
 fn symbol_edge_rank(kind: SymbolEdgeKind) -> u8 {
     match kind {
         SymbolEdgeKind::Contains => 0,
@@ -909,6 +1332,7 @@ fn symbol_edge_rank(kind: SymbolEdgeKind) -> u8 {
     }
 }
 
+/// Finds coarse root-origin call edges with textual `name(` searches.
 fn call_edges(text: &str, symbols: &[CodeSymbol]) -> Vec<SymbolEdge> {
     let functions: Vec<_> = symbols
         .iter()
@@ -935,6 +1359,7 @@ fn call_edges(text: &str, symbols: &[CodeSymbol]) -> Vec<SymbolEdge> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Collects and normalizes resolved Rust call-expression edges.
 fn collect_tree_sitter_rust_call_edges(
     root: tree_sitter::Node<'_>,
     text: &str,
@@ -947,6 +1372,7 @@ fn collect_tree_sitter_rust_call_edges(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Recursively visits call expressions and appends resolvable edges.
 fn collect_tree_sitter_rust_call_edges_from_node(
     node: tree_sitter::Node<'_>,
     text: &str,
@@ -966,6 +1392,7 @@ fn collect_tree_sitter_rust_call_edges_from_node(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Resolves one non-recursive call expression to a caller/callee edge.
 fn call_edge_for_node(
     node: tree_sitter::Node<'_>,
     text: &str,
@@ -984,6 +1411,7 @@ fn call_edge_for_node(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Finds the smallest containing function/method, breaking ties by ID.
 fn caller_for_byte(symbols: &[CodeSymbol], byte: usize) -> Option<&CodeSymbol> {
     symbols
         .iter()
@@ -996,6 +1424,7 @@ fn caller_for_byte(symbols: &[CodeSymbol], byte: usize) -> Option<&CodeSymbol> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Chooses the nearest matching function/method/macro for a call target.
 fn resolve_callee_symbol<'a>(
     symbols: &'a [CodeSymbol],
     caller: &CodeSymbol,
@@ -1024,6 +1453,7 @@ fn resolve_callee_symbol<'a>(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Ranks callee scope relative to a caller from same parent through unrelated.
 fn callee_scope_distance(
     symbols: &[CodeSymbol],
     caller: &CodeSymbol,
@@ -1049,6 +1479,7 @@ fn callee_scope_distance(
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Walks parent IDs upward until root or an unresolved parent.
 fn symbol_ancestors(symbols: &[CodeSymbol], symbol: &CodeSymbol) -> Vec<SymbolId> {
     let mut ancestors = Vec::new();
     let mut current = symbol.parent;
@@ -1063,18 +1494,23 @@ fn symbol_ancestors(symbols: &[CodeSymbol], symbol: &CodeSymbol) -> Vec<SymbolId
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Final callable name plus optional explicit scope qualifier.
 struct CallTarget {
+    /// Unqualified callable name.
     name: String,
+    /// Explicit scope from a scoped identifier, if any.
     scope: Option<String>,
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Extracts a call target from a Tree-sitter call-expression node.
 fn call_expression_target(node: tree_sitter::Node<'_>, text: &str) -> Option<CallTarget> {
     let function = node.child_by_field_name("function")?;
     final_call_target(function, text)
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Recursively extracts the final callable identifier and optional scope.
 fn final_call_target(node: tree_sitter::Node<'_>, text: &str) -> Option<CallTarget> {
     let name = match node.kind() {
         "identifier" | "field_identifier" => node_text(text, node).to_string(),
@@ -1096,6 +1532,7 @@ fn final_call_target(node: tree_sitter::Node<'_>, text: &str) -> Option<CallTarg
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Returns the last recursively discoverable child identifier.
 fn last_identifier_child(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
     let mut cursor = node.walk();
     node.children(&mut cursor)
@@ -1104,6 +1541,7 @@ fn last_identifier_child(node: tree_sitter::Node<'_>, text: &str) -> Option<Stri
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Extracts a non-empty qualifier from a scoped identifier.
 fn call_scope_name(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
     if node.kind() != "scoped_identifier" {
         return None;
@@ -1115,6 +1553,7 @@ fn call_scope_name(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Resolves a symbol's parent ID to its borrowed name.
 fn symbol_parent_name<'a>(symbols: &'a [CodeSymbol], symbol: &CodeSymbol) -> Option<&'a str> {
     let parent = symbol.parent?;
     symbols
@@ -1123,6 +1562,7 @@ fn symbol_parent_name<'a>(symbols: &'a [CodeSymbol], symbol: &CodeSymbol) -> Opt
         .map(|candidate| candidate.name.as_str())
 }
 
+/// Appends a non-empty lexical symbol and repairs its selection range.
 fn push_symbol(
     symbols: &mut Vec<CodeSymbol>,
     language: EditorLanguage,
@@ -1156,12 +1596,14 @@ fn push_symbol(
     last.selection_range = name_start..name_start + last.name.len();
 }
 
+/// Takes the leading ASCII identifier-like substring.
 fn take_ident(rest: &str) -> String {
     rest.chars()
         .take_while(|ch| *ch == '_' || ch.is_ascii_alphanumeric())
         .collect()
 }
 
+/// Iterates newline-inclusive logical lines with starting UTF-8 byte offsets.
 fn lines_with_offsets(text: &str) -> impl Iterator<Item = (usize, &str)> {
     let mut offset = 0;
     text.split_inclusive('\n').map(move |line| {

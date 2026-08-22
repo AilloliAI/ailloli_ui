@@ -3,6 +3,26 @@
 use fontdue::Font;
 
 /// Rasterizes a glyph into a square RGBA buffer (`px_size × px_size`, white mask + alpha).
+///
+/// The font is sampled at `max(px_size, 8)` pixels. Glyph pixels are centered,
+/// clipped to the requested square, and written as white RGB with font coverage
+/// in alpha. A zero size returns an empty vector.
+///
+/// # Panics
+///
+/// May panic if `px_size * px_size * 4` overflows or cannot be allocated.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devicons_font::{DEVICON_FONT_BYTES, GENERIC_FILE_GLYPH};
+/// use ailloli_ui_render_wgpu::icons::raster::rasterize_glyph_mask;
+/// let font = fontdue::Font::from_bytes(DEVICON_FONT_BYTES,
+///     fontdue::FontSettings::default())?;
+/// let rgba = rasterize_glyph_mask(&font, GENERIC_FILE_GLYPH, 8);
+/// assert_eq!(rgba.len(), 8 * 8 * 4);
+/// # Ok::<(), &'static str>(())
+/// ```
 pub fn rasterize_glyph_mask(font: &Font, ch: char, px_size: u32) -> Vec<u8> {
     let px = px_size.max(8) as f32;
     let (metrics, bitmap) = font.rasterize(ch, px);
@@ -33,6 +53,23 @@ pub fn rasterize_glyph_mask(font: &Font, ch: char, px_size: u32) -> Vec<u8> {
 }
 
 /// Pads rows to 256-byte alignment for `queue.write_texture`.
+///
+/// `rgba` must contain at least `px_size * px_size * 4` bytes. The returned row
+/// pitch is the smallest multiple of 256 that can hold one RGBA row; padding is
+/// zero-filled.
+///
+/// # Panics
+///
+/// Panics for a short source slice, arithmetic overflow, or allocation failure.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::icons::raster::pad_rgba_rows;
+/// let (padded, pitch) = pad_rgba_rows(&[255; 2 * 2 * 4], 2);
+/// assert_eq!(pitch, 256);
+/// assert_eq!(padded.len(), 2 * 256);
+/// ```
 pub fn pad_rgba_rows(rgba: &[u8], px_size: u32) -> (Vec<u8>, u32) {
     let unpadded_bpr = px_size * 4;
     let padded_bpr = unpadded_bpr.div_ceil(256) * 256;

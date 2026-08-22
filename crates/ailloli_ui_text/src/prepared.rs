@@ -12,19 +12,66 @@ use crate::glyph::GlyphInstance;
 use crate::params::{LaidOutLine, StyledTextLayoutParams, TextLayoutParams, TextMetrics, WrapMode};
 
 /// Laid-out text plus glyph instances ready for GPU atlas rasterization.
+///
+/// The source text, internal Parley layout, and glyph slice are owned through
+/// reference-counted allocations. Glyph instances identify font data stored in
+/// the `face_blobs` map supplied to [`prepare_layout`] or
+/// [`prepare_styled_layout`]; they do not copy font bytes individually.
+/// Dimensions and glyph positions are logical pixels.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+/// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+/// let mut faces = HashMap::new();
+/// let prepared = prepare_layout(
+///     &mut engine,
+///     TextLayoutParams::new("hello", TextStyle::new(FontId::Ui, 16, Color::WHITE)),
+///     &mut faces,
+/// );
+/// assert_eq!(prepared.text(), "hello");
+/// assert!(!prepared.lines.is_empty());
+/// ```
 #[derive(Debug)]
 pub struct PreparedTextLayout {
+    /// Owned source text referenced by byte ranges and caret methods.
     text: Arc<str>,
+    /// Base style used for the layout.
     style: TextStyle,
+    /// Uniform or styled Parley layout retained for caret hit testing.
     layout: Arc<ParleyLayoutDebug>,
+    /// Per-line summaries in source order.
     pub lines: Vec<LaidOutLine>,
+    /// Overall layout extent in logical pixels.
     pub metrics: TextMetrics,
+    /// Flattened renderer-facing glyphs.
     glyphs: Arc<[GlyphInstance]>,
 }
 
 /// Local wrapper to implement `Debug` without exposing Parley brush types.
+///
+/// The enum remains public because it appears in generated private-item
+/// documentation, but [`PreparedTextLayout`] keeps its instance private. Its
+/// `Debug` implementation intentionally prints only the layout brush kind and
+/// does not dump shaped text or font data.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_text::{ParleyEngine, prepared::ParleyLayoutDebug};
+/// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+/// let layout = engine.layout_text("x", TextStyle::new(FontId::Ui, 12, Color::WHITE), None);
+/// let wrapped = ParleyLayoutDebug::Uniform(layout);
+/// assert!(format!("{wrapped:?}").contains("Layout"));
+/// ```
 pub enum ParleyLayoutDebug {
+    /// Layout whose glyph runs carry unit brushes and use a uniform paint color.
     Uniform(parley::Layout<()>),
+    /// Layout whose glyph runs carry per-span linear-RGBA brushes.
     Styled(parley::Layout<[f32; 4]>),
 }
 
@@ -38,30 +85,138 @@ impl std::fmt::Debug for ParleyLayoutDebug {
 }
 
 impl PreparedTextLayout {
+    /// Returns the source text owned by this prepared layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("é", TextStyle::new(FontId::Ui, 14, Color::WHITE)), &mut faces);
+    /// assert_eq!(prepared.text().len(), 2);
+    /// ```
     pub fn text(&self) -> &str {
         self.text.as_ref()
     }
 
+    /// Returns the copyable base style used to build the layout.
+    ///
+    /// For styled layouts this is the style outside overrides; individual glyph
+    /// colors are available through [`Self::glyphs`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let style = TextStyle::new(FontId::Mono, 13, Color::WHITE);
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("x", style), &mut faces);
+    /// assert_eq!(prepared.style(), style);
+    /// ```
     pub fn style(&self) -> TextStyle {
         self.style
     }
 
+    /// Returns the overall layout width in logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("width", TextStyle::new(FontId::Ui, 16, Color::WHITE)), &mut faces);
+    /// assert_eq!(prepared.width(), prepared.metrics.width);
+    /// ```
     pub fn width(&self) -> f32 {
         self.metrics.width
     }
 
+    /// Returns the overall layout height in logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("height", TextStyle::new(FontId::Ui, 16, Color::WHITE)), &mut faces);
+    /// assert_eq!(prepared.height(), prepared.metrics.height);
+    /// assert!(prepared.height() > 0.0);
+    /// ```
     pub fn height(&self) -> f32 {
         self.metrics.height
     }
 
+    /// Borrows flattened glyph instances without allocating.
+    ///
+    /// Uniform layouts use `color == None`; styled layouts attach the effective
+    /// linear-RGBA run color. An empty input can produce an empty slice.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("Hi", TextStyle::new(FontId::Ui, 16, Color::WHITE)), &mut faces);
+    /// assert!(!prepared.glyphs().is_empty());
+    /// assert!(prepared.glyphs().iter().all(|glyph| glyph.color.is_none()));
+    /// ```
     pub fn glyphs(&self) -> &[GlyphInstance] {
         &self.glyphs
     }
 
+    /// Maps a UTF-8 byte index to the downstream caret's logical-pixel X.
+    ///
+    /// Shaped clusters, combining sequences, and ligatures may make multiple
+    /// byte indices share an X coordinate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("abc", TextStyle::new(FontId::Ui, 16, Color::WHITE)), &mut faces);
+    /// assert!(prepared.caret_x_at(3) >= prepared.caret_x_at(0));
+    /// ```
     pub fn caret_x_at(&self, byte_idx: usize) -> f32 {
         self.caret_rect_at(byte_idx, 0.0).x
     }
 
+    /// Maps a UTF-8 byte index to a logical-pixel caret rectangle.
+    ///
+    /// `width` is normalized with a zero lower bound; negative and NaN values
+    /// behave as zero. A downstream affinity resolves ambiguous boundaries.
+    /// The result height is never negative.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("abc", TextStyle::new(FontId::Ui, 16, Color::WHITE)), &mut faces);
+    /// let rect = prepared.caret_rect_at(0, 1.5);
+    /// assert!(rect.w >= 1.5 && rect.h >= 0.0);
+    /// ```
     pub fn caret_rect_at(&self, byte_idx: usize, width: f32) -> Rect {
         match self.layout.as_ref() {
             ParleyLayoutDebug::Uniform(layout) => caret_rect_at_layout(layout, byte_idx, width),
@@ -69,6 +224,22 @@ impl PreparedTextLayout {
         }
     }
 
+    /// Maps a logical layout-space point to a cluster-aware UTF-8 byte index.
+    ///
+    /// Parley resolves points outside glyph bounds to a valid cursor in the
+    /// layout. No explicit coordinate clamping is performed here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+    /// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+    /// let mut faces = HashMap::new();
+    /// let prepared = prepare_layout(&mut engine, TextLayoutParams::new("abc", TextStyle::new(FontId::Ui, 16, Color::WHITE)), &mut faces);
+    /// assert_eq!(prepared.caret_index_at_point(-100.0, 0.0), 0);
+    /// ```
     pub fn caret_index_at_point(&self, x: f32, y: f32) -> usize {
         match self.layout.as_ref() {
             ParleyLayoutDebug::Uniform(layout) => Cursor::from_point(layout, x, y).index(),
@@ -78,6 +249,30 @@ impl PreparedTextLayout {
 }
 
 /// Builds a Parley layout and glyphs; registers font blobs by `face_id`.
+///
+/// `face_blobs` is an append-only caller-owned registry during this call:
+/// existing IDs are not replaced, and each newly encountered face receives one
+/// reference-counted copy of its complete font bytes. The map has no eviction
+/// policy. [`WrapMode::NoWrap`] ignores `params.max_width`; other modes treat it
+/// as an optional logical-pixel constraint. Uniform glyph colors are `None`
+/// because painting supplies `params.style.color` separately.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_text::{prepare_layout, ParleyEngine, TextLayoutParams};
+/// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+/// let mut faces = HashMap::new();
+/// let prepared = prepare_layout(
+///     &mut engine,
+///     TextLayoutParams::new("render", TextStyle::new(FontId::Mono, 14, Color::WHITE)),
+///     &mut faces,
+/// );
+/// assert!(!prepared.glyphs().is_empty());
+/// assert!(!faces.is_empty());
+/// ```
 pub fn prepare_layout(
     engine: &mut ParleyEngine,
     params: TextLayoutParams<'_>,
@@ -107,6 +302,34 @@ pub fn prepare_layout(
     }
 }
 
+/// Builds a colored, ranged-style layout and registers its font blobs.
+///
+/// Each output glyph carries the effective run color. Span ranges must be
+/// ordered, in bounds, and on UTF-8 boundaries; they replace font family, size,
+/// and color, while text decoration remains paint-only. `face_blobs` has the
+/// same append-only, no-eviction behavior as in [`prepare_layout`].
+///
+/// # Panics
+///
+/// Parley may panic if a span has an invalid UTF-8 byte range.
+///
+/// # Examples
+///
+/// ```
+/// use std::collections::HashMap;
+/// use ailloli_ui_core::{Color, FontId, TextStyle};
+/// use ailloli_ui_text::{ParleyEngine, StyledTextLayoutParams, StyledTextSpan, WrapMode};
+/// use ailloli_ui_text::prepared::prepare_styled_layout;
+/// #[allow(deprecated)] let mut engine = ParleyEngine::new();
+/// let base = TextStyle::new(FontId::Mono, 14, Color::WHITE);
+/// let spans = [StyledTextSpan { range: 0..2, style: TextStyle::new(FontId::Mono, 14, Color::BLACK) }];
+/// let mut faces = HashMap::new();
+/// let prepared = prepare_styled_layout(&mut engine, StyledTextLayoutParams {
+///     text: "fn main", base_style: base, spans: &spans,
+///     max_width: None, wrap_mode: WrapMode::NoWrap,
+/// }, &mut faces);
+/// assert!(prepared.glyphs().iter().all(|glyph| glyph.color.is_some()));
+/// ```
 pub fn prepare_styled_layout(
     engine: &mut ParleyEngine,
     params: StyledTextLayoutParams<'_>,
@@ -141,6 +364,7 @@ pub fn prepare_styled_layout(
     }
 }
 
+/// Extracts source ranges and logical-pixel metrics from all Parley lines.
 fn laid_out_lines<B: parley::style::Brush>(layout: &parley::Layout<B>) -> Vec<LaidOutLine> {
     let mut lines = Vec::new();
     for line in layout.lines() {
@@ -157,6 +381,7 @@ fn laid_out_lines<B: parley::style::Brush>(layout: &parley::Layout<B>) -> Vec<La
     lines
 }
 
+/// Flattens uniform-brush glyph runs and records their font blobs.
 fn glyphs_from_layout(
     layout: &parley::Layout<()>,
     face_blobs: &mut HashMap<u64, Arc<[u8]>>,
@@ -174,6 +399,7 @@ fn glyphs_from_layout(
     out
 }
 
+/// Flattens colored glyph runs and converts brushes to Ailloli colors.
 fn styled_glyphs_from_layout(
     layout: &parley::Layout<[f32; 4]>,
     face_blobs: &mut HashMap<u64, Arc<[u8]>>,
@@ -196,6 +422,7 @@ fn styled_glyphs_from_layout(
     out
 }
 
+/// Registers one run's font once and appends all of its positioned glyphs.
 fn push_glyph_run<B: parley::style::Brush>(
     out: &mut Vec<GlyphInstance>,
     face_blobs: &mut HashMap<u64, Arc<[u8]>>,
@@ -223,6 +450,7 @@ fn push_glyph_run<B: parley::style::Brush>(
     }
 }
 
+/// Computes downstream caret geometry for either Parley brush type.
 fn caret_rect_at_layout<B: parley::style::Brush>(
     layout: &parley::Layout<B>,
     byte_idx: usize,

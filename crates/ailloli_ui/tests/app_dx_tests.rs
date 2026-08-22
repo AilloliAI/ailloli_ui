@@ -1,8 +1,15 @@
+//! Public builder ergonomics and stored-option contract scenarios.
+//!
+//! These tests stay outside the crate so they exercise only consumer-visible
+//! construction and inspection methods.
+
 use ailloli_ui::{Command, Commands, View, Window, WindowChrome, Windows};
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Minimal application action used to inspect command batches.
 enum Action {
+    /// Marker action carried through immediate and delayed dispatch commands.
     Noop,
 }
 

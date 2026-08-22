@@ -1,3 +1,5 @@
+//! Antialiased CPU tessellation for stroked polylines with bevel joins.
+
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::Point;
 use ailloli_ui_runtime::DrawPolyline;
@@ -8,6 +10,26 @@ use crate::vertices::StrokeVertex;
 const MIN_SEGMENT_LENGTH_PX: f32 = 0.001;
 const AA_FRINGE_PX: f32 = 1.0;
 
+/// Appends antialiased triangles for a logical-coordinate polyline.
+///
+/// Stroke width and points are multiplied by DPR. Non-finite points, consecutive
+/// physical points closer than `0.001` pixel, nonpositive/non-finite widths, and
+/// transparent strokes are skipped. Each open path gets one-pixel AA fringes,
+/// square AA caps, and bevel joins; output is always a triangle-list multiple of
+/// three.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{math::Scale, Color, Point, StrokeStyle};
+/// use ailloli_ui_render_wgpu::passes::push_polyline_scaled;
+/// use ailloli_ui_runtime::DrawPolyline;
+/// let line = DrawPolyline { points: vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)],
+///     stroke: StrokeStyle::new(2.0, Color::WHITE) };
+/// let mut vertices = Vec::new();
+/// push_polyline_scaled(&mut vertices, 100.0, 100.0, Scale::new(1.0), &line);
+/// assert_eq!(vertices.len(), 30);
+/// ```
 pub fn push_polyline_scaled(
     out: &mut Vec<StrokeVertex>,
     w: f32,
@@ -50,6 +72,7 @@ pub fn push_polyline_scaled(
     }
 }
 
+/// Drops invalid and near-duplicate points while converting to physical pixels.
 fn clean_points_physical(points: &[Point], scale: Scale) -> Vec<[f32; 2]> {
     let mut out = Vec::with_capacity(points.len());
     for point in points {
@@ -69,6 +92,7 @@ fn clean_points_physical(points: &[Point], scale: Scale) -> Vec<[f32; 2]> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// One normalized physical-pixel line segment and its left normal.
 struct Segment {
     a: [f32; 2],
     b: [f32; 2],
@@ -76,6 +100,7 @@ struct Segment {
     normal: [f32; 2],
 }
 
+/// Creates finite, nondegenerate segments between cleaned points.
 fn build_segments(points: &[[f32; 2]]) -> Vec<Segment> {
     let mut segments = Vec::with_capacity(points.len().saturating_sub(1));
     for pair in points.windows(2) {
@@ -94,6 +119,7 @@ fn build_segments(points: &[[f32; 2]]) -> Vec<Segment> {
     segments
 }
 
+/// Emits the opaque stroke body and transparent one-pixel side fringes.
 fn push_segment_body(
     out: &mut Vec<StrokeVertex>,
     w: f32,
@@ -147,6 +173,7 @@ fn push_segment_body(
     );
 }
 
+/// Emits the one-pixel antialiasing fringe before the first endpoint.
 fn push_start_cap(
     out: &mut Vec<StrokeVertex>,
     w: f32,
@@ -178,6 +205,7 @@ fn push_start_cap(
     );
 }
 
+/// Emits the one-pixel antialiasing fringe after the last endpoint.
 fn push_end_cap(
     out: &mut Vec<StrokeVertex>,
     w: f32,
@@ -209,6 +237,7 @@ fn push_end_cap(
     );
 }
 
+/// Fills a connected pair with a bevel and matching outside AA fringes.
 fn push_bevel_join(
     out: &mut Vec<StrokeVertex>,
     w: f32,
@@ -267,6 +296,7 @@ fn push_bevel_join(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Emits two triangles for a four-corner physical-pixel quad.
 fn emit_quad(
     out: &mut Vec<StrokeVertex>,
     w: f32,
@@ -291,6 +321,7 @@ fn emit_quad(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Emits one physical-pixel triangle with per-corner colors.
 fn emit_triangle(
     out: &mut Vec<StrokeVertex>,
     w: f32,
@@ -309,6 +340,7 @@ fn emit_triangle(
     ]);
 }
 
+/// Converts a physical-pixel position and color into a stroke vertex.
 fn vertex(w: f32, h: f32, p: [f32; 2], color: [f32; 4]) -> StrokeVertex {
     StrokeVertex {
         pos: to_ndc(w, h, p[0], p[1]),
@@ -317,18 +349,22 @@ fn vertex(w: f32, h: f32, p: [f32; 2], color: [f32; 4]) -> StrokeVertex {
     }
 }
 
+/// Adds two physical-pixel vectors component-wise.
 fn add(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [a[0] + b[0], a[1] + b[1]]
 }
 
+/// Subtracts two physical-pixel vectors component-wise.
 fn sub(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
+/// Multiplies a physical-pixel vector by a scalar.
 fn mul(a: [f32; 2], s: f32) -> [f32; 2] {
     [a[0] * s, a[1] * s]
 }
 
+/// Returns Euclidean distance between two physical-pixel positions.
 fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
@@ -336,10 +372,12 @@ fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
 }
 
 #[cfg(test)]
+/// Verifies stroke tessellation, filtering, scale, caps, and bevel joins.
 mod tests {
     use super::*;
     use ailloli_ui_core::{Color, StrokeStyle};
 
+    /// Creates a white test polyline with a caller-selected logical width.
     fn polyline(points: Vec<Point>, width: f32) -> DrawPolyline {
         DrawPolyline {
             points,
@@ -347,6 +385,7 @@ mod tests {
         }
     }
 
+    /// Converts renderer NDC Y back to top-origin physical pixels.
     fn ndc_y_to_px(surface_h: f32, ndc_y: f32) -> f32 {
         (1.0 - ndc_y) * surface_h * 0.5
     }

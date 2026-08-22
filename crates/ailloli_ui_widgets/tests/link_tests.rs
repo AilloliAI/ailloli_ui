@@ -1,3 +1,5 @@
+//! Link composition, opener, focus, hover, keyboard, and pointer scenarios.
+
 use std::rc::Rc;
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};

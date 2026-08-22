@@ -1,3 +1,10 @@
+//! Main GPU renderer, layer descriptions, surface lifecycle, and frame capture.
+//!
+//! [`Renderer`] accepts runtime draw-command layers, prepares glyph/icon GPU
+//! resources, builds a CPU frame plan, and records main and isolated passes.
+//! It can either own a detachable native surface or render into a host-provided
+//! [`RenderTarget`].
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -45,6 +52,14 @@ use wgpu::util::DeviceExt;
 /// [`FrameRenderPlan`]. Per-layer stencil_ref counters are assigned by
 /// `FrameRenderPlan::build_cpu`, removing the previous `StencilFrameState`
 /// field.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::Renderer;
+///
+/// assert!(std::mem::size_of::<Renderer>() > 0);
+/// ```
 pub struct Renderer {
     gpu: RenderBackend,
 
@@ -64,12 +79,16 @@ pub struct Renderer {
     frame_leases: Vec<crate::offscreen_pool::LeasedOffscreen>,
 }
 
+/// Storage policy for a managed surface or externally managed target context.
 enum RenderBackend {
+    /// GPU context plus a native attachment that may be detached.
     Surface(Box<WgpuSurfaceBundle>),
+    /// Device/queue/pipelines without native presentation ownership.
     Detached(Box<WgpuRenderContext>),
 }
 
 impl RenderBackend {
+    /// Mutably borrows the managed surface bundle, if this backend owns one.
     fn surface_mut(&mut self) -> Option<&mut WgpuSurfaceBundle> {
         match self {
             Self::Surface(bundle) => Some(bundle),
@@ -77,6 +96,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns the logical device shared by both backend modes.
     fn device(&self) -> &wgpu::Device {
         match self {
             Self::Surface(bundle) => bundle.device(),
@@ -84,6 +104,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns the submission queue shared by both backend modes.
     fn queue(&self) -> &wgpu::Queue {
         match self {
             Self::Surface(bundle) => bundle.queue(),
@@ -91,6 +112,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns pipelines compiled for this backend's color format.
     fn pipelines(&self) -> &crate::pipeline_cache::PipelineCache {
         match self {
             Self::Surface(bundle) => bundle.pipelines(),
@@ -98,6 +120,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns the configured or remembered physical-pixel extent.
     fn extent(&self) -> PhysicalExtent {
         match self {
             Self::Surface(bundle) => bundle.extent(),
@@ -107,6 +130,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns the color target format expected by cached pipelines.
     fn format(&self) -> wgpu::TextureFormat {
         match self {
             Self::Surface(bundle) => bundle.format(),
@@ -114,6 +138,7 @@ impl RenderBackend {
         }
     }
 
+    /// Applies a resize using the backend-specific configuration path.
     fn try_resize(
         &mut self,
         new_size: PhysicalExtent,
@@ -124,6 +149,7 @@ impl RenderBackend {
         }
     }
 
+    /// Forces native surface configuration, rejecting detached contexts.
     fn try_reconfigure_surface(
         &mut self,
         new_size: PhysicalExtent,
@@ -136,6 +162,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns native capabilities or a synthetic detached-context equivalent.
     fn surface_capabilities(&self) -> wgpu::SurfaceCapabilities {
         match self {
             Self::Surface(surface) => surface.surface_capabilities(),
@@ -152,6 +179,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns the current reason native presentation must wait, if any.
     fn surface_config_deferred_reason(
         &self,
     ) -> Option<crate::pipeline_cache::SurfaceConfigDeferredReason> {
@@ -161,6 +189,7 @@ impl RenderBackend {
         }
     }
 
+    /// Returns native adapter information or a stable detached sentinel.
     fn adapter_info(&self) -> wgpu::AdapterInfo {
         match self {
             Self::Surface(surface) => surface.adapter_info(),
@@ -176,6 +205,7 @@ impl RenderBackend {
         }
     }
 
+    /// Runs the host's optional pre-present notification.
     fn pre_present_notify(&self) {
         match self {
             Self::Surface(surface) => surface.pre_present_notify(),
@@ -183,10 +213,12 @@ impl RenderBackend {
         }
     }
 
+    /// Best-effort resize that deliberately discards errors and outcomes.
     fn resize(&mut self, new_size: PhysicalExtent) {
         let _ = self.try_resize(new_size);
     }
 
+    /// Reports native attachment state; detached contexts always report detached.
     fn attachment_state(&self) -> SurfaceAttachmentState {
         match self {
             Self::Surface(bundle) => bundle.attachment_state(),
@@ -194,6 +226,7 @@ impl RenderBackend {
         }
     }
 
+    /// Borrows native or virtual target configuration.
     fn surface_config(&self) -> Option<&wgpu::SurfaceConfiguration> {
         match self {
             Self::Surface(bundle) => bundle.config(),
@@ -201,6 +234,7 @@ impl RenderBackend {
         }
     }
 
+    /// Mutably borrows the native surface or returns a typed availability error.
     fn require_surface_mut(
         &mut self,
     ) -> Result<&mut WgpuSurfaceBundle, crate::error::RendererError> {
@@ -212,31 +246,92 @@ impl RenderBackend {
 }
 
 /// Per-frame metrics for isolated offscreen rendering (`AILLOLI_UI_GPU_DEBUG=1`).
+///
+/// Pixel and byte fields are accumulated with integer counters during a frame.
+/// A default value represents a frame that performed no isolated work.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::IsolatedFrameMetrics;
+///
+/// let metrics = IsolatedFrameMetrics::default();
+/// assert_eq!(metrics.isolated_pass_count, 0);
+/// assert_eq!(metrics.pool_reuse_ratio(), 0.0);
+/// ```
 #[derive(Debug, Default, Clone, Copy)]
 pub struct IsolatedFrameMetrics {
+    /// Number of offscreen isolated content passes rendered this frame.
     pub isolated_pass_count: u32,
+    /// Total physical pixels covered by isolated offscreen targets.
     pub offscreen_pixels_rendered: u64,
+    /// Total physical pixels processed by blur passes.
     pub blur_pixels_total: u64,
+    /// Peak bytes retained by the offscreen surface pool.
     pub offscreen_peak_bytes: u64,
+    /// Number of offscreen leases satisfied by reusable allocations.
     pub pool_reuse_hits: u32,
+    /// Number of new offscreen allocations made this frame.
     pub pool_allocs: u32,
+    /// Number of separable blur GPU passes recorded.
     pub blur_pass_count: u32,
+    /// Number of isolated targets that required stencil attachments.
     pub stencil_offscreen_count: u32,
+    /// Legacy count of nested-isolation downgrades.
     pub downgrade_nested_isolated: u32,
+    /// Legacy count of oversized-target downgrades.
     pub downgrade_oversized: u32,
+    /// Typed downgrade counts accumulated by the active budget policy.
     pub downgrades: IsolatedDowngradeCounts,
+    /// Number of backdrop regions copied before isolated rendering.
     pub backdrop_capture_count: u32,
+    /// Total physical pixels copied for backdrop capture.
     pub backdrop_pixels_total: u64,
+    /// Number of blur passes applied to captured backdrop regions.
     pub backdrop_blur_pass_count: u32,
+    /// Number of destination regions captured for non-normal blending.
     pub blend_capture_count: u32,
+    /// Number of shader blend composites recorded.
     pub blend_composite_count: u32,
 }
 
 impl IsolatedFrameMetrics {
+    /// Returns the total number of typed and legacy isolation downgrades.
+    ///
+    /// Addition uses ordinary `u32` arithmetic and therefore follows Rust's
+    /// debug-overflow checks; real frame counts remain far below the limit.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::IsolatedFrameMetrics;
+    ///
+    /// let mut metrics = IsolatedFrameMetrics::default();
+    /// metrics.downgrade_nested_isolated = 2;
+    /// metrics.downgrade_oversized = 1;
+    /// assert_eq!(metrics.downgrade_count(), 3);
+    /// ```
     pub fn downgrade_count(&self) -> u32 {
         self.downgrades.total() + self.downgrade_nested_isolated + self.downgrade_oversized
     }
 
+    /// Returns reused leases divided by all reuse/allocation outcomes.
+    ///
+    /// The range is `0.0..=1.0`; an empty denominator returns `0.0` instead of
+    /// NaN.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::IsolatedFrameMetrics;
+    ///
+    /// let metrics = IsolatedFrameMetrics {
+    ///     pool_reuse_hits: 3,
+    ///     pool_allocs: 1,
+    ///     ..IsolatedFrameMetrics::default()
+    /// };
+    /// assert_eq!(metrics.pool_reuse_ratio(), 0.75);
+    /// ```
     pub fn pool_reuse_ratio(&self) -> f64 {
         let denom = self.pool_reuse_hits + self.pool_allocs;
         if denom == 0 {
@@ -248,6 +343,17 @@ impl IsolatedFrameMetrics {
 }
 
 /// Options passed when creating a [`Renderer`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::RendererOptions;
+///
+/// let options = RendererOptions::default();
+/// assert!(!options.transparent);
+/// assert!(options.bootstrap.is_none());
+/// assert!(options.isolated_budget.is_none());
+/// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RendererOptions {
     /// Use a transparent swapchain clear (client chrome / rounded window).
@@ -259,6 +365,20 @@ pub struct RendererOptions {
 }
 
 impl RendererOptions {
+    /// Sets an explicit native-surface bootstrap policy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::{
+    ///     pipeline_cache::SurfaceBootstrapConfig,
+    ///     RendererOptions,
+    /// };
+    ///
+    /// let options = RendererOptions::default()
+    ///     .with_bootstrap(SurfaceBootstrapConfig::vulkan_only());
+    /// assert!(!options.bootstrap_config().allow_fallback_backends);
+    /// ```
     pub fn with_bootstrap(
         mut self,
         bootstrap: crate::pipeline_cache::SurfaceBootstrapConfig,
@@ -267,6 +387,15 @@ impl RendererOptions {
         self
     }
 
+    /// Returns the explicit bootstrap policy or its permissive default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::RendererOptions;
+    ///
+    /// assert!(RendererOptions::default().bootstrap_config().allow_fallback_backends);
+    /// ```
     pub fn bootstrap_config(&self) -> crate::pipeline_cache::SurfaceBootstrapConfig {
         self.bootstrap.unwrap_or_default()
     }
@@ -277,22 +406,61 @@ impl RendererOptions {
 /// `isolated == true` requests an offscreen pass when [`IsolatedEffects::needs_offscreen`]
 /// is true (opacity < 1, blur, etc.). Phase 31 renders content to a pooled
 /// texture, runs the effect chain, then composites into the main pass.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::LayerPass;
+///
+/// let layer = LayerPass::new(&[]);
+/// assert!(layer.cmds.is_empty());
+/// assert!(!layer.isolated);
+/// ```
 #[derive(Debug, Clone)]
 pub struct LayerPass<'a> {
+    /// Draw commands in stable painter's order.
     pub cmds: &'a [DrawCmd],
+    /// Immutable snapshot of nested clip entries for this layer.
     pub clip: ClipStackSnapshot,
+    /// Resolved scissor/shader/stencil policy for [`Self::clip`].
     pub clip_plan: RenderClipPlan,
+    /// Whether the runtime requested isolated compositing.
     pub isolated: bool,
     /// Nesting depth from runtime (`PaintContext`); 0 for flat isolated layers.
     pub isolated_depth: u8,
+    /// Opacity, filters, backdrop, and blend effects for isolated compositing.
     pub effects: IsolatedEffects,
 }
 
 impl<'a> LayerPass<'a> {
+    /// Creates an unclipped, non-isolated layer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    ///
+    /// let layer = LayerPass::new(&[]);
+    /// assert!(layer.clip.is_empty());
+    /// assert!(!layer.isolated);
+    /// ```
     pub fn new(cmds: &'a [DrawCmd]) -> Self {
         Self::with_clip_stack(cmds, ClipStackSnapshot::empty())
     }
 
+    /// Creates a non-isolated layer and resolves its clip rendering plan.
+    ///
+    /// Command count participates in choosing shader versus stencil clipping.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    /// use ailloli_ui_runtime::scene::ClipStackSnapshot;
+    ///
+    /// let layer = LayerPass::with_clip_stack(&[], ClipStackSnapshot::empty());
+    /// assert!(layer.clip.is_empty());
+    /// ```
     pub fn with_clip_stack(cmds: &'a [DrawCmd], clip: ClipStackSnapshot) -> Self {
         let clip_plan = resolve_clip_render_plan(&clip, cmds.len());
         Self {
@@ -305,6 +473,28 @@ impl<'a> LayerPass<'a> {
         }
     }
 
+    /// Converts runtime scene-layer metadata into a renderer layer.
+    ///
+    /// `isolated_depth` is the runtime nesting depth; zero represents a flat
+    /// isolated layer. Effects are retained even when isolation later
+    /// downgrades under budget pressure.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    /// use ailloli_ui_runtime::{scene::ClipStackSnapshot, IsolatedEffects};
+    ///
+    /// let layer = LayerPass::from_scene_layer(
+    ///     &[],
+    ///     ClipStackSnapshot::empty(),
+    ///     true,
+    ///     1,
+    ///     IsolatedEffects::default(),
+    /// );
+    /// assert!(layer.isolated);
+    /// assert_eq!(layer.isolated_depth, 1);
+    /// ```
     pub fn from_scene_layer(
         cmds: &'a [DrawCmd],
         clip: ClipStackSnapshot,
@@ -323,24 +513,90 @@ impl<'a> LayerPass<'a> {
         }
     }
 
+    /// Creates a non-isolated layer with one ordinary clip shape.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    ///
+    /// let layer = LayerPass::with_clip(
+    ///     &[],
+    ///     ClipShape::Rect(Rect::new(0.0, 0.0, 20.0, 10.0)),
+    /// );
+    /// assert!(!layer.clip.is_empty());
+    /// ```
     pub fn with_clip(cmds: &'a [DrawCmd], clip: ClipShape) -> Self {
         Self::with_clip_stack(cmds, ClipStackSnapshot::from_clip(Some(clip), false))
     }
 
+    /// Creates a clipped layer whose single clip is the window root.
+    ///
+    /// Root status can force stencil selection for rounded window chrome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{ClipShape, Rect};
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    ///
+    /// let layer = LayerPass::with_window_root_clip(
+    ///     &[],
+    ///     ClipShape::Rect(Rect::new(0.0, 0.0, 20.0, 10.0)),
+    /// );
+    /// assert!(!layer.clip.is_empty());
+    /// ```
     pub fn with_window_root_clip(cmds: &'a [DrawCmd], clip: ClipShape) -> Self {
         Self::with_clip_stack(cmds, ClipStackSnapshot::from_clip(Some(clip), true))
     }
 
     /// Isolated layer with default effects (collapsed into main pass if noop).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    ///
+    /// let layer = LayerPass::new_isolated(&[]);
+    /// assert!(layer.isolated);
+    /// ```
     pub fn new_isolated(cmds: &'a [DrawCmd]) -> Self {
         Self::with_clip_stack_isolated(cmds, ClipStackSnapshot::empty())
     }
 
     /// Same as `with_clip_stack` but marks the layer as `isolated`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    /// use ailloli_ui_runtime::scene::ClipStackSnapshot;
+    ///
+    /// let layer = LayerPass::with_clip_stack_isolated(&[], ClipStackSnapshot::empty());
+    /// assert!(layer.isolated);
+    /// ```
     pub fn with_clip_stack_isolated(cmds: &'a [DrawCmd], clip: ClipStackSnapshot) -> Self {
         Self::with_clip_stack_isolated_effects(cmds, clip, IsolatedEffects::default())
     }
 
+    /// Creates an isolated layer with an explicit effect set.
+    ///
+    /// The layer may later collapse into the main pass when the effects are a
+    /// no-op or isolation is downgraded by the configured budget.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::LayerPass;
+    /// use ailloli_ui_runtime::{scene::ClipStackSnapshot, IsolatedEffects};
+    ///
+    /// let effects = IsolatedEffects::default();
+    /// let layer = LayerPass::with_clip_stack_isolated_effects(
+    ///     &[], ClipStackSnapshot::empty(), effects,
+    /// );
+    /// assert!(layer.isolated);
+    /// ```
     pub fn with_clip_stack_isolated_effects(
         cmds: &'a [DrawCmd],
         clip: ClipStackSnapshot,
@@ -353,29 +609,50 @@ impl<'a> LayerPass<'a> {
     }
 }
 
+/// GPU uniform storage and bind group for one clip parameter set.
 struct ClipBinding {
+    /// Retains the uniform buffer for at least as long as its bind group.
     _buffer: wgpu::Buffer,
+    /// Bind group consumed by clip-aware pipelines.
     bind_group: wgpu::BindGroup,
 }
 
+/// Clip bindings selected per planned layer.
 struct PerLayerBindings {
+    /// Unclipped binding used when batches bypass shader clipping.
     none_clip: ClipBinding,
+    /// Shape binding for shader-mask batches; absent when not needed.
     shape_clip: Option<ClipBinding>,
 }
 
+/// Optional per-frame vertex buffers uploaded before the main render pass.
 struct MainPassGpuBuffers {
+    /// Solid rectangle vertex arena.
     vertex_buf: Option<wgpu::Buffer>,
+    /// Rounded rectangle vertex arena.
     rrect_buf: Option<wgpu::Buffer>,
+    /// Rounded border vertex arena.
     border_rrect_buf: Option<wgpu::Buffer>,
+    /// Box shadow vertex arena.
     shadow_buf: Option<wgpu::Buffer>,
+    /// Progress ring vertex arena.
     ring_progress_buf: Option<wgpu::Buffer>,
+    /// Polyline stroke vertex arena.
     stroke_buf: Option<wgpu::Buffer>,
+    /// Textured glyph/image/icon vertex arena.
     tex_buf: Option<wgpu::Buffer>,
+    /// Rounded stencil mask vertices.
     stencil_mask_buf: Option<wgpu::Buffer>,
+    /// Isolated-surface composite vertices.
     composite_buf: Option<wgpu::Buffer>,
+    /// Clip bindings in planned-layer order.
     per_layer: Vec<PerLayerBindings>,
 }
 
+/// Creates the stencil attachment for a pass that needs stencil clipping.
+///
+/// Returns `None` when stencil is not needed or no target is available. The
+/// attachment clears stencil to zero and stores the final contents.
 fn stencil_depth_attachment<'a>(
     stencil_target: &'a Option<StencilTarget>,
     needs: bool,
@@ -395,6 +672,10 @@ fn stencil_depth_attachment<'a>(
         })
 }
 
+/// Records nonempty glyph-atlas activity in the benchmark event stream.
+///
+/// Frames with no hits, misses, rasterization, resets, blocked evictions, or
+/// skips are omitted even when pages remain active.
 fn record_text_atlas_frame(stats: TextAtlasStats) {
     if stats.hits
         + stats.misses
@@ -424,6 +705,38 @@ impl Renderer {
     ///
     /// Presentation adapters are responsible for converting their native size
     /// to [`PhysicalExtent`] and for supplying an optional pre-present hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when raw handles cannot create a surface, no compatible
+    /// adapter/device can be opened, or all surface configurations fail.
+    ///
+    /// # Panics
+    ///
+    /// May panic if wgpu rejects renderer shader or pipeline creation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use ailloli_ui_render_wgpu::{PhysicalExtent, Renderer, RendererError, RendererOptions};
+    ///
+    /// fn create<T>(target: Arc<T>) -> Result<Renderer, RendererError>
+    /// where
+    ///     T: wgpu::rwh::HasWindowHandle
+    ///         + wgpu::rwh::HasDisplayHandle
+    ///         + Send
+    ///         + Sync
+    ///         + 'static,
+    /// {
+    ///     Renderer::new_with_surface_target(
+    ///         target,
+    ///         PhysicalExtent::new(1280, 720),
+    ///         RendererOptions::default(),
+    ///         None,
+    ///     )
+    /// }
+    /// ```
     pub fn new_with_surface_target<T>(
         target: Arc<T>,
         size: PhysicalExtent,
@@ -443,6 +756,10 @@ impl Renderer {
         Self::new_from_backend(RenderBackend::Surface(Box::new(gpu)), options)
     }
 
+    /// Allocates renderer caches and the initial stencil target for `gpu`.
+    ///
+    /// The current implementation is fallible for forward compatibility but
+    /// performs only non-fallible CPU initialization and wgpu resource creation.
     fn new_from_backend(
         gpu: RenderBackend,
         options: RendererOptions,
@@ -474,11 +791,46 @@ impl Renderer {
         })
     }
 
+    /// Creates a renderer for an externally managed render target.
+    ///
+    /// The renderer retains `context` but owns no native surface; swapchain-only
+    /// entry points return [`RendererError::RenderTargetUnavailable`].
+    ///
+    /// # Panics
+    ///
+    /// May panic if wgpu rejects atlas or stencil resource creation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{Renderer, RendererOptions, WgpuRenderContext};
+    ///
+    /// fn create(context: WgpuRenderContext) -> Renderer {
+    ///     Renderer::new_with_render_context(context, RendererOptions::default())
+    /// }
+    /// ```
     pub fn new_with_render_context(context: WgpuRenderContext, options: RendererOptions) -> Self {
         Self::new_from_backend(RenderBackend::Detached(Box::new(context)), options)
             .unwrap_or_else(|_| unreachable!("WgpuRenderContext constructor is non-fallible"))
     }
 
+    /// Compatibility alias for [`Self::new_with_render_context`].
+    ///
+    /// `options.bootstrap` has no effect until a surface-backed renderer is
+    /// bootstrapped; detached contexts already own their device and queue.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{Renderer, RendererOptions, WgpuRenderContext};
+    ///
+    /// fn create(context: WgpuRenderContext) -> Renderer {
+    ///     Renderer::new_with_render_context_and_bootstrap(
+    ///         context,
+    ///         RendererOptions::default(),
+    ///     )
+    /// }
+    /// ```
     pub fn new_with_render_context_and_bootstrap(
         context: WgpuRenderContext,
         options: RendererOptions,
@@ -486,22 +838,88 @@ impl Renderer {
         Self::new_with_render_context(context, options)
     }
 
+    /// Returns the active per-frame isolated-rendering budget.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{IsolatedBudgetConfig, Renderer};
+    ///
+    /// fn budget(renderer: &Renderer) -> IsolatedBudgetConfig {
+    ///     renderer.isolated_budget_config()
+    /// }
+    /// ```
     pub fn isolated_budget_config(&self) -> IsolatedBudgetConfig {
         self.isolated_budget
     }
 
+    /// Replaces the budget used when planning subsequent frames.
+    ///
+    /// This does not mutate metrics from the previously completed frame.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{IsolatedBudgetConfig, Renderer};
+    ///
+    /// fn reset_budget(renderer: &mut Renderer) {
+    ///     renderer.set_isolated_budget_config(IsolatedBudgetConfig::default());
+    /// }
+    /// ```
     pub fn set_isolated_budget_config(&mut self, config: IsolatedBudgetConfig) {
         self.isolated_budget = config;
     }
 
+    /// Returns the renderer's reusable font metrics engine.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::Renderer;
+    /// use ailloli_ui_text::FontMetrics;
+    ///
+    /// fn metrics(renderer: &Renderer) -> &FontMetrics {
+    ///     renderer.text_measurer()
+    /// }
+    /// ```
     pub fn text_measurer(&self) -> &FontMetrics {
         &self.text_metrics
     }
 
+    /// Replaces font bytes indexed by runtime face identifier.
+    ///
+    /// The shared map is retained without copying. An absent face causes glyph
+    /// preparation to record a missing-face event and skip that glyph.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::{collections::HashMap, sync::Arc};
+    /// use ailloli_ui_render_wgpu::Renderer;
+    ///
+    /// fn clear_faces(renderer: &mut Renderer) {
+    ///     renderer.set_text_face_blobs(Arc::new(HashMap::new()));
+    /// }
+    /// ```
     pub fn set_text_face_blobs(&mut self, blobs: Arc<HashMap<u64, Arc<[u8]>>>) {
         self.text_face_blobs = blobs;
     }
 
+    /// Best-effort resize of the active backend and stencil target.
+    ///
+    /// This method discards surface errors and recreates stencil storage even
+    /// when native configuration was skipped or deferred. Prefer
+    /// [`Self::try_resize`] when the host needs the precise outcome.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{PhysicalExtent, Renderer};
+    ///
+    /// fn resize(renderer: &mut Renderer) {
+    ///     renderer.resize(PhysicalExtent::new(1920, 1080));
+    /// }
+    /// ```
     pub fn resize(&mut self, new_size: PhysicalExtent) {
         self.gpu.resize(new_size);
         if let Some(st) = self.stencil_target.as_mut() {
@@ -509,6 +927,26 @@ impl Renderer {
         }
     }
 
+    /// Resizes the backend and recreates stencil storage after an applied change.
+    ///
+    /// `new_size` is in physical pixels. Zero dimensions are skipped; an
+    /// unchanged extent leaves all resources intact.
+    ///
+    /// # Errors
+    ///
+    /// Surface-backed renderers propagate unavailability, recreation-required,
+    /// and configuration failures. Detached contexts resize their virtual config
+    /// without error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{PhysicalExtent, Renderer, RendererError, ResizeOutcome};
+    ///
+    /// fn resize(renderer: &mut Renderer) -> Result<ResizeOutcome, RendererError> {
+    ///     renderer.try_resize(PhysicalExtent::new(1920, 1080))
+    /// }
+    /// ```
     pub fn try_resize(&mut self, new_size: PhysicalExtent) -> Result<ResizeOutcome, RendererError> {
         let previous_size = self.gpu.extent();
         let out = self.gpu.try_resize(new_size);
@@ -526,6 +964,22 @@ impl Renderer {
     /// This is the recovery entry point for `SurfaceError::Lost` and
     /// `SurfaceError::Outdated`. A detached render context has no presentation
     /// surface and therefore returns [`RendererError::RenderTargetUnavailable`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates surface unavailability, format-incompatibility, or native
+    /// configuration failure. Zero-sized requests return
+    /// [`ResizeOutcome::SkippedZero`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{PhysicalExtent, Renderer, RendererError, ResizeOutcome};
+    ///
+    /// fn recover(renderer: &mut Renderer) -> Result<ResizeOutcome, RendererError> {
+    ///     renderer.try_reconfigure_surface(PhysicalExtent::new(1280, 720))
+    /// }
+    /// ```
     pub fn try_reconfigure_surface(
         &mut self,
         new_size: PhysicalExtent,
@@ -545,6 +999,20 @@ impl Renderer {
     ///
     /// Returns `true` when an attachment was present. Detached render-context
     /// mode has no owned native surface and returns `false`.
+    ///
+    /// Outstanding offscreen frame leases are released first. Device-bound
+    /// pipelines, atlases, and caches remain valid for compatible reattachment.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{Renderer, SurfaceAttachmentState};
+    ///
+    /// fn suspend(renderer: &mut Renderer) {
+    ///     let _had_attachment = renderer.detach_surface();
+    ///     assert_eq!(renderer.surface_attachment_state(), SurfaceAttachmentState::Detached);
+    /// }
+    /// ```
     pub fn detach_surface(&mut self) -> bool {
         self.frame_leases.clear();
         match &mut self.gpu {
@@ -558,6 +1026,40 @@ impl Renderer {
     /// The current instance, adapter, device, queue, pipelines, atlases, and
     /// caches are reused when compatible. Otherwise the surface bootstrap is
     /// repeated and every device-bound renderer resource is rebuilt safely.
+    /// `size` is in physical pixels.
+    ///
+    /// # Errors
+    ///
+    /// Detached-context renderers cannot acquire surface ownership. Surface
+    /// renderers propagate raw-handle, adapter, device, and configuration errors.
+    ///
+    /// # Panics
+    ///
+    /// A required context rebuild may panic if wgpu rejects renderer pipeline
+    /// creation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use ailloli_ui_render_wgpu::{
+    ///     PhysicalExtent, Renderer, RendererError, SurfaceReattachOutcome,
+    /// };
+    ///
+    /// fn resume<T>(
+    ///     renderer: &mut Renderer,
+    ///     target: Arc<T>,
+    /// ) -> Result<SurfaceReattachOutcome, RendererError>
+    /// where
+    ///     T: wgpu::rwh::HasWindowHandle
+    ///         + wgpu::rwh::HasDisplayHandle
+    ///         + Send
+    ///         + Sync
+    ///         + 'static,
+    /// {
+    ///     renderer.reattach_surface_target(target, PhysicalExtent::new(1280, 720), None)
+    /// }
+    /// ```
     pub fn reattach_surface_target<T>(
         &mut self,
         target: Arc<T>,
@@ -582,6 +1084,10 @@ impl Renderer {
         Ok(outcome)
     }
 
+    /// Drops and recreates every resource tied to the current wgpu device.
+    ///
+    /// CPU font-face blobs, metrics, budget configuration, and benchmark
+    /// scenario survive; GPU atlases, pools, pipelines, metrics, and leases reset.
     fn rebuild_device_bound_resources(&mut self) {
         self.frame_leases.clear();
         self.icon_cache = IconCache::new();
@@ -602,12 +1108,39 @@ impl Renderer {
         ));
     }
 
+    /// Reports whether this renderer currently owns a native attachment.
+    ///
+    /// Externally managed render contexts always report `Detached` because the
+    /// renderer does not own their targets.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{Renderer, SurfaceAttachmentState};
+    ///
+    /// fn state(renderer: &Renderer) -> SurfaceAttachmentState {
+    ///     renderer.surface_attachment_state()
+    /// }
+    /// ```
     pub fn surface_attachment_state(&self) -> SurfaceAttachmentState {
         self.gpu.attachment_state()
     }
 
     /// Returns the active presentation configuration, or `None` while the
     /// native surface is detached.
+    ///
+    /// Detached render contexts return their virtual configuration as `Some`;
+    /// only a detached native surface returns `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::Renderer;
+    ///
+    /// fn width(renderer: &Renderer) -> Option<u32> {
+    ///     renderer.try_surface_config().map(|config| config.width)
+    /// }
+    /// ```
     pub fn try_surface_config(&self) -> Option<&wgpu::SurfaceConfiguration> {
         self.gpu.surface_config()
     }
@@ -616,19 +1149,75 @@ impl Renderer {
     ///
     /// Hosts retaining a renderer across suspension should use
     /// [`Self::try_surface_config`] while the surface may be detached.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a native surface-backed renderer is currently detached.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::Renderer;
+    ///
+    /// fn format(renderer: &Renderer) -> wgpu::TextureFormat {
+    ///     renderer.surface_config().format
+    /// }
+    /// ```
     pub fn surface_config(&self) -> &wgpu::SurfaceConfiguration {
         self.try_surface_config()
             .expect("surface_config called while the presentation surface is detached")
     }
 
+    /// Returns current native capabilities or a synthetic detached-context set.
+    ///
+    /// A detached native surface returns an empty set. A detached render context
+    /// reports its configured format, FIFO, chosen alpha mode, and usage.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::Renderer;
+    ///
+    /// fn format_count(renderer: &Renderer) -> usize {
+    ///     renderer.surface_capabilities().formats.len()
+    /// }
+    /// ```
     pub fn surface_capabilities(&self) -> wgpu::SurfaceCapabilities {
         self.gpu.surface_capabilities()
     }
 
+    /// Queries native adapter information or a stable detached-context sentinel.
+    ///
+    /// The sentinel uses backend `Empty`, zero vendor/device identifiers, and
+    /// the name `ailloli_ui_render_wgpu detached`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::Renderer;
+    ///
+    /// fn adapter_name(renderer: &Renderer) -> String {
+    ///     renderer.adapter_info().name
+    /// }
+    /// ```
     pub fn adapter_info(&self) -> wgpu::AdapterInfo {
         self.gpu.adapter_info()
     }
 
+    /// Returns the current presentation deferral reason, if any.
+    ///
+    /// Externally managed contexts return `None`; detached native surfaces
+    /// report `Detached`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{Renderer, SurfaceConfigDeferredReason};
+    ///
+    /// fn reason(renderer: &Renderer) -> Option<SurfaceConfigDeferredReason> {
+    ///     renderer.surface_config_deferred_reason()
+    /// }
+    /// ```
     pub fn surface_config_deferred_reason(
         &self,
     ) -> Option<crate::pipeline_cache::SurfaceConfigDeferredReason> {
@@ -636,14 +1225,64 @@ impl Renderer {
     }
 
     /// Metrics from the most recent frame that ran isolated offscreen passes.
+    ///
+    /// Frames reset the counters before planning. The returned snapshot is
+    /// `Copy` and remains valid after subsequent rendering.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::{IsolatedFrameMetrics, Renderer};
+    ///
+    /// fn metrics(renderer: &Renderer) -> IsolatedFrameMetrics {
+    ///     renderer.isolated_frame_metrics()
+    /// }
+    /// ```
     pub fn isolated_frame_metrics(&self) -> IsolatedFrameMetrics {
         self.isolated_metrics
     }
 
+    /// Renders one unclipped command slice to the managed surface at DPR 1.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this renderer has no managed surface, frame
+    /// acquisition fails, or the acquired frame exposes no copyable texture.
+    /// Transient capability deferral is treated as a skipped successful frame.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_render_wgpu::{Renderer, RendererError};
+    ///
+    /// fn frame(renderer: &mut Renderer) -> Result<(), RendererError> {
+    ///     renderer.render(Color::BLACK, &[])
+    /// }
+    /// ```
     pub fn render(&mut self, clear: Color, cmds: &[DrawCmd]) -> Result<(), RendererError> {
         self.render_layers(clear, &[cmds])
     }
 
+    /// Renders multiple unclipped command slices at DPR 1.
+    ///
+    /// Layer order is painter's order; empty slices remain valid layers.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same managed-surface errors as [`Self::render`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_render_wgpu::{Renderer, RendererError};
+    /// use ailloli_ui_runtime::DrawCmd;
+    ///
+    /// fn frame(renderer: &mut Renderer, commands: &[DrawCmd]) -> Result<(), RendererError> {
+    ///     renderer.render_layers(Color::BLACK, &[commands, &[]])
+    /// }
+    /// ```
     pub fn render_layers(
         &mut self,
         clear: Color,
@@ -652,6 +1291,22 @@ impl Renderer {
         self.render_layers_scaled(clear, layers, Scale::new(1.0))
     }
 
+    /// Renders multiple unclipped slices with an explicit logical-to-physical scale.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same managed-surface errors as [`Self::render`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::{Color, Scale};
+    /// use ailloli_ui_render_wgpu::{Renderer, RendererError};
+    ///
+    /// fn frame(renderer: &mut Renderer) -> Result<(), RendererError> {
+    ///     renderer.render_layers_scaled(Color::BLACK, &[&[]], Scale::new(2.0))
+    /// }
+    /// ```
     pub fn render_layers_scaled(
         &mut self,
         clear: Color,
@@ -663,6 +1318,21 @@ impl Renderer {
     }
 
     /// Renders layered draw commands to the swapchain (DPR = 1).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same managed-surface errors as [`Self::render_layered_scaled`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_render_wgpu::{LayerPass, Renderer, RendererError};
+    ///
+    /// fn frame(renderer: &mut Renderer) -> Result<(), RendererError> {
+    ///     renderer.render_layered(Color::BLACK, &[LayerPass::new(&[])])
+    /// }
+    /// ```
     pub fn render_layered(
         &mut self,
         clear: Color,
@@ -672,6 +1342,30 @@ impl Renderer {
     }
 
     /// Renders layered draw commands with explicit logical-to-physical scale.
+    ///
+    /// The method acquires, records, notifies, and presents one frame. When
+    /// capabilities are transiently deferred it records a benchmark event and
+    /// returns `Ok(())` without acquiring a texture.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for detached/non-surface backends, frame acquisition
+    /// failures, or a frame without an accessible texture.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::{Color, Scale};
+    /// use ailloli_ui_render_wgpu::{LayerPass, Renderer, RendererError};
+    ///
+    /// fn frame(renderer: &mut Renderer) -> Result<(), RendererError> {
+    ///     renderer.render_layered_scaled(
+    ///         Color::BLACK,
+    ///         &[LayerPass::new(&[])],
+    ///         Scale::new(1.5),
+    ///     )
+    /// }
+    /// ```
     pub fn render_layered_scaled(
         &mut self,
         clear: Color,
@@ -699,6 +1393,34 @@ impl Renderer {
     }
 
     /// Renders layered draw commands into an injected `RenderTarget`.
+    ///
+    /// The target's frame extent drives physical geometry; `scale` converts
+    /// logical coordinates. The frame is presented after the target's
+    /// pre-present callback.
+    ///
+    /// # Errors
+    ///
+    /// Propagates target acquisition failures and rejects frames that do not
+    /// expose their backing texture.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::{Color, Scale};
+    /// use ailloli_ui_render_wgpu::{LayerPass, RenderTarget, Renderer, RendererError};
+    ///
+    /// fn frame<T: RenderTarget + ?Sized>(
+    ///     renderer: &mut Renderer,
+    ///     target: &mut T,
+    /// ) -> Result<(), RendererError> {
+    ///     renderer.render_layered_to_target_scaled(
+    ///         Color::BLACK,
+    ///         &[LayerPass::new(&[])],
+    ///         Scale::new(2.0),
+    ///         target,
+    ///     )
+    /// }
+    /// ```
     pub fn render_layered_to_target_scaled<T: RenderTarget + ?Sized>(
         &mut self,
         clear: Color,
@@ -723,6 +1445,10 @@ impl Renderer {
         Ok(())
     }
 
+    /// Records and submits all layer work into an already-acquired frame.
+    ///
+    /// The frame must expose its source texture because backdrop and blend
+    /// planning may copy from it.
     fn render_layered_from_frame(
         &mut self,
         clear: Color,
@@ -761,6 +1487,25 @@ impl Renderer {
     }
 
     /// Renders one layer stack at DPR = 1 into an injected target.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same target/frame errors as
+    /// [`Self::render_layered_to_target_scaled`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_render_wgpu::{LayerPass, RenderTarget, Renderer, RendererError};
+    ///
+    /// fn frame(
+    ///     renderer: &mut Renderer,
+    ///     target: &mut dyn RenderTarget,
+    /// ) -> Result<(), RendererError> {
+    ///     renderer.render_layered_to_target(Color::BLACK, &[LayerPass::new(&[])], target)
+    /// }
+    /// ```
     pub fn render_layered_to_target(
         &mut self,
         clear: Color,
@@ -771,6 +1516,31 @@ impl Renderer {
     }
 
     /// Renders and readbacks one frame without presenting (for tests / capture).
+    ///
+    /// This convenience overload uses DPR 1. Despite the historical wording,
+    /// the acquired surface texture is presented after the GPU copy is queued.
+    ///
+    /// # Errors
+    ///
+    /// Propagates surface readiness/acquisition, unsupported format, buffer
+    /// mapping, missing texture, and optional PNG encoding failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_render_wgpu::{
+    ///     CaptureParams, CapturedFrame, LayerPass, Renderer, RendererError,
+    /// };
+    ///
+    /// fn capture(renderer: &mut Renderer) -> Result<CapturedFrame, RendererError> {
+    ///     renderer.render_layered_capture_once(
+    ///         Color::BLACK,
+    ///         &[LayerPass::new(&[])],
+    ///         CaptureParams { encode_png: true },
+    ///     )
+    /// }
+    /// ```
     pub fn render_layered_capture_once(
         &mut self,
         clear: Color,
@@ -780,6 +1550,34 @@ impl Renderer {
         self.render_layered_capture_once_scaled(clear, layers, Scale::new(1.0), params)
     }
 
+    /// Renders, synchronously reads back, and optionally PNG-encodes one frame.
+    ///
+    /// The GPU device is polled with `Maintain::Wait`; this method blocks until
+    /// the staging buffer mapping finishes. Output is tightly packed RGBA8 in
+    /// top-to-bottom row order. BGRA surfaces are converted in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for deferred capabilities, missing/unsupported
+    /// frame textures, map/channel failures, or PNG encoding failure.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::{Color, Scale};
+    /// use ailloli_ui_render_wgpu::{
+    ///     CaptureParams, CapturedFrame, LayerPass, Renderer, RendererError,
+    /// };
+    ///
+    /// fn capture(renderer: &mut Renderer) -> Result<CapturedFrame, RendererError> {
+    ///     renderer.render_layered_capture_once_scaled(
+    ///         Color::BLACK,
+    ///         &[LayerPass::new(&[])],
+    ///         Scale::new(2.0),
+    ///         CaptureParams::default(),
+    ///     )
+    /// }
+    /// ```
     pub fn render_layered_capture_once_scaled(
         &mut self,
         clear: Color,
@@ -853,6 +1651,11 @@ impl Renderer {
         })
     }
 
+    /// Allocates a 256-byte-row-aligned staging buffer and queues a full copy.
+    ///
+    /// Physical width and height are clamped to one. Only RGBA8 and BGRA8,
+    /// linear or sRGB, are accepted. The returned tuple carries buffer, width,
+    /// height, padded bytes per row, tight bytes per row, and source format.
     fn enqueue_surface_texture_readback(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -907,6 +1710,11 @@ impl Renderer {
         Ok((staging, width, height, padded_bpr, unpadded_bpr, format))
     }
 
+    /// Blocks for a staging-buffer map and returns tightly packed RGBA8 bytes.
+    ///
+    /// Padded rows are stripped and BGRA formats are channel-swapped. The
+    /// staging buffer is unmapped before return. Mapping callback/channel errors
+    /// become [`RendererError::CaptureMapFailed`].
     fn map_readback_to_rgba(
         &self,
         staging: &wgpu::Buffer,
@@ -954,6 +1762,10 @@ impl Renderer {
         Ok(tight)
     }
 
+    /// Uploads one clip uniform and creates its renderer-layout bind group.
+    ///
+    /// The returned [`ClipBinding`] retains the backing buffer for the complete
+    /// bind-group lifetime.
     fn create_clip_binding(&self, label: &str, params: ClipParamsGpu) -> ClipBinding {
         let buffer = self
             .gpu
@@ -1378,6 +2190,12 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Records a contiguous main-layer range, splitting around shader blends.
+    ///
+    /// The first segment clears only when `clear_load` is true; subsequent
+    /// segments load preserved color. Each destination-dependent blend closes
+    /// the render pass, copies the current destination, runs its composite, and
+    /// then resumes ordinary planned layers.
     fn record_main_pass_segment(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1532,6 +2350,11 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Captures destination color and records one non-normal shader composite.
+    ///
+    /// Missing planned vertices or foreground bind groups make the operation a
+    /// no-op. Lazily compiled blend pipelines and captured leases remain valid
+    /// until the frame ends.
     fn draw_shader_blend_composite(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1592,6 +2415,12 @@ impl Renderer {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Executes isolated passes in child-before-parent topological order.
+    ///
+    /// Each pass leases a pooled color/stencil surface, optionally seeds it with
+    /// backdrop or nested child color, records local content, runs effects, and
+    /// installs a composite bind group. Leases are retained in `frame_leases`
+    /// until after main-pass composition.
     fn execute_isolated_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1738,12 +2567,17 @@ impl Renderer {
         table
     }
 
+    /// Copies planner downgrade counts and emits benchmark/debug frame metrics.
     fn finish_isolated_frame_metrics(&mut self, budget: &IsolatedBudgetPolicy) {
         self.isolated_metrics.downgrades = budget.downgrades;
         log_isolated_frame_metrics(self.isolated_metrics, self.bench_scenario.as_deref());
     }
 }
 
+/// Emits isolated metrics to the benchmark sink and optional stderr diagnostics.
+///
+/// `None` scenarios are encoded as an empty string. Benchmark emission and GPU
+/// debug logging are independently controlled by their environment switches.
 fn log_isolated_frame_metrics(m: IsolatedFrameMetrics, scenario: Option<&str>) {
     let scenario = scenario.unwrap_or("").to_string();
     if ailloli_ui_bench::bench_enabled() {
@@ -1791,6 +2625,9 @@ fn log_isolated_frame_metrics(m: IsolatedFrameMetrics, scenario: Option<&str>) {
     );
 }
 
+/// Clears an isolated lease to `clear` while preserving no prior color.
+///
+/// The temporary render pass ends when this function returns.
 fn clear_isolated_color_target(
     encoder: &mut wgpu::CommandEncoder,
     lease: &crate::offscreen_pool::LeasedOffscreen,
@@ -1820,6 +2657,10 @@ fn clear_isolated_color_target(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Blits a captured backdrop region into local isolated-pass coordinates.
+///
+/// Missing capture geometry, bind groups, or empty generated geometry makes the
+/// operation a no-op. Existing isolated color is loaded and preserved.
 fn blit_backdrop_texture(
     encoder: &mut wgpu::CommandEncoder,
     device: &wgpu::Device,
@@ -1885,6 +2726,10 @@ fn blit_backdrop_texture(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Composites already-rendered child isolation textures into their parent.
+///
+/// Children are drawn in the parent's declared order. Opacity is clamped to
+/// `0.0..=1.0`; missing child plans or bind groups are skipped.
 fn blit_child_isolated_textures(
     encoder: &mut wgpu::CommandEncoder,
     device: &wgpu::Device,
@@ -1961,6 +2806,11 @@ fn blit_child_isolated_textures(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Uploads a local frame plan and records it into one isolated target.
+///
+/// Empty arenas allocate no buffers. `preserve_color` loads backdrop/child
+/// color; otherwise the target is cleared. Stencil is attached only when the
+/// local plan requests it and the lease contains a stencil view.
 fn record_isolated_content_pass(
     encoder: &mut wgpu::CommandEncoder,
     device: &wgpu::Device,
@@ -2154,6 +3004,10 @@ fn record_isolated_content_pass(
     }
 }
 
+/// Uploads a clip uniform through explicit device/pipeline references.
+///
+/// This free-function variant supports isolated passes without borrowing the
+/// whole renderer.
 fn create_clip_binding(
     device: &wgpu::Device,
     pipelines: &crate::pipeline_cache::PipelineCache,
@@ -2179,6 +3033,11 @@ fn create_clip_binding(
     }
 }
 
+/// Finds the destination-dependent non-normal composite in a planned layer.
+///
+/// Normal blends and composites not requiring destination capture return
+/// `None`; planning guarantees at most one matching composite per synthetic
+/// layer.
 fn find_shader_blend_composite(
     plan: &FrameRenderPlan,
     layer_idx: usize,

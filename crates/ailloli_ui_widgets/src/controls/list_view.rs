@@ -1,3 +1,5 @@
+//! Retained stacked lists and actionable list rows.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use crate::layout::{Column, Container};
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
@@ -18,12 +20,32 @@ use ailloli_ui_text::{PreparedTextLayout, TextLayoutParams, WrapMode};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved container style and intrinsic width for a [`ListView`].
+///
+/// The backing container currently forwards only the top border width/color and
+/// top-left radius as uniform values; use uniform borders and radii.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::ListViewStyle;
+/// let style = ListViewStyle::from_theme(Theme::dark());
+/// assert_eq!(style.width, 260.0);
+/// assert_eq!(style.gap, 2.0);
+/// ```
 pub struct ListViewStyle {
+    /// List container fill.
     pub background: Color,
+    /// Container border; use uniform widths and colors.
     pub border: Border,
+    /// Container radii; use a uniform value for current rendering.
     pub radius: Radius,
+    /// Inner padding on every edge in logical pixels.
     pub padding: f32,
+    /// Vertical gap between items in logical pixels.
     pub gap: f32,
+    /// Intrinsic list width in logical pixels.
     pub width: f32,
 }
 
@@ -34,6 +56,17 @@ impl Default for ListViewStyle {
 }
 
 impl ListViewStyle {
+    /// Resolves list container colors and metrics from `theme`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::ListViewStyle;
+    /// let style = ListViewStyle::from_theme(Theme::dark());
+    /// assert!(style.padding >= 0.0);
+    /// assert_eq!(style.width, 260.0);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         Self {
@@ -47,10 +80,27 @@ impl ListViewStyle {
     }
 }
 
+/// A non-virtualized vertical stack of [`ListItem`] views.
+///
+/// Items are retained in insertion order, forced to fill the list width, and
+/// all laid out. The control supplies no scrolling or item reuse; large data
+/// sets should use a virtualized model-backed control instead.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{ListItem, ListView};
+/// let list = ListView::<()>::new().item(ListItem::new("Profile"));
+/// let _ = list;
+/// ```
 pub struct ListView<A = ()> {
+    /// Layout applied to the backing container.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Resolved container paint and spacing.
     style: ListViewStyle,
+    /// Item views in insertion order; no capacity bound or virtualization.
     items: Vec<View<A>>,
 }
 
@@ -63,6 +113,15 @@ impl<A: 'static> Default for ListView<A> {
 }
 
 impl<A: 'static> ListView<A> {
+    /// Creates an empty list with default-theme style and a 260-pixel width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListView;
+    /// let list: ListView<()> = ListView::new();
+    /// let _ = list;
+    /// ```
     pub fn new() -> Self {
         let style = ListViewStyle::default();
         Self {
@@ -73,12 +132,39 @@ impl<A: 'static> ListView<A> {
         }
     }
 
+    /// Replaces the complete container style and synchronizes layout width.
+    ///
+    /// A later explicit width layout builder may override the style width.
+    /// Values, including negative spacing, are accepted as-is.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ListView, ListViewStyle};
+    /// let style = ListViewStyle::from_theme(Theme::dark());
+    /// let list: ListView<()> = ListView::new().list_view_style(style);
+    /// let _ = list;
+    /// ```
     pub fn list_view_style(mut self, style: ListViewStyle) -> Self {
         self.layout = self.layout.width(style.width);
         self.style = style;
         self
     }
 
+    /// Appends one item and forces that item to fill the list width.
+    ///
+    /// Repeated calls preserve insertion order and grow an unbounded vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ListItem, ListView};
+    /// let list = ListView::<()>::new()
+    ///     .item(ListItem::new("One"))
+    ///     .item(ListItem::new("Two"));
+    /// let _ = list;
+    /// ```
     pub fn item(mut self, item: ListItem<A>) -> Self {
         self.items.push(item.fill_width().into_view());
         self
@@ -107,33 +193,74 @@ impl<A: 'static> IntoView<A> for ListView<A> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic title treatment for a [`ListItem`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ListItemVariant;
+/// assert_eq!(ListItemVariant::default(), ListItemVariant::Default);
+/// ```
 pub enum ListItemVariant {
+    /// Normal or selected title color.
     #[default]
     Default,
+    /// Danger title color; behavior and other paint remain unchanged.
     Danger,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved colors, typography, and logical-pixel metrics for a [`ListItem`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::ListItemStyle;
+/// let style = ListItemStyle::from_theme(Theme::dark());
+/// assert_eq!(style.height, 36.0);
+/// assert_eq!(style.subtitle_height, 52.0);
+/// ```
 pub struct ListItemStyle {
+    /// Intrinsic height without a subtitle.
     pub height: f32,
+    /// Intrinsic height whenever `subtitle` is `Some`, even if empty.
     pub subtitle_height: f32,
+    /// Horizontal content inset.
     pub padding_x: f32,
+    /// Gap between content regions.
     pub gap: f32,
+    /// Width and height of an optional leading icon.
     pub icon_size: f32,
+    /// Background and focus-ring corner radii.
     pub radius: Radius,
+    /// Idle background.
     pub background: Color,
+    /// Actionable enabled hover background.
     pub hover_background: Color,
+    /// Actionable enabled pressed background.
     pub pressed_background: Color,
+    /// Background used whenever selected.
     pub selected_background: Color,
+    /// Normal title style.
     pub title_text: TextStyle,
+    /// Subtitle style.
     pub subtitle_text: TextStyle,
+    /// Right-aligned trailing text style.
     pub trailing_text: TextStyle,
+    /// Title style for [`ListItemVariant::Danger`].
     pub danger_text: TextStyle,
+    /// Unselected leading-icon tint.
     pub icon_tint: Color,
+    /// Selected leading-icon tint and default selected-title color.
     pub selected_icon_tint: Color,
+    /// Numeric badge background.
     pub badge_background: Color,
+    /// Numeric badge text style.
     pub badge_text: TextStyle,
+    /// Border painted for focused, enabled, actionable items.
     pub focus_ring: Border,
+    /// Alpha multiplier for disabled backgrounds, icons, and text.
     pub disabled_opacity: f32,
 }
 
@@ -144,6 +271,17 @@ impl Default for ListItemStyle {
 }
 
 impl ListItemStyle {
+    /// Resolves row colors, typography, and geometry from `theme`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::ListItemStyle;
+    /// let style = ListItemStyle::from_theme(Theme::dark());
+    /// assert_eq!(style.icon_size, 16.0);
+    /// assert_eq!(style.disabled_opacity, 0.42);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         Self {
@@ -171,24 +309,59 @@ impl ListItemStyle {
     }
 }
 
+/// One optional-action row for a [`ListView`].
+///
+/// Activation occurs on left-button release inside or a pressed Enter/Space
+/// key while focused. Only an enabled item with an action is focusable.
+/// Selection affects paint but does not suppress activation. No text is clipped
+/// or truncated by the row itself.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ListItem;
+/// let item: ListItem<()> = ListItem::new("Downloads");
+/// let _ = item;
+/// ```
 pub struct ListItem<A = ()> {
+    /// Layout configuration used to resolve intrinsic geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Owned primary text; empty is valid.
     title: String,
+    /// Optional second line; `Some("")` still selects subtitle height.
     subtitle: Option<String>,
+    /// Optional leading icon.
     leading_icon: Option<IconId>,
+    /// Optional right-aligned text.
     trailing_text: Option<String>,
+    /// Optional decimal badge count; zero is displayed as `0`.
     badge: Option<u32>,
+    /// Live selected state.
     selected: Binding<bool>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Semantic title treatment.
     variant: ListItemVariant,
+    /// Resolved paint and metrics.
     style: ListItemStyle,
+    /// Optional activation action.
     on_select: Option<ClickAction<A>>,
 }
 
 crate::impl_layout_builders!(ListItem);
 
 impl<A: 'static> ListItem<A> {
+    /// Creates an enabled, unselected item with no optional content or action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item: ListItem<()> = ListItem::new("Settings");
+    /// let _ = item;
+    /// ```
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -206,46 +379,148 @@ impl<A: 'static> ListItem<A> {
         }
     }
 
+    /// Sets a second line, replacing any previous subtitle.
+    ///
+    /// An empty string still changes intrinsic height to `subtitle_height`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item: ListItem<()> = ListItem::new("Account").subtitle("Signed in");
+    /// let _ = item;
+    /// ```
     pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
+    /// Sets the leading icon, replacing any prior icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item: ListItem<()> = ListItem::new("History").leading_icon(IconId::History);
+    /// let _ = item;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.leading_icon = Some(icon);
         self
     }
 
+    /// Sets right-aligned trailing text, replacing any previous value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item: ListItem<()> = ListItem::new("Version").trailing_text("1.0");
+    /// let _ = item;
+    /// ```
     pub fn trailing_text(mut self, text: impl Into<String>) -> Self {
         self.trailing_text = Some(text.into());
         self
     }
 
+    /// Sets a decimal numeric badge, replacing any previous count.
+    ///
+    /// Every `u32` value is accepted, including zero; no compact `99+` sentinel
+    /// is applied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item: ListItem<()> = ListItem::new("Inbox").badge(12);
+    /// let _ = item;
+    /// ```
     pub fn badge(mut self, count: u32) -> Self {
         self.badge = Some(count);
         self
     }
 
+    /// Sets static or reactive selected state.
+    ///
+    /// Selected background takes precedence over pressed/hover state. A danger
+    /// item keeps danger title color while its icon uses selected tint.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item: ListItem<()> = ListItem::new("Current").selected(true);
+    /// let _ = item;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<bool>>) -> Self {
         self.selected = selected.into();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled items ignore events, are not focusable, and multiply paint
+    /// alpha by [`ListItemStyle::disabled_opacity`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item: ListItem<()> = ListItem::new("Unavailable").disabled(true);
+    /// let _ = item;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Selects normal or danger title treatment.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ListItem, ListItemVariant};
+    /// let item: ListItem<()> = ListItem::new("Delete").variant(ListItemVariant::Danger);
+    /// let _ = item;
+    /// ```
     pub fn variant(mut self, variant: ListItemVariant) -> Self {
         self.variant = variant;
         self
     }
 
+    /// Replaces complete resolved row style and intrinsic metrics.
+    ///
+    /// Values are accepted as-is; layout builders may override intrinsic size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ListItem, ListItemStyle};
+    /// let style = ListItemStyle::from_theme(Theme::dark());
+    /// let item: ListItem<()> = ListItem::new("Styled").list_item_style(style);
+    /// let _ = item;
+    /// ```
     pub fn list_item_style(mut self, style: ListItemStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Installs an action value emitted on activation.
+    ///
+    /// A later action builder replaces it. The item stops propagation after
+    /// running the action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// #[derive(Clone)]
+    /// enum Action { Open }
+    /// let item = ListItem::new("Project").on_select(Action::Open);
+    /// let _ = item;
+    /// ```
     pub fn on_select(mut self, action: impl IntoClickAction<A>) -> Self
     where
         A: Clone,
@@ -254,12 +529,24 @@ impl<A: 'static> ListItem<A> {
         self
     }
 
+    /// Installs a context-aware activation handler.
+    ///
+    /// A later action builder replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ListItem;
+    /// let item = ListItem::<()>::new("Refresh").on_select_ctx(|ctx| ctx.request_repaint());
+    /// let _ = item;
+    /// ```
     pub fn on_select_ctx(mut self, f: impl Fn(&mut EventCtx<A>) + 'static) -> Self {
         self.on_select = Some(ClickAction::handler(f));
         self
     }
 }
 
+/// Retained leaf resolving item bindings, paint state, and activation.
 struct ListItemWidget<A> {
     layout: LayoutStyle,
     title: String,
@@ -470,6 +757,7 @@ impl<A: 'static> Widget<A> for ListItemWidget<A> {
 }
 
 impl<A> ListItemWidget<A> {
+    /// Runs the optional action and consumes input; otherwise does nothing.
     fn run_action(&self, ctx: &mut EventCtx<A>) {
         if let Some(on_select) = &self.on_select {
             on_select.run(ctx);
@@ -477,6 +765,7 @@ impl<A> ListItemWidget<A> {
         }
     }
 
+    /// Resolves danger first, then selected, then normal title paint.
     fn title_style(&self, selected: bool) -> TextStyle {
         if self.variant == ListItemVariant::Danger {
             self.style.danger_text
@@ -513,6 +802,7 @@ impl<A: 'static> IntoView<A> for ListItem<A> {
     }
 }
 
+/// Measures one unwrapped line, returning `None` without a text system.
 fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option<f32> {
     ctx.text_system.as_deref_mut().map(|text_system| {
         text_system
@@ -527,6 +817,7 @@ fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option
     })
 }
 
+/// Prepares one unwrapped line, returning `None` without a text system.
 fn layout_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -542,6 +833,7 @@ fn layout_text(
     })
 }
 
+/// Paints text at an explicit baseline with alpha multiplication.
 fn paint_text_at(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -561,6 +853,7 @@ fn paint_text_at(
     }));
 }
 
+/// Paints left-anchored text vertically centered within row bounds.
 fn paint_text_centered(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -586,6 +879,7 @@ fn paint_text_centered(
     }));
 }
 
+/// Paints text right-aligned to `right` and vertically centered.
 fn paint_trailing_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -612,12 +906,14 @@ fn paint_trailing_text(
     }));
 }
 
+/// Estimates numeric badge width with eight-pixel glyph and padding floors.
 fn measure_badge(ctx: &mut LayoutCtx<'_>, count: u32, style: &ListItemStyle) -> f32 {
     let label = count.to_string();
     let text_w = measure_text(ctx, &label, style.badge_text).unwrap_or(8.0);
     text_w.max(8.0) + 16.0
 }
 
+/// Paints a numeric pill and returns its left edge, or `right` without text support.
 fn paint_badge(
     ctx: &mut PaintCtx<'_>,
     count: u32,

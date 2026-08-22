@@ -24,39 +24,47 @@ use ailloli_ui_runtime::{DrawCmd, DrawRect};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
 
+/// Capture width in physical pixels.
 const W: u32 = 256;
+/// Capture height in physical pixels.
 const H: u32 = 256;
 
+/// Opaque primary red fixture color.
 const RED: Color = Color {
     r: 1.0,
     g: 0.0,
     b: 0.0,
     a: 1.0,
 };
+/// Opaque primary blue fixture color.
 const BLUE: Color = Color {
     r: 0.0,
     g: 0.0,
     b: 1.0,
     a: 1.0,
 };
+/// Opaque primary green fixture color.
 const GREEN: Color = Color {
     r: 0.0,
     g: 1.0,
     b: 0.0,
     a: 1.0,
 };
+/// Opaque yellow fixture color.
 const YELLOW: Color = Color {
     r: 1.0,
     g: 1.0,
     b: 0.0,
     a: 1.0,
 };
+/// Opaque cyan fixture color.
 const CYAN: Color = Color {
     r: 0.0,
     g: 1.0,
     b: 1.0,
     a: 1.0,
 };
+/// Opaque magenta fixture color.
 const MAGENTA: Color = Color {
     r: 1.0,
     g: 0.0,
@@ -64,11 +72,13 @@ const MAGENTA: Color = Color {
     a: 1.0,
 };
 
+/// Reads one RGBA8 pixel at physical coordinates from a tightly packed frame.
 fn rgba_at(frame: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
     let idx = ((y * w + x) * 4) as usize;
     [frame[idx], frame[idx + 1], frame[idx + 2], frame[idx + 3]]
 }
 
+/// Accepts an opaque, strongly red pixel.
 fn assert_is_red(label: &str, px: [u8; 4]) {
     assert!(px[0] > 200, "{label}: expected red-ish, got {px:?}");
     assert!(px[1] < 80, "{label}: expected red-ish, got {px:?}");
@@ -76,6 +86,7 @@ fn assert_is_red(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts an opaque, strongly blue pixel.
 fn assert_is_blue(label: &str, px: [u8; 4]) {
     assert!(px[2] > 200, "{label}: expected blue-ish, got {px:?}");
     assert!(px[0] < 80, "{label}: expected blue-ish, got {px:?}");
@@ -83,6 +94,7 @@ fn assert_is_blue(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts an opaque, strongly green pixel.
 fn assert_is_green(label: &str, px: [u8; 4]) {
     assert!(px[1] > 180, "{label}: expected green-ish, got {px:?}");
     assert!(px[0] < 80, "{label}: expected green-ish, got {px:?}");
@@ -90,6 +102,7 @@ fn assert_is_green(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts an opaque, strongly yellow pixel.
 fn assert_is_yellow(label: &str, px: [u8; 4]) {
     assert!(px[0] > 200, "{label}: expected yellow-ish, got {px:?}");
     assert!(px[1] > 200, "{label}: expected yellow-ish, got {px:?}");
@@ -97,6 +110,7 @@ fn assert_is_yellow(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts an opaque, strongly cyan pixel.
 fn assert_is_cyan(label: &str, px: [u8; 4]) {
     assert!(px[0] < 80, "{label}: expected cyan-ish, got {px:?}");
     assert!(px[1] > 200, "{label}: expected cyan-ish, got {px:?}");
@@ -104,6 +118,7 @@ fn assert_is_cyan(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts an opaque, strongly magenta pixel.
 fn assert_is_magenta(label: &str, px: [u8; 4]) {
     assert!(px[0] > 200, "{label}: expected magenta-ish, got {px:?}");
     assert!(px[1] < 80, "{label}: expected magenta-ish, got {px:?}");
@@ -111,10 +126,12 @@ fn assert_is_magenta(label: &str, px: [u8; 4]) {
     assert!(px[3] > 200, "{label}: expected opaque-ish, got {px:?}");
 }
 
+/// Accepts a pixel whose alpha is below 16/255.
 fn assert_is_transparent(label: &str, px: [u8; 4]) {
     assert!(px[3] < 16, "{label}: expected transparent-ish, got {px:?}");
 }
 
+/// Writes a diagnostic PNG beneath the repository capture-artifact directory.
 fn write_artifact(name: &str, png: &[u8]) {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let out_path = repo_root.join("artifacts").join("captures").join(name);
@@ -125,11 +142,14 @@ fn write_artifact(name: &str, png: &[u8]) {
 }
 
 #[derive(Default)]
+/// Aggregates independently evaluated pixel failures across all scenarios.
 struct ScenarioReport {
     failures: Vec<String>,
 }
 
+/// Runs checks without allowing one panic to hide later failures.
 impl ScenarioReport {
+    /// Executes one labeled check and stores any error or panic text.
     fn check(&mut self, scenario: &str, label: &str, f: impl FnOnce() -> Result<(), String>) {
         if let Err(msg) =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
@@ -218,6 +238,7 @@ fn scenario_e_8_layers(renderer: &mut Renderer, rep: &mut ScenarioReport) {
         Ok(())
     });
 
+    /// Signature shared by the color-classification assertion helpers.
     type AssertFn = fn(&str, [u8; 4]);
     // Each of the 7 rects visible at its center.
     let assertions: [(usize, &str, AssertFn); 7] = [

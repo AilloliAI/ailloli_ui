@@ -25,63 +25,163 @@ use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use crate::text::Text;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Semantic operation represented by a chrome hit target.
+///
+/// Edge and corner variants retain the exact host [`ResizeEdge`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::input::ResizeEdge;
+/// use ailloli_ui_widgets::chrome::WindowAffordanceKind;
+/// assert_eq!(WindowAffordanceKind::ResizeCorner(ResizeEdge::NW), WindowAffordanceKind::ResizeCorner(ResizeEdge::NW));
+/// ```
 pub enum WindowAffordanceKind {
+    /// Drag the complete window or spatial slate.
     Move,
+    /// Resize from one cardinal edge.
     ResizeEdge(ResizeEdge),
+    /// Resize from one diagonal corner.
     ResizeCorner(ResizeEdge),
+    /// Request closure.
     Close,
+    /// Request minimization.
     Minimize,
+    /// Host-defined follow/pin operation.
     Follow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Visual interaction state of one affordance.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::chrome::WindowAffordanceState;
+/// assert_ne!(WindowAffordanceState::Idle, WindowAffordanceState::Active);
+/// ```
 pub enum WindowAffordanceState {
+    /// Neither hovered nor pressed.
     Idle,
+    /// Pointer is over the affordance.
     Hovered,
+    /// Pointer is pressing or dragging the affordance.
     Active,
+    /// Operation is unavailable; currently used by styling helpers.
     Disabled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Lifecycle phase emitted for an affordance interaction.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::chrome::WindowAffordanceDragPhase;
+/// assert_ne!(WindowAffordanceDragPhase::Start, WindowAffordanceDragPhase::End);
+/// ```
 pub enum WindowAffordanceDragPhase {
+    /// Initial left-button press on a movable/resizable region.
     Start,
+    /// Pointer motion while a drag is captured.
     Drag,
+    /// Left-button release after a drag.
     End,
+    /// Press and release on the same non-drag chrome control.
     Click,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Provider-neutral chrome interaction emitted in screen logical pixels.
+///
+/// `delta` is relative to the previous drag event and `total_delta` is relative
+/// to the drag start. Clicks use zero offsets.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Offset, Point};
+/// use ailloli_ui_widgets::chrome::{WindowAffordanceDragPhase, WindowAffordanceEvent, WindowAffordanceKind};
+/// let event = WindowAffordanceEvent {
+///     kind: WindowAffordanceKind::Move,
+///     phase: WindowAffordanceDragPhase::Drag,
+///     position: Point::new(12.0, 8.0),
+///     delta: Offset::new(2.0, 0.0),
+///     total_delta: Offset::new(4.0, 1.0),
+/// };
+/// assert_eq!(event.delta.x, 2.0);
+/// ```
 pub struct WindowAffordanceEvent {
+    /// Operation selected by hit testing.
     pub kind: WindowAffordanceKind,
+    /// Press/drag/release/click lifecycle phase.
     pub phase: WindowAffordanceDragPhase,
+    /// Current pointer position in screen logical pixels.
     pub position: Point,
+    /// Logical-pixel displacement since the previous event.
     pub delta: Offset,
+    /// Logical-pixel displacement since drag start.
     pub total_delta: Offset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Geometry and colors for [`WindowAffordanceFrame`].
+///
+/// All dimensions are logical pixels. The default uses a 38-pixel title bar,
+/// 12-pixel resize hit frame, three 24-pixel controls, and a 12-pixel radius.
+/// Values are sanitized only where consumed, so custom styles should use
+/// finite non-negative dimensions.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::chrome::WindowAffordanceStyle;
+/// let style = WindowAffordanceStyle::default();
+/// assert_eq!(style.titlebar_height, 38.0);
+/// assert_eq!(style.resize_hit_thickness, 12.0);
+/// ```
 pub struct WindowAffordanceStyle {
+    /// Title-bar height in logical pixels.
     pub titlebar_height: f32,
+    /// Square chrome-control extent in logical pixels.
     pub control_size: f32,
+    /// Horizontal gap between chrome controls in logical pixels.
     pub control_gap: f32,
+    /// Distance from the right bound to the close control.
     pub control_margin: f32,
+    /// Invisible resize-hit frame thickness in logical pixels.
     pub resize_hit_thickness: f32,
+    /// Visible resize-handle length in logical pixels.
     pub resize_handle_length: f32,
+    /// Visible resize-handle thickness in logical pixels.
     pub resize_handle_thickness: f32,
+    /// Frame corner radius in logical pixels.
     pub radius: f32,
+    /// Content surface color.
     pub background: Color,
+    /// Title-bar fill color.
     pub titlebar_background: Color,
+    /// One-logical-pixel frame border color.
     pub border: Color,
+    /// Outer frame shadow; inset shadows are skipped.
     pub shadow: BoxShadow,
+    /// Idle chrome-control fill.
     pub control_idle: Color,
+    /// Hovered chrome-control fill.
     pub control_hover: Color,
+    /// Pressed chrome-control fill.
     pub control_active: Color,
+    /// Destructive close-control hover fill.
     pub close_hover: Color,
+    /// Idle visible resize-handle fill.
     pub handle_idle: Color,
+    /// Hovered resize-handle fill.
     pub handle_hover: Color,
+    /// Active resize-handle fill.
     pub handle_active: Color,
 }
 
+/// Supplies the dark-theme defaults described by [`WindowAffordanceStyle`].
 impl Default for WindowAffordanceStyle {
     fn default() -> Self {
         let theme = Theme::default();
@@ -110,8 +210,22 @@ impl Default for WindowAffordanceStyle {
     }
 }
 
+/// Shared retained callback invoked for each emitted affordance event.
 type AffordanceHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, WindowAffordanceEvent)>;
 
+/// Retained frame that paints client chrome and emits provider-neutral actions.
+///
+/// The default logical window id is `"window-affordance"`; movement, resizing,
+/// and the three chrome controls are enabled. The optional content is placed
+/// below the title bar.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::chrome::WindowAffordanceFrame;
+/// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Inspector");
+/// let _ = frame;
+/// ```
 pub struct WindowAffordanceFrame<A = ()> {
     layout: LayoutStyle,
     flex_item: FlexItemStyle,
@@ -128,6 +242,17 @@ pub struct WindowAffordanceFrame<A = ()> {
 crate::impl_layout_builders!(WindowAffordanceFrame);
 
 impl<A: 'static> WindowAffordanceFrame<A> {
+    /// Creates a default movable and resizable frame with `title`.
+    ///
+    /// Empty titles are accepted and displayed as empty text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::WindowAffordanceFrame;
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Tools");
+    /// let _ = frame;
+    /// ```
     pub fn new(title: impl Into<String>) -> Self {
         let title = title.into();
         Self {
@@ -144,41 +269,120 @@ impl<A: 'static> WindowAffordanceFrame<A> {
         }
     }
 
+    /// Sets the host logical id used by built-in minimize requests.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::WindowAffordanceFrame;
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Tools").logical_window_id("tools");
+    /// let _ = frame;
+    /// ```
     pub fn logical_window_id(mut self, value: impl Into<String>) -> Self {
         self.logical_window_id = value.into();
         self
     }
 
+    /// Installs the single child view below the title bar.
+    ///
+    /// Repeated calls replace the previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{chrome::WindowAffordanceFrame, text::Text};
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Tools").content(Text::new("Body"));
+    /// let _ = frame;
+    /// ```
     pub fn content(mut self, content: impl IntoView<A>) -> Self {
         self.content = Some(content.into_view());
         self
     }
 
+    /// Enables or disables title-bar move hit testing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::WindowAffordanceFrame;
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Fixed").movable(false);
+    /// let _ = frame;
+    /// ```
     pub fn movable(mut self, value: bool) -> Self {
         self.movable = value;
         self
     }
 
+    /// Enables or disables edge and corner resize hit testing and handles.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::WindowAffordanceFrame;
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Fixed").resizable(false);
+    /// let _ = frame;
+    /// ```
     pub fn resizable(mut self, value: bool) -> Self {
         self.resizable = value;
         self
     }
 
+    /// Shows or hides close, minimize, and follow controls.
+    ///
+    /// Hiding controls removes both paint and hit targets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::WindowAffordanceFrame;
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Bare").show_controls(false);
+    /// let _ = frame;
+    /// ```
     pub fn show_controls(mut self, value: bool) -> Self {
         self.show_controls = value;
         self
     }
 
+    /// Replaces every chrome geometry and color token.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::{WindowAffordanceFrame, WindowAffordanceStyle};
+    /// let style = WindowAffordanceStyle { titlebar_height: 42.0, ..Default::default() };
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Tools").window_affordance_style(style);
+    /// let _ = frame;
+    /// ```
     pub fn window_affordance_style(mut self, style: WindowAffordanceStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Maps each emitted event into an application action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::{WindowAffordanceEvent, WindowAffordanceFrame};
+    /// enum Action { Chrome(WindowAffordanceEvent) }
+    /// let frame = WindowAffordanceFrame::new("Tools").on_affordance(Action::Chrome);
+    /// let _: WindowAffordanceFrame<Action> = frame;
+    /// ```
     pub fn on_affordance(mut self, f: impl Fn(WindowAffordanceEvent) -> A + 'static) -> Self {
         self.on_affordance = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles emitted events with mutable runtime event context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::chrome::WindowAffordanceFrame;
+    /// let frame: WindowAffordanceFrame<()> = WindowAffordanceFrame::new("Tools")
+    ///     .on_affordance_ctx(|_ctx, _event| {});
+    /// let _ = frame;
+    /// ```
     pub fn on_affordance_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, WindowAffordanceEvent) + 'static,
@@ -188,6 +392,7 @@ impl<A: 'static> WindowAffordanceFrame<A> {
     }
 }
 
+/// Converts the builder into its retained frame component.
 impl<A: 'static> IntoView<A> for WindowAffordanceFrame<A> {
     fn into_view(self) -> View<A> {
         View::component(WindowAffordanceFrameComponent {
@@ -206,12 +411,14 @@ impl<A: 'static> IntoView<A> for WindowAffordanceFrame<A> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Captured drag origin and previous position for delta generation.
 struct AffordanceDragState {
     kind: WindowAffordanceKind,
     start: Point,
     last: Point,
 }
 
+/// Retained builder snapshot rebuilt into the widget and its child views.
 struct WindowAffordanceFrameComponent<A> {
     layout: LayoutStyle,
     flex_item: FlexItemStyle,
@@ -225,6 +432,7 @@ struct WindowAffordanceFrameComponent<A> {
     on_affordance: Option<AffordanceHandler<A>>,
 }
 
+/// Builds the title/content children and persistent interaction signals.
 impl<A: 'static> ComponentNode<A> for WindowAffordanceFrameComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let mut children = Vec::new();
@@ -261,6 +469,7 @@ impl<A: 'static> ComponentNode<A> for WindowAffordanceFrameComponent<A> {
     }
 }
 
+/// Layout, paint, and pointer-event implementation for the chrome frame.
 struct WindowAffordanceFrameWidget<A> {
     layout: LayoutStyle,
     logical_window_id: String,
@@ -274,6 +483,7 @@ struct WindowAffordanceFrameWidget<A> {
     drag: Signal<Option<AffordanceDragState>>,
 }
 
+/// Implements retained chrome geometry, painting, capture, and cursor roles.
 impl<A: 'static> Widget<A> for WindowAffordanceFrameWidget<A> {
     fn debug_name(&self) -> &'static str {
         "WindowAffordanceFrame"
@@ -557,6 +767,7 @@ impl<A: 'static> Widget<A> for WindowAffordanceFrameWidget<A> {
     }
 }
 
+/// Callback dispatch and built-in host chrome actions.
 impl<A: 'static> WindowAffordanceFrameWidget<A> {
     fn emit(&self, ctx: &mut EventCtx<A>, event: WindowAffordanceEvent) {
         if let Some(handler) = &self.on_affordance {
@@ -575,6 +786,27 @@ impl<A: 'static> WindowAffordanceFrameWidget<A> {
     }
 }
 
+/// Resolves a point to the highest-priority enabled chrome affordance.
+///
+/// Points outside `bounds` return `None`. Visible controls win over resize
+/// regions, corners win over edges, and move is considered last. Dimensions
+/// are interpreted as screen logical pixels.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Point, Rect};
+/// use ailloli_ui_widgets::chrome::{classify_window_affordance_hit, WindowAffordanceKind, WindowAffordanceStyle};
+/// let hit = classify_window_affordance_hit(
+///     Rect::new(0.0, 0.0, 320.0, 220.0),
+///     &WindowAffordanceStyle::default(),
+///     Point::new(80.0, 20.0),
+///     true,
+///     true,
+///     true,
+/// );
+/// assert_eq!(hit, Some(WindowAffordanceKind::Move));
+/// ```
 pub fn classify_window_affordance_hit(
     bounds: Rect,
     style: &WindowAffordanceStyle,
@@ -607,6 +839,7 @@ pub fn classify_window_affordance_hit(
     None
 }
 
+/// Builds one event with incremental and start-relative pointer deltas.
 fn drag_event(
     kind: WindowAffordanceKind,
     phase: WindowAffordanceDragPhase,
@@ -623,6 +856,7 @@ fn drag_event(
     }
 }
 
+/// Resolves pressed/dragged state before hover and otherwise returns idle.
 fn affordance_state(
     kind: WindowAffordanceKind,
     hover: Option<WindowAffordanceKind>,
@@ -638,6 +872,7 @@ fn affordance_state(
     }
 }
 
+/// Selects a chrome-control fill from kind and interaction state.
 fn control_color(
     kind: WindowAffordanceKind,
     state: WindowAffordanceState,
@@ -652,6 +887,7 @@ fn control_color(
     }
 }
 
+/// Clamps title-bar height to the non-negative frame height.
 fn titlebar_rect(bounds: Rect, style: &WindowAffordanceStyle) -> Rect {
     Rect::new(
         bounds.x,
@@ -661,6 +897,7 @@ fn titlebar_rect(bounds: Rect, style: &WindowAffordanceStyle) -> Rect {
     )
 }
 
+/// Places close, minimize, and follow controls from right to left.
 fn chrome_control_rects(
     bounds: Rect,
     style: &WindowAffordanceStyle,
@@ -688,6 +925,7 @@ fn chrome_control_rects(
     ]
 }
 
+/// Produces four edge and four corner indicator rectangles.
 fn resize_handle_rects(
     bounds: Rect,
     style: &WindowAffordanceStyle,
@@ -738,9 +976,11 @@ fn resize_handle_rects(
 }
 
 #[cfg(test)]
+/// Hit-priority and enablement regression scenarios for chrome geometry.
 mod tests {
     use super::*;
 
+    /// Returns compact deterministic geometry shared by hit-test scenarios.
     fn style() -> WindowAffordanceStyle {
         WindowAffordanceStyle {
             titlebar_height: 40.0,

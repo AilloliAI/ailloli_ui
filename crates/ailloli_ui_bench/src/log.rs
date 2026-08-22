@@ -1,3 +1,9 @@
+//! Tolerant benchmark artifact reader and metric extraction.
+//!
+//! The reader preserves unknown records but marks such runs unsuitable for
+//! regression gates. It validates protocol order separately from JSON syntax so
+//! callers can still inspect incomplete or legacy artifacts.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -12,40 +18,92 @@ use crate::model::{
 };
 
 /// One finite numeric sample together with its explicit regression role.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::{MetricRole, MetricSample};
+/// let sample = MetricSample { value: 2.5, role: MetricRole::Diagnostic };
+/// assert_eq!(sample.value, 2.5);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MetricSample {
+    /// Finite numeric measurement in the metric's declared unit.
     pub value: f64,
+    /// Comparison and minimum-sample policy for this measurement.
     pub role: MetricRole,
 }
 
 /// One parsed line from a benchmark artifact.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::LogRecord;
+/// let record = LogRecord::Unknown(serde_json::json!({"record_type": "future"}));
+/// assert!(matches!(record, LogRecord::Unknown(_)));
+/// ```
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum LogRecord {
+    /// Initial run identity and metadata.
     RunStart(RunStartRecord),
+    /// Sparse late metadata overlay.
     MetadataUpdate(MetadataUpdateRecord),
+    /// Correlated benchmark event.
     Event(BenchEventRecord),
+    /// Terminal validity and writer counts.
     RunEnd(RunEndRecord),
     /// A future record type retained verbatim by the tolerant reader.
     Unknown(Value),
 }
 
 /// Parsed representation of one run.
+///
+/// Missing start/end records and protocol-order violations are retained for
+/// diagnostics but make [`Self::is_gate_valid`] return `false`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::ParsedRun;
+/// let run = ParsedRun::default();
+/// assert!(!run.is_gate_valid());
+/// assert!(run.events.is_empty());
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct ParsedRun {
+    /// Artifact path supplied to [`read_run`].
     pub path: PathBuf,
+    /// First and only parsed `run_start`, or `None` when absent.
     pub start: Option<RunStartRecord>,
+    /// Metadata overlays in wire order.
     pub metadata_updates: Vec<MetadataUpdateRecord>,
+    /// Event records in wire order.
     pub events: Vec<BenchEventRecord>,
+    /// First and only parsed `run_end`, or `None` when absent.
     pub end: Option<RunEndRecord>,
+    /// Unrecognized record objects retained verbatim.
     pub unknown_records: Vec<Value>,
+    /// Whether start/event/end ordering, IDs, causes, and elapsed times agree.
     protocol_order_valid: bool,
+    /// Count of nonblank wire lines, including the terminal record.
     wire_record_count: u64,
 }
 
 impl ParsedRun {
     /// Returns the last complete metadata view. A metadata update is an overlay
     /// so providers can publish only the values learned after GPU creation.
+    ///
+    /// With no `run_start`, the result begins from [`RunMetadata::default`].
+    /// Sparse updates never erase existing optional fields.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::ParsedRun;
+    /// assert_eq!(ParsedRun::default().final_metadata().scenario, None);
+    /// ```
     pub fn final_metadata(&self) -> RunMetadata {
         let mut metadata = self
             .start
@@ -59,6 +117,17 @@ impl ParsedRun {
     }
 
     /// Whether the artifact is complete and suitable for a regression gate.
+    ///
+    /// Gate-valid files require exactly one compatible start and end, matching
+    /// nonempty run IDs, ordered records/events, prior-only causes, no unknown
+    /// records, a valid end flag, zero drops, and an exact record count.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::ParsedRun;
+    /// assert!(!ParsedRun::default().is_gate_valid());
+    /// ```
     pub fn is_gate_valid(&self) -> bool {
         let (Some(start), Some(end)) = (&self.start, &self.end) else {
             return false;
@@ -86,6 +155,20 @@ impl ParsedRun {
     /// from legacy provider events are diagnostics so an incidental renderer
     /// field can never silently become a release gate. A missing or unknown
     /// role in an older artifact also falls back to `Diagnostic`.
+    ///
+    /// Non-finite values and warmup events are omitted. A synthesized
+    /// `correctness.get_current_texture_err` sample is always present and counts
+    /// acquisition-error events with saturating `u64` arithmetic.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::{MetricRole, ParsedRun};
+    /// let series = ParsedRun::default().metric_samples();
+    /// let sample = series["correctness.get_current_texture_err"][0];
+    /// assert_eq!(sample.value, 0.0);
+    /// assert_eq!(sample.role, MetricRole::Correctness);
+    /// ```
     pub fn metric_samples(&self) -> BTreeMap<String, Vec<MetricSample>> {
         let mut series = BTreeMap::<String, Vec<MetricSample>>::new();
         let mut texture_errors = 0_u64;
@@ -151,6 +234,14 @@ impl ParsedRun {
     }
 
     /// Extracts only numeric values for callers that do not need gate roles.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_bench::ParsedRun;
+    /// let series = ParsedRun::default().metric_series();
+    /// assert_eq!(series["correctness.get_current_texture_err"], vec![0.0]);
+    /// ```
     pub fn metric_series(&self) -> BTreeMap<String, Vec<f64>> {
         self.metric_samples()
             .into_iter()
@@ -165,45 +256,91 @@ impl ParsedRun {
 }
 
 /// Failure while reading a benchmark artifact.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_bench::BenchReadError;
+/// let error = BenchReadError::InvalidInput("missing".into());
+/// assert!(error.to_string().contains("neither a JSONL file nor a directory"));
+/// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BenchReadError {
+    /// Opening a JSONL artifact failed.
     #[error("failed to open benchmark artifact {path}")]
     Open {
+        /// Artifact path that could not be opened.
         path: PathBuf,
+        /// Underlying filesystem error.
         #[source]
         source: std::io::Error,
     },
+    /// Reading an already opened artifact failed.
     #[error("failed to read benchmark artifact {path}")]
     Read {
+        /// File or directory path being read.
         path: PathBuf,
+        /// Underlying filesystem error.
         #[source]
         source: std::io::Error,
     },
+    /// One physical line was not valid JSON.
     #[error("invalid JSON on line {line} of benchmark artifact {path}")]
     Json {
+        /// Artifact containing invalid JSON.
         path: PathBuf,
+        /// One-based line number of the invalid JSON.
         line: usize,
+        /// Underlying JSON parser error.
         #[source]
         source: serde_json::Error,
     },
+    /// A recognized record type had an invalid typed payload.
     #[error("malformed {record_type} record on line {line} of benchmark artifact {path}")]
     MalformedRecord {
+        /// Artifact containing the malformed typed record.
         path: PathBuf,
+        /// One-based line number of the malformed record.
         line: usize,
+        /// `record_type` discriminator found on that line.
         record_type: String,
+        /// Typed deserialization error.
         #[source]
         source: serde_json::Error,
     },
     #[error("duplicate run_start record in benchmark artifact {0}")]
+    /// More than one `run_start` line appeared in the artifact.
     DuplicateRunStart(PathBuf),
     #[error("duplicate run_end record in benchmark artifact {0}")]
+    /// More than one `run_end` line appeared in the artifact.
     DuplicateRunEnd(PathBuf),
     #[error("benchmark input path is neither a JSONL file nor a directory: {0}")]
+    /// Collection input was neither a regular file nor a directory.
     InvalidInput(PathBuf),
 }
 
 /// Reads a version-tolerant benchmark JSONL artifact.
+///
+/// Blank lines are ignored. Unknown record types are retained. Structural
+/// protocol errors (records before start/after end, nonsequential IDs, future
+/// causes, decreasing elapsed time) do not fail parsing; they make the returned
+/// run ineligible for gates.
+///
+/// # Errors
+///
+/// Returns an error for open/read/JSON/typed-record failures or duplicate start
+/// and end records.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_bench::{read_run, BenchReadError, ParsedRun};
+///
+/// fn load(path: &std::path::Path) -> Result<ParsedRun, BenchReadError> {
+///     read_run(path)
+/// }
+/// ```
 pub fn read_run(path: impl AsRef<Path>) -> Result<ParsedRun, BenchReadError> {
     let path = path.as_ref().to_path_buf();
     let file = File::open(&path).map_err(|source| BenchReadError::Open {
@@ -327,6 +464,25 @@ pub fn read_run(path: impl AsRef<Path>) -> Result<ParsedRun, BenchReadError> {
 }
 
 /// Recursively finds `.jsonl` artifacts without following directory symlinks.
+///
+/// A regular file is returned even when it lacks a `.jsonl` extension; the
+/// extension filter applies only during directory traversal. Results are sorted
+/// lexicographically and directory symlinks are ignored.
+///
+/// # Errors
+///
+/// Returns [`BenchReadError::InvalidInput`] for a missing/special top-level path
+/// and [`BenchReadError::Read`] for directory iteration or metadata failures.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_bench::{collect_run_files, BenchReadError};
+///
+/// fn discover(path: &std::path::Path) -> Result<Vec<std::path::PathBuf>, BenchReadError> {
+///     collect_run_files(path)
+/// }
+/// ```
 pub fn collect_run_files(path: impl AsRef<Path>) -> Result<Vec<PathBuf>, BenchReadError> {
     let path = path.as_ref();
     if path.is_file() {

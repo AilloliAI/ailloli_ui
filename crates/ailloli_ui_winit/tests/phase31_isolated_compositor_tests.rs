@@ -13,39 +13,47 @@ use ailloli_ui_runtime::{DrawCmd, DrawRect, IsolatedEffects};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
 
+/// Capture width in physical pixels.
 const W: u32 = 256;
+/// Capture height in physical pixels.
 const H: u32 = 256;
 
+/// Opaque white clear/background color.
 const WHITE: Color = Color {
     r: 1.0,
     g: 1.0,
     b: 1.0,
     a: 1.0,
 };
+/// Opaque primary red fixture color.
 const RED: Color = Color {
     r: 1.0,
     g: 0.0,
     b: 0.0,
     a: 1.0,
 };
+/// Opaque primary blue fixture color.
 const BLUE: Color = Color {
     r: 0.0,
     g: 0.0,
     b: 1.0,
     a: 1.0,
 };
+/// Opaque primary green fixture color.
 const GREEN: Color = Color {
     r: 0.0,
     g: 1.0,
     b: 0.0,
     a: 1.0,
 };
+/// Opaque magenta fixture color.
 const MAGENTA: Color = Color {
     r: 1.0,
     g: 0.0,
     b: 1.0,
     a: 1.0,
 };
+/// Opaque cyan fixture color.
 const CYAN: Color = Color {
     r: 0.0,
     g: 1.0,
@@ -53,11 +61,13 @@ const CYAN: Color = Color {
     a: 1.0,
 };
 
+/// Reads one RGBA8 pixel at physical coordinates from a tightly packed frame.
 fn rgba_at(frame: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
     let idx = ((y * w + x) * 4) as usize;
     [frame[idx], frame[idx + 1], frame[idx + 2], frame[idx + 3]]
 }
 
+/// Best-effort writes a diagnostic PNG beneath the repository artifacts tree.
 fn write_artifact(name: &str, png: &[u8]) {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let out_path = repo_root.join("artifacts").join("captures").join(name);
@@ -67,6 +77,7 @@ fn write_artifact(name: &str, png: &[u8]) {
     let _ = std::fs::write(&out_path, png);
 }
 
+/// Builds isolated effects; opacity is normalized and blur is in physical pixels.
 fn iso_effects(opacity: f32, blur: f32) -> IsolatedEffects {
     IsolatedEffects {
         opacity,
@@ -76,11 +87,14 @@ fn iso_effects(opacity: f32, blur: f32) -> IsolatedEffects {
 }
 
 #[derive(Default)]
+/// Aggregates independently evaluated pixel failures across all scenarios.
 struct ScenarioReport {
     failures: Vec<String>,
 }
 
+/// Runs checks without allowing one panic to hide later failures.
 impl ScenarioReport {
+    /// Executes one labeled check and stores any error or panic text.
     fn check(&mut self, scenario: &str, label: &str, f: impl FnOnce() -> Result<(), String>) {
         if let Err(msg) =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {

@@ -1,8 +1,15 @@
+//! Consumer-visible type, event, mailbox, popup, and retained-tree contracts.
+//!
+//! These integration scenarios compile against the facade rather than its
+//! implementation crates so missing or accidentally platform-coupled reexports
+//! fail at the intended boundary.
+
 use std::num::NonZeroUsize;
 
 use ailloli_ui::prelude::*;
 use ailloli_ui::IntoView;
 
+/// Compile-time assertion that a public cross-thread type is `Send + Sync`.
 fn assert_send_sync<T: Send + Sync>() {}
 
 #[test]
@@ -66,6 +73,7 @@ fn provider_neutral_event_types_are_constructible_without_winit() {
 fn provider_event_matches_keep_forward_compatible_fallbacks() {
     use ailloli_ui::core::event::{Event, WindowEvent};
 
+    /// Classifies provider-neutral event variants while retaining a future fallback.
     fn event_family(event: &Event) -> &'static str {
         match event {
             Event::Window(window) => window_family(window),
@@ -78,6 +86,7 @@ fn provider_event_matches_keep_forward_compatible_fallbacks() {
         }
     }
 
+    /// Classifies window-event variants while retaining a future fallback.
     fn window_family(event: &WindowEvent) -> &'static str {
         match event {
             WindowEvent::Resized { .. } => "resized",

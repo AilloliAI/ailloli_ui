@@ -1,3 +1,5 @@
+//! Accessible links that open validated external HTTP(S) URLs.
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -22,10 +24,25 @@ use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 /// Visual states for a text link.
 ///
 /// State styles are paint-only: keep the same font and size in every state.
+/// [`LinkStyle::resolve_text`] enforces the normal font and size even if a
+/// state override contains different metrics.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::style::InteractionState;
+/// use ailloli_ui_widgets::controls::LinkStyle;
+/// let style = LinkStyle::default();
+/// let resolved = style.resolve_text(InteractionState::default());
+/// assert_eq!(resolved.px_size, style.text.normal.px_size);
+/// ```
 #[derive(Clone, Debug)]
 pub struct LinkStyle {
+    /// Normal and interaction-state text paint styles.
     pub text: StateStyle<TextStyle>,
+    /// Border painted outside a focused, enabled link.
     pub focus_ring: Border,
+    /// Gap between content bounds and focus ring in logical pixels.
     pub focus_ring_offset: f32,
 }
 
@@ -51,6 +68,23 @@ impl Default for LinkStyle {
 }
 
 impl LinkStyle {
+    /// Resolves the text paint for `state` while preserving normal metrics.
+    ///
+    /// State overrides can change color and decoration, but their `font` and
+    /// `px_size` fields are deliberately ignored to keep layout stable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::InteractionState;
+    /// use ailloli_ui_widgets::controls::LinkStyle;
+    /// let style = LinkStyle::default();
+    /// let hovered = style.resolve_text(InteractionState {
+    ///     hovered: true,
+    ///     ..InteractionState::default()
+    /// });
+    /// assert_eq!(hovered.px_size, style.text.normal.px_size);
+    /// ```
     pub fn resolve_text(&self, state: InteractionState) -> TextStyle {
         let resolved = self.text.resolve(state);
         TextStyle {
@@ -60,6 +94,7 @@ impl LinkStyle {
         }
     }
 
+    /// Returns the maximum logical-pixel expansion required by the focus ring.
     fn visual_inflate(&self) -> f32 {
         let widths = self.focus_ring.layout_widths();
         self.focus_ring_offset
@@ -71,9 +106,13 @@ impl LinkStyle {
     }
 }
 
+/// Exactly one content representation owned by a link builder.
 enum LinkContent<A> {
+    /// Zero-sized placeholder used by [`Link::new`].
     Empty,
+    /// Text rendered through [`LinkStyle`].
     Label(String),
+    /// Caller-composed child whose own widget controls painting.
     Child(View<A>),
 }
 
@@ -82,6 +121,16 @@ enum LinkContent<A> {
 /// Use [`Link::with_label`] for the common text form, or [`Link::child`] for
 /// icons and composed content. `href` always means an external system URL;
 /// this widget deliberately has no generic action callback.
+/// Invalid, empty, non-HTTP(S), or hostless URL text produces an inert link;
+/// parse errors are intentionally not retained by the builder.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Link;
+/// let link: Link<()> = Link::with_label("Documentation").href("https://example.com/docs");
+/// let _ = link;
+/// ```
 ///
 /// # Future routing gate
 ///
@@ -94,11 +143,17 @@ enum LinkContent<A> {
 /// Link::with_label("Settings").route(Route::Settings)
 /// ```
 pub struct Link<A = ()> {
+    /// Layout configuration applied around the single content child.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Empty, styled-label, or composed-child content.
     content: LinkContent<A>,
+    /// Validated external URL, or `None` for an inert link.
     href: Option<ExternalUrl>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Label paint states and focus-ring style.
     style: LinkStyle,
 }
 
@@ -111,6 +166,18 @@ impl<A: 'static> Default for Link<A> {
 }
 
 impl<A: 'static> Link<A> {
+    /// Creates an empty, enabled link with no destination.
+    ///
+    /// Until content with nonzero layout and a valid URL are supplied, the link
+    /// is not focusable and uses the default cursor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Link;
+    /// let link: Link<()> = Link::new();
+    /// let _ = link;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -122,6 +189,18 @@ impl<A: 'static> Link<A> {
         }
     }
 
+    /// Creates a link whose sole child is an owned, unwrapped text label.
+    ///
+    /// Empty text is accepted but normally lays out with zero width, leaving
+    /// the link inert even after a URL is supplied.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Link;
+    /// let link: Link<()> = Link::with_label("Website");
+    /// let _ = link;
+    /// ```
     pub fn with_label(label: impl Into<String>) -> Self {
         Self {
             content: LinkContent::Label(label.into()),
@@ -129,36 +208,109 @@ impl<A: 'static> Link<A> {
         }
     }
 
+    /// Replaces empty or label content with one composed child view.
+    ///
+    /// [`LinkStyle::text`] does not affect composed children; the link still
+    /// supplies focus-ring and interaction behavior around their layout bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Link;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let link = Link::<()>::new().child(Text::new("Website"));
+    /// let _ = link;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.content = LinkContent::Child(child.into_view());
         self
     }
 
+    /// Parses and replaces the external HTTP(S) destination.
+    ///
+    /// Validation performs no network request. Invalid input silently clears
+    /// the destination, so a later invalid call makes a previously valid link
+    /// inert. The host-opening failure, if any, is non-fatal during activation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Link;
+    /// let valid: Link<()> = Link::with_label("Web").href("https://example.com");
+    /// let inert: Link<()> = valid.href("file:///tmp/not-allowed");
+    /// let _ = inert;
+    /// ```
     pub fn href(mut self, href: impl AsRef<str>) -> Self {
         self.href = ExternalUrl::parse(href).ok();
         self
     }
 
+    /// Sets a static or reactive disabled binding.
+    ///
+    /// Disabled links do not activate, receive focus, or show a pointer cursor.
+    /// Label content resolves through the disabled text state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Link;
+    /// let link: Link<()> = Link::with_label("Unavailable").disabled(true);
+    /// let _ = link;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Convenience alias for [`Self::disabled`] with a reactive memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Link;
+    /// let link: Link<()> = Link::with_label("Website").disabled_signal(Memo::new(|| false));
+    /// let _ = link;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Replaces only the normal label text style.
+    ///
+    /// Existing hover, pressed, and disabled overrides remain unchanged.
+    /// Composed child content ignores this field.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_widgets::controls::Link;
+    /// let link: Link<()> = Link::with_label("Docs")
+    ///     .style(TextStyle::new(FontId::Ui, 16, Color::WHITE));
+    /// let _ = link;
+    /// ```
     pub fn style(mut self, style: TextStyle) -> Self {
         self.style.text.normal = style;
         self
     }
 
+    /// Replaces the complete label-state and focus-ring style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Link, LinkStyle};
+    /// let link: Link<()> = Link::with_label("Docs").link_style(LinkStyle::default());
+    /// let _ = link;
+    /// ```
     pub fn link_style(mut self, style: LinkStyle) -> Self {
         self.style = style;
         self
     }
 }
 
+/// Retained interaction shell around one laid-out content child.
 struct LinkWidget {
     layout: LayoutStyle,
     href: Option<ExternalUrl>,
@@ -277,12 +429,14 @@ impl<A: 'static> Widget<A> for LinkWidget {
     }
 }
 
+/// Styled text child sharing its parent's latest interaction snapshot.
 struct LinkLabelWidget {
     label: String,
     style: LinkStyle,
     interaction: Rc<Cell<InteractionState>>,
 }
 
+/// Prepares one unwrapped label with no maximum width.
 fn layout_label(
     text_system: &mut TextSystem,
     label: &str,

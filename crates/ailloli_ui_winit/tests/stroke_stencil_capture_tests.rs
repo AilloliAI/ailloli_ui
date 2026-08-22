@@ -12,10 +12,12 @@ use ailloli_ui_runtime::{DrawCmd, DrawPolyline, DrawRect};
 use ailloli_ui_winit::{create_window_before_run, new_event_loop_allow_any_thread, WindowOptions};
 use winit::dpi::LogicalSize;
 
+/// Classifies an opaque pixel within the fixture's broad orange range.
 fn is_orange(px: [u8; 4]) -> bool {
     px[0] > 120 && px[0] > px[1].saturating_add(25) && px[0] > px[2].saturating_add(50)
 }
 
+/// Captures a standalone stroke clipped by the window-root stencil.
 fn capture_stroke_only_under_root_stencil() -> ailloli_ui_render_wgpu::CapturedFrame {
     let event_loop = new_event_loop_allow_any_thread().expect("event loop");
     let window = Arc::new(
@@ -65,6 +67,7 @@ fn stroke_only_under_window_root_stencil_renders_orange_line() {
     );
 }
 
+/// Captures a stroke and surrounding content beneath the root stencil.
 fn capture_stroke_under_root_stencil() -> ailloli_ui_render_wgpu::CapturedFrame {
     let event_loop = new_event_loop_allow_any_thread().expect("event loop");
     let window = Arc::new(
@@ -105,6 +108,7 @@ fn capture_stroke_under_root_stencil() -> ailloli_ui_render_wgpu::CapturedFrame 
     captured
 }
 
+/// Captures the rectangle-line fallback beneath the same root stencil.
 fn capture_rect_line_under_root_stencil() -> ailloli_ui_render_wgpu::CapturedFrame {
     let event_loop = new_event_loop_allow_any_thread().expect("event loop");
     let window = Arc::new(

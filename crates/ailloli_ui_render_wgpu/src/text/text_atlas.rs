@@ -1,3 +1,5 @@
+//! Multi-page GPU glyph atlas with per-frame pinning and LRU page eviction.
+
 use std::collections::{HashMap, VecDeque};
 
 use super::glyph_upload::write_subtexture_rgba;
@@ -7,49 +9,106 @@ use swash::{
     FontRef, GlyphId,
 };
 
-/// Max atlas pages (8 × 1024² ≈ 8 MiB per DPR bucket).
+/// Maximum atlas pages: eight 1024² RGBA8 textures (about 32 MiB total).
+///
+/// Each RGBA8 page occupies about 4 MiB, so the absolute texture storage ceiling
+/// is approximately 32 MiB across all DPR buckets represented in the keys.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::text::MAX_ATLAS_PAGES;
+/// assert_eq!(MAX_ATLAS_PAGES, 8);
+/// ```
 pub const MAX_ATLAS_PAGES: u8 = 8;
 
 /// Cache key for one rasterized glyph in the text atlas.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::text::GlyphKey;
+/// let key = GlyphKey { face_id: 3, font_index: 0, px_size: 16,
+///     glyph_id: 42, scale_100: 200 };
+/// assert_eq!((key.face_id, key.scale_100), (3, 200));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
+    /// Stable face identity supplied by the text system.
     pub face_id: u64,
+    /// Face index inside a font collection.
     pub font_index: u32,
+    /// Raster size in physical pixels, clamped to `8..=128` when used.
     pub px_size: u16,
+    /// Font-specific glyph identifier; rasterization narrows it to `u16`.
     pub glyph_id: u32,
     /// `round(dpr * 100)` to separate HiDPI cache buckets.
     pub scale_100: u16,
 }
 
 /// UV layout and metrics for a glyph in the atlas.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::text::Glyph;
+/// let glyph = Glyph { uv_min: [0.0, 0.0], uv_max: [0.5, 0.5],
+///     size_px: [8.0, 10.0], offset_px: [1.0, -2.0], advance_px: 0.0 };
+/// assert_eq!(glyph.size_px, [8.0, 10.0]);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Glyph {
+    /// Inclusive lower UV corner in normalized atlas coordinates.
     pub uv_min: [f32; 2],
+    /// Exclusive upper UV corner in normalized atlas coordinates.
     pub uv_max: [f32; 2],
+    /// Raster bitmap width and height in physical pixels.
     pub size_px: [f32; 2],
+    /// Bitmap offset from the physical glyph pen position.
     pub offset_px: [f32; 2],
+    /// Reserved advance in physical pixels; currently zero because layout owns advance.
     pub advance_px: f32,
 }
 
 /// Per-frame atlas cache statistics.
+///
+/// Counters saturate at `u32::MAX`; `pages_active` reflects the current atlas,
+/// including pages allocated in earlier frames.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::text::TextAtlasStats;
+/// let stats = TextAtlasStats::default();
+/// assert_eq!((stats.hits, stats.misses, stats.pages_active), (0, 0, 0));
+/// ```
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TextAtlasStats {
+    /// Cache hits in the current frame.
     pub hits: u32,
+    /// Cache misses in the current frame.
     pub misses: u32,
+    /// Glyph bitmaps uploaded in the current frame.
     pub rasterized: u32,
+    /// Atlas page resets caused by eviction in the current frame.
     pub resets: u32,
+    /// Allocations skipped because every candidate page was frame-pinned.
     pub evictions_blocked: u32,
+    /// Glyphs skipped for missing faces, raster failures, or allocation failure.
     pub glyphs_skipped: u32,
+    /// Total allocated atlas pages after the latest operation.
     pub pages_active: u32,
 }
 
 #[derive(Debug)]
+/// Shelf allocator cursor for one atlas page.
 struct Shelf {
     x: u32,
     y: u32,
     h: u32,
 }
 
+/// Texture, binding, and allocator state for one atlas page.
 struct AtlasPage {
     texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
@@ -57,6 +116,17 @@ struct AtlasPage {
 }
 
 /// Multi-page GPU glyph atlas with LRU eviction.
+///
+/// The atlas allocates one 1024-square RGBA8 page eagerly and grows to
+/// [`MAX_ATLAS_PAGES`]. Pinned pages cannot be reset during a frame. Unpinned
+/// eviction clears an entire least-recently-used page, not an individual glyph.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::text::TextAtlas;
+/// let _: usize = std::mem::size_of::<TextAtlas>();
+/// ```
 pub struct TextAtlas {
     tex_size: u32,
     max_pages: u8,
@@ -73,11 +143,36 @@ pub struct TextAtlas {
 }
 
 /// Scoped atlas access for one frame (pins pages until drop).
+///
+/// Dropping the guard calls `finish_frame`, unpinning every page. The guard's
+/// mutable borrow prevents other atlas access during the frame.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::text::TextAtlasFrame;
+/// let _: usize = std::mem::size_of::<TextAtlasFrame<'static>>();
+/// ```
 pub struct TextAtlasFrame<'a> {
     atlas: &'a mut TextAtlas,
 }
 
 impl<'a> TextAtlasFrame<'a> {
+    /// Looks up or rasterizes a glyph and pins its page until this guard drops.
+    ///
+    /// Returns `None` for invalid font data, a missing glyph image, an oversized
+    /// allocation, or when all pages are pinned and full.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::{GlyphKey, TextAtlasFrame};
+    /// fn lookup(frame: &mut TextAtlasFrame<'_>, device: &wgpu::Device,
+    ///     queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout, font: &[u8], key: GlyphKey) {
+    ///     let _glyph: Option<(u8, ailloli_ui_render_wgpu::text::Glyph)> =
+    ///         frame.get_or_rasterize(device, queue, layout, key, font);
+    /// }
+    /// ```
     pub fn get_or_rasterize(
         &mut self,
         device: &wgpu::Device,
@@ -90,10 +185,26 @@ impl<'a> TextAtlasFrame<'a> {
             .get_or_rasterize_pinned(device, queue, bind_group_layout, key, font_data)
     }
 
+    /// Records one glyph skipped because its face bytes were unavailable.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlasFrame;
+    /// fn missing(frame: &mut TextAtlasFrame<'_>) { frame.record_missing_face(); }
+    /// ```
     pub fn record_missing_face(&mut self) {
         self.atlas.record_missing_face();
     }
 
+    /// Returns current per-frame counters and allocated page count.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::{TextAtlasFrame, TextAtlasStats};
+    /// fn stats(frame: &TextAtlasFrame<'_>) -> TextAtlasStats { frame.stats() }
+    /// ```
     pub fn stats(&self) -> TextAtlasStats {
         self.atlas.stats()
     }
@@ -106,6 +217,20 @@ impl Drop for TextAtlasFrame<'_> {
 }
 
 impl TextAtlas {
+    /// Creates an atlas, sampler, and the mandatory first 1024-square page.
+    ///
+    /// The supplied bind-group layout must contain a filterable 2D texture at
+    /// binding 0 and a filtering sampler at binding 1.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn create(device: &wgpu::Device, queue: &wgpu::Queue,
+    ///     layout: &wgpu::BindGroupLayout) -> TextAtlas {
+    ///     TextAtlas::new(device, queue, layout)
+    /// }
+    /// ```
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -138,24 +263,71 @@ impl TextAtlas {
     }
 
     /// Page 0 bind group (always allocated; legacy renderer path).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn binding(atlas: &TextAtlas) -> &wgpu::BindGroup { atlas.bind_group() }
+    /// ```
     pub fn bind_group(&self) -> &wgpu::BindGroup {
         &self.pages[0].bind_group
     }
 
     /// Bind group for the given atlas page index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `page_idx >= page_count()`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn first(atlas: &TextAtlas) -> &wgpu::BindGroup { atlas.page_bind_group(0) }
+    /// ```
     pub fn page_bind_group(&self, page_idx: u8) -> &wgpu::BindGroup {
         &self.pages[page_idx as usize].bind_group
     }
 
+    /// Returns the number of allocated pages, always in `1..=MAX_ATLAS_PAGES`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn pages(atlas: &TextAtlas) -> usize { atlas.page_count() }
+    /// ```
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }
 
+    /// Starts a frame and returns a guard that unpins pages on drop.
+    ///
+    /// Calling this discards the previous frame's counters and pins, so guards
+    /// must not conceptually overlap.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn frame(atlas: &mut TextAtlas) { let _guard = atlas.begin_frame(); }
+    /// ```
     pub fn begin_frame(&mut self) -> TextAtlasFrame<'_> {
         self.start_frame();
         TextAtlasFrame { atlas: self }
     }
 
+    /// Resets per-frame counters and clears all page pins.
+    ///
+    /// Prefer [`Self::begin_frame`] when scoped access is practical.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn start(atlas: &mut TextAtlas) { atlas.start_frame(); }
+    /// ```
     pub fn start_frame(&mut self) {
         self.frame_pinned_pages.clear();
         self.frame_pinned_pages.resize(self.pages.len(), false);
@@ -165,10 +337,26 @@ impl TextAtlas {
         };
     }
 
+    /// Clears page pins without changing counters, glyphs, or allocations.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn finish(atlas: &mut TextAtlas) { atlas.finish_frame(); }
+    /// ```
     pub fn finish_frame(&mut self) {
         self.frame_pinned_pages.fill(false);
     }
 
+    /// Returns current frame counters with a live page-count snapshot.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::{TextAtlas, TextAtlasStats};
+    /// fn stats(atlas: &TextAtlas) -> TextAtlasStats { atlas.stats() }
+    /// ```
     pub fn stats(&self) -> TextAtlasStats {
         TextAtlasStats {
             pages_active: self.pages.len() as u32,
@@ -176,6 +364,7 @@ impl TextAtlas {
         }
     }
 
+    /// Allocates and zero-fills one atlas page, then creates its sample binding.
     fn allocate_page(
         &mut self,
         device: &wgpu::Device,
@@ -230,6 +419,7 @@ impl TextAtlas {
         });
     }
 
+    /// Clears a page and removes every glyph and LRU entry resident on it.
     fn reset_page(&mut self, page_idx: u8, queue: &wgpu::Queue) {
         self.frame_stats.resets = self.frame_stats.resets.saturating_add(1);
         let zero = vec![0u8; (self.tex_size * self.tex_size * 4) as usize];
@@ -254,6 +444,20 @@ impl TextAtlas {
         }
     }
 
+    /// Looks up or rasterizes a glyph without protecting its page from eviction.
+    ///
+    /// Returns `(page_index, metrics)` or `None` on raster/allocation failure.
+    /// Use [`Self::get_or_rasterize_pinned`] during frame preparation.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::{GlyphKey, TextAtlas};
+    /// fn lookup(atlas: &mut TextAtlas, device: &wgpu::Device, queue: &wgpu::Queue,
+    ///     layout: &wgpu::BindGroupLayout, key: GlyphKey, font: &[u8]) {
+    ///     let _ = atlas.get_or_rasterize(device, queue, layout, key, font);
+    /// }
+    /// ```
     pub fn get_or_rasterize(
         &mut self,
         device: &wgpu::Device,
@@ -265,6 +469,20 @@ impl TextAtlas {
         self.get_or_rasterize_impl(device, queue, bind_group_layout, key, font_data, false)
     }
 
+    /// Looks up or rasterizes a glyph and pins its page for the current frame.
+    ///
+    /// If every page is pinned and full, returns `None` and increments both
+    /// `evictions_blocked` and `glyphs_skipped`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::{GlyphKey, TextAtlas};
+    /// fn lookup(atlas: &mut TextAtlas, device: &wgpu::Device, queue: &wgpu::Queue,
+    ///     layout: &wgpu::BindGroupLayout, key: GlyphKey, font: &[u8]) {
+    ///     let _ = atlas.get_or_rasterize_pinned(device, queue, layout, key, font);
+    /// }
+    /// ```
     pub fn get_or_rasterize_pinned(
         &mut self,
         device: &wgpu::Device,
@@ -276,10 +494,19 @@ impl TextAtlas {
         self.get_or_rasterize_impl(device, queue, bind_group_layout, key, font_data, true)
     }
 
+    /// Saturating-increments the missing-face/skip counter.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::text::TextAtlas;
+    /// fn missing(atlas: &mut TextAtlas) { atlas.record_missing_face(); }
+    /// ```
     pub fn record_missing_face(&mut self) {
         self.frame_stats.glyphs_skipped = self.frame_stats.glyphs_skipped.saturating_add(1);
     }
 
+    /// Shared lookup, raster, page allocation, upload, and optional pin path.
     fn get_or_rasterize_impl(
         &mut self,
         device: &wgpu::Device,
@@ -389,6 +616,7 @@ impl TextAtlas {
         Some((page_idx, g))
     }
 
+    /// Marks one page unavailable to eviction for the current frame.
     fn pin_page(&mut self, page_idx: u8) {
         let idx = page_idx as usize;
         if idx >= self.frame_pinned_pages.len() {
@@ -397,11 +625,13 @@ impl TextAtlas {
         self.frame_pinned_pages[idx] = true;
     }
 
+    /// Moves a glyph key to the most-recently-used end of the queue.
     fn touch_lru(&mut self, key: GlyphKey) {
         self.lru.retain(|k| k != &key);
         self.lru.push_back(key);
     }
 
+    /// Rasterizes one glyph through Swash, returning mask and screen-space placement.
     fn rasterize(
         &mut self,
         font_data: &[u8],
@@ -430,6 +660,7 @@ impl TextAtlas {
         Some((image.data, w, h, offset_x, offset_y))
     }
 
+    /// Allocates a shelf region, grows a page, or resets the oldest eligible page.
     fn alloc_or_grow(
         &mut self,
         device: &wgpu::Device,
@@ -468,16 +699,19 @@ impl TextAtlas {
         Some((oldest_page, x, y))
     }
 
+    /// Returns the page containing the globally oldest cached glyph.
     fn oldest_page_idx(&self) -> Option<u8> {
         let key = self.lru.front()?;
         let (page, _) = self.glyphs.get(key)?;
         Some(*page)
     }
 
+    /// Returns the oldest page not pinned by the current frame.
     fn oldest_unpinned_page_idx(&self) -> Option<u8> {
         oldest_unpinned_page_idx_from(&self.lru, &self.glyphs, &self.frame_pinned_pages)
     }
 
+    /// Allocates one rectangle in a page's row-shelf cursor.
     fn try_alloc_in(&mut self, page_idx: usize, w: u32, h: u32) -> Option<(u32, u32)> {
         let page = self.pages.get_mut(page_idx)?;
         if page.shelf.h == 0 {
@@ -503,6 +737,7 @@ impl TextAtlas {
     }
 }
 
+/// Finds the first LRU glyph whose page is not marked pinned.
 fn oldest_unpinned_page_idx_from(
     lru: &VecDeque<GlyphKey>,
     glyphs: &HashMap<GlyphKey, (u8, Glyph)>,
@@ -520,9 +755,11 @@ fn oldest_unpinned_page_idx_from(
 }
 
 #[cfg(test)]
+/// Verifies LRU victim selection while current-frame atlas pages are pinned.
 mod tests {
     use super::*;
 
+    /// Creates a stable key that varies only by glyph identifier.
     fn key(glyph_id: u32) -> GlyphKey {
         GlyphKey {
             face_id: 1,
@@ -533,6 +770,7 @@ mod tests {
         }
     }
 
+    /// Creates a minimal one-pixel glyph entry for page-victim scenarios.
     fn glyph() -> Glyph {
         Glyph {
             uv_min: [0.0, 0.0],

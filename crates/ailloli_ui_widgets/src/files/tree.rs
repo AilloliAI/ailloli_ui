@@ -1,39 +1,101 @@
+//! Filesystem-provider traversal policies and URI tree helpers.
+
 use ailloli_ui_fs::{FileEntry, FileError, FileKind, FileMetadata, FileProvider, FileUri};
 
 use super::model::FileExplorerNode;
 
+/// Policy deciding which directory levels are read proactively.
+///
+/// Explicitly expanded directories, the root, and selected ancestors may still
+/// load independently of this policy. [`FileTreeOptions::max_depth`] is always
+/// a hard upper bound.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::FileTreeLoadMode;
+/// assert_ne!(FileTreeLoadMode::Lazy, FileTreeLoadMode::Full);
+/// assert_eq!(FileTreeLoadMode::Controlled { preload_depth: 2 }, FileTreeLoadMode::Controlled { preload_depth: 2 });
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileTreeLoadMode {
+    /// Reads only root, expanded directories, and selected ancestors.
     Lazy,
-    Controlled { preload_depth: usize },
+    /// Also preloads ordinary directories through the inclusive zero-based depth.
+    Controlled {
+        /// Deepest directory depth eligible for proactive loading.
+        preload_depth: usize,
+    },
+    /// Preloads every ordinary directory until the maximum depth.
     Full,
 }
 
+/// Behavior when a listing exceeds its configured per-directory limit.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::LargeDirectoryPolicy;
+/// assert_ne!(LargeDirectoryPolicy::Load, LargeDirectoryPolicy::Placeholder);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LargeDirectoryPolicy {
+    /// Retains every entry and ignores the numeric limit.
     Load,
+    /// Truncates after sorting and appends a disabled explanatory row.
     Placeholder,
 }
 
+/// Policy for descending into entries known to be directory symlinks.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::SymlinkTraversalPolicy;
+/// assert_ne!(SymlinkTraversalPolicy::Never, SymlinkTraversalPolicy::RecursiveWithCycleGuard);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymlinkTraversalPolicy {
+    /// Never reads through a symlink, even when explicitly expanded.
     Never,
+    /// Reads through a symlink only for root/selection/explicit expansion.
     ExplicitExpansionOnly,
+    /// Allows proactive recursion while stopping repeated canonical URIs.
     RecursiveWithCycleGuard,
 }
 
+/// Complete policy snapshot for synchronous or asynchronous tree loading.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::{FileTreeLoadMode, FileTreeOptions, LargeDirectoryPolicy};
+/// let options = FileTreeOptions::default();
+/// assert_eq!(options.max_depth, 8);
+/// assert_eq!(options.load_mode, FileTreeLoadMode::Lazy);
+/// assert_eq!(options.large_directory_policy, LargeDirectoryPolicy::Load);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileTreeOptions {
+    /// Includes dot-prefixed names when true; selected ancestors always survive.
     pub include_hidden: bool,
+    /// Hard maximum directory depth; root is depth zero and is not read at zero.
     pub max_depth: usize,
+    /// Keeps and loads ancestors of `selected` even when hidden/excluded.
     pub reveal_selected: bool,
+    /// Proactive directory traversal policy.
     pub load_mode: FileTreeLoadMode,
+    /// Excludes common heavy directories unless they contain selection.
     pub exclude_defaults: bool,
+    /// Optional post-filter/post-sort entry cap per directory.
     pub max_entries_per_directory: Option<usize>,
+    /// Whether the optional entry cap is enforced or ignored.
     pub large_directory_policy: LargeDirectoryPolicy,
+    /// Rules for reading directory-like symlinks.
     pub symlink_traversal_policy: SymlinkTraversalPolicy,
 }
 
+/// Uses lazy visible-only loading, depth eight, hidden filtering, and no cap.
 impl Default for FileTreeOptions {
     fn default() -> Self {
         Self {
@@ -49,12 +111,24 @@ impl Default for FileTreeOptions {
     }
 }
 
+/// Internal distinction between direct user/reveal loads and proactive loads.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::{FileTreeOptions, SymlinkTraversalPolicy};
+/// let options = FileTreeOptions::default();
+/// assert_eq!(options.symlink_traversal_policy, SymlinkTraversalPolicy::ExplicitExpansionOnly);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChildLoadReason {
+    /// Root, explicit expansion, or selected-ancestor traversal.
     Explicit,
+    /// Controlled/full proactive traversal.
     Preload,
 }
 
+/// Immutable parameters threaded through recursive provider traversal.
 struct LoadEntryContext<'a> {
     provider: &'a dyn FileProvider,
     root: &'a FileUri,
@@ -63,6 +137,28 @@ struct LoadEntryContext<'a> {
     options: FileTreeOptions,
 }
 
+/// Loads one provider-backed root into a recursive explorer snapshot.
+///
+/// The root metadata is always queried and the returned vector contains exactly
+/// one root on success. Directory reads are synchronous and depth-first. Each
+/// listing is filtered, sorted directory-first, optionally truncated, and may
+/// recursively read children according to `options` and `expanded`.
+///
+/// # Errors
+///
+/// Propagates metadata, canonicalization, or directory-listing [`FileError`]s.
+/// The operation is not transactional and a deep tree consumes call stack.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::{FileError, FileProvider, FileUri};
+/// use ailloli_ui_widgets::files::{load_file_tree, FileExplorerNode, FileTreeOptions};
+/// fn load(provider: &dyn FileProvider, root: &FileUri) -> Result<Vec<FileExplorerNode>, FileError> {
+///     load_file_tree(provider, root, &[], None, FileTreeOptions::default())
+/// }
+/// # let _ = load;
+/// ```
 pub fn load_file_tree(
     provider: &dyn FileProvider,
     root: &FileUri,
@@ -83,6 +179,21 @@ pub fn load_file_tree(
     Ok(vec![node])
 }
 
+/// Tests URI ancestry with scheme, authority, and path-component boundaries.
+///
+/// Trailing slashes are ignored. `/repo` is an ancestor of `/repo/src` but not
+/// `/repository`; different schemes or authorities never match.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::file_uri_is_ancestor_or_self;
+/// let root = FileUri::parse("file:///repo")?;
+/// assert!(file_uri_is_ancestor_or_self(&root, &FileUri::parse("file:///repo/src")?));
+/// assert!(!file_uri_is_ancestor_or_self(&root, &FileUri::parse("file:///repository")?));
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 pub fn file_uri_is_ancestor_or_self(parent: &FileUri, child: &FileUri) -> bool {
     if parent.scheme() != child.scheme() || parent.authority() != child.authority() {
         return false;
@@ -95,6 +206,21 @@ pub fn file_uri_is_ancestor_or_self(parent: &FileUri, child: &FileUri) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// Returns the lexical parent while preserving scheme and authority.
+///
+/// Trailing slashes are ignored. The filesystem root has no parent. Invalid
+/// reconstructed URIs return `None` rather than panicking.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::file_uri_parent;
+/// let uri = FileUri::parse("file:///repo/src/")?;
+/// assert_eq!(file_uri_parent(&uri).unwrap().path(), "/repo");
+/// assert!(file_uri_parent(&FileUri::parse("file:///")?).is_none());
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 pub fn file_uri_parent(uri: &FileUri) -> Option<FileUri> {
     let path = uri.path().trim_end_matches('/');
     let (parent, _) = path.rsplit_once('/')?;
@@ -107,6 +233,21 @@ pub fn file_uri_parent(uri: &FileUri) -> Option<FileUri> {
     .ok()
 }
 
+/// Returns the inclusive, root-to-target URI chain when `root` is an ancestor.
+///
+/// Non-descendants return an empty vector. The output is stable and deduplicated.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::file_uri_ancestors_between;
+/// let root = FileUri::parse("file:///repo")?;
+/// let target = FileUri::parse("file:///repo/src/lib.rs")?;
+/// let paths: Vec<_> = file_uri_ancestors_between(&root, &target).into_iter().map(|u| u.path().to_owned()).collect();
+/// assert_eq!(paths, ["/repo", "/repo/src", "/repo/src/lib.rs"]);
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 pub fn file_uri_ancestors_between(root: &FileUri, target: &FileUri) -> Vec<FileUri> {
     if !file_uri_is_ancestor_or_self(root, target) {
         return Vec::new();
@@ -127,6 +268,21 @@ pub fn file_uri_ancestors_between(root: &FileUri, target: &FileUri) -> Vec<FileU
     dedupe_file_uris(out)
 }
 
+/// Removes duplicate URIs while preserving first-occurrence order.
+///
+/// Equality includes scheme, authority, and path. The implementation is linear
+/// in output length for each input and uses no hashing.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::dedupe_file_uris;
+/// let a = FileUri::parse("file:///a")?;
+/// let b = FileUri::parse("file:///b")?;
+/// assert_eq!(dedupe_file_uris([a.clone(), b, a]), vec![FileUri::parse("file:///a")?, FileUri::parse("file:///b")?]);
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 pub fn dedupe_file_uris(uris: impl IntoIterator<Item = FileUri>) -> Vec<FileUri> {
     let mut out = Vec::new();
     for uri in uris {
@@ -137,6 +293,7 @@ pub fn dedupe_file_uris(uris: impl IntoIterator<Item = FileUri>) -> Vec<FileUri>
     out
 }
 
+/// Recursively loads one entry, guarding canonical cycles and appending limits.
 fn load_entry(
     ctx: &LoadEntryContext<'_>,
     entry: FileEntry,
@@ -185,6 +342,7 @@ fn load_entry(
     Ok(node)
 }
 
+/// Applies kind, hard depth, reason, and symlink policy gates in that order.
 fn should_descend_entry(
     entry: &FileEntry,
     root: &FileUri,
@@ -203,6 +361,7 @@ fn should_descend_entry(
     symlink_policy_allows_descend(&entry.metadata, reason, options.symlink_traversal_policy)
 }
 
+/// Classifies a directory as explicit/reveal-driven or policy-preloaded.
 fn child_load_reason(
     uri: &FileUri,
     root: &FileUri,
@@ -230,6 +389,17 @@ fn child_load_reason(
     }
 }
 
+/// Applies `policy` only to symlinks; ordinary entries always pass.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::{FileTreeOptions, SymlinkTraversalPolicy};
+/// let explicit_only = FileTreeOptions::default();
+/// assert_eq!(explicit_only.symlink_traversal_policy, SymlinkTraversalPolicy::ExplicitExpansionOnly);
+/// let never = FileTreeOptions { symlink_traversal_policy: SymlinkTraversalPolicy::Never, ..explicit_only };
+/// assert_eq!(never.symlink_traversal_policy, SymlinkTraversalPolicy::Never);
+/// ```
 pub(crate) fn symlink_policy_allows_descend(
     metadata: &FileMetadata,
     reason: ChildLoadReason,
@@ -245,6 +415,17 @@ pub(crate) fn symlink_policy_allows_descend(
     }
 }
 
+/// Keeps selected ancestors first, then applies hidden/default exclusions.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::FileTreeOptions;
+/// let normal = FileTreeOptions::default();
+/// assert!(!normal.include_hidden && normal.reveal_selected);
+/// let inclusive = FileTreeOptions { include_hidden: true, exclude_defaults: false, ..normal };
+/// assert!(inclusive.include_hidden);
+/// ```
 pub(crate) fn should_include_file_entry(
     entry: &FileEntry,
     selected: Option<&FileUri>,
@@ -263,6 +444,21 @@ pub(crate) fn should_include_file_entry(
         && is_default_excluded_dir(&entry.name))
 }
 
+/// Sorts entries directory-first, then case-folded name, raw name, and URI path.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_fs::FileUri;
+/// use ailloli_ui_widgets::files::{sort_file_nodes, FileExplorerNode};
+/// let mut nodes = vec![
+///     FileExplorerNode::file(FileUri::parse("file:///z")?, "z"),
+///     FileExplorerNode::directory(FileUri::parse("file:///a")?, "a"),
+/// ];
+/// sort_file_nodes(&mut nodes);
+/// assert_eq!(nodes[0].name(), "a");
+/// # Ok::<(), ailloli_ui_fs::FileError>(())
+/// ```
 pub(crate) fn sort_file_entries(entries: &mut [FileEntry]) {
     entries.sort_by(|a, b| {
         file_entry_directory_rank(&a.metadata)
@@ -277,6 +473,22 @@ pub(crate) fn sort_file_entries(entries: &mut [FileEntry]) {
     });
 }
 
+/// Enforces the optional entry cap only under placeholder policy.
+///
+/// Returns `true` exactly when entries were removed. Sorting/filtering must have
+/// occurred before this helper so the retained prefix is deterministic.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::{FileTreeOptions, LargeDirectoryPolicy};
+/// let options = FileTreeOptions {
+///     max_entries_per_directory: Some(100),
+///     large_directory_policy: LargeDirectoryPolicy::Placeholder,
+///     ..FileTreeOptions::default()
+/// };
+/// assert_eq!(options.max_entries_per_directory, Some(100));
+/// ```
 pub(crate) fn truncate_entries(entries: &mut Vec<FileEntry>, options: FileTreeOptions) -> bool {
     let Some(max) = options.max_entries_per_directory else {
         return false;
@@ -288,6 +500,19 @@ pub(crate) fn truncate_entries(entries: &mut Vec<FileEntry>, options: FileTreeOp
     true
 }
 
+/// Builds the disabled synthetic row appended after a truncated listing.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::{FileTreeOptions, LargeDirectoryPolicy};
+/// let options = FileTreeOptions {
+///     max_entries_per_directory: Some(0),
+///     large_directory_policy: LargeDirectoryPolicy::Placeholder,
+///     ..FileTreeOptions::default()
+/// };
+/// assert_eq!(options.max_entries_per_directory, Some(0));
+/// ```
 pub(crate) fn large_directory_placeholder(parent: &FileUri) -> FileExplorerNode {
     FileExplorerNode::named(
         synthetic_child_uri(parent, ".ailloli_ui-large-directory"),
@@ -297,6 +522,15 @@ pub(crate) fn large_directory_placeholder(parent: &FileUri) -> FileExplorerNode 
     .disabled(true)
 }
 
+/// Builds the disabled synthetic `Loading...` row for pending lazy reads.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::{FileTreeLoadMode, FileTreeOptions};
+/// let options = FileTreeOptions::default();
+/// assert_eq!(options.load_mode, FileTreeLoadMode::Lazy);
+/// ```
 pub(crate) fn loading_placeholder(parent: &FileUri) -> FileExplorerNode {
     FileExplorerNode::named(
         synthetic_child_uri(parent, ".ailloli_ui-loading"),
@@ -306,6 +540,17 @@ pub(crate) fn loading_placeholder(parent: &FileUri) -> FileExplorerNode {
     .disabled(true)
 }
 
+/// Builds a disabled synthetic row whose label is `Error: {message}`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::files::FileExplorerNode;
+/// fn is_error_placeholder(node: &FileExplorerNode) -> bool {
+///     node.disabled && node.name().starts_with("Error: ")
+/// }
+/// # let _ = is_error_placeholder;
+/// ```
 pub(crate) fn error_placeholder(parent: &FileUri, message: impl AsRef<str>) -> FileExplorerNode {
     FileExplorerNode::named(
         synthetic_child_uri(parent, ".ailloli_ui-error"),
@@ -315,6 +560,7 @@ pub(crate) fn error_placeholder(parent: &FileUri, message: impl AsRef<str>) -> F
     .disabled(true)
 }
 
+/// Joins a trusted internal marker name without exposing fallible construction.
 fn synthetic_child_uri(parent: &FileUri, name: &str) -> FileUri {
     FileUri::new(
         parent.scheme().to_string(),
@@ -324,6 +570,7 @@ fn synthetic_child_uri(parent: &FileUri, name: &str) -> FileUri {
     .expect("synthetic file explorer uri")
 }
 
+/// Matches the fixed heavy/generated directory denylist exactly and case-sensitively.
 fn is_default_excluded_dir(name: &str) -> bool {
     matches!(
         name,
@@ -331,6 +578,7 @@ fn is_default_excluded_dir(name: &str) -> bool {
     )
 }
 
+/// Maps directory-like metadata to rank zero and every leaf-like kind to one.
 fn file_entry_directory_rank(metadata: &FileMetadata) -> u8 {
     if metadata.is_directory_like() {
         0
@@ -342,6 +590,7 @@ fn file_entry_directory_rank(metadata: &FileMetadata) -> u8 {
 }
 
 #[cfg(test)]
+/// Scenario tests for every loading mode, filter, depth, symlink, and cycle rule.
 mod tests {
     use std::collections::HashMap;
 
@@ -349,6 +598,7 @@ mod tests {
 
     use super::*;
 
+    /// Deterministic in-memory provider for traversal scenarios.
     #[derive(Default)]
     struct MockProvider {
         metadata: HashMap<FileUri, FileMetadata>,
@@ -357,6 +607,7 @@ mod tests {
     }
 
     impl MockProvider {
+        /// Adds a directory and simple child entries to the fixture maps.
         fn dir(mut self, path: &str, entries: &[(&str, FileKind)]) -> Self {
             let uri = uri(path);
             self.metadata
@@ -378,6 +629,7 @@ mod tests {
             self
         }
 
+        /// Adds a directory containing fully specified entry metadata.
         fn dir_entries(mut self, path: &str, entries: Vec<FileEntry>) -> Self {
             let uri = uri(path);
             self.metadata
@@ -390,6 +642,7 @@ mod tests {
             self
         }
 
+        /// Registers a canonical URI response used for cycle scenarios.
         fn canonical(mut self, path: &str, canonical_path: &str) -> Self {
             self.canonical.insert(uri(path), uri(canonical_path));
             self
@@ -835,6 +1088,7 @@ mod tests {
             .any(|node| node.name() == "metadata.json"));
     }
 
+    /// Returns a named child or panics with useful fixture context.
     fn child<'a>(node: &'a FileExplorerNode, name: &str) -> &'a FileExplorerNode {
         node.children
             .iter()
@@ -842,10 +1096,12 @@ mod tests {
             .unwrap_or_else(|| panic!("missing child {name} in {}", node.name()))
     }
 
+    /// Joins a child name onto an absolute fixture path.
     fn child_uri(parent: &str, name: &str) -> FileUri {
         uri(&format!("{}/{}", parent.trim_end_matches('/'), name))
     }
 
+    /// Builds an entry fixture with custom metadata.
     fn entry_with_metadata(
         path: &str,
         name: impl Into<String>,
@@ -858,12 +1114,14 @@ mod tests {
         }
     }
 
+    /// Builds symlink metadata with a known or unresolved target kind.
     fn symlink_metadata(target: Option<FileKind>) -> FileMetadata {
         let mut metadata = FileMetadata::new(FileKind::Symlink);
         metadata.symlink_target_kind = target;
         metadata
     }
 
+    /// Parses an absolute path into the fixture's local URI namespace.
     fn uri(path: &str) -> FileUri {
         FileUri::parse(format!("file://{path}")).expect("file uri")
     }

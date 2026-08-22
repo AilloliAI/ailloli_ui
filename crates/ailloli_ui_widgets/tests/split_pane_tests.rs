@@ -1,3 +1,5 @@
+//! Split-pane axis, sizing, clamping, dragging, and cursor scenarios.
+
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Modifiers};
 use ailloli_ui_core::geometry::Constraints;

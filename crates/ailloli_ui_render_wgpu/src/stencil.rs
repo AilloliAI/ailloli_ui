@@ -3,16 +3,43 @@
 use crate::render_target::PhysicalExtent;
 
 /// GPU depth/stencil attachment sized to the window.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::stencil::StencilTarget;
+/// assert_eq!(StencilTarget::FORMAT, wgpu::TextureFormat::Depth24PlusStencil8);
+/// ```
 pub struct StencilTarget {
+    /// Owned attachment texture.
     pub texture: wgpu::Texture,
+    /// Full view used by render passes.
     pub view: wgpu::TextureView,
+    /// Actual allocation extent in physical pixels, with each axis at least one.
     pub size: PhysicalExtent,
+    /// Attachment format, always [`Self::FORMAT`].
     pub format: wgpu::TextureFormat,
 }
 
 impl StencilTarget {
+    /// Depth/stencil format expected by stencil-enabled pipelines.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::stencil::StencilTarget;
+    /// assert_eq!(StencilTarget::FORMAT, wgpu::TextureFormat::Depth24PlusStencil8);
+    /// ```
     pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
+    /// Allocates a render attachment, clamping each axis to at least one pixel.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::stencil::StencilTarget;
+    /// fn create(device: &wgpu::Device) -> StencilTarget { StencilTarget::new(device, 0, 64) }
+    /// ```
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         let width = width.max(1);
         let height = height.max(1);
@@ -39,6 +66,16 @@ impl StencilTarget {
         }
     }
 
+    /// Reallocates only when the clamped physical extent changes.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::stencil::StencilTarget;
+    /// fn resize(target: &mut StencilTarget, device: &wgpu::Device) {
+    ///     target.recreate(device, 128, 96);
+    /// }
+    /// ```
     pub fn recreate(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.size.width == width.max(1) && self.size.height == height.max(1) {
             return;
@@ -48,13 +85,38 @@ impl StencilTarget {
 }
 
 /// Per-frame stencil state (global clear + reference value per layer).
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::stencil::StencilFrameState;
+/// let state = StencilFrameState::default();
+/// assert_eq!((state.cleared, state.next_ref), (false, 0));
+/// ```
 #[derive(Debug, Default)]
 pub struct StencilFrameState {
+    /// Whether the attachment has been cleared during this reference cycle.
     pub cleared: bool,
+    /// Last stencil reference allocated, in the range `0..=255`.
     pub next_ref: u32,
 }
 
 impl StencilFrameState {
+    /// Allocates the next nonzero eight-bit reference and required load op.
+    ///
+    /// The first layer clears to zero and returns reference 1. Subsequent layers
+    /// load and increment through 255. The next request clears again and wraps
+    /// to reference 1.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_render_wgpu::stencil::StencilFrameState;
+    /// let mut state = StencilFrameState::default();
+    /// let (load, reference) = state.begin_layer();
+    /// assert!(matches!(load, wgpu::LoadOp::Clear(0)));
+    /// assert_eq!(reference, 1);
+    /// ```
     pub fn begin_layer(&mut self) -> (wgpu::LoadOp<u32>, u32) {
         let load = if self.cleared {
             wgpu::LoadOp::Load
@@ -74,6 +136,7 @@ impl StencilFrameState {
 }
 
 #[cfg(test)]
+/// Verifies stencil target reuse and recreation across physical resizes.
 mod tests {
     use super::*;
 

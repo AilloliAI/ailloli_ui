@@ -1,3 +1,6 @@
+//! End-to-end editor scenarios for layout, input, paint, code layers, symbol
+//! indexing, search, folds, diagnostics, and semantic enrichment.
+
 use ailloli_ui_core::event::ImePreedit;
 use ailloli_ui_core::Theme;
 use ailloli_ui_core::{Point, Rect};
@@ -25,16 +28,19 @@ use ailloli_ui_editor::{
 use ailloli_ui_fs::FileUri;
 use ailloli_ui_text::{TextBuffer, TextEditAction, TextSelection, TextSystem};
 
+/// Creates a default generic editor session for a test string.
 fn session_with_text(text: &str) -> EditorSession {
     EditorSession::new(TextBuffer::from_string(text))
 }
 
+/// Creates a generic editor session with an explicit wrapping mode.
 fn session_with_wrap(text: &str, wrap_mode: EditorWrapMode) -> EditorSession {
     let mut session = session_with_text(text);
     session.config.wrap_mode = wrap_mode;
     session
 }
 
+/// Extracts track/thumb geometry from every scrollbar paint item.
 fn scrollbar_rects(frame: &ailloli_ui_editor::EditorFrame) -> Vec<(Rect, Rect)> {
     frame
         .paint_items
@@ -51,6 +57,7 @@ fn scrollbar_rects(frame: &ailloli_ui_editor::EditorFrame) -> Vec<(Rect, Rect)> 
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Asserts that one syntax token of a category covers an exact source substring.
 fn assert_token(text: &str, tokens: &[SyntaxToken], kind: SyntaxKind, needle: &str) {
     assert!(
         tokens
@@ -2374,6 +2381,7 @@ fn ctags_runner_reports_nonzero_timeout_and_output_limit() {
 }
 
 #[cfg(unix)]
+/// Creates an executable temporary shell script for ctags runner failure tests.
 fn temp_script(name: &str, body: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
@@ -2394,6 +2402,7 @@ fn temp_script(name: &str, body: &str) -> std::path::PathBuf {
     path
 }
 
+/// Finds a symbol by exact category and name or reports the whole fixture graph.
 fn symbol_by<'a>(
     summary: &'a ailloli_ui_editor::code::CodeFileSummary,
     kind: SymbolKind,
@@ -2647,6 +2656,7 @@ fn helper() {}
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Finds a Tree-sitter symbol by category/name or reports the full fixture graph.
 fn assert_symbol<'a>(
     summary: &'a ailloli_ui_editor::code::CodeFileSummary,
     kind: SymbolKind,
@@ -2801,6 +2811,7 @@ pub fn build() {}
 }
 
 #[cfg(feature = "tree_sitter")]
+/// Asserts the presence of one exact directed symbol-graph edge.
 fn assert_graph_edge(
     summary: &ailloli_ui_editor::code::CodeFileSummary,
     from: SymbolId,
@@ -2983,16 +2994,25 @@ fn semantic_lsp_and_scip_mappers_enrich_octav_ir_without_being_primary_indexers(
 }
 
 #[derive(Default)]
+/// In-memory LSP fixture that records lifecycle calls and returns cloned payloads.
 struct MockLspBackend {
+    /// Whether `open_document` was observed.
     opened: bool,
+    /// Whether `change_document` was observed.
     changed: bool,
+    /// Whether `close_document` was observed.
     closed: bool,
+    /// Diagnostic response payload.
     diagnostics: Vec<LspDiagnostic>,
+    /// Document-symbol response payload.
     symbols: Vec<SemanticDocumentSymbol>,
+    /// Reference response payload.
     references: Vec<SemanticReference>,
 }
 
+/// Advertises all exercised queries and records deterministic lifecycle state.
 impl LspBackend for MockLspBackend {
+    /// Advertises symbols, references, and diagnostics.
     fn capabilities(&self) -> LspCapabilities {
         LspCapabilities {
             document_symbols: true,
@@ -3002,21 +3022,25 @@ impl LspBackend for MockLspBackend {
         }
     }
 
+    /// Records that the fixture document opened.
     fn open_document(&mut self, _document: &Document) -> Result<(), LspError> {
         self.opened = true;
         Ok(())
     }
 
+    /// Records that the fixture document changed.
     fn change_document(&mut self, _document: &Document) -> Result<(), LspError> {
         self.changed = true;
         Ok(())
     }
 
+    /// Records that the fixture document closed.
     fn close_document(&mut self, _document: &Document) -> Result<(), LspError> {
         self.closed = true;
         Ok(())
     }
 
+    /// Returns the configured symbol response.
     fn document_symbols(
         &mut self,
         _document: &Document,
@@ -3024,10 +3048,12 @@ impl LspBackend for MockLspBackend {
         Ok(self.symbols.clone())
     }
 
+    /// Returns the configured reference response.
     fn references(&mut self, _document: &Document) -> Result<Vec<SemanticReference>, LspError> {
         Ok(self.references.clone())
     }
 
+    /// Returns the configured diagnostic response.
     fn diagnostics(&mut self, _document: &Document) -> Result<Vec<LspDiagnostic>, LspError> {
         Ok(self.diagnostics.clone())
     }

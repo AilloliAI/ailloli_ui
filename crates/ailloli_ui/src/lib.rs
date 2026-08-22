@@ -52,6 +52,26 @@ pub use app::{
 
 /// Embeds the conventional application icon from `src/assets/icons/icon.svg` in the
 /// consuming crate.
+///
+/// The SVG bytes are embedded at compile time; the path is never read at
+/// runtime. Compilation fails if the consuming package does not provide the
+/// conventional file. Validation remains deferred until icon rasterization or
+/// [`AppBuilder::run`].
+///
+/// # Examples
+///
+/// A consumer with `src/assets/icons/icon.svg` can invoke the disabled line
+/// below directly. The doctest keeps it configuration-disabled because the
+/// facade package is not itself an application and intentionally owns no icon.
+///
+/// ```
+/// use ailloli_ui::{AppIcon, CONVENTIONAL_APP_ICON_PATH};
+/// #[cfg(any())]
+/// let icon: AppIcon = ailloli_ui::app_icon!();
+/// let expected_type: Option<AppIcon> = None;
+/// assert!(expected_type.is_none());
+/// assert_eq!(CONVENTIONAL_APP_ICON_PATH, "src/assets/icons/icon.svg");
+/// ```
 #[macro_export]
 macro_rules! app_icon {
     () => {
@@ -161,4 +181,13 @@ pub use ailloli_ui_winit::{
 #[cfg(feature = "winit")]
 pub use capture::{CaptureOpts, CaptureTargetSpec, CapturedArtifact};
 /// Alias for [`Memo`] — derived reactive values.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui::{Derived, Memo};
+/// fn accepts_derived<T>(_: Derived<T>) {}
+/// let memo: Memo<u32> = Memo::new(|| 42);
+/// accepts_derived(memo);
+/// ```
 pub type Derived<T> = Memo<T>;

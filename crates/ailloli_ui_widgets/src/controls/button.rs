@@ -1,3 +1,5 @@
+//! Clickable single-child buttons with state-aware container styling.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use crate::text::Text;
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
@@ -19,29 +21,79 @@ use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawRRect, DrawText
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in semantic button appearances.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ButtonVariant;
+/// let variants = [
+///     ButtonVariant::Default,
+///     ButtonVariant::Primary,
+///     ButtonVariant::Secondary,
+///     ButtonVariant::Outline,
+///     ButtonVariant::Ghost,
+///     ButtonVariant::Destructive,
+///     ButtonVariant::Success,
+///     ButtonVariant::Warning,
+///     ButtonVariant::Info,
+/// ];
+/// assert_eq!(variants.len(), 9);
+/// assert_eq!(ButtonVariant::default(), ButtonVariant::Primary);
+/// ```
 pub enum ButtonVariant {
     /// Compatibility alias for the primary default button.
     Default,
+    /// Accent-filled primary action; the enum default.
     #[default]
     Primary,
+    /// Elevated neutral surface with a border.
     Secondary,
+    /// Transparent surface with an interaction-state border/fill.
     Outline,
+    /// Borderless transparent surface with interaction fills.
     Ghost,
+    /// Danger-tone filled action.
     Destructive,
+    /// Success-tone filled action.
     Success,
+    /// Warning-tone filled action with dark text.
     Warning,
+    /// Info-tone filled action with dark text.
     Info,
 }
 
 #[derive(Clone, Debug)]
+/// Container/text states and logical-pixel geometry for a button.
+///
+/// The retained [`Button`] widget dynamically resolves `container`. Its child is
+/// independently styled: `text` is copied only by label constructors and is also
+/// used by [`draw_button`]. Likewise, `baseline_shift` only affects
+/// [`draw_button`], not arbitrary child layout.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ButtonStyle;
+/// let style = ButtonStyle::primary();
+/// assert_eq!((style.height, style.horizontal_padding), (36.0, 12.0));
+/// ```
 pub struct ButtonStyle {
+    /// Normal and optional interaction-state box styles.
     pub container: StateStyle<BoxStyle>,
+    /// Normal and optional interaction-state label text styles.
     pub text: StateStyle<TextStyle>,
+    /// Minimum intrinsic button height in logical pixels.
     pub height: f32,
+    /// Horizontal child inset on each side in logical pixels.
     pub horizontal_padding: f32,
+    /// Vertical child inset on each side in logical pixels.
     pub vertical_padding: f32,
+    /// Cross-axis child alignment inside available content space.
     pub align_items: AlignItems,
+    /// Main-axis child alignment inside available content space.
     pub justify_content: JustifyContent,
+    /// Extra baseline offset used only by [`draw_button`], in logical pixels.
     pub baseline_shift: f32,
 }
 
@@ -52,38 +104,116 @@ impl Default for ButtonStyle {
 }
 
 impl ButtonStyle {
+    /// Returns default-theme primary styling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert_eq!(ButtonStyle::primary().height, 36.0);
+    /// ```
     pub fn primary() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Primary)
     }
 
+    /// Returns default-theme secondary styling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert!(ButtonStyle::secondary().container.normal.border.is_visible());
+    /// ```
     pub fn secondary() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Secondary)
     }
 
+    /// Returns default-theme outline styling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert!(ButtonStyle::outline().container.normal.border.is_visible());
+    /// ```
     pub fn outline() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Outline)
     }
 
+    /// Returns default-theme ghost styling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert!(!ButtonStyle::ghost().container.normal.border.is_visible());
+    /// ```
     pub fn ghost() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Ghost)
     }
 
+    /// Returns default-theme danger styling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert_eq!(ButtonStyle::destructive().height, 36.0);
+    /// ```
     pub fn destructive() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Destructive)
     }
 
+    /// Returns default-theme success styling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert_eq!(ButtonStyle::success().horizontal_padding, 12.0);
+    /// ```
     pub fn success() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Success)
     }
 
+    /// Returns default-theme warning styling with dark normal text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert_eq!(ButtonStyle::warning().text.normal.px_size, 14);
+    /// ```
     pub fn warning() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Warning)
     }
 
+    /// Returns default-theme informational styling with dark normal text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert_eq!(ButtonStyle::info().vertical_padding, 8.0);
+    /// ```
     pub fn info() -> Self {
         Self::from_theme(Theme::default(), ButtonVariant::Info)
     }
 
+    /// Resolves every container/text interaction state from theme and variant.
+    ///
+    /// [`ButtonVariant::Default`] and [`ButtonVariant::Primary`] resolve
+    /// identically. Disabled style is shared across variants.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ButtonStyle, ButtonVariant};
+    /// let style = ButtonStyle::from_theme(Theme::dark(), ButtonVariant::Secondary);
+    /// assert_eq!(style.height, 36.0);
+    /// assert!(style.container.hovered.is_some());
+    /// ```
     pub fn from_theme(theme: Theme, variant: ButtonVariant) -> Self {
         let palette = theme.palette();
         let radius = theme.radius().button();
@@ -185,6 +315,18 @@ impl ButtonStyle {
         }
     }
 
+    /// Creates transparent, zero-padding text-only drawing style.
+    ///
+    /// It has 13-pixel UI text and no hover/pressed/focused/disabled overrides.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// let style = ButtonStyle::text_only(Color::WHITE);
+    /// assert_eq!((style.height, style.horizontal_padding), (0.0, 0.0));
+    /// ```
     pub fn text_only(fg: Color) -> Self {
         let text = TextStyle::new(FontId::Ui, 13, fg);
         Self {
@@ -211,14 +353,34 @@ impl ButtonStyle {
         }
     }
 
+    /// Resolves a concrete box style using `StateStyle` precedence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::InteractionState;
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// let resolved = ButtonStyle::primary().resolve_container(InteractionState::default());
+    /// assert!(!resolved.shadows.iter().any(|shadow| shadow.inset));
+    /// ```
     pub fn resolve_container(&self, state: InteractionState) -> BoxStyle {
         self.container.resolve(state)
     }
 
+    /// Resolves a concrete text style using `StateStyle` precedence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::InteractionState;
+    /// use ailloli_ui_widgets::controls::ButtonStyle;
+    /// assert_eq!(ButtonStyle::primary().resolve_text(InteractionState::default()).px_size, 14);
+    /// ```
     pub fn resolve_text(&self, state: InteractionState) -> TextStyle {
         self.text.resolve(state)
     }
 
+    /// Returns maximum per-edge border widths across every container state.
     fn layout_border_widths(&self) -> EdgeInsets {
         let mut widths = self.container.normal.border.layout_widths();
         for style in [
@@ -239,6 +401,7 @@ impl ButtonStyle {
         widths
     }
 
+    /// Unions normal and interaction-state visual bounds for stable layout.
     fn layout_visual_bounds(&self, rect: Rect) -> Rect {
         let mut bounds = self.container.normal.visual_bounds(rect);
         for style in [
@@ -255,6 +418,7 @@ impl ButtonStyle {
         bounds
     }
 
+    /// Applies a box-style transformation to every existing container state.
     fn update_containers(&mut self, mut f: impl FnMut(BoxStyle) -> BoxStyle) {
         self.container.normal = f(self.container.normal.clone());
         if let Some(style) = self.container.hovered.take() {
@@ -272,6 +436,7 @@ impl ButtonStyle {
     }
 }
 
+/// Resolves single-child main-axis offset; space variants collapse to start/center.
 fn main_axis_offset(justify: JustifyContent, available: f32, child: f32) -> f32 {
     let free = (available - child).max(0.0);
     match justify {
@@ -283,6 +448,7 @@ fn main_axis_offset(justify: JustifyContent, available: f32, child: f32) -> f32 
     }
 }
 
+/// Resolves single-child cross-axis offset; stretch behaves as start.
 fn cross_axis_offset(align: AlignItems, available: f32, child: f32) -> f32 {
     let free = (available - child).max(0.0);
     match align {
@@ -292,6 +458,7 @@ fn cross_axis_offset(align: AlignItems, available: f32, child: f32) -> f32 {
     }
 }
 
+/// Returns the smallest axis-aligned rectangle containing both inputs.
 fn union_rect(a: Rect, b: Rect) -> Rect {
     let x0 = a.x.min(b.x);
     let y0 = a.y.min(b.y);
@@ -300,6 +467,7 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
     Rect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
+/// Builds normal/hover/press filled states and light text for a semantic tone.
 fn tone_button(color: Color, radius: Radius) -> (BoxStyle, BoxStyle, BoxStyle, TextStyle) {
     (
         BoxStyle::new()
@@ -315,6 +483,30 @@ fn tone_button(color: Color, radius: Radius) -> (BoxStyle, BoxStyle, BoxStyle, T
     )
 }
 
+/// Produces immediate-mode draw commands for a text-only button snapshot.
+///
+/// [`ButtonVariant::Default`] preserves the supplied style; every other variant
+/// replaces it with default-theme styling for that variant. Only normal states
+/// are used. Non-inset shadows, background, one unwrapped label, and border are
+/// emitted in that order. The rectangle and custom geometry are not validated.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Rect;
+/// use ailloli_ui_text::TextSystem;
+/// use ailloli_ui_widgets::controls::{ButtonStyle, ButtonVariant};
+/// use ailloli_ui_widgets::controls::button::draw_button;
+/// let mut text = TextSystem::new();
+/// let commands = draw_button(
+///     Rect::new(0.0, 0.0, 120.0, 36.0),
+///     "Save",
+///     ButtonVariant::Default,
+///     ButtonStyle::primary(),
+///     &mut text,
+/// );
+/// assert!(!commands.is_empty());
+/// ```
 pub fn draw_button(
     rect: Rect,
     label: &str,
@@ -399,11 +591,13 @@ pub fn draw_button(
     out
 }
 
+/// Multiplies alpha by `opacity` and clamps it to `[0, 1]`.
 fn apply_opacity(mut c: Color, opacity: f32) -> Color {
     c.a = (c.a * opacity).clamp(0.0, 1.0);
     c
 }
 
+/// Applies an opacity multiplier independently to all border-edge colors.
 fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border.colors.left = apply_opacity(border.colors.left, opacity);
     border.colors.top = apply_opacity(border.colors.top, opacity);
@@ -412,11 +606,13 @@ fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border
 }
 
+/// Applies an opacity multiplier to one shadow color.
 fn apply_shadow_opacity(mut shadow: BoxShadow, opacity: f32) -> BoxShadow {
     shadow.color = apply_opacity(shadow.color, opacity);
     shadow
 }
 
+/// Returns the final shadow, inserting `BoxShadow::md()` when empty.
 fn ensure_shadow(shadows: &mut Vec<BoxShadow>) -> &mut BoxShadow {
     if shadows.is_empty() {
         shadows.push(BoxShadow::md());
@@ -424,13 +620,32 @@ fn ensure_shadow(shadows: &mut Vec<BoxShadow>) -> &mut BoxShadow {
     shadows.last_mut().expect("shadow inserted when empty")
 }
 
-/// Clickable button with stateful box/text styles and optional child label.
+/// Clickable single-child button with stateful container styling.
+///
+/// Enter, Space, or a left-button release inside bounds runs the optional action.
+/// Disabled state suppresses activation and selects disabled styling, but the
+/// current focus policy still reports the button as focusable. Child text is not
+/// dynamically restyled; label constructors copy a normal text style once.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{Button, ButtonVariant};
+/// let button: Button<()> = Button::with_label_variant("Save", ButtonVariant::Primary);
+/// let _ = button;
+/// ```
 pub struct Button<A = ()> {
+    /// Layout configuration applied around the child and button insets.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Sole child view; initially empty.
     child: View<A>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Optional activation action.
     on_click: Option<ClickAction<A>>,
+    /// Resolved container and label-construction style.
     style: ButtonStyle,
 }
 
@@ -443,6 +658,15 @@ impl<A: 'static> Default for Button<A> {
 }
 
 impl<A: 'static> Button<A> {
+    /// Creates an enabled primary button with an empty child and no action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new();
+    /// let _ = button;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -454,11 +678,34 @@ impl<A: 'static> Button<A> {
         }
     }
 
+    /// Creates a primary button with one unwrapped text child.
+    ///
+    /// The normal primary text style is copied into the child at construction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::with_label("Save");
+    /// let _ = button;
+    /// ```
     pub fn with_label(label: impl Into<String>) -> Self {
         let style = ButtonStyle::primary();
         Self::new().child(Text::new(label.into()).style(style.text.normal).nowrap())
     }
 
+    /// Creates a themed variant and an unwrapped label styled to match it.
+    ///
+    /// Prefer this over calling [`Self::variant`] after [`Self::with_label`],
+    /// because later style changes do not propagate into an existing child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Button, ButtonVariant};
+    /// let button: Button<()> = Button::with_label_variant("Delete", ButtonVariant::Destructive);
+    /// let _ = button;
+    /// ```
     pub fn with_label_variant(label: impl Into<String>, variant: ButtonVariant) -> Self {
         let style = ButtonStyle::from_theme(Theme::default(), variant);
         Self::new()
@@ -466,20 +713,65 @@ impl<A: 'static> Button<A> {
             .child(Text::new(label.into()).style(style.text.normal).nowrap())
     }
 
+    /// Replaces the sole child view.
+    ///
+    /// The button does not apply `ButtonStyle::text` to arbitrary children.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{controls::Button, text::Text};
+    /// let button: Button<()> = Button::new().child(Text::new("Custom"));
+    /// let _ = button;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = child.into_view();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled buttons ignore activation but currently remain focusable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::with_label("Unavailable").disabled(true);
+    /// let _ = button;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().disabled_signal(Memo::new(|| false));
+    /// let _ = button;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Installs an activation action, replacing any previous action.
+    ///
+    /// The application action type must be cloneable for queued dispatch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// #[derive(Clone)]
+    /// enum Action { Save }
+    /// let button = Button::with_label("Save").on_click(Action::Save);
+    /// let _ = button;
+    /// ```
     pub fn on_click(mut self, action: impl IntoClickAction<A>) -> Self
     where
         A: Clone,
@@ -488,55 +780,169 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Installs a context-aware activation handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button = Button::<()>::new().on_click_ctx(|_ctx| {});
+    /// let _ = button;
+    /// ```
     pub fn on_click_ctx(mut self, f: impl Fn(&mut EventCtx<A>) + 'static) -> Self {
         self.on_click = Some(ClickAction::handler(f));
         self
     }
 
+    /// Replaces only the stored normal label text style for compatibility.
+    ///
+    /// The retained button does not propagate this into an existing child; it is
+    /// observable through the stored style in immediate-mode/compatibility paths.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Color, FontId, TextStyle};
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().style(TextStyle::new(FontId::Ui, 16, Color::WHITE));
+    /// let _ = button;
+    /// ```
     pub fn style(mut self, style: TextStyle) -> Self {
         // Compat: only updates label text in the normal state.
         self.style.text.normal = style;
         self
     }
 
+    /// Replaces the complete button style.
+    ///
+    /// This does not restyle an existing child. A later [`Self::variant`] call
+    /// replaces this custom style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Button, ButtonStyle};
+    /// let button: Button<()> = Button::new().button_style(ButtonStyle::outline());
+    /// let _ = button;
+    /// ```
     pub fn button_style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces the complete style with a default-theme variant.
+    ///
+    /// Existing child styling is unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Button, ButtonVariant};
+    /// let button: Button<()> = Button::new().variant(ButtonVariant::Ghost);
+    /// let _ = button;
+    /// ```
     pub fn variant(mut self, variant: ButtonVariant) -> Self {
         self.style = ButtonStyle::from_theme(Theme::default(), variant);
         self
     }
 
+    /// Sets child cross-axis alignment inside available content space.
+    ///
+    /// `Stretch` currently positions like `Start`; it does not relayout the child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::AlignItems;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().align_items(AlignItems::End);
+    /// let _ = button;
+    /// ```
     pub fn align_items(mut self, value: AlignItems) -> Self {
         self.style.align_items = value;
         self
     }
 
+    /// Sets child main-axis placement inside available content space.
+    ///
+    /// For one child, `SpaceBetween` behaves as `Start` and `SpaceAround`/
+    /// `SpaceEvenly` behave as `Center`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::JustifyContent;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().justify_content(JustifyContent::End);
+    /// let _ = button;
+    /// ```
     pub fn justify_content(mut self, value: JustifyContent) -> Self {
         self.style.justify_content = value;
         self
     }
 
+    /// Replaces background color in every existing container state.
+    ///
+    /// Missing optional states remain absent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().background(Color::hex_rgb(0x224466));
+    /// let _ = button;
+    /// ```
     pub fn background(mut self, color: Color) -> Self {
         self.style
             .update_containers(|style| style.background(Background::color(color)));
         self
     }
 
+    /// Sets uniform corner radius in every existing container state.
+    ///
+    /// The logical-pixel value is stored without clamping.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().radius(8.0);
+    /// let _ = button;
+    /// ```
     pub fn radius(mut self, value: f32) -> Self {
         let radius = Radius::uniform(value);
         self.style.update_containers(|style| style.radius(radius));
         self
     }
 
+    /// Replaces all four border edges in every existing container state.
+    ///
+    /// Width is in logical pixels and is not normalized here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().border(1.0, Color::WHITE);
+    /// let _ = button;
+    /// ```
     pub fn border(mut self, width: f32, color: Color) -> Self {
         self.style
             .update_containers(|style| style.border(Border::new(width, color)));
         self
     }
 
+    /// Replaces every edge width while preserving edge colors in all states.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().border_width(2.0);
+    /// let _ = button;
+    /// ```
     pub fn border_width(mut self, width: f32) -> Self {
         self.style.update_containers(|mut style| {
             style.border = style.border.with_width(width);
@@ -545,6 +951,16 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Replaces every edge color while preserving widths in all states.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().border_color(Color::WHITE);
+    /// let _ = button;
+    /// ```
     pub fn border_color(mut self, color: Color) -> Self {
         self.style.update_containers(|mut style| {
             style.border = style.border.with_color(color);
@@ -553,6 +969,16 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Replaces only the left border edge in every existing state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().border_left(3.0, Color::WHITE);
+    /// let _ = button;
+    /// ```
     pub fn border_left(mut self, width: f32, color: Color) -> Self {
         self.style.update_containers(|mut style| {
             style.border = style.border.with_left(width, color);
@@ -561,6 +987,16 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Replaces only the top border edge in every existing state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().border_top(3.0, Color::WHITE);
+    /// let _ = button;
+    /// ```
     pub fn border_top(mut self, width: f32, color: Color) -> Self {
         self.style.update_containers(|mut style| {
             style.border = style.border.with_top(width, color);
@@ -569,6 +1005,16 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Replaces only the right border edge in every existing state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().border_right(3.0, Color::WHITE);
+    /// let _ = button;
+    /// ```
     pub fn border_right(mut self, width: f32, color: Color) -> Self {
         self.style.update_containers(|mut style| {
             style.border = style.border.with_right(width, color);
@@ -577,6 +1023,16 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Replaces only the bottom border edge in every existing state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().border_bottom(3.0, Color::WHITE);
+    /// let _ = button;
+    /// ```
     pub fn border_bottom(mut self, width: f32, color: Color) -> Self {
         self.style.update_containers(|mut style| {
             style.border = style.border.with_bottom(width, color);
@@ -585,16 +1041,49 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Appends one shadow to every existing container state.
+    ///
+    /// Inset shadows contribute to visual bounds but are skipped by painting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::style::BoxShadow;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().shadow(BoxShadow::sm());
+    /// let _ = button;
+    /// ```
     pub fn shadow(mut self, shadow: BoxShadow) -> Self {
         self.style.update_containers(|style| style.shadow(shadow));
         self
     }
 
+    /// Removes all shadows from every existing container state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().shadow_none();
+    /// let _ = button;
+    /// ```
     pub fn shadow_none(mut self) -> Self {
         self.style.update_containers(|style| style.clear_shadows());
         self
     }
 
+    /// Sets the last shadow color in every existing state.
+    ///
+    /// An empty state first receives [`BoxShadow::md`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().shadow_color(Color::BLACK);
+    /// let _ = button;
+    /// ```
     pub fn shadow_color(mut self, color: Color) -> Self {
         self.style.update_containers(|mut style| {
             ensure_shadow(&mut style.shadows).color = color;
@@ -603,6 +1092,18 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Sets non-negative last-shadow blur radius in logical pixels.
+    ///
+    /// Negative values and NaN become zero; an empty state first receives a
+    /// medium default shadow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().shadow_blur(12.0);
+    /// let _ = button;
+    /// ```
     pub fn shadow_blur(mut self, value: f32) -> Self {
         self.style.update_containers(|mut style| {
             ensure_shadow(&mut style.shadows).blur_radius = value.max(0.0);
@@ -611,6 +1112,15 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Sets last-shadow x/y offset in logical pixels without normalization.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().shadow_offset(0.0, 4.0);
+    /// let _ = button;
+    /// ```
     pub fn shadow_offset(mut self, x: f32, y: f32) -> Self {
         self.style.update_containers(|mut style| {
             ensure_shadow(&mut style.shadows).offset = Offset::new(x, y);
@@ -619,6 +1129,17 @@ impl<A: 'static> Button<A> {
         self
     }
 
+    /// Sets non-negative last-shadow spread in logical pixels.
+    ///
+    /// Negative values and NaN become zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Button;
+    /// let button: Button<()> = Button::new().shadow_spread(2.0);
+    /// let _ = button;
+    /// ```
     pub fn shadow_spread(mut self, value: f32) -> Self {
         self.style.update_containers(|mut style| {
             ensure_shadow(&mut style.shadows).spread = value.max(0.0);
@@ -628,10 +1149,25 @@ impl<A: 'static> Button<A> {
     }
 }
 
+/// Public retained widget type produced internally by [`Button::into_view`].
+///
+/// Fields are private; consumers normally construct [`Button`] instead.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::button::ButtonWidget;
+/// let widget: Option<ButtonWidget<()>> = None;
+/// assert!(widget.is_none());
+/// ```
 pub struct ButtonWidget<A> {
+    /// Layout configuration copied from the builder.
     layout: LayoutStyle,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Optional activation action.
     on_click: Option<ClickAction<A>>,
+    /// Resolved container state and geometry.
     style: ButtonStyle,
 }
 

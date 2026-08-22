@@ -1,3 +1,5 @@
+//! Retained runtime implementation of the public generic editor.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
@@ -21,6 +23,17 @@ use ailloli_ui_text::{TextBuffer, TextEditAction, TextInputMode, TextKeymap};
 
 use super::adapter::paint_editor_frame;
 
+/// Builder snapshot that creates the initial generic editor session.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::component::{IntoView, State, View};
+/// use ailloli_ui_text::TextBuffer;
+/// use ailloli_ui_widgets::editor::Editor;
+/// let view: View<()> = Editor::new(State::new(TextBuffer::new())).into_view();
+/// let _ = view;
+/// ```
 pub(crate) struct EditorComponent {
     pub(crate) layout: LayoutStyle,
     pub(crate) buffer: Signal<TextBuffer>,
@@ -28,6 +41,7 @@ pub(crate) struct EditorComponent {
     pub(crate) initial_selection: Option<(usize, usize)>,
 }
 
+/// Builds a session, clamps initial selection, and allocates the editor engine.
 impl<A: 'static> ComponentNode<A> for EditorComponent {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let mut initial_session = EditorSession::with_config(self.buffer.read(), self.config);
@@ -50,6 +64,17 @@ impl<A: 'static> ComponentNode<A> for EditorComponent {
     }
 }
 
+/// Stateful leaf synchronizing buffer/config props with input and paint.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::component::{IntoView, State, View};
+/// use ailloli_ui_text::TextBuffer;
+/// use ailloli_ui_widgets::editor::Editor;
+/// let view: View<()> = Editor::new(State::new(TextBuffer::new())).into_view();
+/// let _ = view;
+/// ```
 pub(crate) struct EditorWidget {
     layout: LayoutStyle,
     buffer: Signal<TextBuffer>,
@@ -58,6 +83,7 @@ pub(crate) struct EditorWidget {
     config: EditorConfig,
 }
 
+/// Implements generic editor layout, painting, keyboard/IME, wheel, and selection.
 impl<A: 'static> Widget<A> for EditorWidget {
     fn debug_name(&self) -> &'static str {
         "Editor"
@@ -233,6 +259,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
     }
 }
 
+/// Reconciles external props and applies editor actions/clipboard effects.
 impl EditorWidget {
     fn sync_session_from_props(&self) -> EditorSession {
         let mut session = self.session.read();

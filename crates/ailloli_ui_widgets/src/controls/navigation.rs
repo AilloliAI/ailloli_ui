@@ -1,3 +1,5 @@
+//! Retained sidebars and actionable navigation rows.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use crate::layout::{Column, Container};
 use crate::text::Text;
@@ -19,14 +21,36 @@ use ailloli_ui_text::{PreparedTextLayout, TextLayoutParams, WrapMode};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved container style and intrinsic width for a [`Sidebar`].
+///
+/// The backing container forwards the top border width/color and top-left radius
+/// as uniform values, so callers should use uniform borders and radii.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::SidebarStyle;
+/// let style = SidebarStyle::from_theme(Theme::dark());
+/// assert_eq!(style.width, 220.0);
+/// assert_eq!(style.gap, 4.0);
+/// ```
 pub struct SidebarStyle {
+    /// Sidebar fill.
     pub background: Color,
+    /// Sidebar border; use uniform widths and colors.
     pub border: Border,
+    /// Sidebar radii; use a uniform value for current rendering.
     pub radius: Radius,
+    /// Container shadows painted in vector order.
     pub shadows: Vec<BoxShadow>,
+    /// Intrinsic width in logical pixels.
     pub width: f32,
+    /// Inner padding on every edge in logical pixels.
     pub padding: f32,
+    /// Vertical gap between title and items, and between items.
     pub gap: f32,
+    /// Optional section-title text style.
     pub title_text: TextStyle,
 }
 
@@ -37,6 +61,17 @@ impl Default for SidebarStyle {
 }
 
 impl SidebarStyle {
+    /// Resolves sidebar colors, typography, and geometry from `theme`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::SidebarStyle;
+    /// let style = SidebarStyle::from_theme(Theme::dark());
+    /// assert!(style.shadows.is_empty());
+    /// assert_eq!(style.title_text.px_size, 12);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         Self {
@@ -52,11 +87,29 @@ impl SidebarStyle {
     }
 }
 
+/// A non-virtualized vertical sidebar of [`NavItem`] views.
+///
+/// Items are retained in insertion order, forced to fill width, and all laid
+/// out. The optional title is ordinary content with six logical pixels of
+/// padding. This control supplies no scrolling or item reuse.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{NavItem, Sidebar};
+/// let sidebar = Sidebar::<()>::new().title("Workspace").nav_item(NavItem::new("Files"));
+/// let _ = sidebar;
+/// ```
 pub struct Sidebar<A = ()> {
+    /// Layout applied to the backing container.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Resolved container style.
     style: SidebarStyle,
+    /// Optional owned section title; `Some("")` still adds its container.
     title: Option<String>,
+    /// Navigation item views in insertion order; no capacity bound.
     items: Vec<View<A>>,
 }
 
@@ -69,6 +122,15 @@ impl<A: 'static> Default for Sidebar<A> {
 }
 
 impl<A: 'static> Sidebar<A> {
+    /// Creates an empty untitled sidebar with a 220-pixel intrinsic width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Sidebar;
+    /// let sidebar: Sidebar<()> = Sidebar::new();
+    /// let _ = sidebar;
+    /// ```
     pub fn new() -> Self {
         let style = SidebarStyle::default();
         Self {
@@ -80,17 +142,53 @@ impl<A: 'static> Sidebar<A> {
         }
     }
 
+    /// Sets the optional title, replacing any previous title.
+    ///
+    /// Empty text remains present and reserves a padded title row.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Sidebar;
+    /// let sidebar: Sidebar<()> = Sidebar::new().title("Main");
+    /// let _ = sidebar;
+    /// ```
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
+    /// Replaces complete container style and synchronizes layout width.
+    ///
+    /// A later explicit width builder may override the style width. Style values
+    /// are otherwise accepted as-is.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{Sidebar, SidebarStyle};
+    /// let style = SidebarStyle::from_theme(Theme::dark());
+    /// let sidebar: Sidebar<()> = Sidebar::new().sidebar_style(style);
+    /// let _ = sidebar;
+    /// ```
     pub fn sidebar_style(mut self, style: SidebarStyle) -> Self {
         self.layout = self.layout.width(style.width);
         self.style = style;
         self
     }
 
+    /// Appends an item and forces it to fill the sidebar width.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{NavItem, Sidebar};
+    /// let sidebar = Sidebar::<()>::new()
+    ///     .nav_item(NavItem::new("Files"))
+    ///     .nav_item(NavItem::new("Search"));
+    /// let _ = sidebar;
+    /// ```
     pub fn nav_item(mut self, item: NavItem<A>) -> Self {
         self.items.push(item.fill_width().into_view());
         self
@@ -129,32 +227,72 @@ impl<A: 'static> IntoView<A> for Sidebar<A> {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic text treatment for a [`NavItem`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::NavItemVariant;
+/// assert_eq!(NavItemVariant::default(), NavItemVariant::Default);
+/// ```
 pub enum NavItemVariant {
+    /// Normal or selected text style.
     #[default]
     Default,
+    /// Danger text style; interaction behavior is unchanged.
     Danger,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved colors, typography, and logical-pixel metrics for a [`NavItem`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::NavItemStyle;
+/// let style = NavItemStyle::from_theme(Theme::dark());
+/// assert_eq!(style.height, 34.0);
+/// assert_eq!(style.icon_size, 16.0);
+/// ```
 pub struct NavItemStyle {
+    /// Intrinsic row height.
     pub height: f32,
+    /// Horizontal content inset.
     pub padding_x: f32,
+    /// Gap after a leading icon.
     pub gap: f32,
+    /// Width and height of a leading icon.
     pub icon_size: f32,
+    /// Background and focus-ring radii.
     pub radius: Radius,
+    /// Idle background.
     pub background: Color,
+    /// Actionable enabled hover background.
     pub hover_background: Color,
+    /// Actionable enabled pressed background.
     pub pressed_background: Color,
+    /// Background used whenever selected.
     pub selected_background: Color,
+    /// Normal label style.
     pub text: TextStyle,
+    /// Selected label style.
     pub selected_text: TextStyle,
+    /// Reserved secondary text style; current nav items do not paint it.
     pub muted_text: TextStyle,
+    /// Label style for [`NavItemVariant::Danger`].
     pub danger_text: TextStyle,
+    /// Unselected leading-icon tint.
     pub icon_tint: Color,
+    /// Selected leading-icon tint.
     pub selected_icon_tint: Color,
+    /// Numeric badge fill.
     pub badge_background: Color,
+    /// Numeric badge text style.
     pub badge_text: TextStyle,
+    /// Border painted for focused, enabled, actionable items.
     pub focus_ring: Border,
+    /// Alpha multiplier for disabled paint.
     pub disabled_opacity: f32,
 }
 
@@ -165,6 +303,17 @@ impl Default for NavItemStyle {
 }
 
 impl NavItemStyle {
+    /// Resolves row colors, typography, and geometry from `theme`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::NavItemStyle;
+    /// let style = NavItemStyle::from_theme(Theme::dark());
+    /// assert_eq!(style.disabled_opacity, 0.42);
+    /// assert_eq!(style.badge_text.px_size, 11);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         Self {
@@ -191,22 +340,55 @@ impl NavItemStyle {
     }
 }
 
+/// One optional-action navigation row.
+///
+/// Activation occurs on left-button release inside or pressed Enter/Space while
+/// focused. Only an enabled item with an action is focusable. Selection affects
+/// paint but does not suppress activation. Labels and badges are not clipped by
+/// this widget.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::NavItem;
+/// let item: NavItem<()> = NavItem::new("Files");
+/// let _ = item;
+/// ```
 pub struct NavItem<A = ()> {
+    /// Layout configuration used to resolve intrinsic geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Owned label; empty is valid.
     label: String,
+    /// Optional leading icon.
     leading_icon: Option<IconId>,
+    /// Optional decimal badge; zero is displayed as `0`.
     badge: Option<u32>,
+    /// Live selected state.
     selected: Binding<bool>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Semantic label treatment.
     variant: NavItemVariant,
+    /// Resolved paint and metrics.
     style: NavItemStyle,
+    /// Optional activation action.
     on_select: Option<ClickAction<A>>,
 }
 
 crate::impl_layout_builders!(NavItem);
 
 impl<A: 'static> NavItem<A> {
+    /// Creates an enabled, unselected item with no icon, badge, or action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::NavItem;
+    /// let item: NavItem<()> = NavItem::new("Settings");
+    /// let _ = item;
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -222,36 +404,115 @@ impl<A: 'static> NavItem<A> {
         }
     }
 
+    /// Sets the leading icon, replacing any prior icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::NavItem;
+    /// let item: NavItem<()> = NavItem::new("History").leading_icon(IconId::History);
+    /// let _ = item;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.leading_icon = Some(icon);
         self
     }
 
+    /// Sets an exact decimal badge count.
+    ///
+    /// Every `u32`, including zero, is shown without a compact upper sentinel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::NavItem;
+    /// let item: NavItem<()> = NavItem::new("Inbox").badge(5);
+    /// let _ = item;
+    /// ```
     pub fn badge(mut self, count: u32) -> Self {
         self.badge = Some(count);
         self
     }
 
+    /// Sets static or reactive selected state.
+    ///
+    /// Selected background takes precedence over pressed/hover state. Danger
+    /// labels keep danger color while selected icons use selected tint.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::NavItem;
+    /// let item: NavItem<()> = NavItem::new("Current").selected(true);
+    /// let _ = item;
+    /// ```
     pub fn selected(mut self, selected: impl Into<Binding<bool>>) -> Self {
         self.selected = selected.into();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled items ignore events, are not focusable, and multiply paint
+    /// alpha by [`NavItemStyle::disabled_opacity`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::NavItem;
+    /// let item: NavItem<()> = NavItem::new("Unavailable").disabled(true);
+    /// let _ = item;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Selects normal or danger label treatment.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{NavItem, NavItemVariant};
+    /// let item: NavItem<()> = NavItem::new("Delete").variant(NavItemVariant::Danger);
+    /// let _ = item;
+    /// ```
     pub fn variant(mut self, variant: NavItemVariant) -> Self {
         self.variant = variant;
         self
     }
 
+    /// Replaces complete row style and intrinsic metrics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{NavItem, NavItemStyle};
+    /// let style = NavItemStyle::from_theme(Theme::dark());
+    /// let item: NavItem<()> = NavItem::new("Styled").nav_item_style(style);
+    /// let _ = item;
+    /// ```
     pub fn nav_item_style(mut self, style: NavItemStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Installs an action value emitted on activation.
+    ///
+    /// A later action builder replaces it. The item consumes input after the
+    /// action runs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::NavItem;
+    /// #[derive(Clone)]
+    /// enum Action { Open }
+    /// let item = NavItem::new("Files").on_select(Action::Open);
+    /// let _ = item;
+    /// ```
     pub fn on_select(mut self, action: impl IntoClickAction<A>) -> Self
     where
         A: Clone,
@@ -260,12 +521,22 @@ impl<A: 'static> NavItem<A> {
         self
     }
 
+    /// Installs a context-aware activation handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::NavItem;
+    /// let item = NavItem::<()>::new("Refresh").on_select_ctx(|ctx| ctx.request_repaint());
+    /// let _ = item;
+    /// ```
     pub fn on_select_ctx(mut self, f: impl Fn(&mut EventCtx<A>) + 'static) -> Self {
         self.on_select = Some(ClickAction::handler(f));
         self
     }
 }
 
+/// Retained leaf resolving nav bindings, paint state, and activation.
 struct NavItemWidget<A> {
     layout: LayoutStyle,
     label: String,
@@ -418,6 +689,7 @@ impl<A: 'static> Widget<A> for NavItemWidget<A> {
 }
 
 impl<A> NavItemWidget<A> {
+    /// Runs the optional action and consumes input; otherwise does nothing.
     fn run_action(&self, ctx: &mut EventCtx<A>) {
         if let Some(on_select) = &self.on_select {
             on_select.run(ctx);
@@ -425,6 +697,7 @@ impl<A> NavItemWidget<A> {
         }
     }
 
+    /// Resolves danger first, then selected, then normal label paint.
     fn text_style(&self, selected: bool) -> TextStyle {
         if self.variant == NavItemVariant::Danger {
             self.style.danger_text
@@ -456,6 +729,7 @@ impl<A: 'static> IntoView<A> for NavItem<A> {
     }
 }
 
+/// Measures one unwrapped line, returning `None` without a text system.
 fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option<f32> {
     ctx.text_system.as_deref_mut().map(|text_system| {
         text_system
@@ -470,6 +744,7 @@ fn measure_text(ctx: &mut LayoutCtx<'_>, text: &str, style: TextStyle) -> Option
     })
 }
 
+/// Prepares one unwrapped line, returning `None` without a text system.
 fn layout_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -485,6 +760,7 @@ fn layout_text(
     })
 }
 
+/// Paints left-anchored text vertically centered with alpha multiplication.
 fn paint_text_centered(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -510,12 +786,14 @@ fn paint_text_centered(
     }));
 }
 
+/// Estimates badge width with eight-pixel glyph and padding floors.
 fn measure_badge(ctx: &mut LayoutCtx<'_>, count: u32, style: &NavItemStyle) -> f32 {
     let label = count.to_string();
     let text_w = measure_text(ctx, &label, style.badge_text).unwrap_or(8.0);
     text_w.max(8.0) + 16.0
 }
 
+/// Paints a right-aligned decimal badge when a text system is available.
 fn paint_badge(
     ctx: &mut PaintCtx<'_>,
     count: u32,

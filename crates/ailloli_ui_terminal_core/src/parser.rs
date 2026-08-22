@@ -1,17 +1,91 @@
+//! Incremental VT byte parsing into [`TerminalState`].
+//!
+//! The parser supports a deliberately bounded terminal-control subset. Unknown,
+//! malformed, ignored, DCS, and security-sensitive operations are generally
+//! represented as [`TerminalWarning`] values rather
+//! than returned errors. Parsing itself performs no I/O.
+
 use crate::{
     ShellKind, TerminalColor, TerminalMouseTrackingMode, TerminalProcessStatus, TerminalState,
     TerminalWarning,
 };
 
+/// Incrementally applies terminal-process bytes to mutable terminal state.
+///
+/// Implementations retain parsing state across calls so callers may split UTF-8
+/// and escape sequences at arbitrary byte boundaries. The operation has no
+/// return value; implementations report recoverable protocol issues through the
+/// supplied state, typically as warnings.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::{TerminalParser, TerminalState, VteTerminalParser};
+///
+/// fn feed(parser: &mut impl TerminalParser, state: &mut TerminalState, bytes: &[u8]) {
+///     parser.advance(state, bytes);
+/// }
+///
+/// let mut parser = VteTerminalParser::new();
+/// let mut state = TerminalState::new();
+/// feed(&mut parser, &mut state, b"hello");
+/// assert!(state.screen.lines[0].plain_text().starts_with("hello"));
+/// ```
 pub trait TerminalParser {
+    /// Consumes one arbitrary byte chunk and applies completed actions to `state`.
+    ///
+    /// An empty slice is a no-op. Chunks may end mid-character or mid-sequence;
+    /// the parser must retain enough state for a later call.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_core::{TerminalParser, TerminalState, VteTerminalParser};
+    ///
+    /// let mut parser = VteTerminalParser::default();
+    /// let mut state = TerminalState::new();
+    /// let utf8 = "界".as_bytes();
+    /// parser.advance(&mut state, &utf8[..1]);
+    /// parser.advance(&mut state, &utf8[1..]);
+    /// assert_eq!(state.screen.lines[0].cells[0].text, "界");
+    /// ```
     fn advance(&mut self, state: &mut TerminalState, bytes: &[u8]);
 }
 
+/// [`vte`] state-machine adapter for the supported terminal-state operations.
+///
+/// One instance represents one incremental byte stream. Reusing it for
+/// unrelated streams can carry an incomplete escape/UTF-8 sequence from the
+/// first stream into the next; create a fresh parser per terminal stream.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_terminal_core::{TerminalParser, TerminalState, VteTerminalParser};
+///
+/// let mut parser = VteTerminalParser::new();
+/// let mut state = TerminalState::new();
+/// parser.advance(&mut state, b"A\x1b[31mB");
+/// assert_eq!(state.screen.lines[0].cells[1].text, "B");
+/// ```
 pub struct VteTerminalParser {
+    /// Incremental VT state machine, including any partial sequence.
     parser: vte::Parser,
 }
 
 impl VteTerminalParser {
+    /// Creates a parser with no buffered partial sequence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_core::{TerminalParser, TerminalState, VteTerminalParser};
+    ///
+    /// let mut parser = VteTerminalParser::new();
+    /// let mut state = TerminalState::new();
+    /// parser.advance(&mut state, b"ok");
+    /// assert!(state.screen.lines[0].plain_text().starts_with("ok"));
+    /// ```
     pub fn new() -> Self {
         Self {
             parser: vte::Parser::new(),
@@ -20,28 +94,41 @@ impl VteTerminalParser {
 }
 
 impl Default for VteTerminalParser {
+    /// Creates the same empty parser as [`Self::new`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_terminal_core::VteTerminalParser;
+    /// let _parser = VteTerminalParser::default();
+    /// ```
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl TerminalParser for VteTerminalParser {
+    /// Advances the internal [`vte`] machine with a temporary state performer.
     fn advance(&mut self, state: &mut TerminalState, bytes: &[u8]) {
         let mut performer = TerminalPerformer { state };
         self.parser.advance(&mut performer, bytes);
     }
 }
 
+/// Per-call bridge from parsed VT actions to mutable terminal state.
 struct TerminalPerformer<'a> {
+    /// State receiving each parsed action.
     state: &'a mut TerminalState,
 }
 
 impl vte::Perform for TerminalPerformer<'_> {
+    /// Writes one decoded character and refreshes the prompt heuristic.
     fn print(&mut self, c: char) {
         self.state.write_char(c);
         self.state.update_prompt_heuristic();
     }
 
+    /// Applies supported C0 controls; bell is ignored and others warn.
     fn execute(&mut self, byte: u8) {
         match byte {
             b'\n' | 0x0b | 0x0c => self.state.line_feed(),
@@ -53,14 +140,22 @@ impl vte::Perform for TerminalPerformer<'_> {
         }
     }
 
+    /// Rejects every DCS entry and records its final action character.
     fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, action: char) {
         self.unsupported(format!("DCS {action}"));
     }
 
+    /// Discards DCS payload bytes after the DCS hook has warned.
     fn put(&mut self, _byte: u8) {}
 
+    /// Completes a discarded DCS payload without further mutation.
     fn unhook(&mut self) {}
 
+    /// Dispatches supported operating-system commands using lossy text payloads.
+    ///
+    /// Title/CWD payload components are rejoined with semicolons. OSC 52 never
+    /// writes a clipboard: when disallowed it records a blocked warning; when
+    /// allowed it still records an unsupported warning for the unimplemented I/O.
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         let Some(code) = params
             .first()
@@ -106,6 +201,11 @@ impl vte::Perform for TerminalPerformer<'_> {
         }
     }
 
+    /// Applies supported ANSI CSI actions or records an unsupported warning.
+    ///
+    /// Zero/missing count parameters use each action's ANSI default. Scroll
+    /// region defaulting casts the active row count to `u16`, so manually
+    /// constructed screens taller than `u16::MAX` lose high bits in that default.
     fn csi_dispatch(
         &mut self,
         params: &vte::Params,
@@ -190,6 +290,7 @@ impl vte::Perform for TerminalPerformer<'_> {
         }
     }
 
+    /// Applies save/restore and application-keypad ESC sequences.
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
         if ignore {
             self.unsupported(format!("ESC ignored 0x{byte:02x}"));
@@ -206,6 +307,11 @@ impl vte::Perform for TerminalPerformer<'_> {
 }
 
 impl TerminalPerformer<'_> {
+    /// Parses the `ailloli_ui:` protocol and accepted legacy `octavui:` prefix.
+    ///
+    /// Fields use the first matching named alias, then an action-specific
+    /// positional fallback. Missing required fields, invalid payload encoding,
+    /// invalid process status, and unknown actions append unsupported warnings.
     fn dispatch_ailloli_ui_shell_osc(&mut self, params: &[&[u8]]) {
         let Some(parts) = shell_parts(params) else {
             self.unsupported("OSC 9001 invalid shell payload");
@@ -268,6 +374,11 @@ impl TerminalPerformer<'_> {
         }
     }
 
+    /// Parses the supported OSC 133 prompt/start/end aliases.
+    ///
+    /// Action `A` marks a prompt, `B` starts a command, and `C` finishes it.
+    /// Unknown/missing actions warn. An absent command for `B` becomes empty;
+    /// invalid numeric values are treated as absent.
     fn dispatch_osc_133(&mut self, params: &[&[u8]]) {
         let Some(parts) = shell_parts(params) else {
             self.unsupported("OSC 133 invalid shell payload");
@@ -301,6 +412,7 @@ impl TerminalPerformer<'_> {
         }
     }
 
+    /// Parses only OSC 1337 `CurrentDir=...`; all other payloads warn.
     fn dispatch_osc_1337(&mut self, params: &[&[u8]]) {
         let Some(parts) = shell_parts(params) else {
             self.unsupported("OSC 1337 invalid payload");
@@ -317,6 +429,10 @@ impl TerminalPerformer<'_> {
         }
     }
 
+    /// Applies supported DEC private mode set/reset parameters.
+    ///
+    /// Multiple flattened parameters are applied in order. Unknown parameters
+    /// append warnings without rolling back modes already changed.
     fn dispatch_private_csi(&mut self, params: &vte::Params, action: char) {
         match action {
             'h' | 'l' => {
@@ -366,6 +482,12 @@ impl TerminalPerformer<'_> {
         }
     }
 
+    /// Applies supported SGR style codes to the state's current style.
+    ///
+    /// Colon-grouped parameters and malformed extended colors warn and discard
+    /// all style changes from that CSI. Other unsupported scalar codes warn but
+    /// allow supported codes in the same CSI to commit. Extended color supports
+    /// `38/48;5;n` and `38/48;2;r;g;b` with components in `0..=255`.
     fn dispatch_sgr(&mut self, params: &vte::Params) {
         let grouped = grouped_params(params);
         if grouped.iter().any(|param| param.len() > 1) {
@@ -423,6 +545,7 @@ impl TerminalPerformer<'_> {
         self.state.current_style = style;
     }
 
+    /// Appends one unsupported-sequence warning without deduplication or limits.
     fn unsupported(&mut self, sequence: impl Into<String>) {
         self.state
             .warnings
@@ -430,6 +553,10 @@ impl TerminalPerformer<'_> {
     }
 }
 
+/// Parses an SGR extended-color suffix and its consumed suffix-code count.
+///
+/// Extra suffix codes are left for the caller. Missing components or values
+/// above 255 return `None`.
 fn parse_extended_color(codes: &[u16]) -> Option<(TerminalColor, usize)> {
     match codes {
         [5, index, ..] if *index <= 255 => Some((TerminalColor::Indexed(*index as u8), 2)),
@@ -440,10 +567,12 @@ fn parse_extended_color(codes: &[u16]) -> Option<(TerminalColor, usize)> {
     }
 }
 
+/// Copies VTE parameters while retaining colon-grouped subparameters.
 fn grouped_params(params: &vte::Params) -> Vec<Vec<u16>> {
     params.iter().map(|param| param.to_vec()).collect()
 }
 
+/// Flattens all VTE parameter groups, returning ANSI default zero when empty.
 fn flat_params(params: &vte::Params) -> Vec<u16> {
     let values = params
         .iter()
@@ -456,6 +585,7 @@ fn flat_params(params: &vte::Params) -> Vec<u16> {
     }
 }
 
+/// Returns a nonzero first subparameter at `index`, otherwise `default`.
 fn param_or(params: &vte::Params, index: usize, default: u16) -> u16 {
     params
         .iter()
@@ -465,10 +595,12 @@ fn param_or(params: &vte::Params, index: usize, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+/// Copies grouped parameters for stable warning formatting.
 fn params_to_debug(params: &vte::Params) -> Vec<Vec<u16>> {
     grouped_params(params)
 }
 
+/// Joins OSC byte components with semicolons and decodes invalid UTF-8 lossily.
 fn join_params(params: &[&[u8]]) -> String {
     let mut joined = Vec::new();
     for (index, param) in params.iter().enumerate() {
@@ -480,12 +612,19 @@ fn join_params(params: &[&[u8]]) -> String {
     String::from_utf8_lossy(&joined).into_owned()
 }
 
+/// Parsed shell-protocol field, either named or positional.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ShellField {
+    /// ASCII-lowercase name, or `None` for a positional value.
     key: Option<String>,
+    /// Decoded field value, possibly empty.
     value: String,
 }
 
+/// Strictly UTF-8 and percent-decodes every shell-protocol component.
+///
+/// Any invalid component rejects the entire payload. A literal plus sign stays
+/// `+`; only `%HH` escapes are decoded.
 fn shell_parts(params: &[&[u8]]) -> Option<Vec<String>> {
     params
         .iter()
@@ -496,6 +635,7 @@ fn shell_parts(params: &[&[u8]]) -> Option<Vec<String>> {
         .collect()
 }
 
+/// Splits each component at its first `=` and ASCII-lowercases named keys.
 fn shell_fields(parts: &[String]) -> Vec<ShellField> {
     parts
         .iter()
@@ -515,6 +655,7 @@ fn shell_fields(parts: &[String]) -> Vec<ShellField> {
         .collect()
 }
 
+/// Clones the first named field whose normalized key appears in `keys`.
 fn shell_field_value(fields: &[ShellField], keys: &[&str]) -> Option<String> {
     fields.iter().find_map(|field| {
         let key = field.key.as_deref()?;
@@ -522,6 +663,7 @@ fn shell_field_value(fields: &[ShellField], keys: &[&str]) -> Option<String> {
     })
 }
 
+/// Clones the zero-based positional field, ignoring named fields.
 fn shell_positional_value(fields: &[ShellField], index: usize) -> Option<String> {
     fields
         .iter()
@@ -530,14 +672,20 @@ fn shell_positional_value(fields: &[ShellField], index: usize) -> Option<String>
         .map(|field| field.value.clone())
 }
 
+/// Parses the first matching named field as a signed 32-bit decimal integer.
 fn shell_i32_value(fields: &[ShellField], keys: &[&str]) -> Option<i32> {
     shell_field_value(fields, keys).and_then(|value| value.parse().ok())
 }
 
+/// Parses the first matching named field as an unsigned 64-bit decimal integer.
 fn shell_u64_value(fields: &[ShellField], keys: &[&str]) -> Option<u64> {
     shell_field_value(fields, keys).and_then(|value| value.parse().ok())
 }
 
+/// Parses a case-insensitive supported process status and its optional number.
+///
+/// `exited`/`exit` and `signaled`/`signal` aliases are accepted. A malformed or
+/// missing code/signal does not reject a recognized status; that number is `None`.
 fn shell_process_status(fields: &[ShellField]) -> Option<TerminalProcessStatus> {
     let status = shell_field_value(fields, &["status"])
         .or_else(|| shell_positional_value(fields, 0))?
@@ -556,6 +704,10 @@ fn shell_process_status(fields: &[ShellField]) -> Option<TerminalProcessStatus> 
     }
 }
 
+/// Decodes `%HH` byte escapes and requires the resulting bytes to be UTF-8.
+///
+/// Incomplete escapes, non-hex digits, and decoded invalid UTF-8 return `None`.
+/// Unescaped non-ASCII input is copied byte-for-byte.
 fn percent_decode(input: &str) -> Option<String> {
     let bytes = input.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -574,6 +726,7 @@ fn percent_decode(input: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
+/// Maps one ASCII hexadecimal digit to `0..=15`.
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -584,6 +737,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
+/// Parser tests for chunking, terminal controls, security, and shell protocols.
 mod tests {
     use super::*;
     use crate::{
@@ -592,6 +746,7 @@ mod tests {
         TerminalStyle, TerminalWarningKind,
     };
 
+    /// Creates a test terminal with ten retained scrollback lines.
     fn state(rows: usize, cols: usize) -> TerminalState {
         TerminalState::with_config(TerminalConfig {
             size: TerminalSize::new(rows, cols),

@@ -5,11 +5,12 @@ use ailloli_ui_terminal_core::{
     TerminalState, VteTerminalParser,
 };
 
-// Preserve the 36-cell width of the captured readline regression while using
-// a product-neutral, non-personal fixture path.
+/// Product-neutral 36-cell prompt matching the captured readline regression width.
 const PROMPT: &str = "dev@example:~/workspace/sample-app$ ";
+/// Short prompt substring whose exact occurrence count detects duplication/loss.
 const PROMPT_MARKER: &str = "dev@";
 
+/// Creates a test state with secure defaults and 1,000-line scrollback.
 fn new_state(rows: usize, cols: usize) -> TerminalState {
     TerminalState::with_config(TerminalConfig {
         size: TerminalSize::new(rows, cols),
@@ -18,11 +19,13 @@ fn new_state(rows: usize, cols: usize) -> TerminalState {
     })
 }
 
+/// Parses one chunk and refreshes derived diagnostics as the product loop does.
 fn feed(parser: &mut VteTerminalParser, state: &mut TerminalState, bytes: &[u8]) {
     parser.advance(state, bytes);
     state.classify_terminal_output();
 }
 
+/// Copies full padded normal-buffer text in scrollback-then-screen order.
 fn full_buffer_text(state: &TerminalState) -> Vec<String> {
     state
         .scrollback
@@ -32,6 +35,7 @@ fn full_buffer_text(state: &TerminalState) -> Vec<String> {
         .collect()
 }
 
+/// Emits terminal geometry, cursor, prompt identity, and every normal visual row.
 fn dump(state: &TerminalState, label: &str) {
     eprintln!("--- {label} (scrollback={} rows={} cols={} cursor=({},{}) last_prompt_line={:?} total_pushed={})",
         state.scrollback.len(),
@@ -47,6 +51,7 @@ fn dump(state: &TerminalState, label: &str) {
     }
 }
 
+/// Counts non-overlapping marker occurrences across normal scrollback and screen.
 fn history_line_count(state: &TerminalState, marker: &str) -> usize {
     full_buffer_text(state)
         .iter()
@@ -54,6 +59,7 @@ fn history_line_count(state: &TerminalState, marker: &str) -> usize {
         .sum()
 }
 
+/// Builds a deterministic two-prompt, ten-output-line shell transcript fixture.
 fn setup_ls_session(rows: usize, cols: usize) -> (VteTerminalParser, TerminalState) {
     let mut parser = VteTerminalParser::new();
     let mut state = new_state(rows, cols);
@@ -78,6 +84,7 @@ fn setup_ls_session(rows: usize, cols: usize) -> (VteTerminalParser, TerminalSta
     (parser, state)
 }
 
+/// Applies the simple single-physical-line bash SIGWINCH prompt redraw.
 fn bash_winch_redraw(parser: &mut VteTerminalParser, state: &mut TerminalState) {
     feed(parser, state, b"\r\x1b[K\r");
     feed(parser, state, PROMPT.as_bytes());
@@ -107,6 +114,9 @@ fn readline_winch_redraw(
     feed(parser, state, PROMPT.as_bytes());
 }
 
+/// Requires every fixture output once and exactly two prompt markers.
+///
+/// On failure it first dumps the complete normal visual buffer for diagnosis.
 fn assert_history_intact(state: &TerminalState, label: &str) {
     let mut missing = Vec::new();
     for idx in 1..=10 {

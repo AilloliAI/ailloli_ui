@@ -1,25 +1,81 @@
+//! OpenXR loader, extension negotiation, system selection, and runtime identity.
+
 use openxr as xr;
 
 use super::error::OpenXrRuntimeError;
 
+/// Internal names used to create the OpenXR instance.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::{OpenXrRuntime, OpenXrRuntimeOptions};
+/// let options = OpenXrRuntimeOptions { application_name: "My XR app".to_string(), engine_name: "My engine".to_string(), ..Default::default() };
+/// let _runtime = OpenXrRuntime::new(options)?;
+/// # Ok::<(), ailloli_ui_openxr::OpenXrRuntimeError>(())
+/// ```
 pub(crate) struct OpenXrInstanceOptions<'a> {
+    /// Application name, shorter than OpenXR's byte limit and without NULs.
     pub application_name: &'a str,
+    /// Engine name, shorter than OpenXR's byte limit and without NULs.
     pub engine_name: &'a str,
 }
 
+/// Loaded OpenXR instance plus negotiated system capabilities.
+///
+/// The runtime and system handles remain valid for the lifetime of this value.
+/// Capability booleans reflect extensions enabled during construction, not a
+/// prediction about every individual input device.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrInstance;
+/// fn report(instance: &OpenXrInstance) -> (&str, bool) {
+///     (&instance.runtime_name, instance.hand_tracking_supported)
+/// }
+/// ```
 pub struct OpenXrInstance {
+    /// Dynamically loaded OpenXR entry table.
     pub entry: xr::Entry,
+    /// Created OpenXR instance handle.
     pub instance: xr::Instance,
+    /// Selected head-mounted-display system identifier.
     pub system: xr::SystemId,
+    /// First advertised stereo environment blend mode, or opaque fallback.
     pub blend_mode: xr::EnvironmentBlendMode,
+    /// Runtime-reported implementation name.
     pub runtime_name: String,
+    /// Runtime-reported implementation version.
     pub runtime_version: xr::Version,
+    /// Whether system hand tracking and its extension are available.
     pub hand_tracking_supported: bool,
+    /// Whether the FB hand-aim extension is enabled with hand tracking.
     pub hand_aim_supported: bool,
+    /// Whether native cylinder composition layers are enabled.
     pub composition_layer_cylinder_supported: bool,
 }
 
 impl OpenXrInstance {
+    /// Loads OpenXR and creates the instance used by the high-level runtime.
+    ///
+    /// The function enables Vulkan 2 integration, optional hand extensions, and
+    /// optional cylinder layers. Android also initializes and enables its loader
+    /// extension. The first advertised stereo blend mode is selected.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenXrRuntimeError`] for invalid byte-limited names, loader or
+    /// extension failures, instance creation, property lookup, or HMD selection.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRuntime, OpenXrRuntimeOptions};
+    /// let runtime = OpenXrRuntime::new(OpenXrRuntimeOptions::default())?;
+    /// println!("{}", runtime.xr.runtime_name);
+    /// # Ok::<(), ailloli_ui_openxr::OpenXrRuntimeError>(())
+    /// ```
     pub(crate) fn new(options: OpenXrInstanceOptions<'_>) -> Result<Self, OpenXrRuntimeError> {
         validate_openxr_name(
             "application_name",
@@ -131,6 +187,10 @@ impl OpenXrInstance {
     }
 }
 
+/// Validates an OpenXR fixed-size, NUL-terminated UTF-8 name field.
+///
+/// Embedded NUL bytes are rejected. `max_bytes_with_nul` includes the trailing
+/// NUL, so the string itself must be strictly shorter than that limit.
 fn validate_openxr_name(
     field: &'static str,
     value: &str,

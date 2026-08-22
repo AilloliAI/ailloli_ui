@@ -1,3 +1,5 @@
+//! Translation from editor-neutral paint items to runtime draw commands.
+
 use ailloli_ui_core::{Border, Point, Radius, StrokeStyle};
 use ailloli_ui_editor::{EditorFrame, EditorPaintItem};
 use ailloli_ui_runtime::scene::PaintCtx;
@@ -11,6 +13,20 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawPolyline, DrawRRect, DrawRect,
 /// makes this safe again — previously a second scene layer would corrupt the
 /// previously rendered chrome through the shared vertex buffer being
 /// overwritten.
+///
+/// Backgrounds are appended on the current layer first, gutter items are
+/// clipped to the gutter, and content is clipped to the text viewport. Item
+/// order inside each category is preserved and text-layout handles are cloned.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::component::{IntoView, State, View};
+/// use ailloli_ui_text::TextBuffer;
+/// use ailloli_ui_widgets::editor::Editor;
+/// let view: View<()> = Editor::new(State::new(TextBuffer::from_string("hello"))).into_view();
+/// let _ = view; // painting this view routes its EditorFrame through the adapter.
+/// ```
 pub(crate) fn paint_editor_frame(ctx: &mut PaintCtx<'_>, frame: &EditorFrame) {
     for item in &frame.paint_items {
         if let EditorPaintItem::Background { rect, color } = item {
@@ -146,6 +162,7 @@ pub(crate) fn paint_editor_frame(ctx: &mut PaintCtx<'_>, frame: &EditorFrame) {
     });
 }
 
+/// Returns three logical-pixel polyline points for right/down fold chevrons.
 fn fold_chevron_points(rect: ailloli_ui_core::Rect, collapsed: bool) -> Vec<Point> {
     let cx = rect.x + rect.w * 0.5;
     let cy = rect.y + rect.h * 0.5;

@@ -1,3 +1,5 @@
+//! Non-interactive linear and circular determinate progress indicators.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use ailloli_ui_core::event::Event;
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
@@ -11,35 +13,84 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawRect, DrawRingProgr
 use ailloli_ui_text::{TextLayoutParams, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Built-in geometry and typography choices for progress indicators.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ProgressSize;
+/// assert_eq!(ProgressSize::default(), ProgressSize::Default);
+/// ```
 pub enum ProgressSize {
+    /// 180 × 6 bar and 44-pixel ring with 11-pixel label text.
     Compact,
+    /// 220 × 8 bar and 58-pixel ring with 12-pixel label text.
     #[default]
     Default,
+    /// 280 × 12 bar and 72-pixel ring with 14-pixel label text.
     Large,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Fill treatment for a [`ProgressBar`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ProgressVariant;
+/// assert_eq!(ProgressVariant::default(), ProgressVariant::Solid);
+/// ```
 pub enum ProgressVariant {
+    /// Uniform fill.
     #[default]
     Solid,
+    /// Repeating clipped rectangular stripes over enabled fill.
     Striped,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved colors, typography, and logical-pixel progress geometry.
+///
+/// `focus_neutral` is reserved for compatibility; progress widgets are not
+/// focusable and do not currently paint it.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{ProgressSize, ProgressStyle};
+/// let style = ProgressStyle::from_theme(Theme::dark(), ProgressSize::Large);
+/// assert_eq!((style.bar_width, style.bar_height), (280.0, 12.0));
+/// assert_eq!(style.circular_size, 72.0);
+/// ```
 pub struct ProgressStyle {
+    /// Enabled track fill.
     pub track: Color,
+    /// Enabled active fill/ring color.
     pub fill: Color,
+    /// Enabled striped-overlay color.
     pub stripe: Color,
+    /// Disabled track color before opacity multiplication.
     pub disabled_track: Color,
+    /// Disabled fill color before opacity multiplication.
     pub disabled_fill: Color,
+    /// Linear bar border; circular progress does not paint it.
     pub border: Border,
+    /// Enabled circular label style.
     pub text: TextStyle,
+    /// Disabled circular label style.
     pub muted_text: TextStyle,
+    /// Reserved focus color; currently unused.
     pub focus_neutral: Color,
+    /// Linear intrinsic width.
     pub bar_width: f32,
+    /// Linear intrinsic height.
     pub bar_height: f32,
+    /// Circular intrinsic width and height.
     pub circular_size: f32,
+    /// Circular ring thickness, later fitted to the resolved side.
     pub circular_thickness: f32,
+    /// Alpha multiplier for disabled track, fill, label, and border.
     pub disabled_opacity: f32,
 }
 
@@ -50,6 +101,17 @@ impl Default for ProgressStyle {
 }
 
 impl ProgressStyle {
+    /// Resolves progress colors, metrics, and typography from `theme` and `size`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ProgressSize, ProgressStyle};
+    /// let style = ProgressStyle::from_theme(Theme::dark(), ProgressSize::Compact);
+    /// assert_eq!(style.circular_thickness, 5.0);
+    /// assert_eq!(style.text.px_size, 11);
+    /// ```
     pub fn from_theme(theme: Theme, size: ProgressSize) -> Self {
         let palette = theme.palette();
         let (bar_width, bar_height, circular_size, circular_thickness, text_px) = match size {
@@ -75,22 +137,45 @@ impl ProgressStyle {
         }
     }
 
+    /// Returns configured linear width and height without clamping.
     fn bar_intrinsic_size(&self) -> Size {
         Size::new(self.bar_width, self.bar_height)
     }
 
+    /// Returns a square using configured circular size without clamping.
     fn circular_intrinsic_size(&self) -> Size {
         Size::new(self.circular_size, self.circular_size)
     }
 }
 
+/// A non-focusable determinate linear progress bar.
+///
+/// Values are mapped and clamped through [`ProgressSpec`]. Non-finite values
+/// select the range minimum. Extreme finite domains may still yield a non-finite
+/// fraction as documented by `ProgressSpec`; normal domains paint `0.0..=1.0`.
+/// Disabled striped bars omit stripes and paint disabled colors/opacities.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ProgressBar;
+/// let bar = ProgressBar::new().range(0.0, 100.0).value(42.0);
+/// let _ = bar;
+/// ```
 pub struct ProgressBar {
+    /// Layout configuration used to resolve intrinsic geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Live value in the configured numeric domain.
     value: Binding<f32>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Sanitized value domain.
     spec: ProgressSpec,
+    /// Solid or striped enabled fill.
     variant: ProgressVariant,
+    /// Resolved colors and geometry.
     style: ProgressStyle,
 }
 
@@ -103,6 +188,15 @@ impl Default for ProgressBar {
 }
 
 impl ProgressBar {
+    /// Creates an enabled, empty solid bar over the `0.0..=1.0` domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ProgressBar;
+    /// let bar = ProgressBar::new();
+    /// let _ = bar;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -115,20 +209,66 @@ impl ProgressBar {
         }
     }
 
+    /// Sets a static or reactive value.
+    ///
+    /// Values outside the domain are visually clamped. NaN and infinities select
+    /// the minimum through [`ProgressSpec::clamp_value`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ProgressBar;
+    /// let bar = ProgressBar::new().value(0.5);
+    /// let _ = bar;
+    /// ```
     pub fn value(mut self, value: impl Into<Binding<f32>>) -> Self {
         self.value = value.into();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Progress remains visible but uses disabled colors/opacities and suppresses
+    /// stripes. These widgets are non-interactive regardless of disabled state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ProgressBar;
+    /// let bar = ProgressBar::new().disabled(true);
+    /// let _ = bar;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Convenience alias for [`Self::disabled`] with a reactive memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::ProgressBar;
+    /// let bar = ProgressBar::new().disabled_signal(Memo::new(|| false));
+    /// let _ = bar;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Replaces range bounds and immediately sanitizes them.
+    ///
+    /// Reversed bounds swap, equal finite bounds try to expand max by `1.0`, and
+    /// any non-finite bound resets the range to `0.0..=1.0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ProgressBar;
+    /// let bar = ProgressBar::new().range(100.0, 0.0).value(25.0);
+    /// let _ = bar; // sanitized domain is 0..=100
+    /// ```
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.spec.min = min;
         self.spec.max = max;
@@ -136,35 +276,98 @@ impl ProgressBar {
         self
     }
 
+    /// Replaces and sanitizes the complete numeric domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ProgressSpec;
+    /// use ailloli_ui_widgets::controls::ProgressBar;
+    /// let bar = ProgressBar::new().progress_spec(ProgressSpec::new(10.0, 20.0));
+    /// let _ = bar;
+    /// ```
     pub fn progress_spec(mut self, spec: ProgressSpec) -> Self {
         self.spec = spec.sanitized();
         self
     }
 
+    /// Selects solid or striped enabled fill.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ProgressBar, ProgressVariant};
+    /// let bar = ProgressBar::new().variant(ProgressVariant::Striped);
+    /// let _ = bar;
+    /// ```
     pub fn variant(mut self, variant: ProgressVariant) -> Self {
         self.variant = variant;
         self
     }
 
+    /// Replaces complete resolved style without clamping its values.
+    ///
+    /// A later [`Self::progress_size`] call discards this custom style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ProgressBar, ProgressSize, ProgressStyle};
+    /// let style = ProgressStyle::from_theme(Theme::dark(), ProgressSize::Compact);
+    /// let bar = ProgressBar::new().progress_style(style);
+    /// let _ = bar;
+    /// ```
     pub fn progress_style(mut self, style: ProgressStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces complete style with the default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ProgressBar, ProgressSize};
+    /// let bar = ProgressBar::new().progress_size(ProgressSize::Large);
+    /// let _ = bar;
+    /// ```
     pub fn progress_size(mut self, size: ProgressSize) -> Self {
         self.style = ProgressStyle::from_theme(Theme::default(), size);
         self
     }
 }
 
+/// A non-focusable determinate circular progress ring with an optional label.
+///
+/// The ring is centered in the shortest resolved side and begins at 12 o'clock.
+/// With `show_label(true)` and no custom label, a rounded whole percentage is
+/// generated. A stored custom label is painted even after `show_label(false)`;
+/// there is no builder that clears it.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::CircularProgress;
+/// let progress = CircularProgress::new().value(0.75).show_label(true);
+/// let _ = progress;
+/// ```
 pub struct CircularProgress {
+    /// Layout configuration used to resolve intrinsic square geometry.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Live value in the configured numeric domain.
     value: Binding<f32>,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Sanitized value domain.
     spec: ProgressSpec,
+    /// Resolved colors, typography, size, and ring thickness.
     style: ProgressStyle,
+    /// Whether to generate a percentage when no custom label exists.
     show_label: bool,
+    /// Optional static or reactive custom center label.
     label: Option<Binding<String>>,
 }
 
@@ -177,6 +380,15 @@ impl Default for CircularProgress {
 }
 
 impl CircularProgress {
+    /// Creates an enabled, empty unlabeled ring over `0.0..=1.0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new();
+    /// let _ = progress;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -190,20 +402,63 @@ impl CircularProgress {
         }
     }
 
+    /// Sets a static or reactive value, visually clamped through the domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new().value(0.25);
+    /// let _ = progress;
+    /// ```
     pub fn value(mut self, value: impl Into<Binding<f32>>) -> Self {
         self.value = value.into();
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// Disabled state changes colors and label style; the ring is non-interactive
+    /// in either state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new().disabled(true);
+    /// let _ = progress;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Convenience alias for [`Self::disabled`] with a reactive memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new().disabled_signal(Memo::new(|| false));
+    /// let _ = progress;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Replaces range bounds and immediately sanitizes them.
+    ///
+    /// Reversed bounds swap, equal finite bounds try to expand max by `1.0`, and
+    /// any non-finite bound resets the domain to `0.0..=1.0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new().range(0.0, 100.0).value(75.0);
+    /// let _ = progress;
+    /// ```
     pub fn range(mut self, min: f32, max: f32) -> Self {
         self.spec.min = min;
         self.spec.max = max;
@@ -211,26 +466,80 @@ impl CircularProgress {
         self
     }
 
+    /// Replaces and sanitizes the complete numeric domain.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::ProgressSpec;
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new().progress_spec(ProgressSpec::new(10.0, 20.0));
+    /// let _ = progress;
+    /// ```
     pub fn progress_spec(mut self, spec: ProgressSpec) -> Self {
         self.spec = spec.sanitized();
         self
     }
 
+    /// Replaces complete resolved style without clamping its values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{CircularProgress, ProgressSize, ProgressStyle};
+    /// let style = ProgressStyle::from_theme(Theme::dark(), ProgressSize::Large);
+    /// let progress = CircularProgress::new().progress_style(style);
+    /// let _ = progress;
+    /// ```
     pub fn progress_style(mut self, style: ProgressStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Replaces complete style with the default-theme built-in size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{CircularProgress, ProgressSize};
+    /// let progress = CircularProgress::new().progress_size(ProgressSize::Compact);
+    /// let _ = progress;
+    /// ```
     pub fn progress_size(mut self, size: ProgressSize) -> Self {
         self.style = ProgressStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Controls generated percentage visibility when no custom label exists.
+    ///
+    /// A custom label remains visible regardless of `show`; call this before
+    /// [`Self::label`] only to document intent, because `label` sets it true.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new().value(0.5).show_label(true);
+    /// let _ = progress; // generated label is "50%"
+    /// ```
     pub fn show_label(mut self, show: bool) -> Self {
         self.show_label = show;
         self
     }
 
+    /// Sets static or reactive custom center text and enables label painting.
+    ///
+    /// Empty text remains a custom label and suppresses generated percentage.
+    /// There is no builder to return to `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::CircularProgress;
+    /// let progress = CircularProgress::new().value(3.0).range(0.0, 10.0).label("3 / 10");
+    /// let _ = progress;
+    /// ```
     pub fn label(mut self, label: impl Into<Binding<String>>) -> Self {
         self.label = Some(label.into());
         self.show_label = true;
@@ -238,6 +547,7 @@ impl CircularProgress {
     }
 }
 
+/// Retained non-interactive leaf for a linear bar.
 struct ProgressBarWidget {
     layout: LayoutStyle,
     value: Binding<f32>,
@@ -247,6 +557,7 @@ struct ProgressBarWidget {
     style: ProgressStyle,
 }
 
+/// Retained non-interactive leaf for a circular ring and optional label.
 struct CircularProgressWidget {
     layout: LayoutStyle,
     value: Binding<f32>,
@@ -367,6 +678,7 @@ impl<A: 'static> IntoView<A> for CircularProgress {
     }
 }
 
+/// Resolves a leaf layout with identical paint and visual bounds.
 fn progress_layout_result(
     intrinsic: Size,
     layout: LayoutStyle,
@@ -386,6 +698,7 @@ fn progress_layout_result(
     }
 }
 
+/// Paints track, active fill/optional stripes, then border.
 fn paint_progress_bar(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -454,6 +767,7 @@ fn paint_progress_bar(
     }
 }
 
+/// Paints clipped repeating stripes with geometry derived from bar height.
 fn paint_stripes(ctx: &mut PaintCtx<'_>, active: Rect, height: f32, style: &ProgressStyle) {
     let stripe_w = (height * 0.55).max(2.0);
     let step = (height * 1.65).max(7.0);
@@ -470,6 +784,7 @@ fn paint_stripes(ctx: &mut PaintCtx<'_>, active: Rect, height: f32, style: &Prog
     });
 }
 
+/// Paints a centered ring and optional generated or custom label.
 fn paint_circular_progress(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -537,6 +852,7 @@ fn paint_circular_progress(
     }
 }
 
+/// Paints one unwrapped line centered when a text system is available.
 fn paint_centered_text(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str, style: TextStyle) {
     let Some(ts) = ctx.text_system.as_deref_mut() else {
         return;
@@ -562,11 +878,13 @@ fn paint_centered_text(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str, style: Te
     }));
 }
 
+/// Multiplies and clamps color alpha to `0.0..=1.0`.
 fn apply_opacity(mut color: Color, opacity: f32) -> Color {
     color.a = (color.a * opacity).clamp(0.0, 1.0);
     color
 }
 
+/// Applies [`apply_opacity`] to all four border colors.
 fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border.colors.left = apply_opacity(border.colors.left, opacity);
     border.colors.top = apply_opacity(border.colors.top, opacity);

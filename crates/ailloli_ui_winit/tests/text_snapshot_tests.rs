@@ -1,6 +1,9 @@
+//! Deterministic Unicode caret-position snapshots from the Parley text engine.
+
 use ailloli_ui_core::{style::Color, FontId, TextStyle};
 use ailloli_ui_text::{caret_x_at, layout_text, ParleyEngine, TextLayoutParams, WrapMode};
 
+/// Formats every caret boundary and measured x-position for snapshot comparison.
 fn snapshot_caret_positions(s: &str) -> String {
     #[allow(deprecated)]
     let mut eng = ParleyEngine::new();

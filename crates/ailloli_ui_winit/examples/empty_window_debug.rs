@@ -1,3 +1,5 @@
+//! Low-level empty-window renderer diagnostic for resize, fullscreen, and first-frame timing.
+
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -13,6 +15,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
+/// Owns the native window, renderer, and deferred-resize state for the diagnostic.
 struct EmptyWindowDebug {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -22,9 +25,11 @@ struct EmptyWindowDebug {
     log_level: LogLevel,
 }
 
+/// Minimum delay before retrying a surface resize that the renderer deferred.
 const RESIZE_RETRY_DELAY: Duration = Duration::from_millis(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// Verbosity threshold ordered from disabled output through per-frame traces.
 enum LogLevel {
     None,
     Info,
@@ -32,7 +37,9 @@ enum LogLevel {
     Trace,
 }
 
+/// Parses command-line levels and applies their ordering as a filter.
 impl LogLevel {
+    /// Maps the accepted lowercase names to a level; unknown values return `None`.
     fn parse(value: &str) -> Option<Self> {
         match value {
             "none" | "off" => Some(Self::None),
@@ -43,12 +50,15 @@ impl LogLevel {
         }
     }
 
+    /// Reports whether an active threshold includes a candidate message level.
     fn allows(self, level: Self) -> bool {
         self != Self::None && level <= self
     }
 }
 
+/// Constructs and operates the retained diagnostic state.
 impl EmptyWindowDebug {
+    /// Creates an unattached diagnostic with no pending resize or rendered frames.
     fn new(log_level: LogLevel) -> Self {
         Self {
             window: None,
@@ -60,10 +70,12 @@ impl EmptyWindowDebug {
         }
     }
 
+    /// Emits a message when `level` is enabled by the configured threshold.
     fn log(&self, level: LogLevel, message: fmt::Arguments<'_>) {
         log_message(self.log_level, level, message);
     }
 
+    /// Requests a frame when a native window is currently attached.
     fn request_redraw(&self) {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
@@ -71,7 +83,9 @@ impl EmptyWindowDebug {
     }
 }
 
+/// Drives window creation, input, resizing, redraws, and wait scheduling.
 impl ApplicationHandler for EmptyWindowDebug {
+    /// Creates a fresh native window and renderer after the event loop resumes.
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.log(LogLevel::Info, format_args!("resumed"));
         log_environment(self.log_level);
@@ -108,6 +122,7 @@ impl ApplicationHandler for EmptyWindowDebug {
         self.request_redraw();
     }
 
+    /// Handles events for the owned window, including deferred resize retries.
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(window) = self.window.as_ref().cloned() else {
             return;
@@ -292,6 +307,7 @@ impl ApplicationHandler for EmptyWindowDebug {
         }
     }
 
+    /// Selects `Wait` or the next retry deadline before the event loop sleeps.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         if let Some(ready_at) = self.resize_retry_at {
@@ -319,6 +335,7 @@ impl ApplicationHandler for EmptyWindowDebug {
     }
 }
 
+/// Toggles borderless fullscreen on the current monitor and records the transition.
 fn toggle_fullscreen(log_level: LogLevel, window: &Window) {
     if window.fullscreen().is_some() {
         log_message(log_level, LogLevel::Info, format_args!("fullscreen off"));
@@ -333,6 +350,7 @@ fn toggle_fullscreen(log_level: LogLevel, window: &Window) {
     }
 }
 
+/// Logs the display- and renderer-selection environment variables when enabled.
 fn log_environment(log_level: LogLevel) {
     log_message(
         log_level,
@@ -347,6 +365,7 @@ fn log_environment(log_level: LogLevel) {
     );
 }
 
+/// Logs window geometry, scale, state, and current-monitor metadata.
 fn log_window(log_level: LogLevel, prefix: &str, window: &Window) {
     let size = window.inner_size();
     let monitor = window.current_monitor();
@@ -379,6 +398,7 @@ fn log_window(log_level: LogLevel, prefix: &str, window: &Window) {
     }
 }
 
+/// Logs the selected GPU adapter, surface capabilities, and active configuration.
 fn log_renderer(log_level: LogLevel, prefix: &str, renderer: &Renderer) {
     let adapter = renderer.adapter_info();
     let caps = renderer.surface_capabilities();
@@ -415,12 +435,14 @@ fn log_renderer(log_level: LogLevel, prefix: &str, renderer: &Renderer) {
     );
 }
 
+/// Prints a diagnostic line only when `active` admits `level`.
 fn log_message(active: LogLevel, level: LogLevel, message: fmt::Arguments<'_>) {
     if active.allows(level) {
         println!("empty_window_debug: {message}");
     }
 }
 
+/// Parses `--log-level`; help exits with zero and invalid input exits with code 2.
 fn parse_log_level_arg() -> LogLevel {
     let mut args = std::env::args().skip(1);
     let mut log_level = LogLevel::Debug;
@@ -459,6 +481,7 @@ fn parse_log_level_arg() -> LogLevel {
     log_level
 }
 
+/// Prints command usage to standard error and terminates with `code`.
 fn print_usage_and_exit(code: i32) -> ! {
     eprintln!(
         "usage: cargo run -p ailloli_ui_winit --example empty_window_debug -- [--log-level none|info|debug|trace]"
@@ -466,6 +489,7 @@ fn print_usage_and_exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
+/// Returns milliseconds since the Unix epoch, falling back to zero before the epoch.
 fn now_ms() -> u128 {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -475,6 +499,7 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// Initializes optional benchmarking and runs the low-level diagnostic event loop.
 fn main() -> Result<(), Box<dyn Error>> {
     let log_level = parse_log_level_arg();
 

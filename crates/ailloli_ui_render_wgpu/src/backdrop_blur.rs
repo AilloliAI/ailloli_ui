@@ -3,6 +3,22 @@
 use crate::effect_chain::EffectPipelines;
 
 /// Separable blur on a captured backdrop texture (in-place on `view`).
+///
+/// A nonpositive or NaN radius is a no-op. Positive radii execute the same
+/// horizontal-then-vertical chain used for isolated content; `width` and
+/// `height` are physical pixels and should match `view`.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_wgpu::{backdrop_blur::run_backdrop_blur,
+///     effect_chain::EffectPipelines};
+/// fn blur(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder,
+///     pipelines: &EffectPipelines, view: &wgpu::TextureView) {
+///     run_backdrop_blur(device, encoder, pipelines, wgpu::TextureFormat::Rgba8Unorm,
+///         view, 64, 64, 8.0, 1);
+/// }
+/// ```
 #[allow(clippy::too_many_arguments)]
 pub fn run_backdrop_blur(
     device: &wgpu::Device,

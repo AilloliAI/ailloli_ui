@@ -1,3 +1,5 @@
+//! Immediate-mode shaping and painting for one editable monospace line.
+
 use ailloli_ui_core::event::ImePreedit;
 use ailloli_ui_core::{Color, Rect, TextStyle};
 use ailloli_ui_runtime::input::Selection;
@@ -5,14 +7,34 @@ use ailloli_ui_runtime::{DrawCmd, DrawRect, DrawText};
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
 #[derive(Debug, Clone, Copy)]
+/// Colors, metrics, and blink cadence for [`draw_editable_mono_line`].
+///
+/// Widths are logical pixels and `caret_blink_ms` is milliseconds per visible
+/// or hidden half-period. A non-positive blink value suppresses the caret.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::text::EditableTextStyle;
+/// let style = EditableTextStyle::default();
+/// assert_eq!(style.caret_w, 1.0);
+/// assert_eq!(style.caret_blink_ms, 500);
+/// assert!(style.selection_bg.is_some());
+/// ```
 pub struct EditableTextStyle {
+    /// Glyph font, size in integer logical pixels, color, and decoration.
     pub text: TextStyle,
+    /// Caret fill color.
     pub caret: Color,
+    /// Caret width in logical pixels; not clamped by the draw helper.
     pub caret_w: f32,
+    /// Milliseconds per blink half-period; non-positive disables the caret.
     pub caret_blink_ms: i64,
+    /// Optional selection fill; `None` suppresses selection painting.
     pub selection_bg: Option<Color>,
 }
 
+/// Supplies a 15-pixel mono style, one-pixel caret, and 500 ms blink cadence.
 impl Default for EditableTextStyle {
     fn default() -> Self {
         Self {
@@ -29,6 +51,10 @@ impl Default for EditableTextStyle {
     }
 }
 
+/// Inserts optional preedit text into an owned display string and maps its caret.
+///
+/// Byte offsets are length-clamped but must already be UTF-8 character
+/// boundaries; `String::insert_str` panics otherwise.
 fn layout_string_for_edit(
     text: &str,
     caret_byte: usize,
@@ -56,6 +82,27 @@ fn layout_string_for_edit(
 /// Single-line editable text; baseline Y = `baseline_y` (see `DrawText.pos[1]`).
 ///
 /// Paint order: selection background (optional) → glyphs → caret.
+/// Byte offsets use UTF-8 bytes and must be character boundaries when preedit
+/// insertion occurs. Selection is intentionally hidden during preedit. The
+/// function allocates a display string and returns newly owned draw commands.
+///
+/// # Panics
+///
+/// Panics when a non-empty preedit is inserted at a clamped `caret_byte` that
+/// is not a UTF-8 character boundary.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::text::{draw_editable_mono_line, EditableTextStyle};
+/// use ailloli_ui_text::TextSystem;
+/// let mut text_system = TextSystem::new();
+/// let commands = draw_editable_mono_line(
+///     4.0, 18.0, "hello", 5, None, None, false, 0,
+///     EditableTextStyle::default(), &mut text_system,
+/// );
+/// assert_eq!(commands.len(), 1); // glyph command; unfocused means no caret
+/// ```
 #[allow(clippy::too_many_arguments)]
 pub fn draw_editable_mono_line(
     baseline_x: f32,

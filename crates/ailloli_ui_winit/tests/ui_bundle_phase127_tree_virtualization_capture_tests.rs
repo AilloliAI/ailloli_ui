@@ -12,20 +12,31 @@ use ailloli_ui_core::LogicalWindowId;
 use ailloli_ui_render_wgpu::CapturedFrame;
 use ailloli_ui_winit::{run_winit_host, NoopHostDriver, UiApp, WindowOptions, WinitHost};
 
+/// Stable logical identity of the native fixture window.
 const WINDOW_ID: &str = "phase127-tree-virtualization";
+/// Stable retained key used for focus and diagnostics lookup.
 const TREE_KEY: &str = "phase127-virtual-tree";
+/// Output filename beneath the repository capture directory.
 const CAPTURE_NAME: &str = "ui_bundle_phase127_tree_virtualization.png";
+/// Total retained nodes loaded into the synthetic tree.
 const ROW_COUNT: u64 = 100_000;
+/// Deep row selected and scrolled into the initial viewport.
 const SELECTED_ROW: u64 = 75_005;
+/// Fixed logical row height used to compute initial scroll position.
 const ROW_HEIGHT: f32 = 28.0;
+/// Maximum rows that layout or paint may visit for one viewport frame.
 const ROW_BUDGET: u64 = 53;
 
 #[derive(Clone)]
+/// Shared component inputs for the retained virtual-tree scene.
 struct SceneProps {
+    /// Mutable retained tree model shared with post-render assertions.
     model: TreeModelHandle<u64>,
+    /// Counters used to prove viewport-bounded layout and paint work.
     diagnostics: TreeViewDiagnostics,
 }
 
+/// Builds the focused, initially deep-scrolled virtual tree capture scene.
 fn scene(ctx: &mut Context<()>, props: SceneProps) -> View<()> {
     ctx.runtime().request_focus_key(TREE_KEY);
     let palette = Theme::default().palette();
@@ -65,6 +76,7 @@ fn scene(ctx: &mut Context<()>, props: SceneProps) -> View<()> {
         .into_view()
 }
 
+/// Builds a 100,000-node expanded tree with one deliberately wide nearby row.
 fn synthetic_model() -> TreeModelHandle<u64> {
     let mut model = TreeModel::new();
     let mut mutations = Vec::with_capacity(ROW_COUNT as usize);
@@ -97,6 +109,7 @@ fn synthetic_model() -> TreeModelHandle<u64> {
     TreeModelHandle::new(model)
 }
 
+/// Resolves the repository-local directory used for the final PNG artifact.
 fn captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -104,6 +117,7 @@ fn captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Verifies exact extent, encoded data, color diversity, and non-empty viewport content.
 fn assert_visual_frame(frame: &CapturedFrame) {
     assert_eq!((frame.width, frame.height), (1_000, 640));
     assert!(!frame.png_data.as_ref().expect("PNG bytes").is_empty());

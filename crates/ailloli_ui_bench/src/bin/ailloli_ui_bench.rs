@@ -1,3 +1,9 @@
+//! Command-line collection and regression gates for Ailloli UI benchmark logs.
+//!
+//! The binary can launch a reproducible scenario matrix, summarize complete
+//! JSONL runs, or compare compatible baseline and candidate populations. Matrix
+//! indexes are published without overwrite and bind every run by SHA-256.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::ffi::OsString;
@@ -17,9 +23,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// Schema version of the matrix index format, independent of the run-log schema.
 const MATRIX_INDEX_SCHEMA_VERSION: u32 = 1;
+/// Fixed file name used to identify an indexed scenario directory.
 const MATRIX_INDEX_FILE: &str = "matrix-index.json";
+/// Machine-readable status emitted when no historical wake baseline exists.
 const HISTORICAL_WAKE_BASELINE_STATUS: &str = "N/A";
+/// Stable explanation accompanying [`HISTORICAL_WAKE_BASELINE_STATUS`].
 const HISTORICAL_WAKE_BASELINE_REASON: &str =
     "the wake/mailbox path did not exist before Phase 125; no comparable historical run exists";
 
@@ -30,11 +40,14 @@ const HISTORICAL_WAKE_BASELINE_REASON: &str =
     about = "Ailloli UI benchmark gate",
     after_help = "Cargo usage requires the opt-in feature:\n  cargo run --release -p ailloli_ui_bench --features cli --bin ailloli-ui-bench --locked -- <COMMAND>"
 )]
+/// Parsed top-level command line.
 struct Cli {
+    /// Operation selected by the user.
     #[command(subcommand)]
     command: CliCommand,
 }
 
+/// Supported benchmark CLI operations.
 #[derive(Debug, Subcommand)]
 enum CliCommand {
     /// Runs an executable in isolated child processes for a scenario matrix.
@@ -45,14 +58,19 @@ enum CliCommand {
     Compare(CompareArgs),
 }
 
+/// Sampling population used by matrix collection and legacy CLI selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum ModeArg {
+    /// One process containing warmup and at least 30 measured samples.
     Steady,
+    /// Independent processes, including at least five measured processes.
     ColdStart,
 }
 
+/// Converts CLI population terminology to the library gate terminology.
 impl From<ModeArg> for ComparisonMode {
+    /// Maps the CLI spelling to the library comparison mode.
     fn from(value: ModeArg) -> Self {
         match value {
             ModeArg::Steady => Self::SteadyState,
@@ -61,14 +79,19 @@ impl From<ModeArg> for ComparisonMode {
     }
 }
 
+/// Arguments controlling matrix identity, sample population, and child command.
 #[derive(Debug, Args)]
 struct RunMatrixArgs {
+    /// Root below which phase/backend/scenario directories are created.
     #[arg(long)]
     output_root: PathBuf,
+    /// Path-safe phase identifier such as `baseline` or `candidate`.
     #[arg(long)]
     phase: String,
+    /// Path-safe `winit` version identity.
     #[arg(long)]
     winit_version: String,
+    /// Path-safe requested window backend, for example `wayland`.
     #[arg(long)]
     backend: String,
     /// Cargo/build profile of the measured child (for example `release`).
@@ -89,58 +112,83 @@ struct RunMatrixArgs {
     /// Requested window dimensions formatted as WIDTHxHEIGHT.
     #[arg(long, default_value = "1280x720")]
     window: String,
+    /// Unique, path-safe scenario names to collect.
     #[arg(long, required = true)]
     scenario: Vec<String>,
+    /// Process/sample population model; defaults to steady state.
     #[arg(long, value_enum, default_value = "steady")]
     mode: ModeArg,
+    /// Warmup samples, or warmup processes in cold-start mode.
     #[arg(long, default_value_t = 3)]
     warmups: u32,
+    /// Measured samples, or measured processes in cold-start mode.
     #[arg(long, default_value_t = 30)]
     samples: u32,
+    /// Requested workload duration in milliseconds; child timeout adds 30 seconds and is at least 60 seconds.
     #[arg(long, default_value_t = 10_000)]
     duration_ms: u32,
+    /// Executable followed by its arguments, after `--`.
     #[arg(last = true, required = true, num_args = 1..)]
     child: Vec<OsString>,
 }
 
+/// Input path accepted by the summary operation.
 #[derive(Debug, Args)]
 struct InputArgs {
+    /// JSONL file, artifact tree, or indexed matrix scenario directory.
     #[arg(long)]
     input: PathBuf,
 }
 
+/// Baseline/candidate paths and compatibility relaxation for comparison.
 #[derive(Debug, Args)]
 struct CompareArgs {
+    /// Baseline JSONL file or artifact tree.
     #[arg(long)]
     baseline: PathBuf,
+    /// Candidate JSONL file or artifact tree.
     #[arg(long)]
     candidate: PathBuf,
+    /// Legacy mode selector; explicit per-metric roles remain authoritative.
     #[arg(long, value_enum, default_value = "steady")]
     mode: ModeArg,
+    /// Whether the two populations may use different `winit` versions.
     #[arg(long)]
     allow_winit_version_diff: bool,
 }
 
+/// Deterministic JSON payload produced by `summarize`.
 #[derive(Debug, Serialize)]
 struct SummaryOutput {
+    /// Number of complete measured runs included.
     runs: usize,
+    /// Explicit status for the unavailable pre-Phase-125 wake baseline.
     historical_wake_baseline: HistoricalWakeBaseline,
+    /// Summaries keyed by metric name.
     metrics: BTreeMap<String, MetricSummary>,
 }
 
+/// Deterministic JSON payload and aggregate gate result produced by `compare`.
 #[derive(Debug, Serialize)]
 struct ComparisonOutput {
+    /// `true` when at least one metric comparison fails its role-specific gate.
     failed: bool,
+    /// Comparisons sorted by metric name.
     comparisons: Vec<MetricComparison>,
 }
 
+/// Serializable status explaining the absence of a comparable historical wake run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct HistoricalWakeBaseline {
+    /// Stable status token, currently `N/A`.
     status: String,
+    /// Human-readable reason why no baseline can be supplied.
     reason: String,
 }
 
+/// Constructs the canonical historical-baseline status.
 impl HistoricalWakeBaseline {
+    /// Returns the one canonical unavailable-baseline value.
     fn unavailable() -> Self {
         Self {
             status: HISTORICAL_WAKE_BASELINE_STATUS.to_string(),
@@ -149,39 +197,67 @@ impl HistoricalWakeBaseline {
     }
 }
 
+/// Integrity manifest for one phase/backend/scenario matrix directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MatrixIndex {
+    /// Version of this index structure.
     index_schema_version: u32,
+    /// Required schema version of every referenced benchmark log.
     benchmark_schema_version: u32,
+    /// Matrix phase identity.
     phase: String,
+    /// Recorded `winit` version identity.
     winit_version: String,
+    /// Effective window backend required in every run.
     backend: String,
+    /// Scenario identity required in every run.
     scenario: String,
+    /// Build profile required in every run.
     profile: String,
+    /// Stable harness identity required in every run.
     harness: String,
+    /// Optional compilation target required in every run when present.
     target: Option<String>,
+    /// Optional machine identity required in every run when present.
     machine: Option<String>,
+    /// Requested device-pixel ratio; finite and greater than zero.
     requested_dpr: f64,
+    /// Requested non-zero logical window width in pixels.
     window_width: u32,
+    /// Requested non-zero logical window height in pixels.
     window_height: u32,
+    /// Collection population model.
     mode: ModeArg,
+    /// Expected warmup sample/process count.
     warmups: u32,
+    /// Expected measured sample/process count.
     samples: u32,
+    /// Requested child workload duration in milliseconds.
     duration_ms: u32,
+    /// Canonical unavailable historical-baseline marker.
     historical_wake_baseline: HistoricalWakeBaseline,
+    /// Strictly sorted, unique run entries covering every JSONL file below the index.
     runs: Vec<MatrixRunEntry>,
 }
 
+/// Integrity and identity information for one indexed benchmark run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MatrixRunEntry {
+    /// Slash-separated path confined below the scenario directory.
     path: String,
+    /// Lowercase hexadecimal SHA-256 of the complete JSONL file.
     sha256: String,
+    /// Run identifier copied from the start record.
     run_id: String,
+    /// Common schema version of all recognized records in the run.
     run_schema_version: u32,
+    /// Whether this cold-start process is excluded from gate populations.
     warmup_process: bool,
+    /// Metadata after applying every update in log order.
     final_metadata: RunMetadata,
 }
 
+/// Parses and executes the CLI, using exit code 2 for a completed regression gate.
 fn main() -> ExitCode {
     match execute(Cli::parse()) {
         Ok(false) => ExitCode::SUCCESS,
@@ -193,6 +269,10 @@ fn main() -> ExitCode {
     }
 }
 
+/// Executes one parsed command and returns whether a comparison gate failed.
+///
+/// Operational, validation, serialization, and I/O failures are returned as
+/// errors and therefore map to the generic failure exit code in [`main`].
 fn execute(cli: Cli) -> Result<bool, Box<dyn Error>> {
     match cli.command {
         CliCommand::RunMatrix(args) => {
@@ -213,6 +293,11 @@ fn execute(cli: Cli) -> Result<bool, Box<dyn Error>> {
     }
 }
 
+/// Validates a matrix request, collects each scenario, and atomically publishes its index.
+///
+/// Steady mode requires at least 30 measured samples. Cold-start mode requires
+/// at least five independent measured processes. Existing artifacts are never
+/// overwritten, and a failed child leaves no index that could authorize a gate.
 fn run_matrix(args: &RunMatrixArgs) -> Result<(), Box<dyn Error>> {
     if args.child.is_empty() {
         return Err("child command is required".into());
@@ -313,6 +398,7 @@ fn run_matrix(args: &RunMatrixArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Builds `output/phase/winit-VERSION/backend/scenario` after segment validation.
 fn matrix_scenario_root(args: &RunMatrixArgs, scenario: &str) -> PathBuf {
     args.output_root
         .join(&args.phase)
@@ -321,6 +407,7 @@ fn matrix_scenario_root(args: &RunMatrixArgs, scenario: &str) -> PathBuf {
         .join(scenario)
 }
 
+/// Rejects indexes, logs, output files, or file roots that would be overwritten.
 fn preflight_matrix_destination(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -370,6 +457,11 @@ fn preflight_matrix_destination(
     Ok(())
 }
 
+/// Runs one benchmark child with a complete environment contract.
+///
+/// The child must exit successfully before the timeout, which is the requested
+/// duration plus 30 seconds and never less than 60 seconds. Timeout termination
+/// waits for the process after killing it.
 fn run_child(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -441,12 +533,14 @@ fn run_child(
     }
 }
 
+/// Adds warmup and measured frame counts, rejecting `u32` overflow.
 fn matrix_frame_count(warmups: u32, samples: u32) -> Result<u32, Box<dyn Error>> {
     warmups
         .checked_add(samples)
         .ok_or_else(|| "warmup + measured sample count exceeds u32".into())
 }
 
+/// Validates a completed child log and constructs its confined, hashed index entry.
 fn index_run(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -504,6 +598,10 @@ fn index_run(
     })
 }
 
+/// Requires a child run to reproduce every requested matrix identity field.
+///
+/// Floating-point DPR values are compared by exact bit pattern. The explicit
+/// `scenario_gate_ready` extension must also permit gating when present.
 fn validate_matrix_run_metadata(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -552,6 +650,10 @@ fn validate_matrix_run_metadata(
     Ok(())
 }
 
+/// Reads the optional boolean scenario-fidelity gate.
+///
+/// Absence means `true` for schema-one and third-party harness compatibility;
+/// a present non-boolean value is rejected.
 fn scenario_gate_ready(metadata: &RunMetadata) -> Result<bool, Box<dyn Error>> {
     match metadata.extensions.get("scenario_gate_ready") {
         Some(serde_json::Value::Bool(ready)) => Ok(*ready),
@@ -563,6 +665,7 @@ fn scenario_gate_ready(metadata: &RunMetadata) -> Result<bool, Box<dyn Error>> {
     }
 }
 
+/// Serializes, creates, writes, and synchronizes an index without overwriting a file.
 fn publish_matrix_index(path: &Path, index: &MatrixIndex) -> Result<(), Box<dyn Error>> {
     let mut bytes = serde_json::to_vec_pretty(index)?;
     bytes.push(b'\n');
@@ -581,6 +684,7 @@ fn publish_matrix_index(path: &Path, index: &MatrixIndex) -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// Streams a file in 64-KiB chunks and returns its lowercase SHA-256 digest.
 fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -595,6 +699,11 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Compares compatible baseline and candidate populations and prints JSON.
+///
+/// Diagnostic metrics may exist on only one side. Gating and correctness
+/// metrics must exist on both sides with equal roles and sufficient populations.
+/// The return value is `true` only for a completed comparison whose gate failed.
 fn compare(args: &CompareArgs) -> Result<bool, Box<dyn Error>> {
     let baseline_runs = load_gate_runs(&args.baseline)?;
     let candidate_runs = load_gate_runs(&args.candidate)?;
@@ -659,6 +768,11 @@ fn compare(args: &CompareArgs) -> Result<bool, Box<dyn Error>> {
     Ok(failed)
 }
 
+/// Enforces the sample/process minimum associated with a metric role.
+///
+/// Steady gates need 30 samples. Cold-start gates need five processes and
+/// exactly one sample per process. Diagnostics and correctness metrics need at
+/// least one measured sample.
 fn validate_metric_population(
     side: &str,
     metric: &str,
@@ -687,6 +801,10 @@ fn validate_metric_population(
     }
 }
 
+/// Loads complete measured runs from a file, tree, or indexed matrix directory.
+///
+/// Unindexed trees exclude artifacts below `warmup-*` components. Indexed trees
+/// instead receive full manifest, hash, identity, and population validation.
 fn load_gate_runs(path: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>> {
     if path.is_dir() && path.join(MATRIX_INDEX_FILE).exists() {
         return load_indexed_gate_runs(path);
@@ -716,6 +834,11 @@ fn load_gate_runs(path: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>> {
     Ok(runs)
 }
 
+/// Validates an index as an exact integrity manifest and returns non-warmup runs.
+///
+/// Paths must be sorted and unique, cover exactly all JSONL artifacts below
+/// `root`, remain confined there, match their SHA-256 and run ID, and reproduce
+/// the index identity and expected process counts.
 fn load_indexed_gate_runs(root: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>> {
     let index_path = root.join(MATRIX_INDEX_FILE);
     let index: MatrixIndex = serde_json::from_reader(File::open(&index_path)?)?;
@@ -902,6 +1025,7 @@ fn load_indexed_gate_runs(root: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>>
     Ok(gate_runs)
 }
 
+/// Resolves a slash-separated index path while rejecting absolute or traversing paths.
 fn safe_indexed_path(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn Error>> {
     if relative.is_empty() || relative.starts_with('/') || relative.contains('\\') {
         return Err(format!("invalid matrix index run path: {relative:?}").into());
@@ -916,6 +1040,10 @@ fn safe_indexed_path(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn Err
     Ok(path)
 }
 
+/// Requires homogeneous populations and equal environment identity across sides.
+///
+/// The `winit` version is the sole optionally relaxed field. Floating-point
+/// scale factors are represented by their exact bits in the compatibility key.
 fn ensure_compatible(
     baseline: &[ParsedRun],
     candidate: &[ParsedRun],
@@ -924,6 +1052,7 @@ fn ensure_compatible(
     let baseline = homogeneous_compatibility("baseline", baseline)?;
     let candidate = homogeneous_compatibility("candidate", candidate)?;
 
+    /// Returns a field-specific incompatibility error when a key component differs.
     macro_rules! require_equal {
         ($label:literal, $field:ident) => {
             if baseline.$field != candidate.$field {
@@ -961,6 +1090,7 @@ fn ensure_compatible(
     Ok(())
 }
 
+/// Returns one compatibility key when every run in a non-empty population agrees.
 fn homogeneous_compatibility(
     label: &str,
     runs: &[ParsedRun],
@@ -977,29 +1107,50 @@ fn homogeneous_compatibility(
     Ok(compatibility)
 }
 
+/// Canonical environment identity required for meaningful statistical comparison.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompatibilityKey {
+    /// Common benchmark record schema version.
     schema_version: u32,
+    /// Scenario identity.
     scenario: String,
+    /// Build profile identity.
     profile: String,
+    /// Timestamp origin used by event records.
     time_origin: TimeOrigin,
+    /// Operating-system identity.
     operating_system: String,
+    /// `winit` version identity.
     winit_version: String,
+    /// Effective window-system backend.
     window_backend: String,
+    /// Optional renderer backend.
     renderer_backend: Option<String>,
+    /// Optional GPU identity.
     gpu: Option<String>,
+    /// Optional driver identity.
     driver: Option<String>,
+    /// Non-zero logical window width in pixels.
     window_width: u32,
+    /// Non-zero logical window height in pixels.
     window_height: u32,
+    /// Exact bit representation of the finite positive requested DPR.
     requested_scale_factor_bits: u64,
+    /// Exact bit representation of the finite positive observed DPR.
     observed_scale_factor_bits: u64,
+    /// Stable harness identity.
     harness: String,
+    /// Optional compilation target.
     target: Option<String>,
+    /// Optional machine identity.
     machine: Option<String>,
+    /// Optional configured warmup sample count.
     warmup_samples: Option<u32>,
+    /// Optional configured measured sample count.
     measured_samples: Option<u32>,
 }
 
+/// Extracts and validates the comparison identity of one parsed run.
 fn compatibility_tuple(run: &ParsedRun) -> Result<CompatibilityKey, Box<dyn Error>> {
     let metadata = run.final_metadata();
     let scenario = required_metadata("scenario", metadata.scenario.clone())?;
@@ -1057,6 +1208,7 @@ fn compatibility_tuple(run: &ParsedRun) -> Result<CompatibilityKey, Box<dyn Erro
     })
 }
 
+/// Returns the start-record schema after requiring all recognized records to match it.
 fn run_schema_version(run: &ParsedRun) -> Result<u32, Box<dyn Error>> {
     let start = run
         .start
@@ -1080,6 +1232,7 @@ fn run_schema_version(run: &ParsedRun) -> Result<u32, Box<dyn Error>> {
     Ok(version)
 }
 
+/// Unwraps required string metadata and rejects absent or whitespace-only values.
 fn required_metadata(label: &str, value: Option<String>) -> Result<String, Box<dyn Error>> {
     match value {
         Some(value) if !value.trim().is_empty() => Ok(value),
@@ -1087,6 +1240,7 @@ fn required_metadata(label: &str, value: Option<String>) -> Result<String, Box<d
     }
 }
 
+/// Reconciles the explicit harness field with its legacy extension alias.
 fn harness_identity(metadata: &RunMetadata) -> Result<Option<String>, Box<dyn Error>> {
     metadata_string_with_extensions(
         metadata,
@@ -1096,6 +1250,10 @@ fn harness_identity(metadata: &RunMetadata) -> Result<Option<String>, Box<dyn Er
     )
 }
 
+/// Reconciles one optional explicit string with non-empty extension aliases.
+///
+/// All representations must agree exactly. `None` means no representation was
+/// present; empty strings, wrong JSON types, and conflicting aliases are errors.
 fn metadata_string_with_extensions(
     metadata: &RunMetadata,
     label: &str,
@@ -1125,6 +1283,7 @@ fn metadata_string_with_extensions(
     Ok(value)
 }
 
+/// Returns the requested DPR when finite and greater than zero.
 fn requested_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn Error>> {
     match metadata.scale_factor {
         Some(value) if value.is_finite() && value > 0.0 => Ok(Some(value)),
@@ -1133,6 +1292,10 @@ fn requested_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn
     }
 }
 
+/// Resolves the effective window backend from extension, explicit field, then legacy field.
+///
+/// A present extension must be a non-empty string and must equal the explicit
+/// field when both exist.
 fn effective_window_backend(metadata: &RunMetadata) -> Result<Option<String>, Box<dyn Error>> {
     let extension = metadata.extensions.get("winit_backend_actual");
     let extension = match extension {
@@ -1155,6 +1318,7 @@ fn effective_window_backend(metadata: &RunMetadata) -> Result<Option<String>, Bo
         .or_else(|| metadata.backend.clone()))
 }
 
+/// Reconciles observed-DPR fields and aliases as exact finite positive values.
 fn observed_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn Error>> {
     let extension = metadata
         .extensions
@@ -1184,6 +1348,7 @@ fn observed_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn 
     Ok(extension.or(metadata.observed_scale_factor))
 }
 
+/// Rejects empty, dot, parent, and separator-containing path segments.
 fn validate_path_segment(label: &str, segment: &str) -> Result<(), Box<dyn Error>> {
     if segment.is_empty()
         || segment == "."
@@ -1196,6 +1361,7 @@ fn validate_path_segment(label: &str, segment: &str) -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// Requires a string to contain at least one non-whitespace character.
 fn validate_non_empty(label: &str, value: &str) -> Result<(), Box<dyn Error>> {
     if value.trim().is_empty() {
         return Err(format!("{label} must be a non-empty string").into());
@@ -1203,6 +1369,7 @@ fn validate_non_empty(label: &str, value: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Parses `WIDTHxHEIGHT` as non-zero `u32` logical pixel dimensions.
 fn parse_window(value: &str) -> Result<(u32, u32), Box<dyn Error>> {
     let (width, height) = value
         .split_once('x')

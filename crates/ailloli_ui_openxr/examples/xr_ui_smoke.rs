@@ -1,3 +1,9 @@
+//! Command-line OpenXR smoke host for UI, controller/hand input, and affordances.
+//!
+//! The example accepts CLI flags over environment variables, logs to stdout and
+//! optionally a file, and exits nonzero on initialization or frame-loop failure.
+
+/// Runs the native smoke host and reports fatal errors to stderr.
 #[cfg(feature = "openxr")]
 fn main() {
     if let Err(error) = run() {
@@ -6,6 +12,7 @@ fn main() {
     }
 }
 
+/// Explains the required feature and exits nonzero when OpenXR is disabled.
 #[cfg(not(feature = "openxr"))]
 fn main() {
     eprintln!(
@@ -16,23 +23,37 @@ fn main() {
 
 #[cfg(feature = "openxr")]
 #[derive(Debug, Clone, Copy)]
+/// Actions emitted by the example's buttons and window chrome.
 enum SmokeAction {
+    /// Primary diagnostic button.
     Primary,
+    /// Secondary diagnostic button.
     Secondary,
+    /// Window affordance kind reported to the log.
     Affordance(ailloli_ui_widgets::chrome::WindowAffordanceKind),
+    /// Request loop shutdown.
     Exit,
 }
 
 #[cfg(feature = "openxr")]
 #[derive(Debug, Clone)]
+/// Parsed command-line and environment configuration.
 struct SmokeArgs {
+    /// Prefer left controller when both pointers are candidates.
     prefer_left: bool,
+    /// Allow tracked-hand input.
     hands: bool,
+    /// Positive panel distance in metres.
     distance_m: f32,
+    /// Positive logical-to-physical scale/DPR.
     scale: f32,
+    /// Optional positive automatic-exit delay in seconds.
     timeout_sec: Option<f32>,
+    /// Optional append-only log destination.
     log_path: Option<std::path::PathBuf>,
+    /// Whether to show movable/resizable chrome.
     affordance_demo: bool,
+    /// Panel-facing mode and pitch bounds.
     panel_facing: ailloli_ui_openxr::OpenXrPanelFacingOptions,
 }
 
@@ -53,6 +74,7 @@ impl Default for SmokeArgs {
 }
 
 #[cfg(feature = "openxr")]
+/// Initializes the runtime, builds the view, and processes actions until exit.
 fn run() -> Result<(), String> {
     use std::time::{Duration, Instant};
 
@@ -141,6 +163,7 @@ fn run() -> Result<(), String> {
 }
 
 #[cfg(feature = "openxr")]
+/// Builds either the standard checklist or affordance demo view.
 fn smoke_view(args: SmokeArgs) -> ailloli_ui_runtime::component::View<SmokeAction> {
     use ailloli_ui_core::{Color, FontId, TextStyle};
     use ailloli_ui_runtime::component::{IntoView, IntoViewKeyExt};
@@ -311,6 +334,7 @@ fn smoke_view(args: SmokeArgs) -> ailloli_ui_runtime::component::View<SmokeActio
 }
 
 #[cfg(feature = "openxr")]
+/// Parses environment defaults followed by overriding command-line flags.
 fn parse_args() -> Result<SmokeArgs, String> {
     let mut args = SmokeArgs::from_env()?;
     let mut iter = std::env::args().skip(1);
@@ -365,6 +389,7 @@ fn parse_args() -> Result<SmokeArgs, String> {
 
 #[cfg(feature = "openxr")]
 impl SmokeArgs {
+    /// Reads primary Ailloli variables with legacy OctavUI fallbacks.
     fn from_env() -> Result<Self, String> {
         let mut args = SmokeArgs::default();
         if env_bool("AILLOLI_UI_XR_PREFER_LEFT", "OCTAVUI_XR_PREFER_LEFT")? {
@@ -415,6 +440,7 @@ impl SmokeArgs {
 }
 
 #[cfg(feature = "openxr")]
+/// Reads a non-empty Unicode primary variable or falls back to the legacy name.
 fn optional_env(primary: &str, legacy: &str) -> Option<String> {
     match std::env::var(primary) {
         Ok(value) if !value.trim().is_empty() => Some(value),
@@ -427,6 +453,7 @@ fn optional_env(primary: &str, legacy: &str) -> Option<String> {
 }
 
 #[cfg(feature = "openxr")]
+/// Parses a boolean environment variable from the documented eight literals.
 fn env_bool(primary: &str, legacy: &str) -> Result<bool, String> {
     let Some(value) = optional_env(primary, legacy) else {
         return Ok(false);
@@ -441,12 +468,14 @@ fn env_bool(primary: &str, legacy: &str) -> Result<bool, String> {
 }
 
 #[cfg(feature = "openxr")]
+/// Returns the next CLI token or a flag-specific missing-value error plus usage.
 fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     iter.next()
         .ok_or_else(|| format!("{flag} expects a value\n\n{}", usage()))
 }
 
 #[cfg(feature = "openxr")]
+/// Parses a finite floating-point value strictly greater than zero.
 fn parse_positive_f32(flag: &str, value: &str) -> Result<f32, String> {
     let parsed = parse_finite_f32(flag, value)?;
     if parsed > 0.0 {
@@ -457,6 +486,7 @@ fn parse_positive_f32(flag: &str, value: &str) -> Result<f32, String> {
 }
 
 #[cfg(feature = "openxr")]
+/// Parses a finite floating-point value, rejecting NaN and infinities.
 fn parse_finite_f32(flag: &str, value: &str) -> Result<f32, String> {
     let parsed = value
         .parse::<f32>()
@@ -469,6 +499,7 @@ fn parse_finite_f32(flag: &str, value: &str) -> Result<f32, String> {
 }
 
 #[cfg(feature = "openxr")]
+/// Parses fixed, yaw-only aliases, or yaw-pitch panel-facing mode.
 fn parse_panel_facing(
     flag: &str,
     value: &str,
@@ -488,12 +519,15 @@ fn parse_panel_facing(
 }
 
 #[cfg(feature = "openxr")]
+/// Stdout logger with an optional append-only file sink.
 struct SmokeLogger {
+    /// Open append handle, or `None` for stdout-only logging.
     file: Option<std::fs::File>,
 }
 
 #[cfg(feature = "openxr")]
 impl SmokeLogger {
+    /// Opens the optional log path, creating non-empty parent directories.
     fn new(path: Option<&std::path::Path>) -> Result<Self, String> {
         let Some(path) = path else {
             return Ok(Self { file: None });
@@ -513,6 +547,7 @@ impl SmokeLogger {
         Ok(Self { file: Some(file) })
     }
 
+    /// Writes one line to stdout and best-effort to the optional file.
     fn log(&mut self, line: impl AsRef<str>) {
         use std::io::Write;
 
@@ -525,6 +560,7 @@ impl SmokeLogger {
 }
 
 #[cfg(feature = "openxr")]
+/// Logs normalized startup options and the manual validation checklist.
 fn print_startup(logger: &mut SmokeLogger, args: &SmokeArgs) {
     logger.log("[ailloli_ui-xr-smoke] starting");
     logger.log(format!(
@@ -552,11 +588,13 @@ fn print_startup(logger: &mut SmokeLogger, args: &SmokeArgs) {
 }
 
 #[cfg(feature = "openxr")]
+/// Prints the command-line usage string.
 fn print_usage() {
     println!("{}", usage());
 }
 
 #[cfg(feature = "openxr")]
+/// Returns complete CLI usage, accepted flags, units, and defaults.
 fn usage() -> &'static str {
     "Usage: cargo run -p ailloli_ui_openxr --example xr_ui_smoke --features openxr -- [options]\n\
      Options:\n\

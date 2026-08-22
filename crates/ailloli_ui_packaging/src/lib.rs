@@ -1,4 +1,20 @@
 //! Consumer-side desktop packaging for Ailloli UI applications.
+//!
+//! The `cargo-ailloli-ui` binary discovers a consumer package through Cargo
+//! metadata, builds or authenticates its executable, probes the embedded
+//! application identity, and emits a host-native package plus checksums and a
+//! JSON manifest. Packaging is intentionally host-native: this crate does not
+//! claim that copying a foreign-target executable is sufficient to create a
+//! valid package.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! fn main() -> Result<(), ailloli_ui_packaging::PackagingError> {
+//!     // Reads the real process arguments and current directory.
+//!     ailloli_ui_packaging::run_from_env()
+//! }
+//! ```
 
 mod icons;
 mod linux;
@@ -18,28 +34,65 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Version of the deterministic generated-icon cache layout.
+///
+/// Changing icon layout or encoding semantics requires changing this value so
+/// stale derivatives cannot be mistaken for current output.
 const GENERATOR_VERSION: &str = "1";
 
+/// Error returned by the packaging command and its format-specific backends.
+///
+/// The display text is intended for command-line diagnostics. Callers should
+/// match variants, not parse those strings.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_packaging::PackagingError;
+///
+/// let error: PackagingError = std::io::Error::new(
+///     std::io::ErrorKind::PermissionDenied,
+///     "artifact",
+/// ).into();
+/// assert!(matches!(error, PackagingError::Io(_)));
+/// assert!(error.to_string().contains("packaging I/O failed"));
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum PackagingError {
+    /// A packaging invariant or external command failed with contextual text.
     #[error("{0}")]
     Message(String),
+    /// A filesystem or process-I/O operation failed.
     #[error("packaging I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Identity, receipt, or manifest JSON was malformed.
     #[error("invalid packaging JSON: {0}")]
     Json(#[from] serde_json::Error),
+    /// Application-icon validation or generation failed.
     #[error(transparent)]
     Icon(#[from] icons::IconGenerationError),
+    /// A portable Windows ZIP archive could not be generated.
     #[error("ZIP generation failed: {0}")]
     Zip(#[from] zip::result::ZipError),
 }
 
+/// Constructors used to preserve contextual command-line diagnostics.
 impl PackagingError {
+    /// Wraps a human-readable invariant failure without assigning another source error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_packaging::PackagingError;
+    /// let error: PackagingError = std::io::Error::other("fixture").into();
+    /// assert!(error.to_string().contains("fixture"));
+    /// ```
     pub(crate) fn message(message: impl Into<String>) -> Self {
         Self::Message(message.into())
     }
 }
 
+/// Parsed `cargo ailloli-ui` command line.
 #[derive(Debug, Parser)]
 #[command(
     name = "cargo ailloli-ui",
@@ -47,10 +100,12 @@ impl PackagingError {
     about = "Package an Ailloli UI consumer application"
 )]
 struct Cli {
+    /// Selected top-level operation.
     #[command(subcommand)]
     command: CliCommand,
 }
 
+/// Top-level packaging operations exposed by the Cargo subcommand.
 #[derive(Debug, Subcommand)]
 enum CliCommand {
     /// Validate and generate PNG, ICO and ICNS icon derivatives without building the app.
@@ -59,6 +114,7 @@ enum CliCommand {
     Package(PackageArgs),
 }
 
+/// Optional selectors shared by icon generation and packaging.
 #[derive(Debug, Args)]
 struct SelectionArgs {
     /// Cargo package to select when the current workspace is ambiguous.
@@ -69,14 +125,18 @@ struct SelectionArgs {
     bin: Option<String>,
 }
 
+/// Arguments for generating icon derivatives only.
 #[derive(Debug, Args)]
 struct IconsArgs {
+    /// Consumer package and binary selection.
     #[command(flatten)]
     selection: SelectionArgs,
 }
 
+/// Arguments controlling a full package build.
 #[derive(Debug, Args)]
 struct PackageArgs {
+    /// Consumer package and binary selection.
     #[command(flatten)]
     selection: SelectionArgs,
     /// Cargo build profile. Defaults to release.
@@ -93,22 +153,33 @@ struct PackageArgs {
     no_build: bool,
 }
 
+/// User-facing output format selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum PackageFormat {
+    /// Selects the sole supported format for the current host.
     Auto,
+    /// Builds a Debian `ar` package; valid only on Linux hosts.
     Deb,
+    /// Builds a portable ZIP with an updated PE executable; valid only on Windows.
     WindowsZip,
+    /// Builds and archives an application bundle; valid only on macOS.
     MacosApp,
 }
 
+/// Normalized host platform used for validation and output naming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Platform {
+    /// Linux and Debian packaging.
     Linux,
+    /// Windows PE and ZIP packaging.
     Windows,
+    /// macOS application-bundle packaging.
     Macos,
 }
 
+/// Stable staging labels for each supported platform.
 impl Platform {
+    /// Returns the lowercase stable label used as a staging-directory name.
     fn name(self) -> &'static str {
         match self {
             Self::Linux => "linux",
@@ -119,6 +190,26 @@ impl Platform {
 }
 
 /// Runs the external Cargo subcommand using process arguments and current directory.
+///
+/// Cargo invokes an external subcommand as `cargo-ailloli-ui ailloli-ui ...`;
+/// the redundant second argument is removed when present. Parsing errors and
+/// help/version requests are handled by `clap` and may terminate the process.
+/// Successful packaging writes below Cargo's target directory and may invoke
+/// both Cargo and the built consumer executable.
+///
+/// # Errors
+///
+/// Returns an error when the current directory is unavailable or any discovery,
+/// build, identity, staging, archive, or manifest step fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// let result: Result<(), ailloli_ui_packaging::PackagingError> =
+///     ailloli_ui_packaging::run_from_env();
+/// result?;
+/// # Ok::<(), ailloli_ui_packaging::PackagingError>(())
+/// ```
 pub fn run_from_env() -> Result<(), PackagingError> {
     let mut args: Vec<OsString> = std::env::args_os().collect();
     if args.get(1).is_some_and(|value| value == "ailloli-ui") {
@@ -128,6 +219,7 @@ pub fn run_from_env() -> Result<(), PackagingError> {
     run(cli, &std::env::current_dir()?)
 }
 
+/// Executes an already parsed command relative to `cwd`.
 fn run(cli: Cli, cwd: &Path) -> Result<(), PackagingError> {
     let metadata = cargo_metadata(cwd)?;
     match cli.command {
@@ -136,31 +228,48 @@ fn run(cli: Cli, cwd: &Path) -> Result<(), PackagingError> {
     }
 }
 
+/// Minimal subset of Cargo metadata used by the packager.
 #[derive(Debug, Deserialize)]
 struct CargoMetadata {
+    /// Workspace packages returned by `cargo metadata --no-deps`.
     packages: Vec<CargoPackage>,
+    /// Cargo target directory in which caches and distributions are written.
     target_directory: PathBuf,
 }
 
+/// Consumer package metadata relevant to selection and package manifests.
 #[derive(Debug, Clone, Deserialize)]
 struct CargoPackage {
+    /// Cargo package name before distribution-name normalization.
     name: String,
+    /// Package version copied verbatim into artifacts and metadata.
     version: String,
+    /// Absolute or metadata-relative path to the package manifest.
     manifest_path: PathBuf,
+    /// Cargo authors; Debian requires one `Name <email>` entry.
     authors: Vec<String>,
+    /// Optional Cargo description; required for Linux AppStream and Debian metadata.
     description: Option<String>,
+    /// Optional SPDX license expression; required for Linux AppStream metadata.
     license: Option<String>,
+    /// Optional project homepage copied into the distribution manifest.
     homepage: Option<String>,
+    /// Optional source repository copied into the distribution manifest.
     repository: Option<String>,
+    /// Build targets used to choose exactly one binary.
     targets: Vec<CargoTarget>,
 }
 
+/// Cargo target metadata used by binary selection.
 #[derive(Debug, Clone, Deserialize)]
 struct CargoTarget {
+    /// Cargo target name and eventual executable basename.
     name: String,
+    /// Cargo target kinds; a binary contains the exact string `bin`.
     kind: Vec<String>,
 }
 
+/// Queries Cargo without dependency metadata in `cwd`.
 fn cargo_metadata(cwd: &Path) -> Result<CargoMetadata, PackagingError> {
     let output = Command::new(cargo_program())
         .args(["metadata", "--format-version", "1", "--no-deps"])
@@ -175,10 +284,14 @@ fn cargo_metadata(cwd: &Path) -> Result<CargoMetadata, PackagingError> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
+/// Returns the Cargo executable from `CARGO`, falling back to `cargo`.
 fn cargo_program() -> OsString {
     std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
+/// Selects one package explicitly, by current manifest, or by singleton fallback.
+///
+/// An absent request never guesses when a multi-package workspace is ambiguous.
 fn select_package<'a>(
     cwd: &Path,
     metadata: &'a CargoMetadata,
@@ -222,6 +335,7 @@ fn select_package<'a>(
     }
 }
 
+/// Selects one binary target, requiring `--bin` when several exist.
 fn select_binary<'a>(
     package: &'a CargoPackage,
     requested: Option<&str>,
@@ -255,6 +369,11 @@ fn select_binary<'a>(
     }
 }
 
+/// Returns the directory containing a package's Cargo manifest.
+///
+/// # Panics
+///
+/// Panics only if Cargo metadata supplies a manifest path with no parent.
 fn package_root(package: &CargoPackage) -> &Path {
     package
         .manifest_path
@@ -262,10 +381,12 @@ fn package_root(package: &CargoPackage) -> &Path {
         .expect("Cargo manifest has a parent")
 }
 
+/// Resolves the framework's conventional icon path below a consumer package.
 fn conventional_icon_path(package: &CargoPackage) -> PathBuf {
     package_root(package).join(CONVENTIONAL_APP_ICON_PATH)
 }
 
+/// Implements the icon-only command in the content-addressed target cache.
 fn generate_icons_command(
     cwd: &Path,
     metadata: &CargoMetadata,
@@ -294,23 +415,47 @@ fn generate_icons_command(
     Ok(())
 }
 
+/// Immutable inputs shared by all format-specific staging backends.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::ApplicationId;
+/// let id = ApplicationId::parse("org.example.sample-app")?;
+/// assert_eq!(id.as_str(), "org.example.sample-app");
+/// # Ok::<(), ailloli_ui_core::AppIdentityError>(())
+/// ```
 #[derive(Debug, Clone)]
 pub(crate) struct PackageContext {
+    /// Root of the consumer package; all configured payload sources are confined here.
     consumer_root: PathBuf,
+    /// Original Cargo package name.
     package_name: String,
+    /// Lowercase Debian-safe distribution name.
     distribution_name: String,
+    /// Selected Cargo binary target name.
     binary_name: String,
+    /// Cargo package version copied into platform metadata.
     version: String,
+    /// Cargo authors used to derive maintainer and company fields.
     authors: Vec<String>,
+    /// Optional Cargo description; Linux packaging requires `Some`.
     description: Option<String>,
+    /// Optional Cargo license; Linux AppStream generation requires `Some`.
     license: Option<String>,
+    /// Optional homepage written to the distribution manifest; `None` omits it.
     homepage: Option<String>,
+    /// Optional repository written to the distribution manifest; `None` omits it.
     repository: Option<String>,
+    /// Identity emitted by the built executable and verified against the source icon.
     identity: AppIdentityMetadata,
+    /// Cargo profile name; `dev` maps to the `debug` output directory.
     profile: String,
+    /// Explicit host-native target triple, or `None` for the host toolchain target.
     target: Option<String>,
 }
 
+/// Runs the build, attestation, staging, and artifact workflow for one package.
 fn package_command(
     cwd: &Path,
     metadata: &CargoMetadata,
@@ -487,6 +632,7 @@ fn package_command(
     Ok(())
 }
 
+/// Invokes Cargo for exactly the selected package, binary, profile, and target.
 fn build_consumer(
     cwd: &Path,
     package: &CargoPackage,
@@ -513,6 +659,10 @@ fn build_consumer(
     Ok(())
 }
 
+/// Computes Cargo's expected executable path for the selected build settings.
+///
+/// The special Cargo profile name `dev` maps to directory `debug`; Windows
+/// appends `.exe`, while other platforms preserve the binary target name.
 fn executable_path(
     metadata: &CargoMetadata,
     binary: &CargoTarget,
@@ -535,6 +685,12 @@ fn executable_path(
     path
 }
 
+/// Executes the host-native consumer binary to obtain embedded identity JSON.
+///
+/// The probe path is communicated through
+/// [`AILLOLI_UI_PACKAGE_METADATA_PATH_ENV`]. A stale file with the same
+/// process-based name is removed first. The binary is trusted build output and
+/// runs with the packager's normal environment and permissions.
 fn probe_identity(
     cwd: &Path,
     metadata: &CargoMetadata,
@@ -577,6 +733,7 @@ fn probe_identity(
     Ok(identity)
 }
 
+/// Confirms that probed identity names the conventional icon and exact SVG digest.
 fn validate_embedded_identity(
     identity: &AppIdentityMetadata,
     source_icon: &ailloli_ui_core::AppIcon,
@@ -596,21 +753,37 @@ fn validate_embedded_identity(
     Ok(())
 }
 
+/// Reproducible build inputs authenticated for `--no-build` reuse.
+///
+/// Schema version `2` includes the packaging configuration and resolved Linux
+/// payloads. Any field difference invalidates the entire receipt.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct BuildReceipt {
+    /// Receipt schema; currently exactly `2`.
     schema_version: u32,
+    /// Cargo package name.
     package: String,
+    /// Selected binary target name.
     binary: String,
+    /// Cargo profile name.
     profile: String,
+    /// Explicit target triple, or `None` for the host target.
     target: Option<String>,
+    /// Lowercase hexadecimal SHA-256 of the executable bytes.
     executable_sha256: String,
+    /// Lowercase hexadecimal SHA-256 of `Cargo.toml`.
     manifest_sha256: String,
+    /// Lowercase hexadecimal SHA-256 of the embedded SVG bytes.
     icon_sha256: String,
+    /// Metadata emitted by the executable during the identity probe.
     identity: AppIdentityMetadata,
+    /// Debian configuration digest, or `None` when no config file exists.
     packaging_config_sha256: Option<String>,
+    /// Sorted, architecture-specific payload attestations; empty for no payloads.
     payloads: Vec<linux::PayloadAttestation>,
 }
 
+/// Returns the receipt path keyed by package, binary, profile, and target.
 fn receipt_path(metadata: &CargoMetadata, context: &PackageContext) -> PathBuf {
     metadata
         .target_directory
@@ -624,6 +797,7 @@ fn receipt_path(metadata: &CargoMetadata, context: &PackageContext) -> PathBuf {
         ))
 }
 
+/// Recomputes every authenticated receipt field from current files and metadata.
 fn expected_receipt(
     context: &PackageContext,
     package: &CargoPackage,
@@ -647,6 +821,10 @@ fn expected_receipt(
     })
 }
 
+/// Serializes a fresh schema-two receipt after a successful build.
+///
+/// Parent directories are created as needed. The write is not atomic; a write
+/// error may leave a partial receipt, which validation rejects as stale.
 fn write_receipt(
     path: &Path,
     context: &PackageContext,
@@ -671,6 +849,10 @@ fn write_receipt(
     Ok(())
 }
 
+/// Requires a stored receipt to equal the freshly computed expected receipt.
+///
+/// Missing, malformed, older-schema, or unequal receipts all produce the same
+/// actionable `--no-build` stale-receipt diagnostic.
 fn validate_receipt(
     path: &Path,
     context: &PackageContext,
@@ -706,32 +888,53 @@ fn validate_receipt(
     Ok(())
 }
 
+/// Machine-readable description of the most recently produced distribution artifact.
 #[derive(Debug, Serialize)]
 struct DistributionManifest<'a> {
+    /// Manifest schema; currently exactly `2`.
     schema_version: u32,
+    /// Reverse-DNS application identity.
     application_id: &'a str,
+    /// Human-readable application name.
     display_name: &'a str,
+    /// Original Cargo package name.
     package: &'a str,
+    /// Selected Cargo binary target name.
     binary: &'a str,
+    /// Cargo package version.
     version: &'a str,
+    /// Cargo build profile.
     profile: &'a str,
+    /// Explicit target triple or sentinel string `host`.
     target: &'a str,
+    /// Lowercase platform label.
     platform: &'a str,
+    /// Lowercase hexadecimal SHA-256 of the source SVG.
     icon_sha256: &'a str,
+    /// Filename, byte size, and digest of the generated artifact.
     artifact: ArtifactEntry,
+    /// Optional package homepage; `None` serializes as JSON `null`.
     homepage: Option<&'a str>,
+    /// Optional source repository; `None` serializes as JSON `null`.
     repository: Option<&'a str>,
+    /// Optional Debian configuration digest; absent configuration becomes `null`.
     packaging_config_sha256: Option<&'a str>,
+    /// Sorted Linux payload attestations; non-Linux artifacts use an empty slice.
     payloads: &'a [linux::PayloadAttestation],
 }
 
+/// Integrity metadata for one generated artifact.
 #[derive(Debug, Serialize)]
 struct ArtifactEntry {
+    /// Artifact basename, without its distribution-directory prefix.
     file: String,
+    /// Artifact length in bytes.
     size: u64,
+    /// Lowercase 64-character SHA-256 digest.
     sha256: String,
 }
 
+/// Atomically replaces the distribution manifest and GNU-style checksum file.
 fn write_distribution_manifest(
     dist: &Path,
     context: &PackageContext,
@@ -778,6 +981,10 @@ fn write_distribution_manifest(
     Ok(())
 }
 
+/// Replaces `path` by writing a process-specific sibling and renaming it.
+///
+/// On platforms where rename-over-existing is unavailable, the old file is
+/// removed first, leaving a small interval in which the final path is absent.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PackagingError> {
     let temp = path.with_extension(format!("tmp-{}", std::process::id()));
     fs::write(&temp, bytes)?;
@@ -788,6 +995,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PackagingError> {
     Ok(())
 }
 
+/// Builds an artifact at a sibling temporary path and installs it on success.
+///
+/// Failed callbacks trigger best-effort temporary-file cleanup and preserve an
+/// existing destination. A successful callback removes an old destination
+/// before renaming the temporary file.
 fn write_replacing(
     destination: &Path,
     write: impl FnOnce(&Path) -> Result<(), PackagingError>,
@@ -807,6 +1019,9 @@ fn write_replacing(
     Ok(())
 }
 
+/// Streams a file through SHA-256 using a fixed 64-KiB buffer.
+///
+/// Returns a lowercase 64-character hexadecimal digest, including for an empty file.
 fn hash_file(path: &Path) -> Result<String, PackagingError> {
     let mut input = BufReader::new(File::open(path)?);
     let mut digest = Sha256::new();
@@ -825,6 +1040,10 @@ fn hash_file(path: &Path) -> Result<String, PackagingError> {
         .collect())
 }
 
+/// Normalizes a Cargo name to a lowercase Debian distribution name.
+///
+/// ASCII underscores become hyphens. Remaining characters must be lowercase
+/// ASCII letters, digits, `+`, `-`, or `.`; the result must not be empty.
 fn distribution_name(name: &str) -> Result<String, PackagingError> {
     let name = name.to_ascii_lowercase().replace('_', "-");
     if name.is_empty()
@@ -839,6 +1058,10 @@ fn distribution_name(name: &str) -> Result<String, PackagingError> {
     Ok(name)
 }
 
+/// Resolves an output format and enforces host-native packaging.
+///
+/// An explicit target must map to the current host OS. `Auto` selects that OS;
+/// every explicit format must also match it.
 fn requested_platform(
     format: PackageFormat,
     target: Option<&str>,
@@ -869,6 +1092,7 @@ fn requested_platform(
     Ok(requested)
 }
 
+/// Maps the compile-time host OS to a supported packaging platform.
 fn host_platform() -> Result<Platform, PackagingError> {
     match std::env::consts::OS {
         "linux" => Ok(Platform::Linux),
@@ -880,6 +1104,7 @@ fn host_platform() -> Result<Platform, PackagingError> {
     }
 }
 
+/// Infers a platform from conventional substrings in a Rust target triple.
 fn platform_from_target(target: &str) -> Result<Platform, PackagingError> {
     if target.contains("windows") {
         Ok(Platform::Windows)
@@ -894,6 +1119,7 @@ fn platform_from_target(target: &str) -> Result<Platform, PackagingError> {
     }
 }
 
+/// Returns an explicit target verbatim or a stable `<arch>-<platform>` host label.
 fn target_label(target: Option<&str>, platform: Platform) -> String {
     target.map(ToOwned::to_owned).unwrap_or_else(|| {
         format!(
@@ -909,6 +1135,7 @@ fn target_label(target: Option<&str>, platform: Platform) -> String {
 }
 
 #[cfg(test)]
+/// Exercises selection ambiguity, name normalization, and receipt invalidation.
 mod tests {
     use super::*;
     use ailloli_ui_core::app_identity::AppIconMetadata;

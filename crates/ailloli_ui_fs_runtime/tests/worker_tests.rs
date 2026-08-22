@@ -1,3 +1,5 @@
+//! Cross-thread ownership, coalescing, stale-response, polling, and mutation tests.
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
@@ -13,24 +15,31 @@ use ailloli_ui_fs_runtime::{
 };
 
 #[derive(Default)]
+/// State shared between the worker-owned source and test assertions.
 struct SourceState {
     creator: Mutex<Option<ThreadId>>,
     reads: AtomicUsize,
     mutations: Mutex<Vec<String>>,
 }
 
+/// Factory that records the thread on which source construction occurs.
 struct Factory(Arc<SourceState>);
 
+/// Creates the deterministic test source on the runtime worker.
 impl FileTreeSourceFactory for Factory {
+    /// Records worker ownership and returns a source sharing the counters.
     fn create(&self) -> Result<Box<dyn FileTreeSource>, FileError> {
         *self.0.creator.lock().unwrap() = Some(std::thread::current().id());
         Ok(Box::new(Source(self.0.clone())))
     }
 }
 
+/// Deterministic provider that records reads and mutations.
 struct Source(Arc<SourceState>);
 
+/// Supplies one child per read and records all supported mutation calls.
 impl FileTreeSource for Source {
+    /// Records a read and returns one file child below the requested URI.
     fn read_dir(&mut self, uri: &FileUri) -> Result<Vec<FileEntry>, FileError> {
         self.0.reads.fetch_add(1, Ordering::Relaxed);
         Ok(vec![FileEntry::new(
@@ -39,6 +48,7 @@ impl FileTreeSource for Source {
         )])
     }
 
+    /// Derives a stable test identity from the exact URI bytes.
     fn identity(&mut self, uri: &FileUri) -> Result<Option<FileIdentity>, FileError> {
         Ok(Some(FileIdentity::new(
             "worker-test",
@@ -46,6 +56,7 @@ impl FileTreeSource for Source {
         )))
     }
 
+    /// Records a successful directory creation.
     fn create_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.0
             .mutations
@@ -55,6 +66,7 @@ impl FileTreeSource for Source {
         Ok(())
     }
 
+    /// Records a successful file creation.
     fn create_file(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.0
             .mutations
@@ -64,6 +76,7 @@ impl FileTreeSource for Source {
         Ok(())
     }
 
+    /// Records a successful move with its source and destination.
     fn move_entry(&mut self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
         self.0
             .mutations
@@ -73,6 +86,7 @@ impl FileTreeSource for Source {
         Ok(())
     }
 
+    /// Records a removal and its recursive flag.
     fn remove_entry(&mut self, uri: &FileUri, recursive: bool) -> Result<(), FileError> {
         self.0
             .mutations
@@ -83,6 +97,7 @@ impl FileTreeSource for Source {
     }
 }
 
+/// Creates a fresh directory-rooted store at `file:///tmp`.
 fn store() -> FileTreeStore {
     FileTreeStore::new(
         FileUri::parse("file:///tmp").unwrap(),
@@ -92,6 +107,7 @@ fn store() -> FileTreeStore {
 }
 
 #[test]
+/// Verifies worker ownership, directory coalescing, and balanced metrics.
 fn source_is_worker_owned_and_directory_requests_are_coalesced() {
     let state = Arc::new(SourceState::default());
     let ui_thread = std::thread::current().id();
@@ -127,6 +143,7 @@ fn source_is_worker_owned_and_directory_requests_are_coalesced() {
 }
 
 #[test]
+/// Verifies that a stale generation is counted and never applied or retried.
 fn stale_store_generation_drops_owned_response_without_retry() {
     let state = Arc::new(SourceState::default());
     let mut runtime = FileTreeRuntime::spawn(Arc::new(Factory(state))).unwrap();
@@ -150,6 +167,7 @@ fn stale_store_generation_drops_owned_response_without_retry() {
 }
 
 #[test]
+/// Verifies that reopening supersedes a cancelled request for the same node.
 fn a_reopened_directory_supersedes_the_cancelled_worker_request() {
     let state = Arc::new(SourceState::default());
     let mut runtime = FileTreeRuntime::spawn(Arc::new(Factory(state.clone()))).unwrap();
@@ -174,6 +192,7 @@ fn a_reopened_directory_supersedes_the_cancelled_worker_request() {
 }
 
 #[test]
+/// Verifies expansion-only polling, bounded backoff, and success reset.
 fn remote_polling_only_schedules_expanded_directories_with_bounded_backoff() {
     let mut scheduler = FileTreeReconcileScheduler::new(false);
     let root = store().root();
@@ -207,6 +226,7 @@ fn remote_polling_only_schedules_expanded_directories_with_bounded_backoff() {
 }
 
 #[test]
+/// Verifies that native-watch providers never create a polling schedule.
 fn native_watch_scheduler_never_creates_a_polling_loop() {
     let mut scheduler = FileTreeReconcileScheduler::new(true);
     let root = store().root();
@@ -218,6 +238,7 @@ fn native_watch_scheduler_never_creates_a_polling_loop() {
 }
 
 #[test]
+/// Verifies worker-side mutation order followed by attested store updates.
 fn provider_mutations_run_on_the_worker_then_update_the_store() {
     let state = Arc::new(SourceState::default());
     let mut runtime = FileTreeRuntime::spawn(Arc::new(Factory(state.clone()))).unwrap();
@@ -287,6 +308,7 @@ fn provider_mutations_run_on_the_worker_then_update_the_store() {
 }
 
 #[test]
+/// Verifies that file creation preserves the UI-reserved draft node ID.
 fn reserved_file_create_keeps_the_inline_draft_identity() {
     let state = Arc::new(SourceState::default());
     let mut runtime = FileTreeRuntime::spawn(Arc::new(Factory(state.clone()))).unwrap();
@@ -315,6 +337,7 @@ fn reserved_file_create_keeps_the_inline_draft_identity() {
     runtime.finish().unwrap();
 }
 
+/// Drains until `ready` or fails after the bounded two-second test deadline.
 fn wait_until(
     runtime: &mut FileTreeRuntime,
     store: &mut FileTreeStore,

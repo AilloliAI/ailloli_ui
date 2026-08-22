@@ -1,3 +1,5 @@
+//! Chat transcript/composer rendering, scrolling, resizing, and action scenarios.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;

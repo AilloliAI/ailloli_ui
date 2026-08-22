@@ -1,3 +1,5 @@
+//! Shared retained popup-portal ownership, policy, dismissal, and content scenarios.
+
 use std::time::{Duration, Instant};
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};

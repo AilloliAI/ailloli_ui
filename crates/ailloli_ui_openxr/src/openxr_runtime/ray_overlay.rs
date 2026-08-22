@@ -1,3 +1,5 @@
+//! Vulkan-backed, alpha-blended ray visualization as an OpenXR quad layer.
+
 use ash::vk::{self, Handle};
 use openxr as xr;
 
@@ -7,29 +9,102 @@ use super::error::OpenXrRuntimeError;
 use super::swapchain::{select_swapchain_format, OpenXrSwapchainFormat};
 use super::ui_layer::OpenXrExternalVulkanContext;
 
+/// Default ray texture width in pixels.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_openxr::OPENXR_RAY_TEXTURE_WIDTH, 16);
+/// ```
 pub const OPENXR_RAY_TEXTURE_WIDTH: u32 = 16;
+/// Default ray texture height in pixels.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_openxr::OPENXR_RAY_TEXTURE_HEIGHT, 256);
+/// ```
 pub const OPENXR_RAY_TEXTURE_HEIGHT: u32 = 256;
+/// Default physical ray-layer width in metres.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_openxr::OPENXR_RAY_WIDTH_METERS, 0.003);
+/// ```
 pub const OPENXR_RAY_WIDTH_METERS: f32 = 0.003;
+/// Default minimum displayed ray length in metres.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_openxr::OPENXR_RAY_MIN_LENGTH_METERS, 0.05);
+/// ```
 pub const OPENXR_RAY_MIN_LENGTH_METERS: f32 = 0.05;
+/// Default maximum displayed ray length in metres.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(ailloli_ui_openxr::OPENXR_RAY_MAX_LENGTH_METERS, 3.0);
+/// ```
 pub const OPENXR_RAY_MAX_LENGTH_METERS: f32 = 3.0;
 
+/// Error-context label for ray staging allocations.
 const RAY_STAGING_USAGE: &str = "OpenXR ray overlay";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether the selected ray intersects the UI panel.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrRayHitKind;
+/// assert_ne!(OpenXrRayHitKind::Miss, OpenXrRayHitKind::Ui);
+/// ```
 pub enum OpenXrRayHitKind {
+    /// Ray does not hit the UI and is rendered translucent gray.
     Miss,
+    /// Ray hits the UI and is rendered green.
     Ui,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// World-space ray selected for optional visualization.
+///
+/// Origin and distance use metres. Direction is normalized when building the
+/// layer, with negative Z fallback for a near-zero vector.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::{OpenXrRayHitKind, OpenXrRaySample};
+/// use ailloli_ui_openxr::math::Vec3;
+/// let sample = OpenXrRaySample::new(Vec3::default(), Vec3::new(0.0, 0.0, -1.0), OpenXrRayHitKind::Ui, 1.5);
+/// assert_eq!(sample.hit_distance, 1.5);
+/// ```
 pub struct OpenXrRaySample {
+    /// Ray origin in world metres.
     pub origin: Vec3,
+    /// World-space ray direction.
     pub direction: Vec3,
+    /// Miss/UI color classification.
     pub hit_kind: OpenXrRayHitKind,
+    /// Unclamped hit or display distance in metres.
     pub hit_distance: f32,
 }
 
 impl OpenXrRaySample {
+    /// Creates a ray sample without normalizing or clamping values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::{OpenXrRayHitKind, OpenXrRaySample};
+    /// use ailloli_ui_openxr::math::Vec3;
+    /// let sample = OpenXrRaySample::new(Vec3::new(1.0, 2.0, 3.0), Vec3::default(), OpenXrRayHitKind::Miss, 99.0);
+    /// assert_eq!(sample.origin.x, 1.0);
+    /// ```
     pub fn new(
         origin: Vec3,
         direction: Vec3,
@@ -46,13 +121,33 @@ impl OpenXrRaySample {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Texture, physical geometry, visibility, and length limits for a ray layer.
+///
+/// Texture dimensions are clamped to at least one during overlay construction.
+/// Effective minimum length is at least 1 mm and maximum is at least minimum.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrRayOverlayOptions;
+/// let options = OpenXrRayOverlayOptions::default();
+/// assert_eq!((options.texture_width, options.texture_height), (16, 256));
+/// assert_eq!((options.min_length_m, options.max_length_m), (0.05, 3.0));
+/// ```
 pub struct OpenXrRayOverlayOptions {
+    /// Generated texture width in pixels.
     pub texture_width: u32,
+    /// Generated texture height in pixels.
     pub texture_height: u32,
+    /// Submitted quad width in metres.
     pub ray_width_m: f32,
+    /// Minimum submitted quad length in metres.
     pub min_length_m: f32,
+    /// Maximum submitted quad length in metres.
     pub max_length_m: f32,
+    /// Eyes to which the ray is visible.
     pub eye_visibility: xr::EyeVisibility,
+    /// Composition flags; defaults enable unpremultiplied source alpha.
     pub layer_flags: xr::CompositionLayerFlags,
 }
 
@@ -71,6 +166,7 @@ impl Default for OpenXrRayOverlayOptions {
     }
 }
 
+/// Persistently mapped host-visible upload buffer for generated ray pixels.
 struct RayStagingBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
@@ -78,6 +174,18 @@ struct RayStagingBuffer {
     size: vk::DeviceSize,
 }
 
+/// Swapchain and upload resources for a standalone ray composition layer.
+///
+/// Texture pixels are regenerated only when hit classification changes. Drop
+/// waits for the owned Vulkan device to become idle before unmapping and freeing
+/// staging resources.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_openxr::OpenXrRayOverlay;
+/// fn update(overlay: &mut OpenXrRayOverlay) { let _ = overlay; }
+/// ```
 pub struct OpenXrRayOverlay {
     device: ash::Device,
     handle: xr::Swapchain<xr::Vulkan>,
@@ -91,6 +199,24 @@ pub struct OpenXrRayOverlay {
 }
 
 impl OpenXrRayOverlay {
+    /// Creates the ray swapchain and persistently mapped staging buffer.
+    ///
+    /// Texture dimensions are clamped to at least one. `context` must belong to
+    /// the Vulkan device backing `session` and must include memory properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns format, swapchain, image enumeration, memory-property, buffer,
+    /// allocation, binding, or mapping failures.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrExternalVulkanContext, OpenXrRayOverlay, OpenXrRayOverlayOptions, OpenXrRuntimeError};
+    /// fn create(session: &openxr::Session<openxr::Vulkan>, context: OpenXrExternalVulkanContext<'_>) -> Result<OpenXrRayOverlay, OpenXrRuntimeError> {
+    ///     OpenXrRayOverlay::new(session, context, OpenXrRayOverlayOptions::default())
+    /// }
+    /// ```
     pub fn new(
         session: &xr::Session<xr::Vulkan>,
         context: OpenXrExternalVulkanContext<'_>,
@@ -150,6 +276,23 @@ impl OpenXrRayOverlay {
         })
     }
 
+    /// Uploads the generated texture when its hit classification changed.
+    ///
+    /// Repeated calls for the already-uploaded kind are a no-op. Upload records
+    /// and synchronously waits for a one-time Vulkan queue submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns acquisition, staging upload, queue, image-index, or release errors.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrExternalVulkanContext, OpenXrRayHitKind, OpenXrRayOverlay, OpenXrRuntimeError};
+    /// fn upload(overlay: &mut OpenXrRayOverlay, context: OpenXrExternalVulkanContext<'_>) -> Result<(), OpenXrRuntimeError> {
+    ///     overlay.ensure_texture(context, OpenXrRayHitKind::Ui)
+    /// }
+    /// ```
     pub fn ensure_texture(
         &mut self,
         context: OpenXrExternalVulkanContext<'_>,
@@ -163,6 +306,20 @@ impl OpenXrRayOverlay {
         self.upload_rgba(context, &rgba, hit_kind)
     }
 
+    /// Builds a quad layer centered along the clamped ray segment.
+    ///
+    /// Returns `None` until a texture upload succeeded. The layer borrows the
+    /// overlay swapchain and reference space and uses the sample's distance,
+    /// clamped to configured minimum/maximum metres.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_openxr::{OpenXrRayOverlay, OpenXrRaySample};
+    /// fn build<'a>(overlay: &'a OpenXrRayOverlay, space: &'a openxr::Space, sample: &OpenXrRaySample) -> Option<openxr::CompositionLayerQuad<'a, openxr::Vulkan>> {
+    ///     overlay.build_layer(space, sample)
+    /// }
+    /// ```
     pub fn build_layer<'a>(
         &'a self,
         reference_space: &'a xr::Space,
@@ -203,6 +360,7 @@ impl OpenXrRayOverlay {
         )
     }
 
+    /// Copies pixels, acquires/waits an image, submits upload, then releases it.
     fn upload_rgba(
         &mut self,
         context: OpenXrExternalVulkanContext<'_>,
@@ -266,6 +424,7 @@ impl Drop for OpenXrRayOverlay {
 }
 
 impl RayStagingBuffer {
+    /// Allocates, binds, and persistently maps a transfer-source buffer.
     fn new(
         device: &ash::Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -327,6 +486,7 @@ impl RayStagingBuffer {
     }
 }
 
+/// Finds the first compatible host-visible, host-coherent memory type.
 fn find_host_visible_memory_type(
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     memory_requirements: vk::MemoryRequirements,
@@ -340,6 +500,7 @@ fn find_host_visible_memory_type(
     })
 }
 
+/// Allocates, records, submits, waits for, and frees one primary command buffer.
 fn submit_one_time_commands(
     context: OpenXrExternalVulkanContext<'_>,
     record: impl FnOnce(vk::CommandBuffer),
@@ -387,6 +548,12 @@ fn submit_one_time_commands(
     result
 }
 
+/// Records layout transitions and a complete RGBA staging-to-image copy.
+///
+/// # Safety
+///
+/// All handles must belong to `device`; the buffer must contain at least
+/// `buffer_size` valid bytes and the image must match `width` by `height`.
 unsafe fn record_rgba_upload(
     device: &ash::Device,
     command_buffer: vk::CommandBuffer,
@@ -470,11 +637,15 @@ unsafe fn record_rgba_upload(
 }
 
 #[derive(Clone, Copy)]
+/// Byte ordering required by the selected Vulkan swapchain format.
 enum RayUploadSwizzle {
+    /// Preserve RGBA source order.
     Rgba,
+    /// Swap red and blue for BGRA destinations.
     Bgra,
 }
 
+/// Selects BGRA channel swapping for the two supported B8 formats.
 fn upload_swizzle(format: vk::Format) -> RayUploadSwizzle {
     match format {
         vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB => RayUploadSwizzle::Bgra,
@@ -482,6 +653,9 @@ fn upload_swizzle(format: vk::Format) -> RayUploadSwizzle {
     }
 }
 
+/// Copies generated pixels into mapped staging memory with optional R/B swap.
+///
+/// The caller guarantees `dst` is valid for `rgba.len()` writable bytes.
 fn copy_rgba_to_staging(dst: *mut u8, rgba: &[u8], swizzle: RayUploadSwizzle) {
     match swizzle {
         RayUploadSwizzle::Rgba => unsafe {
@@ -499,12 +673,14 @@ fn copy_rgba_to_staging(dst: *mut u8, rgba: &[u8], swizzle: RayUploadSwizzle) {
     }
 }
 
+/// Clamps distance to a minimum of 1 mm and an ordered configured range.
 fn clamp_ray_length(hit_distance: f32, options: OpenXrRayOverlayOptions) -> f32 {
     let min = options.min_length_m.max(0.001);
     let max = options.max_length_m.max(min);
     hit_distance.clamp(min, max)
 }
 
+/// Builds a pose at the ray midpoint with local positive Y along the ray.
 fn ray_pose(mid: Vec3, direction: Vec3) -> xr::Posef {
     xr::Posef {
         orientation: orientation_for_ray(direction),
@@ -516,6 +692,7 @@ fn ray_pose(mid: Vec3, direction: Vec3) -> xr::Posef {
     }
 }
 
+/// Builds a roll-stable orientation whose local positive Y follows the ray.
 fn orientation_for_ray(direction: Vec3) -> xr::Quaternionf {
     let y_axis = direction.normalize_or(Vec3::new(0.0, 0.0, -1.0));
     let mut z_hint = Vec3::new(0.0, 1.0, 0.0);
@@ -532,6 +709,7 @@ fn orientation_for_ray(direction: Vec3) -> xr::Quaternionf {
     ])
 }
 
+/// Converts an orthonormal 3x3 matrix into a quaternion.
 fn rotation_matrix_to_quaternion(m: [[f32; 3]; 3]) -> xr::Quaternionf {
     let trace = m[0][0] + m[1][1] + m[2][2];
     if trace > 0.0 {
@@ -569,6 +747,7 @@ fn rotation_matrix_to_quaternion(m: [[f32; 3]; 3]) -> xr::Quaternionf {
     }
 }
 
+/// Generates edge-faded RGBA pixels, gray for miss and green for UI hit.
 fn ray_rgba(hit_kind: OpenXrRayHitKind, options: OpenXrRayOverlayOptions) -> Vec<u8> {
     let (r, g, b, base_alpha) = match hit_kind {
         OpenXrRayHitKind::Miss => (160u8, 160u8, 160u8, 102u8),
@@ -596,9 +775,11 @@ fn ray_rgba(hit_kind: OpenXrRayHitKind, options: OpenXrRayOverlayOptions) -> Vec
 }
 
 #[cfg(test)]
+/// Verifies texture size/colors/alpha, length clamping, and midpoint pose.
 mod tests {
     use super::*;
 
+    /// Returns the first nontransparent RGBA pixel from generated ray data.
     fn first_visible_pixel(rgba: &[u8]) -> &[u8] {
         rgba.chunks_exact(4)
             .find(|pixel| pixel[3] > 0)

@@ -11,6 +11,7 @@ use ailloli_ui::prelude::*;
 use ailloli_ui::{App, Window};
 use ailloli_ui_render_wgpu::CapturedFrame;
 
+/// Resolves the repository-local directory used for multiline-input captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -18,12 +19,14 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Counts RGBA8 pixels accepted by `pred`; trailing incomplete bytes are ignored.
 fn count_pixels(rgba: &[u8], pred: impl Fn([u8; 4]) -> bool) -> u64 {
     rgba.chunks_exact(4)
         .filter(|px| pred([px[0], px[1], px[2], px[3]]))
         .count() as u64
 }
 
+/// Verifies multiline text, border, background, extent, and encoded PNG output.
 fn assert_phase112_frame(frame: &CapturedFrame, name: &str) {
     let png = frame.png_data.as_ref().expect("png data");
     assert!(!png.is_empty(), "{name}: empty png");
@@ -57,6 +60,7 @@ fn assert_phase112_frame(frame: &CapturedFrame, name: &str) {
     );
 }
 
+/// Writes a frame's required PNG payload beneath the captures directory.
 fn write_capture(name: &str, frame: &CapturedFrame) {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir).expect("mkdir captures");
@@ -99,6 +103,7 @@ fn ui_bundle_phase112_text_input_multiline_capture() {
     write_capture("ui_bundle_phase112_text_input_multiline.png", &frame);
 }
 
+/// Builds the ten-line text value used to force internal wrapping and scrolling.
 fn phase112_seed() -> String {
     [
         "Line 01  A long editable draft starts here and wraps inside the same input surface.",
@@ -121,6 +126,7 @@ fn phase112_seed() -> String {
     .join("\n")
 }
 
+/// Builds the constrained multiline input and its explanatory labels.
 fn phase112_showcase() -> impl IntoView<()> {
     let draft = State::new(phase112_seed());
     let palette = Theme::default().palette();

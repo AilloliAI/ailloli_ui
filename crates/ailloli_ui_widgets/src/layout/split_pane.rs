@@ -1,3 +1,5 @@
+//! Two-child split layout with a draggable, bindable seam.
+
 use std::rc::Rc;
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
@@ -17,10 +19,21 @@ use super::resize_bar::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+/// Styling for the seam shared with [`super::ResizeBar`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::layout::SplitPaneStyle;
+/// let style = SplitPaneStyle::default();
+/// assert_eq!(style.resize_bar.hit_thickness, 8.0);
+/// ```
 pub struct SplitPaneStyle {
+    /// Seam hit geometry, line geometry, and interaction colors.
     pub resize_bar: ResizeBarStyle,
 }
 
+/// Derives split-pane styling from [`Theme::default`].
 impl Default for SplitPaneStyle {
     fn default() -> Self {
         Self::from_theme(Theme::default())
@@ -28,6 +41,15 @@ impl Default for SplitPaneStyle {
 }
 
 impl SplitPaneStyle {
+    /// Derives seam colors from `theme` and standard resize geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::layout::SplitPaneStyle;
+    /// assert_eq!(SplitPaneStyle::from_theme(Theme::dark()).resize_bar.line_thickness, 2.0);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         Self {
             resize_bar: ResizeBarStyle::from_theme(theme),
@@ -35,14 +57,29 @@ impl SplitPaneStyle {
     }
 }
 
+/// Shared retained callback invoked for seam drag events.
 type ResizeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, SplitResizeEvent)>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+/// Initial seam distance measured from the start or end edge.
 enum SplitPaneInitialPosition {
     Start(f32),
     End(f32),
 }
 
+/// Two-child layout split on x or y with a draggable seam.
+///
+/// Columns split on x; rows split on y. The default seam is centered, both
+/// minimum extents are zero, the pane fills both axes, and position is held in
+/// component-local state unless [`Self::bind_position`] supplies a signal.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+/// let split: SplitPane<()> = SplitPane::columns(Text::new("left"), Text::new("right"));
+/// let _ = split;
+/// ```
 pub struct SplitPane<A = ()> {
     pub(crate) layout: LayoutStyle,
     pub(crate) flex_item: FlexItemStyle,
@@ -60,14 +97,41 @@ pub struct SplitPane<A = ()> {
 crate::impl_layout_builders!(SplitPane);
 
 impl<A: 'static> SplitPane<A> {
+    /// Creates left/right panes separated by an x-axis seam.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("left"), Text::new("right"));
+    /// let _ = split;
+    /// ```
     pub fn columns(start: impl IntoView<A>, end: impl IntoView<A>) -> Self {
         Self::new(ResizeAxis::X, start, end)
     }
 
+    /// Creates top/bottom panes separated by a y-axis seam.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let split: SplitPane<()> = SplitPane::rows(Text::new("top"), Text::new("bottom"));
+    /// let _ = split;
+    /// ```
     pub fn rows(start: impl IntoView<A>, end: impl IntoView<A>) -> Self {
         Self::new(ResizeAxis::Y, start, end)
     }
 
+    /// Creates a fill-sized split for an explicit axis and two required children.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::{ResizeAxis, SplitPane}, text::Text};
+    /// let split: SplitPane<()> = SplitPane::new(ResizeAxis::X, Text::new("a"), Text::new("b"));
+    /// let _ = split;
+    /// ```
     pub fn new(axis: ResizeAxis, start: impl IntoView<A>, end: impl IntoView<A>) -> Self {
         Self {
             layout: LayoutStyle::default().fill(),
@@ -84,41 +148,133 @@ impl<A: 'static> SplitPane<A> {
         }
     }
 
+    /// Sets initial seam distance from the start edge in logical pixels.
+    ///
+    /// Negative and `NaN` values become zero. A bound signal takes precedence,
+    /// and the resolved value is clamped by pane minima on layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("a"), Text::new("b")).initial_position(160.0);
+    /// let _ = split;
+    /// ```
     pub fn initial_position(mut self, position: f32) -> Self {
         self.initial_position = Some(SplitPaneInitialPosition::Start(position.max(0.0)));
         self
     }
 
+    /// Sets initial end-pane extent in logical pixels.
+    ///
+    /// The seam is resolved as `available - position`, floored at zero, then
+    /// clamped by pane minima. Negative and `NaN` inputs become zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("a"), Text::new("b")).initial_end_position(240.0);
+    /// let _ = split;
+    /// ```
     pub fn initial_end_position(mut self, position: f32) -> Self {
         self.initial_position = Some(SplitPaneInitialPosition::End(position.max(0.0)));
         self
     }
 
+    /// Binds seam position, measured from the start edge, to shared state.
+    ///
+    /// Binding has priority over initial and local positions and is updated
+    /// synchronously during drag. Its value is clamped for layout but is not
+    /// rewritten merely because constraints clamp it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let position = State::new(120.0);
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("a"), Text::new("b")).bind_position(position);
+    /// let _ = split;
+    /// ```
     pub fn bind_position(mut self, position: impl Into<Signal<f32>>) -> Self {
         self.bound_position = Some(position.into());
         self
     }
 
+    /// Sets the minimum start-pane main extent in logical pixels.
+    ///
+    /// Negative and `NaN` inputs become zero. If both minima cannot fit, the
+    /// start minimum wins and the end pane may collapse to zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("a"), Text::new("b")).min_start(80.0);
+    /// let _ = split;
+    /// ```
     pub fn min_start(mut self, value: f32) -> Self {
         self.min_start = value.max(0.0);
         self
     }
 
+    /// Sets the minimum end-pane main extent in logical pixels.
+    ///
+    /// Negative and `NaN` inputs become zero. Impossible combined minima use
+    /// the start-minimum precedence described by [`Self::min_start`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("a"), Text::new("b")).min_end(100.0);
+    /// let _ = split;
+    /// ```
     pub fn min_end(mut self, value: f32) -> Self {
         self.min_end = value.max(0.0);
         self
     }
 
+    /// Replaces all seam style values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::{SplitPane, SplitPaneStyle}, text::Text};
+    /// let style = SplitPaneStyle::default();
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("a"), Text::new("b")).split_pane_style(style);
+    /// let _ = split;
+    /// ```
     pub fn split_pane_style(mut self, style: SplitPaneStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Maps each seam event into an application action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::{SplitPane, SplitResizeEvent}, text::Text};
+    /// enum Action { Resize(SplitResizeEvent) }
+    /// let split: SplitPane<Action> = SplitPane::columns(Text::new("a"), Text::new("b")).on_resize(Action::Resize);
+    /// let _ = split;
+    /// ```
     pub fn on_resize(mut self, f: impl Fn(SplitResizeEvent) -> A + 'static) -> Self {
         self.on_resize = Some(Rc::new(move |ctx, event| ctx.dispatch(f(event))));
         self
     }
 
+    /// Handles seam events with mutable runtime event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{layout::SplitPane, text::Text};
+    /// let split: SplitPane<()> = SplitPane::columns(Text::new("a"), Text::new("b")).on_resize_ctx(|_ctx, _event| {});
+    /// let _ = split;
+    /// ```
     pub fn on_resize_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, SplitResizeEvent) + 'static,
@@ -128,6 +284,7 @@ impl<A: 'static> SplitPane<A> {
     }
 }
 
+/// Retained builder snapshot used to allocate local position/drag state.
 struct SplitPaneComponent<A> {
     layout: LayoutStyle,
     axis: ResizeAxis,
@@ -141,6 +298,7 @@ struct SplitPaneComponent<A> {
     on_resize: Option<ResizeHandler<A>>,
 }
 
+/// Builds the split widget with exactly two retained children.
 impl<A: 'static> ComponentNode<A> for SplitPaneComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         View::node(
@@ -163,12 +321,14 @@ impl<A: 'static> ComponentNode<A> for SplitPaneComponent<A> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Captured pointer and seam positions for incremental drag events.
 struct SplitPaneDragState {
     pointer: ResizeDragState,
     start_position: f32,
     last_position: f32,
 }
 
+/// Retained layout, seam-state, hover, and drag implementation.
 struct SplitPaneWidget<A> {
     layout: LayoutStyle,
     axis: ResizeAxis,
@@ -183,6 +343,7 @@ struct SplitPaneWidget<A> {
     hover_seam: Signal<bool>,
 }
 
+/// Implements tight two-pane layout and seam pointer capture/painting.
 impl<A: 'static> Widget<A> for SplitPaneWidget<A> {
     fn debug_name(&self) -> &'static str {
         "SplitPane"
@@ -375,6 +536,7 @@ impl<A: 'static> Widget<A> for SplitPaneWidget<A> {
     }
 }
 
+/// Position priority/clamping, state writes, event dispatch, and seam geometry.
 impl<A: 'static> SplitPaneWidget<A> {
     fn current_position(&self, available: f32) -> f32 {
         let raw = self
@@ -458,6 +620,7 @@ impl<A: 'static> SplitPaneWidget<A> {
     }
 }
 
+/// Converts the builder into a retained component and preserves flex metadata.
 impl<A: 'static> IntoView<A> for SplitPane<A> {
     fn into_view(self) -> View<A> {
         finish_view_sized(
@@ -479,6 +642,7 @@ impl<A: 'static> IntoView<A> for SplitPane<A> {
     }
 }
 
+/// Selects width for x-axis splits or height for y-axis splits.
 fn main_extent(axis: ResizeAxis, size: Size) -> f32 {
     match axis {
         ResizeAxis::X => size.w,
@@ -486,6 +650,7 @@ fn main_extent(axis: ResizeAxis, size: Size) -> f32 {
     }
 }
 
+/// Replaces the selected main extent, flooring it at zero.
 fn size_with_main(axis: ResizeAxis, container: Size, main: f32) -> Size {
     match axis {
         ResizeAxis::X => Size::new(main.max(0.0), container.h),

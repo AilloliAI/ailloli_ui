@@ -2,6 +2,16 @@
 //!
 //! This crate defines stable, UI-agnostic file concepts. Concrete backends live
 //! in separate crates such as `ailloli_ui_fs_local`.
+//!
+//! # Examples
+//!
+//! ```
+//! use ailloli_ui_fs::{FileKind, FileMetadata, FileUri};
+//! let uri = FileUri::parse("file:///tmp/example.txt")?;
+//! let metadata = FileMetadata::new(FileKind::File);
+//! assert_eq!((uri.scheme(), metadata.kind), ("file", FileKind::File));
+//! # Ok::<(), ailloli_ui_fs::FileError>(())
+//! ```
 
 pub mod auth;
 pub mod capabilities;

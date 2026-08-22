@@ -1,3 +1,5 @@
+//! Overlay toast values and a non-focusable stacking host.
+
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -19,45 +21,105 @@ use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawImage, DrawRRec
 use super::popup::{apply_opacity, paint_overlay_text_in_rect};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic accent color for a [`Toast`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ToastTone;
+/// assert_eq!(ToastTone::default(), ToastTone::Neutral);
+/// ```
 pub enum ToastTone {
+    /// De-emphasized neutral accent.
     #[default]
     Neutral,
+    /// Successful outcome.
     Success,
+    /// Warning outcome.
     Warning,
+    /// Failed or destructive outcome.
     Danger,
+    /// Informational outcome.
     Info,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Corner from which a [`ToastHost`] stacks notifications.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::ToastPosition;
+/// assert_eq!(ToastPosition::default(), ToastPosition::TopRight);
+/// ```
 pub enum ToastPosition {
+    /// Stack downward from the top-left inset.
     TopLeft,
+    /// Stack downward from the top-right inset.
     #[default]
     TopRight,
+    /// Stack upward from the bottom-left inset.
     BottomLeft,
+    /// Stack upward from the bottom-right inset.
     BottomRight,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved toast colors, typography, and logical-pixel geometry.
+///
+/// Toast heights are fixed at 52 pixels without a description and 72 pixels
+/// with one. `padding_y` is retained for style compatibility but those fixed
+/// vertical offsets currently do not read it.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::ToastStyle;
+/// let style = ToastStyle::from_theme(Theme::dark());
+/// assert_eq!(style.width, 330.0);
+/// assert_eq!(style.inset, 18.0);
+/// ```
 pub struct ToastStyle {
+    /// Card fill.
     pub background: Color,
+    /// Card border.
     pub border: Border,
+    /// Card shadows; inset entries are skipped.
     pub shadows: Vec<BoxShadow>,
+    /// Title text style.
     pub title_text: TextStyle,
+    /// Description text style.
     pub description_text: TextStyle,
+    /// Close-icon tint before the fixed 0.82 opacity multiplier.
     pub close_tint: Color,
+    /// Neutral tone-strip and icon color.
     pub neutral: Color,
+    /// Success tone-strip and icon color.
     pub success: Color,
+    /// Warning tone-strip and icon color.
     pub warning: Color,
+    /// Danger tone-strip and icon color.
     pub danger: Color,
+    /// Info tone-strip and icon color.
     pub info: Color,
+    /// Card corner radii.
     pub radius: Radius,
+    /// Toast width in logical pixels.
     pub width: f32,
+    /// Horizontal text/icon inset in logical pixels.
     pub padding_x: f32,
+    /// Reserved vertical padding; fixed toast offsets currently ignore it.
     pub padding_y: f32,
+    /// Gap between leading icon/text and text/close regions.
     pub gap: f32,
+    /// Leading icon width and height.
     pub icon_size: f32,
+    /// Close hit/icon width and height.
     pub close_size: f32,
+    /// Gap between stacked toast rectangles.
     pub stack_gap: f32,
+    /// Distance from the selected host edges.
     pub inset: f32,
 }
 
@@ -68,6 +130,17 @@ impl Default for ToastStyle {
 }
 
 impl ToastStyle {
+    /// Resolves toast colors, typography, and geometry from `theme`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::ToastStyle;
+    /// let style = ToastStyle::from_theme(Theme::dark());
+    /// assert_eq!(style.icon_size, 16.0);
+    /// assert_eq!(style.stack_gap, 10.0);
+    /// ```
     pub fn from_theme(theme: Theme) -> Self {
         let palette = theme.palette();
         Self {
@@ -94,6 +167,15 @@ impl ToastStyle {
         }
     }
 
+    /// Returns the configured accent color for `tone`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ToastStyle, ToastTone};
+    /// let style = ToastStyle::default();
+    /// assert_eq!(style.tone_color(ToastTone::Success), style.success);
+    /// ```
     pub fn tone_color(&self, tone: ToastTone) -> Color {
         match tone {
             ToastTone::Neutral => self.neutral,
@@ -106,16 +188,46 @@ impl ToastStyle {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Owned data for one overlay notification.
+///
+/// IDs route dismissal and should be unique. Duplicate IDs are accepted; a
+/// bound-host dismissal removes every matching value while invoking its callback
+/// once. `Some("")` description still selects the taller 72-pixel layout.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{Toast, ToastTone};
+/// let toast = Toast::new("saved", "Saved").tone(ToastTone::Success);
+/// assert_eq!(toast.id(), "saved");
+/// ```
 pub struct Toast {
+    /// Dismissal identity.
     id: String,
+    /// Primary text.
     title: String,
+    /// Optional secondary line; presence controls height even when empty.
     description: Option<String>,
+    /// Semantic accent tone.
     tone: ToastTone,
+    /// Optional tone-tinted leading icon.
     leading_icon: Option<IconId>,
+    /// Whether a pointer-accessible close affordance is painted.
     closable: bool,
 }
 
 impl Toast {
+    /// Creates a neutral, closable toast with no description or icon.
+    ///
+    /// Empty and duplicate IDs are accepted but unique stable IDs are recommended.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Toast;
+    /// let toast = Toast::new("connected", "Connected");
+    /// assert_eq!(toast.title(), "Connected");
+    /// ```
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -127,45 +239,127 @@ impl Toast {
         }
     }
 
+    /// Borrows the exact dismissal identity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Toast;
+    /// let toast = Toast::new("job-1", "Started");
+    /// assert_eq!(toast.id(), "job-1");
+    /// ```
     pub fn id(&self) -> &str {
         &self.id
     }
 
+    /// Borrows the exact primary title.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Toast;
+    /// let toast = Toast::new("job-1", "Started");
+    /// assert_eq!(toast.title(), "Started");
+    /// ```
     pub fn title(&self) -> &str {
         &self.title
     }
 
+    /// Sets the secondary line, replacing any previous description.
+    ///
+    /// An empty string remains `Some` and selects the taller toast layout.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Toast;
+    /// let toast = Toast::new("saved", "Saved").description("All changes are on disk");
+    /// let _ = toast;
+    /// ```
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
 
+    /// Sets the semantic accent tone.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Toast, ToastTone};
+    /// let toast = Toast::new("failed", "Failed").tone(ToastTone::Danger);
+    /// let _ = toast;
+    /// ```
     pub fn tone(mut self, tone: ToastTone) -> Self {
         self.tone = tone;
         self
     }
 
+    /// Sets a tone-tinted leading icon, replacing any prior icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::Toast;
+    /// let toast = Toast::new("done", "Done").leading_icon(IconId::Check);
+    /// let _ = toast;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.leading_icon = Some(icon);
         self
     }
 
+    /// Controls whether the close icon, hit bound, and dismiss path are present.
+    ///
+    /// Non-closable toasts can still be removed by changing the host's source.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Toast;
+    /// let toast = Toast::new("sync", "Syncing").closable(false);
+    /// let _ = toast;
+    /// ```
     pub fn closable(mut self, closable: bool) -> Self {
         self.closable = closable;
         self
     }
 }
 
+/// Shared callback receiving the dismissed toast ID.
 type ToastDismissHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, String)>;
 
+/// A full-slot host that overlays a stack of toasts over one optional child.
+///
+/// The host itself is never focusable. Close activation is pointer-only and
+/// checks visible values in reverse order. Bound mode removes all matching IDs;
+/// controlled/static mode reports dismissal but cannot mutate its source.
+/// Toasts are not clipped or virtualized and may extend outside a small host.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{Toast, ToastHost};
+/// let host: ToastHost<()> = ToastHost::new().toast(Toast::new("saved", "Saved"));
+/// let _ = host;
+/// ```
 pub struct ToastHost<A = ()> {
+    /// Layout configuration for the full host slot.
     pub(crate) layout: LayoutStyle,
+    /// Flex-item behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Static, controlled, or bound toast values in stack order.
     toasts: Binding<Vec<Toast>>,
+    /// Writable source in bound mode only.
     bound_toasts: Option<Signal<Vec<Toast>>>,
+    /// Corner and stack direction.
     position: ToastPosition,
+    /// Resolved paint and geometry.
     style: ToastStyle,
+    /// Optional dismissal callback.
     on_dismiss: Option<ToastDismissHandler<A>>,
+    /// Optional sole host child below the overlay.
     child: Option<View<A>>,
 }
 
@@ -178,6 +372,15 @@ impl<A: 'static> Default for ToastHost<A> {
 }
 
 impl<A: 'static> ToastHost<A> {
+    /// Creates an empty top-right host with no child or dismissal callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ToastHost;
+    /// let host: ToastHost<()> = ToastHost::new();
+    /// let _ = host;
+    /// ```
     pub fn new() -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -191,6 +394,18 @@ impl<A: 'static> ToastHost<A> {
         }
     }
 
+    /// Appends one toast to a snapshot of the current binding.
+    ///
+    /// This converts the result to static mode and clears a writable binding.
+    /// Repeated calls preserve order and grow an unbounded vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Toast, ToastHost};
+    /// let host: ToastHost<()> = ToastHost::new().toast(Toast::new("one", "First"));
+    /// let _ = host;
+    /// ```
     pub fn toast(mut self, toast: Toast) -> Self {
         let mut toasts = self.toasts.read();
         toasts.push(toast);
@@ -199,12 +414,39 @@ impl<A: 'static> ToastHost<A> {
         self
     }
 
+    /// Replaces the static or reactive controlled toast list.
+    ///
+    /// This clears bound mode, so close activation cannot mutate the source.
+    /// The callback can be used to ask the consumer to update it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Toast, ToastHost};
+    /// let host: ToastHost<()> = ToastHost::new().toasts(vec![Toast::new("one", "First")]);
+    /// let _ = host;
+    /// ```
     pub fn toasts(mut self, toasts: impl Into<Binding<Vec<Toast>>>) -> Self {
         self.toasts = toasts.into();
         self.bound_toasts = None;
         self
     }
 
+    /// Installs a writable signal for two-way dismissal.
+    ///
+    /// Close activation removes every toast whose ID equals the activated ID,
+    /// then invokes the optional callback once.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{cell::RefCell, rc::Rc};
+    /// use ailloli_ui_runtime::component::Signal;
+    /// use ailloli_ui_widgets::controls::{Toast, ToastHost};
+    /// let toasts = Signal::new(Rc::new(RefCell::new(vec![Toast::new("one", "First")])), Rc::new(|| {}));
+    /// let host: ToastHost<()> = ToastHost::new().bind_toasts(toasts);
+    /// let _ = host;
+    /// ```
     pub fn bind_toasts(mut self, toasts: impl Into<Signal<Vec<Toast>>>) -> Self {
         let signal = toasts.into();
         self.toasts = Binding::Signal(signal.clone());
@@ -212,32 +454,84 @@ impl<A: 'static> ToastHost<A> {
         self
     }
 
+    /// Selects the corner and vertical stacking direction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{ToastHost, ToastPosition};
+    /// let host: ToastHost<()> = ToastHost::new().position(ToastPosition::BottomLeft);
+    /// let _ = host;
+    /// ```
     pub fn position(mut self, position: ToastPosition) -> Self {
         self.position = position;
         self
     }
 
+    /// Replaces complete toast-stack style and geometry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{ToastHost, ToastStyle};
+    /// let style = ToastStyle::from_theme(Theme::dark());
+    /// let host: ToastHost<()> = ToastHost::new().toast_style(style);
+    /// let _ = host;
+    /// ```
     pub fn toast_style(mut self, style: ToastStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Maps each dismissed ID to an application action and dispatches it.
+    ///
+    /// The mapper runs after bound values are removed. A later handler replaces it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ToastHost;
+    /// enum Action { Dismissed(String) }
+    /// let host = ToastHost::new().on_dismiss(Action::Dismissed);
+    /// let _ = host;
+    /// ```
     pub fn on_dismiss(mut self, f: impl Fn(String) -> A + 'static) -> Self {
         self.on_dismiss = Some(Rc::new(move |ctx, id| ctx.dispatch(f(id))));
         self
     }
 
+    /// Installs a context-aware dismissal callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ToastHost;
+    /// let host = ToastHost::<()>::new().on_dismiss_ctx(|ctx, _id| ctx.request_repaint());
+    /// let _ = host;
+    /// ```
     pub fn on_dismiss_ctx(mut self, f: impl Fn(&mut EventCtx<A>, String) + 'static) -> Self {
         self.on_dismiss = Some(Rc::new(f));
         self
     }
 
+    /// Sets the sole underlying host child, replacing any previous child.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::ToastHost;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let host = ToastHost::<()>::new().child(Text::new("Workspace"));
+    /// let _ = host;
+    /// ```
     pub fn child(mut self, child: impl IntoView<A>) -> Self {
         self.child = Some(child.into_view());
         self
     }
 }
 
+/// Component properties used to build the overlay host node.
 struct ToastHostComponent<A> {
     layout: LayoutStyle,
     toasts: Binding<Vec<Toast>>,
@@ -286,6 +580,7 @@ impl<A: 'static> IntoView<A> for ToastHost<A> {
     }
 }
 
+/// Retained overlay widget resolving stack geometry and close activation.
 struct ToastHostWidget<A> {
     layout: LayoutStyle,
     toasts: Binding<Vec<Toast>>,
@@ -373,6 +668,7 @@ impl<A: 'static> Widget<A> for ToastHostWidget<A> {
 }
 
 impl<A: 'static> ToastHostWidget<A> {
+    /// Resolves all toast rectangles in source order without clipping.
     fn toast_rects(&self, host_size: Size) -> Vec<(usize, Toast, Rect)> {
         let mut y = match self.position {
             ToastPosition::TopLeft | ToastPosition::TopRight => self.style.inset,
@@ -409,6 +705,7 @@ impl<A: 'static> ToastHostWidget<A> {
         out
     }
 
+    /// Returns 72 pixels when a description is present, otherwise 52.
     fn toast_height(&self, toast: &Toast) -> f32 {
         if toast.description.is_some() {
             72.0
@@ -417,6 +714,7 @@ impl<A: 'static> ToastHostWidget<A> {
         }
     }
 
+    /// Returns the close hit/icon square aligned to the toast's right inset.
     fn close_rect(&self, rect: Rect) -> Rect {
         Rect::new(
             rect.right() - self.style.padding_x - self.style.close_size,
@@ -426,6 +724,7 @@ impl<A: 'static> ToastHostWidget<A> {
         )
     }
 
+    /// Removes matching bound values, reports once, and requests repaint.
     fn dismiss(&self, ctx: &mut EventCtx<A>, id: String) {
         if let Some(bound) = &self.bound_toasts {
             bound.update(|toasts| toasts.retain(|toast| toast.id != id));
@@ -436,6 +735,7 @@ impl<A: 'static> ToastHostWidget<A> {
         ctx.request_repaint();
     }
 
+    /// Paints one card, four-pixel tone strip, content, close icon, and border.
     fn paint_toast(&self, ctx: &mut PaintCtx<'_>, rect: Rect, toast: &Toast) {
         for shadow in self.style.shadows.iter().copied().filter(|s| !s.inset) {
             ctx.push_overlay(DrawCmd::BoxShadow(DrawBoxShadow {
@@ -504,6 +804,7 @@ impl<A: 'static> ToastHostWidget<A> {
     }
 }
 
+/// Resolves host size from its child or finite constraint maxima.
 fn host_slot_size<A: 'static>(
     engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
     ctx: &mut LayoutCtx<'_>,
@@ -522,6 +823,7 @@ fn host_slot_size<A: 'static>(
     apply_layout_size(intrinsic, layout, constraints)
 }
 
+/// Returns `value` when finite and `fallback` for NaN or either infinity.
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() {
         value
@@ -530,7 +832,9 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
     }
 }
 
+/// Local geometry extension used to pass host dimensions to stack layout.
 trait RectExt {
+    /// Copies rectangle width and height into a [`Size`].
     fn size(self) -> Size;
 }
 

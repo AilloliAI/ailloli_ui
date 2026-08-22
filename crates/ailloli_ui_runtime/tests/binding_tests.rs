@@ -1,13 +1,17 @@
+//! Integration scenarios for bindings, state propagation, and invalidation.
+
 use ailloli_ui_runtime::app::RuntimeHandle;
 use ailloli_ui_runtime::component::{Binding, Context, State};
 
 #[test]
+/// Verifies that binding static from str reads.
 fn binding_static_from_str_reads() {
     let b: Binding<String> = "hello".into();
     assert_eq!(b.read(), "hello".to_string());
 }
 
 #[test]
+/// Verifies that binding signal reads latest value.
 fn binding_signal_reads_latest_value() {
     let runtime = RuntimeHandle::<()>::new();
     let element_id = ailloli_ui_core::ids::ElementId(1);
@@ -22,6 +26,7 @@ fn binding_signal_reads_latest_value() {
 }
 
 #[test]
+/// Verifies that binding state reads latest value.
 fn binding_state_reads_latest_value() {
     let state = State::new(10u32);
     let binding: Binding<u32> = state.clone().into();
@@ -32,6 +37,7 @@ fn binding_state_reads_latest_value() {
 }
 
 #[test]
+/// Verifies that binding memo reads computed value.
 fn binding_memo_reads_computed_value() {
     let runtime = RuntimeHandle::<()>::new();
     let element_id = ailloli_ui_core::ids::ElementId(1);

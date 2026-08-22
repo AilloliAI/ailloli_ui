@@ -3,17 +3,67 @@
 //! The font is a deterministic subset of Nerd Fonts Symbols Only 3.4.0. It
 //! contains only glyphs used by `devicons` 0.6.12 plus the canonical folder
 //! and file fallbacks. See `SOURCE_PROVENANCE` and `THIRD_PARTY_NOTICES`.
+//!
+//! # Examples
+//!
+//! ```
+//! use ailloli_ui_devicons_font::{glyph_or_fallback, FOLDER_GLYPH};
+//! assert_eq!(glyph_or_fallback(FOLDER_GLYPH), FOLDER_GLYPH);
+//! ```
 
-/// Generic file glyph used whenever a requested icon is not in the audited font.
+/// Generic-file fallback glyph at private-use codepoint `U+F15B`.
+///
+/// This glyph is included in [`SUPPORTED_GLYPHS`] and is returned by
+/// [`glyph_or_fallback`] for every unsupported character.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devicons_font::GENERIC_FILE_GLYPH;
+/// assert_eq!(GENERIC_FILE_GLYPH, '\u{f15b}');
+/// ```
 pub const GENERIC_FILE_GLYPH: char = '\u{f15b}';
 
-/// Folder glyph used by the framework file explorer.
+/// Canonical folder glyph at private-use codepoint `U+F07B`.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devicons_font::{supports_glyph, FOLDER_GLYPH};
+/// assert_eq!(FOLDER_GLYPH, '\u{f07b}');
+/// assert!(supports_glyph(FOLDER_GLYPH));
+/// ```
 pub const FOLDER_GLYPH: char = '\u{f07b}';
 
-/// Bytes of the audited file-icon font used for `IconId::Devicon`.
+/// Static bytes of the bundled `AilloliUIFileIcons-Regular.ttf` font.
+///
+/// The slice is embedded at compile time, is never empty in this release, and
+/// can be passed directly to a TrueType/OpenType parser or font provider. It is
+/// the font used to render `IconId::Devicon` in the wider framework.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devicons_font::DEVICON_FONT_BYTES;
+/// let bytes: &'static [u8] = DEVICON_FONT_BYTES;
+/// assert!(!bytes.is_empty());
+/// ```
 pub const DEVICON_FONT_BYTES: &[u8] = include_bytes!("../assets/AilloliUIFileIcons-Regular.ttf");
 
-/// Glyphs retained by the audited subset, sorted by Unicode codepoint.
+/// All 198 glyphs retained by the audited font subset.
+///
+/// Entries are strictly increasing Unicode scalar values, so they are unique
+/// and suitable for binary search. Both [`FOLDER_GLYPH`] and
+/// [`GENERIC_FILE_GLYPH`] are included. The slice is exhaustive for Unicode
+/// mappings in [`DEVICON_FONT_BYTES`], as checked by the crate tests.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devicons_font::{SUPPORTED_GLYPHS, GENERIC_FILE_GLYPH};
+/// assert_eq!(SUPPORTED_GLYPHS.len(), 198);
+/// assert!(SUPPORTED_GLYPHS.binary_search(&GENERIC_FILE_GLYPH).is_ok());
+/// ```
 pub const SUPPORTED_GLYPHS: &[char] = &[
     '\u{e21c}',
     '\u{e271}',
@@ -216,11 +266,30 @@ pub const SUPPORTED_GLYPHS: &[char] = &[
 ];
 
 /// Returns whether `glyph` is present in the audited embedded font.
+///
+/// The check uses binary search over 198 sorted entries and therefore takes
+/// logarithmic time without allocating. Any Unicode scalar value is accepted.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devicons_font::supports_glyph;
+/// assert!(supports_glyph('\u{e68b}')); // Rust file icon
+/// assert!(!supports_glyph('A'));
+/// ```
 pub fn supports_glyph(glyph: char) -> bool {
     SUPPORTED_GLYPHS.binary_search(&glyph).is_ok()
 }
 
-/// Returns `glyph` when it is audited and bundled, otherwise the generic file glyph.
+/// Returns `glyph` when bundled, or [`GENERIC_FILE_GLYPH`] otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_devicons_font::{glyph_or_fallback, GENERIC_FILE_GLYPH};
+/// assert_eq!(glyph_or_fallback('\u{e68b}'), '\u{e68b}');
+/// assert_eq!(glyph_or_fallback('A'), GENERIC_FILE_GLYPH);
+/// ```
 pub fn glyph_or_fallback(glyph: char) -> char {
     if supports_glyph(glyph) {
         glyph
@@ -231,6 +300,9 @@ pub fn glyph_or_fallback(glyph: char) -> char {
 
 #[cfg(test)]
 mod tests {
+    //! Verifies exact font cmap coverage, ordering, fallbacks, and exclusion of
+    //! known unlicensed or source-missing Font Logos glyphs.
+
     use super::{
         glyph_or_fallback, supports_glyph, DEVICON_FONT_BYTES, FOLDER_GLYPH, GENERIC_FILE_GLYPH,
         SUPPORTED_GLYPHS,

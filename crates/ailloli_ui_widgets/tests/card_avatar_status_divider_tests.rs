@@ -1,3 +1,5 @@
+//! Card, avatar, status indicator, and divider layout/paint scenarios.
+
 use ailloli_ui_core::event::{Event, Modifiers, MouseButton, PointerEvent};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::math::Scale;

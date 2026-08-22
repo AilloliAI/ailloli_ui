@@ -1,3 +1,9 @@
+//! Framed text/code editor composition with tabs and active-file metadata.
+//!
+//! An [`EditorPane`] owns one editor content view and paints two chrome rows:
+//! selectable tabs followed by a title, path, or file breadcrumb. Tabs and the
+//! active tab can be supplied as static values or live signals.
+
 use std::path::Path;
 use std::rc::Rc;
 
@@ -27,24 +33,60 @@ use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 #[cfg(feature = "files")]
 use ailloli_ui_fs::FileUri;
 
+/// Shared retained callback for the pane's combined action stream.
 type ActionHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, EditorPaneAction)>;
+/// Shared retained callback for one tab identifier.
 type TabHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, String)>;
 
+/// Default intrinsic pane width in logical pixels before layout constraints.
 const DEFAULT_PANE_WIDTH: f32 = 640.0;
+/// Default intrinsic pane height in logical pixels before layout constraints.
 const DEFAULT_PANE_HEIGHT: f32 = 420.0;
 
+/// Metadata rendered for one editor-pane tab.
+///
+/// Empty identifiers are accepted but should be avoided because identifiers
+/// drive selection and callbacks. `None` for `path`, `icon`, or `icon_tint`
+/// means that the corresponding decoration or override is absent.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::editor::{EditorPaneTab, EditorPaneTabKind};
+/// let tab = EditorPaneTab::code("main", "main.rs").path("src/main.rs");
+/// assert_eq!(tab.id, "main");
+/// assert_eq!(tab.kind, EditorPaneTabKind::Code);
+/// assert_eq!(tab.path.as_deref(), Some("src/main.rs"));
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditorPaneTab {
+    /// Stable identifier emitted by selection and close actions.
     pub id: String,
+    /// Visible tab label and fallback active title.
     pub title: String,
+    /// Optional display path or URI used by the header/breadcrumb.
     pub path: Option<String>,
+    /// Whether to render the unsaved-change indicator.
     pub dirty: bool,
+    /// Semantic tab category used for the scope strip.
     pub kind: EditorPaneTabKind,
+    /// Optional leading icon.
     pub icon: Option<IconId>,
+    /// Optional icon tint; `None` uses the pane's muted-path color.
     pub icon_tint: Option<Color>,
 }
 
 impl EditorPaneTab {
+    /// Creates an undecorated, clean tab of [`EditorPaneTabKind::Other`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPaneTab, EditorPaneTabKind};
+    /// let tab = EditorPaneTab::new("notes", "Notes");
+    /// assert_eq!(tab.kind, EditorPaneTabKind::Other);
+    /// assert!(!tab.dirty && tab.path.is_none() && tab.icon.is_none());
+    /// ```
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -57,76 +99,205 @@ impl EditorPaneTab {
         }
     }
 
+    /// Creates a tab categorized as plain text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPaneTab, EditorPaneTabKind};
+    /// assert_eq!(EditorPaneTab::text("readme", "README").kind, EditorPaneTabKind::Text);
+    /// ```
     pub fn text(id: impl Into<String>, title: impl Into<String>) -> Self {
         Self::new(id, title).kind(EditorPaneTabKind::Text)
     }
 
+    /// Creates a tab categorized as source code.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPaneTab, EditorPaneTabKind};
+    /// assert_eq!(EditorPaneTab::code("lib", "lib.rs").kind, EditorPaneTabKind::Code);
+    /// ```
     pub fn code(id: impl Into<String>, title: impl Into<String>) -> Self {
         Self::new(id, title).kind(EditorPaneTabKind::Code)
     }
 
+    /// Sets the display path or URI used by the active header.
+    ///
+    /// Empty strings behave as absent while resolving the header. With the
+    /// `files` feature, URI strings, slash paths, backslash paths, and
+    /// `parent > child` labels are normalized for breadcrumb rendering.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPaneTab;
+    /// let tab = EditorPaneTab::code("lib", "lib.rs").path("src/lib.rs");
+    /// assert_eq!(tab.path.as_deref(), Some("src/lib.rs"));
+    /// ```
     pub fn path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
     }
 
+    /// Marks whether the tab has unsaved changes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPaneTab;
+    /// assert!(EditorPaneTab::text("draft", "Draft").dirty(true).dirty);
+    /// ```
     pub fn dirty(mut self, dirty: bool) -> Self {
         self.dirty = dirty;
         self
     }
 
+    /// Replaces the semantic category used by the tab scope strip.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPaneTab, EditorPaneTabKind};
+    /// let tab = EditorPaneTab::new("log", "Log").kind(EditorPaneTabKind::Text);
+    /// assert_eq!(tab.kind, EditorPaneTabKind::Text);
+    /// ```
     pub fn kind(mut self, kind: EditorPaneTabKind) -> Self {
         self.kind = kind;
         self
     }
 
+    /// Sets a leading tab icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::editor::EditorPaneTab;
+    /// let tab = EditorPaneTab::new("new", "New").icon(IconId::Plus);
+    /// assert_eq!(tab.icon, Some(IconId::Plus));
+    /// ```
     pub fn icon(mut self, icon: IconId) -> Self {
         self.icon = Some(icon);
         self
     }
 
+    /// Sets the leading icon tint.
+    ///
+    /// The tint is retained even when no icon is configured and becomes visible
+    /// if an icon is added later.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Color;
+    /// use ailloli_ui_widgets::editor::EditorPaneTab;
+    /// let color = Color::rgba(255, 0, 0, 1.0);
+    /// assert_eq!(EditorPaneTab::new("a", "A").icon_tint(color).icon_tint, Some(color));
+    /// ```
     pub fn icon_tint(mut self, color: Color) -> Self {
         self.icon_tint = Some(color);
         self
     }
 }
 
+/// Semantic category used to decorate an editor tab.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::editor::EditorPaneTabKind;
+/// assert_eq!(EditorPaneTabKind::default(), EditorPaneTabKind::Other);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EditorPaneTabKind {
+    /// Plain-text document.
     Text,
+    /// Source-code document.
     Code,
+    /// Unclassified content and the default.
     #[default]
     Other,
 }
 
+/// High-level user action emitted by editor-pane tab chrome.
+///
+/// The contained string is the [`EditorPaneTab::id`]. A click on the close
+/// affordance emits only `CloseTab`; it does not first select the tab.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::editor::EditorPaneAction;
+/// let action = EditorPaneAction::SelectTab("main".into());
+/// assert_eq!(action, EditorPaneAction::SelectTab("main".into()));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditorPaneAction {
+    /// The user selected the identified tab.
     SelectTab(String),
+    /// The user requested closing the identified tab.
     CloseTab(String),
 }
 
+/// Preset height for the tabs and metadata header rows.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::editor::EditorPaneSize;
+/// assert_eq!(EditorPaneSize::default(), EditorPaneSize::Default);
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EditorPaneSize {
+    /// 32-logical-pixel tabs plus a 24-pixel header.
     Compact,
+    /// 36-logical-pixel tabs plus a 28-pixel header.
     #[default]
     Default,
 }
 
+/// Colors and logical-pixel geometry for an [`EditorPane`].
+///
+/// No field is automatically clamped. Negative row heights or radius values
+/// are therefore forwarded to layout/painting and should be avoided.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::editor::EditorPaneStyle;
+/// let style = EditorPaneStyle::default();
+/// assert_eq!(style.tabs_height, 36.0);
+/// assert_eq!(style.header_height, 28.0);
+/// ```
 #[derive(Clone, Debug)]
 pub struct EditorPaneStyle {
+    /// Content-frame fill color.
     pub background: Color,
+    /// One-logical-pixel outer border color.
     pub border: Color,
+    /// Metadata-header fill color.
     pub header_bg: Color,
+    /// One-logical-pixel divider color below the header.
     pub header_border: Color,
+    /// Active breadcrumb-segment color.
     pub title_fg: Color,
+    /// Inactive breadcrumb/path and fallback icon color.
     pub path_fg: Color,
+    /// Unsaved-change dot color.
     pub dirty: Color,
+    /// Outer clip and border radius in logical pixels.
     pub radius: f32,
+    /// Tab-row height in logical pixels.
     pub tabs_height: f32,
+    /// Metadata-header height in logical pixels.
     pub header_height: f32,
+    /// Nested tab-bar colors.
     pub tabs: TabsStyle,
 }
 
+/// Builds default-sized chrome from the process-independent default theme.
 impl Default for EditorPaneStyle {
     fn default() -> Self {
         Self::from_theme(Theme::default(), EditorPaneSize::Default)
@@ -134,6 +305,19 @@ impl Default for EditorPaneStyle {
 }
 
 impl EditorPaneStyle {
+    /// Derives pane colors from `theme` and row heights from `size`.
+    ///
+    /// Compact rows are 32/24 logical pixels; default rows are 36/28. The
+    /// dirty indicator uses opaque amber and the radius uses `theme.radius().md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::editor::{EditorPaneSize, EditorPaneStyle};
+    /// let compact = EditorPaneStyle::from_theme(Theme::default(), EditorPaneSize::Compact);
+    /// assert_eq!((compact.tabs_height, compact.header_height), (32.0, 24.0));
+    /// ```
     pub fn from_theme(theme: Theme, size: EditorPaneSize) -> Self {
         let p = theme.palette();
         let (tabs_height, header_height) = match size {
@@ -165,8 +349,28 @@ impl EditorPaneStyle {
     }
 }
 
+/// Framed editor view with tab and active-document chrome.
+///
+/// The pane has a 640×420 logical-pixel intrinsic size, then obeys the standard
+/// layout builders and incoming constraints. Its tabs and metadata header take
+/// their configured heights; a smaller constrained height gives the content a
+/// zero-height remainder. `A` is the application action type dispatched by
+/// callback adapters.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::editor::{EditorPane, EditorPaneTab};
+/// use ailloli_ui_widgets::text::Text;
+/// let pane = EditorPane::<()>::new(Text::new("Preview"))
+///     .tabs([EditorPaneTab::text("preview", "Preview")])
+///     .active_tab("preview");
+/// let _ = pane;
+/// ```
 pub struct EditorPane<A = ()> {
+    /// Standard logical-pixel size and position constraints.
     pub(crate) layout: LayoutStyle,
+    /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
     content: View<A>,
     tabs: Vec<EditorPaneTab>,
@@ -186,6 +390,16 @@ pub struct EditorPane<A = ()> {
 crate::impl_layout_builders!(EditorPane);
 
 impl<A: 'static> EditorPane<A> {
+    /// Wraps any view as pane content with empty tabs and default chrome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("content"));
+    /// let _ = pane;
+    /// ```
     pub fn new(child: impl IntoView<A>) -> Self {
         Self {
             layout: LayoutStyle::default(),
@@ -206,32 +420,120 @@ impl<A: 'static> EditorPane<A> {
         }
     }
 
+    /// Creates a pane whose content is a fill-sized plain-text [`Editor`].
+    ///
+    /// Edits mutate the shared buffer signal. No tab is synthesized from the
+    /// buffer; configure tabs/title/path explicitly when chrome text is wanted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_text::TextBuffer;
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// let pane: EditorPane<()> = EditorPane::text(State::new(TextBuffer::from_string("notes")));
+    /// let _ = pane;
+    /// ```
     pub fn text(buffer: impl Into<Signal<TextBuffer>>) -> Self {
         Self::new(Editor::new(buffer).fill())
     }
 
+    /// Creates a pane whose content is a fill-sized [`CodeEditor`].
+    ///
+    /// Document source metadata and dirty state become fallbacks for the pane
+    /// header. No visible tab is synthesized automatically.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::{Document, DocumentId};
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_text::TextBuffer;
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// let document = Document::new(DocumentId(1), TextBuffer::new()).with_path("src/lib.rs");
+    /// let pane: EditorPane<()> = EditorPane::code(State::new(document));
+    /// let _ = pane;
+    /// ```
     pub fn code(document: impl Into<Signal<Document>>) -> Self {
         let document = document.into();
         Self::new(CodeEditor::<A>::new(document.clone()).fill()).with_active_document(document)
     }
 
+    /// Replaces static tabs and removes any previously bound tab signal.
+    ///
+    /// Iteration order is paint and hit-test order. An empty list suppresses
+    /// tabs; no implicit tab is derived from editor content.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPane, EditorPaneTab};
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body"))
+    ///     .tabs([EditorPaneTab::text("one", "One"), EditorPaneTab::text("two", "Two")]);
+    /// let _ = pane;
+    /// ```
     pub fn tabs(mut self, tabs: impl IntoIterator<Item = EditorPaneTab>) -> Self {
         self.tabs = tabs.into_iter().collect();
         self.bound_tabs = None;
         self
     }
 
+    /// Binds the visible tabs to live shared state.
+    ///
+    /// Bound tabs take precedence over stored static tabs. Later calling
+    /// [`Self::tabs`] returns to static input by clearing this binding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::editor::{EditorPane, EditorPaneTab};
+    /// use ailloli_ui_widgets::text::Text;
+    /// let tabs = State::new(vec![EditorPaneTab::code("lib", "lib.rs")]);
+    /// let pane = EditorPane::<()>::new(Text::new("body")).bind_tabs(tabs);
+    /// let _ = pane;
+    /// ```
     pub fn bind_tabs(mut self, tabs: impl Into<Signal<Vec<EditorPaneTab>>>) -> Self {
         self.bound_tabs = Some(tabs.into());
         self
     }
 
+    /// Sets a static or generic binding for the active tab identifier.
+    ///
+    /// Empty or unknown identifiers fall back to the first tab. This method
+    /// removes the special writable signal installed by [`Self::bind_active_tab`],
+    /// so user clicks no longer update active state automatically.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body")).active_tab("main");
+    /// let _ = pane;
+    /// ```
     pub fn active_tab(mut self, active_tab: impl Into<Binding<String>>) -> Self {
         self.active_tab = Some(active_tab.into());
         self.bound_active_tab = None;
         self
     }
 
+    /// Binds active-tab selection to writable shared state.
+    ///
+    /// A left click on a tab writes its identifier before invoking selection
+    /// and aggregate callbacks. Empty or unknown values display the first tab.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let active = State::new(String::from("main"));
+    /// let pane = EditorPane::<()>::new(Text::new("body")).bind_active_tab(active);
+    /// let _ = pane;
+    /// ```
     pub fn bind_active_tab(mut self, active_tab: impl Into<Signal<String>>) -> Self {
         let signal = active_tab.into();
         self.active_tab = Some(Binding::Signal(signal.clone()));
@@ -239,56 +541,197 @@ impl<A: 'static> EditorPane<A> {
         self
     }
 
+    /// Overrides the selected tab or document title.
+    ///
+    /// An empty value is treated as no override. Resolution order is explicit
+    /// non-empty title, selected-tab title, document filename, then empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body")).active_title("Untitled");
+    /// let _ = pane;
+    /// ```
     pub fn active_title(mut self, title: impl Into<Binding<String>>) -> Self {
         self.active_title = Some(title.into());
         self
     }
 
+    /// Overrides the selected tab or document path in the header.
+    ///
+    /// An empty value is treated as absent. Resolution order is explicit path,
+    /// selected-tab path, then document source path/URI.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body")).active_path("src/main.rs");
+    /// let _ = pane;
+    /// ```
     pub fn active_path(mut self, path: impl Into<Binding<String>>) -> Self {
         self.active_path = Some(path.into());
         self
     }
 
+    /// Overrides active dirty state, including an explicit `false`.
+    ///
+    /// Without an override, the selected tab and active document are combined
+    /// with logical OR. The value controls the header dot and selected tab's
+    /// unread/dirty decoration only.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body")).dirty(true);
+    /// let _ = pane;
+    /// ```
     pub fn dirty(mut self, dirty: impl Into<Binding<bool>>) -> Self {
         self.dirty = Some(dirty.into());
         self
     }
 
+    /// Replaces all pane and tab chrome styling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPane, EditorPaneStyle};
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body")).pane_style(EditorPaneStyle::default());
+    /// let _ = pane;
+    /// ```
     pub fn pane_style(mut self, style: EditorPaneStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Applies a size preset using the default theme.
+    ///
+    /// This replaces the entire existing [`EditorPaneStyle`], so call it before
+    /// [`Self::pane_style`] when combining a size preset with custom colors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPane, EditorPaneSize};
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body")).pane_size(EditorPaneSize::Compact);
+    /// let _ = pane;
+    /// ```
     pub fn pane_size(mut self, size: EditorPaneSize) -> Self {
         self.style = EditorPaneStyle::from_theme(Theme::default(), size);
         self
     }
 
+    /// Maps a selected tab identifier into an application action.
+    ///
+    /// The callback runs after a bound active-tab signal is updated and before
+    /// the optional aggregate action callback.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// enum Action { Select(String) }
+    /// let pane = EditorPane::<Action>::new(Text::new("body")).on_select_tab(Action::Select);
+    /// let _ = pane;
+    /// ```
     pub fn on_select_tab(mut self, f: impl Fn(String) -> A + 'static) -> Self {
         self.on_select_tab = Some(Rc::new(move |ctx, id| ctx.dispatch(f(id))));
         self
     }
 
+    /// Handles selection with direct access to the event context.
+    ///
+    /// Use this form to dispatch zero or multiple actions or request additional
+    /// runtime work. Callback order matches [`Self::on_select_tab`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body"))
+    ///     .on_select_tab_ctx(|_ctx, _id| {});
+    /// let _ = pane;
+    /// ```
     pub fn on_select_tab_ctx(mut self, f: impl Fn(&mut EventCtx<A>, String) + 'static) -> Self {
         self.on_select_tab = Some(Rc::new(f));
         self
     }
 
+    /// Maps a close request identifier into an application action.
+    ///
+    /// Clicking a tab's trailing 22-logical-pixel close region takes priority
+    /// over selection, invokes this callback, then invokes the aggregate action
+    /// callback. The pane does not remove the tab itself.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// enum Action { Close(String) }
+    /// let pane = EditorPane::<Action>::new(Text::new("body")).on_close_tab(Action::Close);
+    /// let _ = pane;
+    /// ```
     pub fn on_close_tab(mut self, f: impl Fn(String) -> A + 'static) -> Self {
         self.on_close_tab = Some(Rc::new(move |ctx, id| ctx.dispatch(f(id))));
         self
     }
 
+    /// Handles a close request with direct access to the event context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body"))
+    ///     .on_close_tab_ctx(|_ctx, _id| {});
+    /// let _ = pane;
+    /// ```
     pub fn on_close_tab_ctx(mut self, f: impl Fn(&mut EventCtx<A>, String) + 'static) -> Self {
         self.on_close_tab = Some(Rc::new(f));
         self
     }
 
+    /// Maps every select/close event into one application action.
+    ///
+    /// A specialized selection or close callback, when installed, runs first;
+    /// both callbacks may therefore dispatch actions for one pointer event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::{EditorPane, EditorPaneAction};
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<EditorPaneAction>::new(Text::new("body")).on_action(|action| action);
+    /// let _ = pane;
+    /// ```
     pub fn on_action(mut self, f: impl Fn(EditorPaneAction) -> A + 'static) -> Self {
         self.on_action = Some(Rc::new(move |ctx, action| ctx.dispatch(f(action))));
         self
     }
 
+    /// Handles every select/close event with direct event-context access.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::editor::EditorPane;
+    /// use ailloli_ui_widgets::text::Text;
+    /// let pane = EditorPane::<()>::new(Text::new("body"))
+    ///     .on_action_ctx(|_ctx, _action| {});
+    /// let _ = pane;
+    /// ```
     pub fn on_action_ctx(
         mut self,
         f: impl Fn(&mut EventCtx<A>, EditorPaneAction) + 'static,
@@ -297,12 +740,14 @@ impl<A: 'static> EditorPane<A> {
         self
     }
 
+    /// Retains code-document metadata as a title/path/dirty fallback.
     fn with_active_document(mut self, document: Signal<Document>) -> Self {
         self.active_document = Some(document);
         self
     }
 }
 
+/// Converts the pane builder into a clipped frame, chrome, and content tree.
 impl<A: 'static> IntoView<A> for EditorPane<A> {
     fn into_view(self) -> View<A> {
         finish_view_sized(
@@ -328,6 +773,7 @@ impl<A: 'static> IntoView<A> for EditorPane<A> {
     }
 }
 
+/// Component boundary that expands the builder into frame/chrome/content nodes.
 struct EditorPaneComponent<A> {
     layout: LayoutStyle,
     content: View<A>,
@@ -345,6 +791,7 @@ struct EditorPaneComponent<A> {
     on_action: Option<ActionHandler<A>>,
 }
 
+/// Rebuilds chrome children from the latest builder-held bindings.
 impl<A: 'static> ComponentNode<A> for EditorPaneComponent<A> {
     fn build(&self, _context: &mut Context<A>) -> View<A> {
         let chrome = EditorPaneChromeWidget {
@@ -380,11 +827,13 @@ impl<A: 'static> ComponentNode<A> for EditorPaneComponent<A> {
     }
 }
 
+/// Lays out and clips the two-row chrome above the editor content.
 struct EditorPaneFrameWidget {
     layout: LayoutStyle,
     style: EditorPaneStyle,
 }
 
+/// Implements constrained 640x420 sizing, round clipping, fill, and border.
 impl<A: 'static> Widget<A> for EditorPaneFrameWidget {
     fn debug_name(&self) -> &'static str {
         "EditorPane"
@@ -458,6 +907,7 @@ impl<A: 'static> Widget<A> for EditorPaneFrameWidget {
     }
 }
 
+/// Resolves reactive tab metadata and paints/handles the two chrome rows.
 struct EditorPaneChromeWidget<A> {
     tabs: Vec<EditorPaneTab>,
     bound_tabs: Option<Signal<Vec<EditorPaneTab>>>,
@@ -473,6 +923,7 @@ struct EditorPaneChromeWidget<A> {
     on_action: Option<ActionHandler<A>>,
 }
 
+/// Paints closeable tabs and routes left-clicks with close-before-row priority.
 impl<A: 'static> Widget<A> for EditorPaneChromeWidget<A> {
     fn debug_name(&self) -> &'static str {
         "EditorPaneChrome"
@@ -648,6 +1099,7 @@ impl<A: 'static> Widget<A> for EditorPaneChromeWidget<A> {
 }
 
 impl<A: 'static> EditorPaneChromeWidget<A> {
+    /// Returns the bounded x origin for header text after optional icon space.
     fn header_text_x(&self, width: f32, has_icon: bool) -> f32 {
         let mut x: f32 = 14.0;
         if has_icon {
@@ -657,6 +1109,7 @@ impl<A: 'static> EditorPaneChromeWidget<A> {
     }
 }
 
+/// Builds one breadcrumb child when file integration is enabled, otherwise none.
 fn editor_pane_breadcrumb_children<A: 'static>(
     tabs: Vec<EditorPaneTab>,
     bound_tabs: Option<Signal<Vec<EditorPaneTab>>>,
@@ -694,6 +1147,10 @@ fn editor_pane_breadcrumb_children<A: 'static>(
 }
 
 #[cfg(feature = "files")]
+/// Parses a URI or normalizes display-path separators into a local file URI.
+///
+/// Whitespace-only input and paths with no components return `None`. Native
+/// backslashes and `parent > child` display paths become forward slashes.
 fn breadcrumb_uri_from_path(path: &str) -> Option<FileUri> {
     let path = path.trim();
     if path.is_empty() {
@@ -720,6 +1177,12 @@ fn breadcrumb_uri_from_path(path: &str) -> Option<FileUri> {
 }
 
 impl<A: 'static> EditorPaneChromeWidget<A> {
+    /// Resolves current signals and explicit metadata into one paint/hit model.
+    ///
+    /// Bound tabs override static tabs. Empty/unknown active identifiers select
+    /// the first resolved tab. Explicit non-empty title/path values override tab
+    /// values, which override document metadata; an explicit dirty boolean wins
+    /// over the tab/document logical-OR fallback.
     fn model(&self) -> EditorPaneChromeModel {
         let document = self.active_document.as_ref().map(Signal::read);
         let document_meta = document.as_ref().and_then(document_title_path);
@@ -817,6 +1280,7 @@ impl<A: 'static> EditorPaneChromeWidget<A> {
         }
     }
 
+    /// Commits bound selection, invokes callbacks in order, and requests paint.
     fn emit_select(&self, ctx: &mut EventCtx<A>, id: String) {
         if let Some(active) = &self.bound_active_tab {
             active.set(id.clone());
@@ -830,6 +1294,7 @@ impl<A: 'static> EditorPaneChromeWidget<A> {
         ctx.request_repaint();
     }
 
+    /// Invokes specialized then aggregate close callbacks and requests paint.
     fn emit_close(&self, ctx: &mut EventCtx<A>, id: String) {
         if let Some(handler) = &self.on_close_tab {
             handler(ctx, id.clone());
@@ -842,6 +1307,7 @@ impl<A: 'static> EditorPaneChromeWidget<A> {
 }
 
 #[cfg(feature = "files")]
+/// Paint-only breadcrumb whose URI follows pane title/path precedence.
 struct EditorPaneBreadcrumbWidget {
     tabs: Vec<EditorPaneTab>,
     bound_tabs: Option<Signal<Vec<EditorPaneTab>>>,
@@ -853,6 +1319,7 @@ struct EditorPaneBreadcrumbWidget {
 
 #[cfg(feature = "files")]
 impl EditorPaneBreadcrumbWidget {
+    /// Resolves the active path and converts it to a breadcrumb-compatible URI.
     fn breadcrumb_uri(&self) -> Option<FileUri> {
         let document = self.active_document.as_ref().map(Signal::read);
         let document_meta = document.as_ref().and_then(document_title_path);
@@ -947,6 +1414,7 @@ impl<A: 'static> Widget<A> for EditorPaneBreadcrumbWidget {
 }
 
 #[cfg(feature = "files")]
+/// Measures and builds one no-wrap breadcrumb label draw command.
 fn breadcrumb_text_cmd(
     text_system: &mut TextSystem,
     x: f32,
@@ -972,6 +1440,7 @@ fn breadcrumb_text_cmd(
     )
 }
 
+/// Reports whether file-enabled chrome will paint a breadcrumb child.
 fn model_has_breadcrumb(model: &EditorPaneChromeModel) -> bool {
     #[cfg(feature = "files")]
     {
@@ -984,11 +1453,13 @@ fn model_has_breadcrumb(model: &EditorPaneChromeModel) -> bool {
     }
 }
 
+/// Header title and optional display path derived from a document source.
 struct DocumentMeta {
     title: String,
     path: Option<String>,
 }
 
+/// Resolves legacy `path` first, then local/URI source; memory-only gives none.
 fn document_title_path(document: &Document) -> Option<DocumentMeta> {
     if let Some(path) = document.path.as_deref() {
         return Some(DocumentMeta {
@@ -1009,6 +1480,7 @@ fn document_title_path(document: &Document) -> Option<DocumentMeta> {
     }
 }
 
+/// Returns an owned UTF-8 filename, or `None` for missing/non-UTF-8 names.
 fn path_file_name(path: &Path) -> Option<String> {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1016,6 +1488,7 @@ fn path_file_name(path: &Path) -> Option<String> {
 }
 
 #[derive(Clone)]
+/// Internal tab projection consumed by the shared tab-bar renderer.
 struct ResolvedEditorPaneTab {
     id: String,
     title: String,
@@ -1060,6 +1533,7 @@ impl TabsItem for ResolvedEditorPaneTab {
     }
 }
 
+/// Immutable per-frame chrome values resolved from all static/reactive inputs.
 struct EditorPaneChromeModel {
     tabs: Vec<ResolvedEditorPaneTab>,
     active_title: String,
@@ -1071,6 +1545,11 @@ struct EditorPaneChromeModel {
     active_icon_tint: Option<Color>,
 }
 
+/// Reconstructs tab and close hit rectangles used by the shared painter.
+///
+/// Horizontal padding is 8 logical pixels, gaps are 6, visible tabs are
+/// 120..=220 pixels wide, and each trailing close target is 22 pixels. Tabs
+/// that cannot fit their 120-pixel minimum are omitted from hit testing.
 fn tab_hit_layout(rect: Rect, tabs: &[ResolvedEditorPaneTab]) -> Vec<(String, Rect, Rect)> {
     let pad_x = 8.0;
     let pad_y = 4.0;
@@ -1096,6 +1575,7 @@ fn tab_hit_layout(rect: Rect, tabs: &[ResolvedEditorPaneTab]) -> Vec<(String, Re
     out
 }
 
+/// Creates an unbounded no-wrap UI-font label in logical-pixel coordinates.
 fn label_cmd(
     text: &mut TextSystem,
     pos: [f32; 2],

@@ -11,10 +11,12 @@ use ailloli_ui::{App, Window};
 use ailloli_ui_render_wgpu::CapturedFrame;
 
 #[path = "../examples/support/ui_bundle_showcase.rs"]
+/// Reuses the deterministic gallery builder exercised by the executable example.
 mod ui_bundle_showcase;
 
 use ui_bundle_showcase::{ui_bundle_showcase, ShowcaseMode};
 
+/// Resolves the repository-local directory used for diagnostic captures.
 fn repo_captures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -22,12 +24,14 @@ fn repo_captures_dir() -> PathBuf {
         .join("captures")
 }
 
+/// Counts RGBA8 pixels accepted by `pred`; trailing incomplete bytes are ignored.
 fn count_pixels(rgba: &[u8], pred: impl Fn([u8; 4]) -> bool) -> u64 {
     rgba.chunks_exact(4)
         .filter(|px| pred([px[0], px[1], px[2], px[3]]))
         .count() as u64
 }
 
+/// Requires encoded PNG data and a captured extent larger than 200x80 pixels.
 fn assert_non_empty_frame(frame: &CapturedFrame, name: &str) {
     let png = frame.png_data.as_ref().expect("png data");
     assert!(!png.is_empty(), "{name}: empty png");
@@ -35,6 +39,7 @@ fn assert_non_empty_frame(frame: &CapturedFrame, name: &str) {
     assert!(frame.height > 80, "{name}: height={}", frame.height);
 }
 
+/// Writes a frame's required PNG payload beneath the repository captures directory.
 fn write_capture(name: &str, frame: &CapturedFrame) {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir).expect("mkdir captures");

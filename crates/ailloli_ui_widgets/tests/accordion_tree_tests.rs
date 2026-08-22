@@ -1,3 +1,5 @@
+//! Accordion and tree interaction, mutation, editing, drag/drop, and paint scenarios.
+
 use std::time::Duration;
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};

@@ -33,7 +33,7 @@
 //!
 //! # Application entry
 //!
-//! ```ignore
+//! ```no_run
 //! use ailloli_ui::prelude::*;
 //!
 //! fn main() -> ailloli_ui::Result<()> {

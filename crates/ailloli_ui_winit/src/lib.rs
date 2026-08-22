@@ -17,10 +17,32 @@
 //! | [`resize`] | Surface resize coalescing before redraw |
 //! | [`wgpu_bootstrap`] | Create [`ailloli_ui_render_wgpu::Renderer`] from a `winit` window |
 
+/// Returns the modern environment value, falling back to a legacy name.
+///
+/// Empty and non-Unicode values are preserved. Lookup is process-global and
+/// reads `primary` first.
+///
+/// # Examples
+///
+/// ```
+/// let modern = Some(std::ffi::OsString::from("modern"));
+/// let legacy = Some(std::ffi::OsString::from("legacy"));
+/// assert_eq!(modern.or(legacy).unwrap(), "modern");
+/// ```
 pub(crate) fn framework_env_var_os(primary: &str, legacy: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(primary).or_else(|| std::env::var_os(legacy))
 }
 
+/// Returns whether either modern or legacy trace variable is present.
+///
+/// The value is not parsed: even an empty string or `0` enables tracing.
+///
+/// # Examples
+///
+/// ```
+/// let configured: Option<std::ffi::OsString> = None;
+/// assert!(!configured.is_some());
+/// ```
 pub(crate) fn winit_trace_enabled() -> bool {
     framework_env_var_os("AILLOLI_UI_WINIT_TRACE", "OCTAVUI_WINIT_TRACE").is_some()
 }
@@ -34,6 +56,7 @@ pub mod clipboard;
 /// System cursor mapping (future `CursorStyle` bridge).
 pub mod cursor;
 #[cfg(feature = "devtools")]
+/// Optional inspector window and loopback JSONL command service.
 pub mod devtools;
 /// DPI and physical size helpers.
 pub mod dpi;
@@ -44,6 +67,7 @@ pub mod external_url;
 /// Provider-neutral application logic hosted by winit.
 pub mod host;
 #[cfg(feature = "native_overlay")]
+/// Native overlay surfaces and output calibration on supported platforms.
 pub mod native_overlay;
 /// OS-specific winit extensions.
 pub mod platform;
@@ -63,6 +87,19 @@ pub use application::run_app;
 /// Starts a reliable JSONL benchmark session when `AILLOLI_UI_BENCH=1`.
 ///
 /// Uses `AILLOLI_UI_BENCH_PATH` when set; otherwise writes to `default_path`.
+/// Disabled collection returns `BenchInit::Disabled`; enabled initialization
+/// propagates typed path, writer, and global-install failures.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_winit::try_init_ailloli_ui_bench_from_env;
+/// fn initialize() -> Result<(), Box<dyn std::error::Error>> {
+///     let init = try_init_ailloli_ui_bench_from_env("artifacts/bench/run.jsonl")?;
+///     let _completed = init.finish()?;
+///     Ok(())
+/// }
+/// ```
 #[inline]
 pub fn try_init_ailloli_ui_bench_from_env(
     default_path: &str,
@@ -80,6 +117,14 @@ pub fn try_init_ailloli_ui_bench_from_env(
 )]
 #[allow(deprecated)]
 #[inline]
+/// # Examples
+///
+/// ```no_run
+/// #![allow(deprecated)]
+/// let path: Option<std::path::PathBuf> =
+///     ailloli_ui_winit::init_ailloli_ui_bench_from_env("artifacts/bench/run.jsonl");
+/// let _ = path;
+/// ```
 pub fn init_ailloli_ui_bench_from_env(default_path: &str) -> Option<std::path::PathBuf> {
     ailloli_ui_bench::init_from_env(default_path)
 }
@@ -113,11 +158,21 @@ pub use window::{create_window, create_window_before_run, window_attributes, Win
 /// adapter deliberately advertises only the universal retained overlay. A
 /// future native capability must pass the platform matrix before changing
 /// this value.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::popup::PopupBackend;
+/// let capabilities = ailloli_ui_winit::popup_backend_capabilities();
+/// assert!(capabilities.supports(PopupBackend::Overlay));
+/// assert!(!capabilities.supports(PopupBackend::Native));
+/// ```
 pub const fn popup_backend_capabilities() -> ailloli_ui_runtime::popup::PopupBackendCapabilities {
     ailloli_ui_runtime::popup::PopupBackendCapabilities::overlay_only()
 }
 
 #[cfg(test)]
+/// Capability regression ensuring winit 0.30 remains overlay-only.
 mod popup_backend_tests {
     use ailloli_ui_runtime::popup::PopupBackend;
 

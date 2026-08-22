@@ -1,3 +1,5 @@
+//! Panel-facing, stable-grab, logical/world conversion, and depth-drag geometry.
+
 use ailloli_ui_core::{Point, Size};
 use openxr as xr;
 
@@ -5,22 +7,65 @@ use crate::math::Vec3;
 
 use super::composer::OpenXrQuadLayerOptions;
 
+/// Squared-distance threshold below which facing direction is considered absent.
 const PANEL_FACING_EPSILON: f32 = 1e-6;
+/// Default minimum panel pitch, negative 45 degrees in radians.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::DEFAULT_PANEL_PITCH_MIN_RAD;
+/// assert_eq!(DEFAULT_PANEL_PITCH_MIN_RAD.to_degrees(), -45.0);
+/// ```
 pub const DEFAULT_PANEL_PITCH_MIN_RAD: f32 = -std::f32::consts::FRAC_PI_4;
+/// Default maximum panel pitch, positive 45 degrees in radians.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::DEFAULT_PANEL_PITCH_MAX_RAD;
+/// assert_eq!(DEFAULT_PANEL_PITCH_MAX_RAD.to_degrees(), 45.0);
+/// ```
 pub const DEFAULT_PANEL_PITCH_MAX_RAD: f32 = std::f32::consts::FRAC_PI_4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Policy controlling whether panel orientation follows the viewer.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrPanelFacingMode;
+/// assert_ne!(OpenXrPanelFacingMode::Fixed, OpenXrPanelFacingMode::FaceUserOnDrag);
+/// ```
 pub enum OpenXrPanelFacingMode {
+    /// Preserve the existing layer orientation.
     Fixed,
+    /// Apply yaw-only viewer facing while the panel is dragged.
     FaceUserOnDrag,
+    /// Apply yaw-only viewer facing continuously when the host requests updates.
     FaceUserAlways,
+    /// Apply viewer yaw and clamped pitch while the panel is dragged.
     FaceUserYawPitchOnDrag,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// Facing policy and inclusive pitch bounds in radians.
+///
+/// Non-finite bounds normalize to +/-45 degrees and reversed bounds are swapped.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::{OpenXrPanelFacingMode, OpenXrPanelFacingOptions};
+/// let options = OpenXrPanelFacingOptions::default();
+/// assert_eq!(options.mode, OpenXrPanelFacingMode::FaceUserOnDrag);
+/// ```
 pub struct OpenXrPanelFacingOptions {
+    /// Orientation policy.
     pub mode: OpenXrPanelFacingMode,
+    /// Inclusive minimum pitch in radians.
     pub pitch_min_rad: f32,
+    /// Inclusive maximum pitch in radians.
     pub pitch_max_rad: f32,
 }
 
@@ -35,6 +80,15 @@ impl Default for OpenXrPanelFacingOptions {
 }
 
 impl OpenXrPanelFacingOptions {
+    /// Creates options and immediately normalizes both pitch bounds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::{OpenXrPanelFacingMode, OpenXrPanelFacingOptions};
+    /// let options = OpenXrPanelFacingOptions::new(OpenXrPanelFacingMode::FaceUserYawPitchOnDrag, 0.5, -0.5);
+    /// assert_eq!((options.pitch_min_rad, options.pitch_max_rad), (-0.5, 0.5));
+    /// ```
     pub fn new(mode: OpenXrPanelFacingMode, pitch_min_rad: f32, pitch_max_rad: f32) -> Self {
         let mut options = Self {
             mode,
@@ -45,6 +99,16 @@ impl OpenXrPanelFacingOptions {
         options
     }
 
+    /// Replaces non-finite defaults and orders the pitch bounds in place.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::{OpenXrPanelFacingMode, OpenXrPanelFacingOptions};
+    /// let mut options = OpenXrPanelFacingOptions { mode: OpenXrPanelFacingMode::Fixed, pitch_min_rad: f32::NAN, pitch_max_rad: f32::INFINITY };
+    /// options.normalize_pitch_bounds();
+    /// assert_eq!((options.pitch_min_rad.to_degrees(), options.pitch_max_rad.to_degrees()), (-45.0, 45.0));
+    /// ```
     pub fn normalize_pitch_bounds(&mut self) {
         if !self.pitch_min_rad.is_finite() {
             self.pitch_min_rad = DEFAULT_PANEL_PITCH_MIN_RAD;
@@ -59,15 +123,43 @@ impl OpenXrPanelFacingOptions {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Retained state that keeps a grabbed panel point stable while it reorients.
+///
+/// World-space vectors use metres. Optional head and ray fields are `None` until
+/// the corresponding valid pose has been observed.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::openxr_runtime::OpenXrPanelGrabState;
+/// use ailloli_ui_openxr::math::Vec3;
+/// let grab = OpenXrPanelGrabState::new(Vec3::default(), openxr::Posef::IDENTITY.orientation);
+/// assert!(grab.depth_axis.is_none());
+/// ```
 pub struct OpenXrPanelGrabState {
+    /// Grabbed point in panel-local metres.
     pub local_grab_point_m: Vec3,
+    /// Most recently observed valid HMD position in world metres.
     pub last_valid_head_pos: Option<Vec3>,
+    /// Most recently applied valid panel orientation.
     pub last_valid_rotation: xr::Quaternionf,
+    /// Normalized initial pointer direction used for depth translation.
     pub depth_axis: Option<Vec3>,
+    /// Last pointer origin paired with `depth_axis`.
     pub last_ray_origin: Option<Vec3>,
 }
 
 impl OpenXrPanelGrabState {
+    /// Creates a grab state with no head pose or pointer-depth history.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::openxr_runtime::OpenXrPanelGrabState;
+    /// use ailloli_ui_openxr::math::Vec3;
+    /// let state = OpenXrPanelGrabState::new(Vec3::new(0.1, 0.2, 0.0), openxr::Posef::IDENTITY.orientation);
+    /// assert_eq!(state.local_grab_point_m.x, 0.1);
+    /// ```
     pub fn new(local_grab_point_m: Vec3, initial_rotation: xr::Quaternionf) -> Self {
         Self {
             local_grab_point_m,
@@ -78,11 +170,36 @@ impl OpenXrPanelGrabState {
         }
     }
 
+    /// Initializes pointer-depth tracking and returns the updated state.
+    ///
+    /// A near-zero direction leaves both depth fields `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::openxr_runtime::OpenXrPanelGrabState;
+    /// use ailloli_ui_openxr::math::Vec3;
+    /// let state = OpenXrPanelGrabState::new(Vec3::default(), openxr::Posef::IDENTITY.orientation).with_pointer_depth(Vec3::default(), Vec3::new(0.0, 0.0, -2.0));
+    /// assert_eq!(state.depth_axis, Some(Vec3::new(0.0, 0.0, -1.0)));
+    /// ```
     pub fn with_pointer_depth(mut self, ray_origin: Vec3, ray_direction: Vec3) -> Self {
         self.set_pointer_depth(ray_origin, ray_direction);
         self
     }
 
+    /// Replaces the normalized depth axis and its initial ray origin.
+    ///
+    /// A direction of length at most `1e-6` clears both values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_openxr::openxr_runtime::OpenXrPanelGrabState;
+    /// use ailloli_ui_openxr::math::Vec3;
+    /// let mut state = OpenXrPanelGrabState::new(Vec3::default(), openxr::Posef::IDENTITY.orientation);
+    /// state.set_pointer_depth(Vec3::new(1.0, 2.0, 3.0), Vec3::default());
+    /// assert!(state.last_ray_origin.is_none());
+    /// ```
     pub fn set_pointer_depth(&mut self, ray_origin: Vec3, ray_direction: Vec3) {
         self.depth_axis = ray_direction.normalize();
         self.last_ray_origin = self.depth_axis.map(|_| ray_origin);
@@ -90,26 +207,73 @@ impl OpenXrPanelGrabState {
 }
 
 #[derive(Clone, Copy)]
+/// Result of applying a stable-grab facing update.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrQuadLayerOptions;
+/// use ailloli_ui_openxr::openxr_runtime::panel::OpenXrPanelGrabUpdate;
+/// let update = OpenXrPanelGrabUpdate { layer: OpenXrQuadLayerOptions::default(), hmd_pose_seen: false, yaw_applied: false, grab_point_stable: false, pitch_deg: 0.0, pitch_clamped: false };
+/// assert!(!update.hmd_pose_seen);
+/// ```
 pub struct OpenXrPanelGrabUpdate {
+    /// Updated layer pose and unchanged layer presentation properties.
     pub layer: OpenXrQuadLayerOptions,
+    /// Whether the call received an HMD position.
     pub hmd_pose_seen: bool,
+    /// Whether a facing rotation was successfully computed and applied.
     pub yaw_applied: bool,
+    /// Whether the transformed grab point is within one millimetre of its target.
     pub grab_point_stable: bool,
+    /// Applied pitch in degrees; zero for yaw-only/fixed paths.
     pub pitch_deg: f32,
+    /// Whether pitch was clipped to its configured bounds.
     pub pitch_clamped: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+/// World grab point after optional controller-origin depth translation.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::openxr_runtime::PanelDepthUpdate;
+/// use ailloli_ui_openxr::math::Vec3;
+/// let update = PanelDepthUpdate { adjusted_grab_world: Vec3::default(), depth_delta_m: 0.0, depth_applied: false };
+/// assert!(!update.depth_applied);
+/// ```
 pub struct PanelDepthUpdate {
+    /// Original or translated grab point in world metres.
     pub adjusted_grab_world: Vec3,
+    /// Signed movement projected onto the initial pointer axis, in metres.
     pub depth_delta_m: f32,
+    /// Whether the absolute projected movement exceeded `1e-6` metres.
     pub depth_applied: bool,
 }
 
+/// Converts an OpenXR vector to the crate's lightweight vector unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::openxr_runtime::panel::vec3_from_xr;
+/// assert_eq!(vec3_from_xr(openxr::Vector3f { x: 1.0, y: 2.0, z: 3.0 }).z, 3.0);
+/// ```
 pub fn vec3_from_xr(v: xr::Vector3f) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
 }
 
+/// Converts the crate's lightweight vector to an OpenXR vector unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::math::Vec3;
+/// use ailloli_ui_openxr::openxr_runtime::panel::xr_vec3;
+/// let vector = xr_vec3(Vec3::new(1.0, 2.0, 3.0));
+/// assert_eq!((vector.x, vector.y, vector.z), (1.0, 2.0, 3.0));
+/// ```
 pub fn xr_vec3(v: Vec3) -> xr::Vector3f {
     xr::Vector3f {
         x: v.x,
@@ -118,6 +282,17 @@ pub fn xr_vec3(v: Vec3) -> xr::Vector3f {
     }
 }
 
+/// Rotates a vector by an OpenXR quaternion.
+///
+/// The quaternion is assumed normalized and is not validated.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::math::Vec3;
+/// use ailloli_ui_openxr::openxr_runtime::panel::rotate_vec3;
+/// assert_eq!(rotate_vec3(openxr::Posef::IDENTITY.orientation, Vec3::new(1.0, 2.0, 3.0)), Vec3::new(1.0, 2.0, 3.0));
+/// ```
 pub fn rotate_vec3(q: xr::Quaternionf, v: Vec3) -> Vec3 {
     let q_vec = Vec3::new(q.x, q.y, q.z);
     let uv = q_vec.cross(v);
@@ -125,10 +300,37 @@ pub fn rotate_vec3(q: xr::Quaternionf, v: Vec3) -> Vec3 {
     v + (uv * q.w + uuv) * 2.0
 }
 
+/// Transforms a panel-local point into world space using the layer pose.
+///
+/// Coordinates conventionally use metres.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrQuadLayerOptions;
+/// use ailloli_ui_openxr::openxr_runtime::panel_local_to_world;
+/// use ailloli_ui_openxr::math::Vec3;
+/// let world = panel_local_to_world(OpenXrQuadLayerOptions::default(), Vec3::default());
+/// assert_eq!(world, Vec3::new(0.0, 0.0, -2.0));
+/// ```
 pub fn panel_local_to_world(layer: OpenXrQuadLayerOptions, local: Vec3) -> Vec3 {
     vec3_from_xr(layer.pose.position) + rotate_vec3(layer.pose.orientation, local)
 }
 
+/// Maps a top-left-origin logical UI point into panel-local metres.
+///
+/// Logical width and height are clamped to at least one to avoid division by
+/// zero. Points are not clamped, so coordinates beyond the UI map beyond the
+/// panel. Local Z is always zero.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Point, Size};
+/// use ailloli_ui_openxr::openxr_runtime::logical_point_to_panel_local;
+/// let local = logical_point_to_panel_local(Point::new(50.0, 25.0), Size::new(100.0, 50.0), openxr::Extent2Df { width: 2.0, height: 1.0 });
+/// assert_eq!((local.x, local.y, local.z), (0.0, 0.0, 0.0));
+/// ```
 pub fn logical_point_to_panel_local(
     point: Point,
     logical_size: Size,
@@ -143,6 +345,20 @@ pub fn logical_point_to_panel_local(
     )
 }
 
+/// Computes yaw-only orientation whose local positive Z faces the viewer.
+///
+/// Vertical separation is ignored. If horizontal squared distance is at most
+/// `1e-6`, returns `(fallback, false)`; otherwise the second value is true.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::openxr_runtime::face_user_yaw_only;
+/// use ailloli_ui_openxr::math::Vec3;
+/// let (rotation, applied) = face_user_yaw_only(Vec3::new(0.0, 0.0, -2.0), Vec3::default(), openxr::Posef::IDENTITY.orientation);
+/// assert!(applied);
+/// assert_eq!(rotation, openxr::Posef::IDENTITY.orientation);
+/// ```
 pub fn face_user_yaw_only(
     panel_pos: Vec3,
     head_pos: Vec3,
@@ -159,6 +375,23 @@ pub fn face_user_yaw_only(
     (yaw_quaternion(yaw), true)
 }
 
+/// Computes viewer-facing yaw and pitch while keeping roll at zero.
+///
+/// Non-finite pitch bounds fall back to +/-45 degrees and reversed bounds are
+/// swapped. The returned tuple contains rotation, whether it was applied,
+/// applied pitch in degrees, and whether pitch was clamped. Degenerate horizontal
+/// direction returns the fallback with both booleans false.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::{DEFAULT_PANEL_PITCH_MAX_RAD, DEFAULT_PANEL_PITCH_MIN_RAD};
+/// use ailloli_ui_openxr::openxr_runtime::face_user_yaw_pitch_clamped;
+/// use ailloli_ui_openxr::math::Vec3;
+/// let (_, applied, pitch_deg, clamped) = face_user_yaw_pitch_clamped(Vec3::new(0.0, 0.0, -2.0), Vec3::new(0.0, 100.0, -1.9), openxr::Posef::IDENTITY.orientation, DEFAULT_PANEL_PITCH_MIN_RAD, DEFAULT_PANEL_PITCH_MAX_RAD);
+/// assert!(applied && clamped);
+/// assert!((pitch_deg - 45.0).abs() < 1e-4);
+/// ```
 pub fn face_user_yaw_pitch_clamped(
     panel_pos: Vec3,
     head_pos: Vec3,
@@ -215,6 +448,20 @@ pub fn face_user_yaw_pitch_clamped(
     )
 }
 
+/// Projects pointer-origin movement onto the initial ray axis.
+///
+/// The signed projection translates `grab_world` along the normalized axis.
+/// Missing/near-zero axes or either missing origin return an unchanged result.
+/// `depth_applied` is true only above `1e-6` metres.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::openxr_runtime::apply_pointer_depth_delta;
+/// use ailloli_ui_openxr::math::Vec3;
+/// let update = apply_pointer_depth_delta(Vec3::new(0.0, 0.0, -2.0), Some(Vec3::new(0.0, 0.0, -1.0)), Some(Vec3::default()), Some(Vec3::new(0.0, 0.0, -0.25)));
+/// assert_eq!(update.adjusted_grab_world, Vec3::new(0.0, 0.0, -2.25));
+/// ```
 pub fn apply_pointer_depth_delta(
     grab_world: Vec3,
     depth_axis: Option<Vec3>,
@@ -244,6 +491,22 @@ pub fn apply_pointer_depth_delta(
     }
 }
 
+/// Reorients a dragged panel in yaw while preserving the grabbed world point.
+///
+/// Without a head position the layer is unchanged and `hmd_pose_seen` is false.
+/// Stability is reported when reconstruction error is at most one millimetre.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::OpenXrQuadLayerOptions;
+/// use ailloli_ui_openxr::math::Vec3;
+/// use ailloli_ui_openxr::openxr_runtime::{OpenXrPanelGrabState, panel::apply_yaw_only_stable_grab};
+/// let layer = OpenXrQuadLayerOptions::default();
+/// let mut grab = OpenXrPanelGrabState::new(Vec3::default(), layer.pose.orientation);
+/// let update = apply_yaw_only_stable_grab(layer, &mut grab, Vec3::new(0.0, 0.0, -2.0), Some(Vec3::default()));
+/// assert!(update.hmd_pose_seen && update.grab_point_stable);
+/// ```
 pub fn apply_yaw_only_stable_grab(
     layer: OpenXrQuadLayerOptions,
     grab: &mut OpenXrPanelGrabState,
@@ -285,6 +548,23 @@ pub fn apply_yaw_only_stable_grab(
     }
 }
 
+/// Applies the selected facing policy while preserving the grabbed world point.
+///
+/// Fixed mode preserves orientation; yaw-only modes ignore vertical separation;
+/// yaw-pitch mode normalizes and applies configured pitch bounds. Missing HMD
+/// position leaves the layer unchanged. Stability tolerance is one millimetre.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_openxr::{OpenXrPanelFacingMode, OpenXrPanelFacingOptions, OpenXrQuadLayerOptions};
+/// use ailloli_ui_openxr::math::Vec3;
+/// use ailloli_ui_openxr::openxr_runtime::{OpenXrPanelGrabState, panel::apply_facing_stable_grab};
+/// let layer = OpenXrQuadLayerOptions::default();
+/// let mut grab = OpenXrPanelGrabState::new(Vec3::default(), layer.pose.orientation);
+/// let update = apply_facing_stable_grab(layer, &mut grab, Vec3::new(0.0, 0.0, -2.0), Some(Vec3::default()), OpenXrPanelFacingOptions::new(OpenXrPanelFacingMode::Fixed, -1.0, 1.0));
+/// assert!(update.hmd_pose_seen && update.grab_point_stable);
+/// ```
 pub fn apply_facing_stable_grab(
     layer: OpenXrQuadLayerOptions,
     grab: &mut OpenXrPanelGrabState,
@@ -341,6 +621,7 @@ pub fn apply_facing_stable_grab(
     }
 }
 
+/// Creates a normalized pure-Y-axis quaternion from yaw radians.
 fn yaw_quaternion(yaw: f32) -> xr::Quaternionf {
     let half = yaw * 0.5;
     xr::Quaternionf {
@@ -351,6 +632,7 @@ fn yaw_quaternion(yaw: f32) -> xr::Quaternionf {
     }
 }
 
+/// Converts a right/up/forward 3x3 rotation matrix to a quaternion.
 fn rotation_matrix_to_quaternion(m: [[f32; 3]; 3]) -> xr::Quaternionf {
     let trace = m[0][0] + m[1][1] + m[2][2];
     if trace > 0.0 {
@@ -389,9 +671,11 @@ fn rotation_matrix_to_quaternion(m: [[f32; 3]; 3]) -> xr::Quaternionf {
 }
 
 #[cfg(test)]
+/// Covers facing degeneracy, pitch normalization, coordinate mapping, and stable drags.
 mod tests {
     use super::*;
 
+    /// Returns an identity quaternion fixture.
     fn identity() -> xr::Quaternionf {
         xr::Quaternionf {
             x: 0.0,
@@ -401,6 +685,7 @@ mod tests {
         }
     }
 
+    /// Returns the default-sized identity-facing panel fixture at -2 metres.
     fn layer() -> OpenXrQuadLayerOptions {
         OpenXrQuadLayerOptions {
             pose: xr::Posef {
@@ -420,6 +705,7 @@ mod tests {
         }
     }
 
+    /// Asserts two floats differ by less than `1e-5`.
     fn approx(a: f32, b: f32) {
         assert!(
             (a - b).abs() < 1e-5,
@@ -427,12 +713,14 @@ mod tests {
         );
     }
 
+    /// Applies [`approx`] component-wise to two vectors.
     fn approx_vec(a: Vec3, b: Vec3) {
         approx(a.x, b.x);
         approx(a.y, b.y);
         approx(a.z, b.z);
     }
 
+    /// Converts degree bounds into normalized facing options.
     fn facing_options(
         mode: OpenXrPanelFacingMode,
         min_deg: f32,

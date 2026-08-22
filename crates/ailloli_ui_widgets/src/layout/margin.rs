@@ -1,3 +1,5 @@
+//! Low-level outer-inset layout widget.
+
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::{EdgeInsets, Offset};
 use ailloli_ui_runtime::component::Widget;
@@ -9,16 +11,40 @@ use ailloli_ui_runtime::scene::PaintCtx;
 ///
 /// Mirrors [`Padding`](crate::layout::Padding) behavior: deflates child constraints, inflates final size,
 /// and positions the child at `(margin.left, margin.top)`.
+/// Insets are logical pixels and are not normalized; callers should use finite
+/// non-negative values because negative/non-finite values can produce unusual
+/// offsets even though inner minima and maxima are floored at zero.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::EdgeInsets;
+/// use ailloli_ui_widgets::layout::Margin;
+/// let margin = Margin::new(EdgeInsets::all(8.0));
+/// assert_eq!(margin.margin.left, 8.0);
+/// ```
 pub struct Margin {
+    /// Outer logical-pixel insets in left/top/right/bottom order.
     pub margin: EdgeInsets,
 }
 
 impl Margin {
+    /// Creates an outer-inset widget with the exact supplied edges.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::EdgeInsets;
+    /// use ailloli_ui_widgets::layout::Margin;
+    /// let margin = Margin::new(EdgeInsets::new(1.0, 2.0, 3.0, 4.0));
+    /// assert_eq!((margin.margin.left, margin.margin.top), (1.0, 2.0));
+    /// ```
     pub fn new(margin: EdgeInsets) -> Self {
         Self { margin }
     }
 }
 
+/// Deflates constraints, offsets at most one child, and reinflates final size.
 impl<A: 'static> Widget<A> for Margin {
     fn debug_name(&self) -> &'static str {
         "Margin"

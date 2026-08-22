@@ -1,3 +1,10 @@
+//! Facade dependency and prelude-boundary regression scenarios.
+//!
+//! The manifest is inspected as source to keep product-specific packages and
+//! features out of the public facade, while compile-time imports prove the
+//! intentionally generic prelude surface.
+
+/// Facade manifest fixture embedded at compile time.
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
 
 #[test]

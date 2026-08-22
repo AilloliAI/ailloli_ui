@@ -1,3 +1,5 @@
+//! Compact informational badges, taxonomy tags, and dismissible chips.
+
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey};
@@ -14,44 +16,119 @@ use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawImage, DrawRRec
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Semantic color applied to a [`Badge`], [`Tag`], or [`Chip`].
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::BadgeTone;
+/// let tones = [
+///     BadgeTone::Neutral,
+///     BadgeTone::Accent,
+///     BadgeTone::Danger,
+///     BadgeTone::Success,
+///     BadgeTone::Warning,
+///     BadgeTone::Info,
+///     BadgeTone::Muted,
+/// ];
+/// assert_eq!(tones.len(), 7);
+/// assert_eq!(BadgeTone::default(), BadgeTone::Neutral);
+/// ```
 pub enum BadgeTone {
+    /// Neutral surface emphasis; this is the default tone.
     #[default]
     Neutral,
+    /// Accent-brand emphasis.
     Accent,
+    /// Destructive or error emphasis.
     Danger,
+    /// Successful-state emphasis.
     Success,
+    /// Warning-state emphasis.
     Warning,
+    /// Informational-state emphasis.
     Info,
+    /// Low-emphasis muted presentation.
     Muted,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Container treatment applied around pill content.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::BadgeVariant;
+/// let variants = [
+///     BadgeVariant::Soft,
+///     BadgeVariant::Filled,
+///     BadgeVariant::Outline,
+///     BadgeVariant::Ghost,
+/// ];
+/// assert_eq!(variants.len(), 4);
+/// assert_eq!(BadgeVariant::default(), BadgeVariant::Soft);
+/// ```
 pub enum BadgeVariant {
+    /// Translucent or elevated fill with a subtle border; the default.
     #[default]
     Soft,
+    /// Solid tone-colored fill with no border.
     Filled,
+    /// Transparent fill with a tone-colored border.
     Outline,
+    /// Transparent fill with no border.
     Ghost,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Resolved visual and logical-pixel geometry for pill controls.
+///
+/// Colors are derived from the selected tone and variant. Geometry is not
+/// validated: negative or non-finite custom values propagate into layout and
+/// paint calculations.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Theme;
+/// use ailloli_ui_widgets::controls::{BadgeStyle, BadgeTone, BadgeVariant};
+/// let style = BadgeStyle::from_theme(Theme::dark(), BadgeTone::Info, BadgeVariant::Soft);
+/// assert_eq!((style.height, style.padding_x, style.icon_size), (26.0, 9.0, 14.0));
+/// ```
 pub struct BadgeStyle {
+    /// Pill fill; the painter currently supports color backgrounds.
     pub background: Background,
+    /// Per-edge border widths and colors.
     pub border: Border,
+    /// Corner radii used by the fill, border, and shadows.
     pub radius: Radius,
+    /// Painted shadows; unlike popup helpers, inset shadows are not filtered.
     pub shadows: Vec<BoxShadow>,
+    /// Label text style.
     pub text: TextStyle,
+    /// Numeric count text style.
     pub count_text: TextStyle,
+    /// Tint for an optional leading icon.
     pub icon_tint: Color,
+    /// Fill for an optional leading dot.
     pub dot_color: Color,
+    /// Tint for a chip's close icon.
     pub close_tint: Color,
+    /// Preferred pill height in logical pixels; text can make it taller.
     pub height: f32,
+    /// Horizontal inset on each side in logical pixels.
     pub padding_x: f32,
+    /// Horizontal spacing between content segments in logical pixels.
     pub gap: f32,
+    /// Leading icon width and height in logical pixels.
     pub icon_size: f32,
+    /// Leading dot diameter in logical pixels.
     pub dot_size: f32,
+    /// Close icon width and height in logical pixels.
     pub close_size: f32,
+    /// Reserved baseline offset; the current painter does not read this field.
     pub baseline_shift: f32,
+    /// Alpha multiplier applied when a chip is disabled.
     pub disabled_opacity: f32,
 }
 
@@ -62,6 +139,23 @@ impl Default for BadgeStyle {
 }
 
 impl BadgeStyle {
+    /// Resolves badge/chip colors and default geometry from a theme.
+    ///
+    /// The result is 26 logical pixels high with 9-pixel horizontal padding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{BadgeStyle, BadgeTone, BadgeVariant};
+    /// let style = BadgeStyle::from_theme(
+    ///     Theme::default(),
+    ///     BadgeTone::Success,
+    ///     BadgeVariant::Filled,
+    /// );
+    /// assert_eq!(style.height, 26.0);
+    /// assert_eq!(style.disabled_opacity, 0.45);
+    /// ```
     pub fn from_theme(theme: Theme, tone: BadgeTone, variant: BadgeVariant) -> Self {
         let palette = theme.palette();
         let tone_color = tone_color(theme, tone);
@@ -120,6 +214,23 @@ impl BadgeStyle {
         }
     }
 
+    /// Resolves the shorter tag geometry from a theme.
+    ///
+    /// This starts from [`Self::from_theme`] and changes the height to 24
+    /// logical pixels and horizontal padding to 8 logical pixels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Theme;
+    /// use ailloli_ui_widgets::controls::{BadgeStyle, BadgeTone, BadgeVariant};
+    /// let style = BadgeStyle::tag_from_theme(
+    ///     Theme::default(),
+    ///     BadgeTone::Neutral,
+    ///     BadgeVariant::Outline,
+    /// );
+    /// assert_eq!((style.height, style.padding_x), (24.0, 8.0));
+    /// ```
     pub fn tag_from_theme(theme: Theme, tone: BadgeTone, variant: BadgeVariant) -> Self {
         let mut style = Self::from_theme(theme, tone, variant);
         style.height = 24.0;
@@ -129,6 +240,7 @@ impl BadgeStyle {
         style
     }
 
+    /// Extends layout bounds to include every configured shadow.
     fn visual_bounds(&self, rect: Rect) -> Rect {
         self.shadows.iter().fold(rect, |bounds, shadow| {
             union_rect(bounds, shadow.paint_bounds(rect))
@@ -137,28 +249,42 @@ impl BadgeStyle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Optional content painted before a pill label.
 enum Leading {
+    /// No leading content.
     None,
+    /// A tinted icon.
     Icon(IconId),
+    /// A tone-colored circular dot.
     Dot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Behavioral role of the shared pill widget.
 enum PillKind {
+    /// Informational badge.
     Badge,
+    /// Informational taxonomy tag.
     Tag,
+    /// Interactive dismissible chip.
     Chip,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Shared visible content for badge-like controls.
 struct PillContent {
+    /// Unwrapped label text.
     label: String,
+    /// Optional decimal count rendered after the label.
     count: Option<u32>,
+    /// Optional leading icon or dot.
     leading: Leading,
+    /// Whether to reserve and paint a close icon.
     close: bool,
 }
 
 impl PillContent {
+    /// Creates label-only content with no count, leading mark, or close icon.
     fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -169,18 +295,45 @@ impl PillContent {
     }
 }
 
+/// A non-interactive status label with optional count and leading mark.
+///
+/// It defaults to accent/soft styling. Empty labels and a count of zero remain
+/// visible values; repeated leading builder calls replace the prior mark.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{Badge, BadgeTone};
+/// let badge = Badge::new("Inbox").tone(BadgeTone::Info).count(3);
+/// let _ = badge;
+/// ```
 pub struct Badge {
+    /// Layout constraints applied to the intrinsic pill size.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Semantic tone used when regenerating a themed style.
     tone: BadgeTone,
+    /// Container variant used when regenerating a themed style.
     variant: BadgeVariant,
+    /// Resolved visual style.
     style: BadgeStyle,
+    /// Label, count, and leading content.
     content: PillContent,
 }
 
 crate::impl_layout_builders_unit!(Badge);
 
 impl Badge {
+    /// Creates an accent/soft label with no count or leading mark.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Badge;
+    /// let badge = Badge::new("Beta");
+    /// let _ = badge;
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         let tone = BadgeTone::Accent;
         let variant = BadgeVariant::Soft;
@@ -194,55 +347,152 @@ impl Badge {
         }
     }
 
+    /// Creates a badge with a leading tone-colored dot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Badge;
+    /// let badge = Badge::dot("Online");
+    /// let _ = badge;
+    /// ```
     pub fn dot(label: impl Into<String>) -> Self {
         Self::new(label).leading_dot()
     }
 
+    /// Selects a tone and regenerates style from the default theme.
+    ///
+    /// This replaces any custom style previously supplied with
+    /// [`Self::badge_style`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Badge, BadgeTone};
+    /// let badge = Badge::new("Failed").tone(BadgeTone::Danger);
+    /// let _ = badge;
+    /// ```
     pub fn tone(mut self, tone: BadgeTone) -> Self {
         self.tone = tone;
         self.style = BadgeStyle::from_theme(Theme::default(), self.tone, self.variant);
         self
     }
 
+    /// Selects a variant and regenerates style from the default theme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Badge, BadgeVariant};
+    /// let badge = Badge::new("Stable").variant(BadgeVariant::Filled);
+    /// let _ = badge;
+    /// ```
     pub fn variant(mut self, variant: BadgeVariant) -> Self {
         self.variant = variant;
         self.style = BadgeStyle::from_theme(Theme::default(), self.tone, self.variant);
         self
     }
 
+    /// Replaces the resolved style without changing stored tone/variant.
+    ///
+    /// A later [`Self::tone`] or [`Self::variant`] call regenerates the style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{Badge, BadgeStyle};
+    /// let badge = Badge::new("Custom").badge_style(BadgeStyle::default());
+    /// let _ = badge;
+    /// ```
     pub fn badge_style(mut self, style: BadgeStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Sets the unsigned decimal count rendered after the label.
+    ///
+    /// Zero is rendered as `0`; a later call replaces the previous count.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Badge;
+    /// let badge = Badge::new("Alerts").count(0);
+    /// let _ = badge;
+    /// ```
     pub fn count(mut self, count: u32) -> Self {
         self.content.count = Some(count);
         self
     }
 
+    /// Sets a leading icon, replacing any dot or previous icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::Badge;
+    /// let badge = Badge::new("History").leading_icon(IconId::History);
+    /// let _ = badge;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.content.leading = Leading::Icon(icon);
         self
     }
 
+    /// Sets a leading dot, replacing any icon.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Badge;
+    /// let badge = Badge::new("Live").leading_dot();
+    /// let _ = badge;
+    /// ```
     pub fn leading_dot(mut self) -> Self {
         self.content.leading = Leading::Dot;
         self
     }
 }
 
+/// A compact non-interactive taxonomy label.
+///
+/// Tags default to neutral/outline styling and use the shorter tag geometry.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::{BadgeTone, Tag};
+/// let tag = Tag::new("Rust").tone(BadgeTone::Accent);
+/// let _ = tag;
+/// ```
 pub struct Tag {
+    /// Layout constraints applied to the intrinsic pill size.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Semantic tone used when regenerating a themed style.
     tone: BadgeTone,
+    /// Container variant used when regenerating a themed style.
     variant: BadgeVariant,
+    /// Resolved visual style.
     style: BadgeStyle,
+    /// Label-only pill content.
     content: PillContent,
 }
 
 crate::impl_layout_builders_unit!(Tag);
 
 impl Tag {
+    /// Creates a neutral/outline tag with no leading or trailing content.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Tag;
+    /// let tag = Tag::new("Desktop");
+    /// let _ = tag;
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         let tone = BadgeTone::Neutral;
         let variant = BadgeVariant::Outline;
@@ -256,38 +506,100 @@ impl Tag {
         }
     }
 
+    /// Selects a tone and regenerates tag style from the default theme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BadgeTone, Tag};
+    /// let tag = Tag::new("Blocked").tone(BadgeTone::Danger);
+    /// let _ = tag;
+    /// ```
     pub fn tone(mut self, tone: BadgeTone) -> Self {
         self.tone = tone;
         self.style = BadgeStyle::tag_from_theme(Theme::default(), self.tone, self.variant);
         self
     }
 
+    /// Selects a variant and regenerates tag style from the default theme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BadgeVariant, Tag};
+    /// let tag = Tag::new("Pinned").variant(BadgeVariant::Ghost);
+    /// let _ = tag;
+    /// ```
     pub fn variant(mut self, variant: BadgeVariant) -> Self {
         self.variant = variant;
         self.style = BadgeStyle::tag_from_theme(Theme::default(), self.tone, self.variant);
         self
     }
 
+    /// Replaces the resolved style without changing stored tone/variant.
+    ///
+    /// A later [`Self::tone`] or [`Self::variant`] call regenerates the style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BadgeStyle, Tag};
+    /// let tag = Tag::new("Custom").badge_style(BadgeStyle::default());
+    /// let _ = tag;
+    /// ```
     pub fn badge_style(mut self, style: BadgeStyle) -> Self {
         self.style = style;
         self
     }
 }
 
+/// A pill with an optional close action.
+///
+/// Calling a close builder displays the close icon and makes the whole widget
+/// keyboard-focusable. Enter or Space activates the action; pointer activation
+/// is restricted to the close-icon rectangle. Disabled chips remain visible at
+/// reduced opacity but do not activate.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::controls::Chip;
+/// #[derive(Clone)]
+/// enum Action { Remove }
+/// let chip = Chip::new("Filter").on_close(Action::Remove);
+/// let _ = chip;
+/// ```
 pub struct Chip<A = ()> {
+    /// Layout constraints applied to the intrinsic pill size.
     pub(crate) layout: LayoutStyle,
+    /// Flex behavior used by the parent layout.
     pub(crate) flex_item: FlexItemStyle,
+    /// Semantic tone used when regenerating a themed style.
     tone: BadgeTone,
+    /// Container variant used when regenerating a themed style.
     variant: BadgeVariant,
+    /// Resolved visual style.
     style: BadgeStyle,
+    /// Label, leading mark, and close-icon presence.
     content: PillContent,
+    /// Live disabled state.
     disabled: Binding<bool>,
+    /// Optional close action.
     on_close: Option<ClickAction<A>>,
 }
 
 crate::impl_layout_builders!(Chip);
 
 impl<A: 'static> Chip<A> {
+    /// Creates an enabled neutral/soft chip without a close action.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Chip;
+    /// let chip: Chip<()> = Chip::new("Filter");
+    /// let _ = chip;
+    /// ```
     pub fn new(label: impl Into<String>) -> Self {
         let tone = BadgeTone::Neutral;
         let variant = BadgeVariant::Soft;
@@ -303,37 +615,109 @@ impl<A: 'static> Chip<A> {
         }
     }
 
+    /// Selects a tone and regenerates style from the default theme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BadgeTone, Chip};
+    /// let chip: Chip<()> = Chip::new("Urgent").tone(BadgeTone::Danger);
+    /// let _ = chip;
+    /// ```
     pub fn tone(mut self, tone: BadgeTone) -> Self {
         self.tone = tone;
         self.style = BadgeStyle::from_theme(Theme::default(), self.tone, self.variant);
         self
     }
 
+    /// Selects a variant and regenerates style from the default theme.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BadgeVariant, Chip};
+    /// let chip: Chip<()> = Chip::new("Active").variant(BadgeVariant::Outline);
+    /// let _ = chip;
+    /// ```
     pub fn variant(mut self, variant: BadgeVariant) -> Self {
         self.variant = variant;
         self.style = BadgeStyle::from_theme(Theme::default(), self.tone, self.variant);
         self
     }
 
+    /// Replaces the resolved style without changing stored tone/variant.
+    ///
+    /// A later [`Self::tone`] or [`Self::variant`] call regenerates the style.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::{BadgeStyle, Chip};
+    /// let chip: Chip<()> = Chip::new("Custom").badge_style(BadgeStyle::default());
+    /// let _ = chip;
+    /// ```
     pub fn badge_style(mut self, style: BadgeStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// Sets a leading icon, replacing any previous leading mark.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::IconId;
+    /// use ailloli_ui_widgets::controls::Chip;
+    /// let chip: Chip<()> = Chip::new("Recent").leading_icon(IconId::History);
+    /// let _ = chip;
+    /// ```
     pub fn leading_icon(mut self, icon: IconId) -> Self {
         self.content.leading = Leading::Icon(icon);
         self
     }
 
+    /// Sets static or reactive disabled state.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Chip;
+    /// let chip: Chip<()> = Chip::new("Locked").disabled(true);
+    /// let _ = chip;
+    /// ```
     pub fn disabled(mut self, disabled: impl Into<Binding<bool>>) -> Self {
         self.disabled = disabled.into();
         self
     }
 
+    /// Sets disabled state from a derived memo.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::Memo;
+    /// use ailloli_ui_widgets::controls::Chip;
+    /// let chip: Chip<()> = Chip::new("Dynamic").disabled_signal(Memo::new(|| false));
+    /// let _ = chip;
+    /// ```
     pub fn disabled_signal(self, disabled: Memo<bool>) -> Self {
         self.disabled(disabled)
     }
 
+    /// Displays the close icon and installs an action value.
+    ///
+    /// A later call replaces the action. The action type must be cloneable
+    /// because input dispatch may enqueue it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Chip;
+    /// #[derive(Clone)]
+    /// enum Action { Remove }
+    /// let chip = Chip::new("Filter").on_close(Action::Remove);
+    /// let _ = chip;
+    /// ```
     pub fn on_close(mut self, action: impl IntoClickAction<A>) -> Self
     where
         A: Clone,
@@ -343,6 +727,15 @@ impl<A: 'static> Chip<A> {
         self
     }
 
+    /// Displays the close icon and installs a context-aware handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Chip;
+    /// let chip = Chip::<()>::new("Filter").on_close_ctx(|_ctx| {});
+    /// let _ = chip;
+    /// ```
     pub fn on_close_ctx(mut self, f: impl Fn(&mut EventCtx<A>) + 'static) -> Self {
         self.content.close = true;
         self.on_close = Some(ClickAction::handler(f));
@@ -350,12 +743,19 @@ impl<A: 'static> Chip<A> {
     }
 }
 
+/// Shared retained widget for badge, tag, and chip behavior.
 struct PillWidget<A> {
+    /// Layout constraints applied to the intrinsic pill size.
     layout: LayoutStyle,
+    /// Role controlling interactivity and debug identity.
     kind: PillKind,
+    /// Resolved paint and geometry.
     style: BadgeStyle,
+    /// Visible pill content.
     content: PillContent,
+    /// Live disabled state; static false for badges and tags.
     disabled: Binding<bool>,
+    /// Optional chip-only close action.
     on_close: Option<ClickAction<A>>,
 }
 
@@ -490,6 +890,7 @@ impl<A: 'static> IntoView<A> for Chip<A> {
     }
 }
 
+/// Measures the unwrapped pill contents plus padding and inter-segment gaps.
 fn pill_intrinsic_size(
     content: &PillContent,
     style: &BadgeStyle,
@@ -533,6 +934,7 @@ fn pill_intrinsic_size(
     Size::new(width.ceil(), style.height.max(label.h).ceil())
 }
 
+/// Paints the pill shell, content segments, close icon, and border.
 fn paint_pill(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -608,6 +1010,7 @@ fn paint_pill(
     }
 }
 
+/// Paints the optional leading icon or centered circular dot.
 fn paint_leading(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -638,6 +1041,7 @@ fn paint_leading(
     }
 }
 
+/// Paints one unwrapped text segment and returns its width.
 fn paint_text(
     ctx: &mut PaintCtx<'_>,
     text: &str,
@@ -670,6 +1074,7 @@ fn paint_text(
     layout.metrics.width
 }
 
+/// Measures text through the text system or a deterministic fallback estimate.
 fn measure_text(text_system: Option<&mut TextSystem>, text: &str, style: TextStyle) -> Size {
     if let Some(text_system) = text_system {
         let layout = text_system.layout_cached(TextLayoutParams {
@@ -684,10 +1089,12 @@ fn measure_text(text_system: Option<&mut TextSystem>, text: &str, style: TextSty
     }
 }
 
+/// Estimates unwrapped text width as 0.58 em per Unicode scalar value.
 fn estimate_text_width(text: &str, style: TextStyle) -> f32 {
     text.chars().count() as f32 * style.px_size as f32 * 0.58
 }
 
+/// Returns the width of the current leading mark in logical pixels.
 fn leading_width(content: &PillContent, style: &BadgeStyle) -> f32 {
     match content.leading {
         Leading::None => 0.0,
@@ -696,6 +1103,7 @@ fn leading_width(content: &PillContent, style: &BadgeStyle) -> f32 {
     }
 }
 
+/// Returns the centered close-icon rectangle at the pill's trailing inset.
 fn close_rect(bounds: Rect, style: &BadgeStyle) -> Rect {
     Rect::new(
         bounds.right() - style.padding_x - style.close_size,
@@ -705,6 +1113,7 @@ fn close_rect(bounds: Rect, style: &BadgeStyle) -> Rect {
     )
 }
 
+/// Resolves a semantic tone to its theme palette color.
 fn tone_color(theme: Theme, tone: BadgeTone) -> Color {
     let palette = theme.palette();
     match tone {
@@ -718,6 +1127,7 @@ fn tone_color(theme: Theme, tone: BadgeTone) -> Color {
     }
 }
 
+/// Chooses dark or light foreground using a weighted RGB luminance threshold.
 fn contrast_text_for(color: Color) -> Color {
     let luminance = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
     if luminance > 0.62 {
@@ -727,11 +1137,13 @@ fn contrast_text_for(color: Color) -> Color {
     }
 }
 
+/// Multiplies alpha by `opacity` and clamps the result to `[0, 1]`.
 fn apply_opacity(mut color: Color, opacity: f32) -> Color {
     color.a = (color.a * opacity).clamp(0.0, 1.0);
     color
 }
 
+/// Applies the same opacity multiplier independently to every border edge.
 fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border.colors.left = apply_opacity(border.colors.left, opacity);
     border.colors.top = apply_opacity(border.colors.top, opacity);
@@ -740,6 +1152,7 @@ fn apply_border_opacity(mut border: Border, opacity: f32) -> Border {
     border
 }
 
+/// Returns the smallest axis-aligned rectangle containing both inputs.
 fn union_rect(a: Rect, b: Rect) -> Rect {
     let x0 = a.x.min(b.x);
     let y0 = a.y.min(b.y);

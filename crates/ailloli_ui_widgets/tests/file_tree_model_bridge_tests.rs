@@ -1,4 +1,5 @@
 #![cfg(feature = "files")]
+//! File-store delta projection into retained tree-model scenarios.
 
 use ailloli_ui_fs::{FileEntry, FileIdentity, FileKind, FileMetadata, FileTreeStore, FileUri};
 use ailloli_ui_widgets::files::FileTreeModelBridge;

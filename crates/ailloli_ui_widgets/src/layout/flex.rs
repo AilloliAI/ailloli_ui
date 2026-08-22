@@ -1,3 +1,5 @@
+//! Retained row/column flex sizing and positioning engine.
+
 use ailloli_ui_core::event::Event;
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::style::{
@@ -11,6 +13,7 @@ use ailloli_ui_runtime::layout::{ChildLayout, LayoutResult};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx};
 use ailloli_ui_runtime::scene::PaintCtx;
 
+/// Resolves a non-negative cross-axis offset for one alignment mode.
 fn cross_offset(align: AlignItems, cross_extent: f32, child_cross: f32) -> f32 {
     match align {
         AlignItems::Start => 0.0,
@@ -20,13 +23,33 @@ fn cross_offset(align: AlignItems, cross_extent: f32, child_cross: f32) -> f32 {
     }
 }
 
+/// Low-level flex widget used by [`super::Row`] and [`super::Column`].
+///
+/// `items` and `child_hints` correspond by index to retained children. Missing
+/// entries use defaults; extra entries are ignored during measurement, though
+/// shrink processing expects `items` not to exceed the final-main vector and is
+/// intended to be constructed by the safe row/column builders.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::component::{IntoView, View};
+/// use ailloli_ui_widgets::{layout::Row, text::Text};
+/// let view: View<()> = Row::new().child(Text::new("cell")).into_view();
+/// let _ = view; // Row constructs the crate-private FlexWidget safely.
+/// ```
 pub struct FlexWidget {
+    /// Declarative width/height bounds for the inner flex box.
     pub layout: LayoutStyle,
+    /// Direction, gap, and cross-axis alignment.
     pub flex: FlexStyle,
+    /// Per-child grow/shrink/basis/alignment values.
     pub items: Vec<FlexItemStyle>,
+    /// Per-child fill hints used during intrinsic probing.
     pub child_hints: Vec<LayoutSizeHint>,
 }
 
+/// Private main/cross-axis projection and intrinsic-measurement helpers.
 impl FlexWidget {
     fn main_cross(size: Size, direction: FlexDirection) -> (f32, f32) {
         match direction {
@@ -141,6 +164,7 @@ impl FlexWidget {
     }
 }
 
+/// Performs two-pass flex measurement, distribution, shrinking, and tight relayout.
 impl<A: 'static> Widget<A> for FlexWidget {
     fn debug_name(&self) -> &'static str {
         match self.flex.direction {
@@ -316,6 +340,14 @@ impl<A: 'static> Widget<A> for FlexWidget {
 }
 
 /// Keeps only margin/padding for outer layout wrappers.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::layout::Row;
+/// let row: Row<()> = Row::new().margin(4.0).padding(8.0);
+/// let _ = row; // conversion keeps these insets on outer wrappers
+/// ```
 pub(crate) fn layout_insets_only(layout: LayoutStyle) -> LayoutStyle {
     LayoutStyle {
         margin: layout.margin,
@@ -325,6 +357,14 @@ pub(crate) fn layout_insets_only(layout: LayoutStyle) -> LayoutStyle {
 }
 
 /// Keeps only sizing for the inner flex widget.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_widgets::layout::Row;
+/// let row: Row<()> = Row::new().width(120.0).min_height(24.0);
+/// let _ = row; // conversion keeps these bounds on the inner flex widget
+/// ```
 pub(crate) fn layout_sizing_only(layout: LayoutStyle) -> LayoutStyle {
     LayoutStyle {
         width: layout.width,

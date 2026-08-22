@@ -1,3 +1,10 @@
+//! Stateful Vulkan pipeline cache, frame upload, command recording, and submission.
+//!
+//! The renderer owns layouts, format-specific pipelines, and an optional glyph
+//! atlas, but never owns host targets, queues, or command pools. Rendering is
+//! synchronous: transient geometry is allocated per frame and the host queue is
+//! waited idle before those buffers and the framebuffer are destroyed.
+
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::sync::Arc;
@@ -17,12 +24,24 @@ use crate::target::VulkanFrameTarget;
 use crate::text_atlas::TextAtlas;
 use crate::vertices::{BorderRRectVertex, BoxShadowVertex, RRectVertex, SolidVertex, TextVertex};
 
+/// Renderer configuration retained for the renderer lifetime.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_vulkan::VulkanRendererOptions;
+/// let options = VulkanRendererOptions::default();
+/// assert!(!options.enable_debug_labels);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct VulkanRendererOptions {
+    /// Reserved debug-label switch; currently stored but does not record labels.
     pub enable_debug_labels: bool,
 }
 
+/// Conservative defaults that avoid optional debug instrumentation.
 impl Default for VulkanRendererOptions {
+    /// Disables the reserved debug-label option.
     fn default() -> Self {
         Self {
             enable_debug_labels: false,
@@ -30,14 +49,31 @@ impl Default for VulkanRendererOptions {
     }
 }
 
+/// Saturating lowering counters for the most recently processed scene.
+///
+/// The values update after geometry lowering, even if later Vulkan allocation or
+/// submission fails. A newly constructed renderer reports all zeros.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_vulkan::VulkanRendererStats;
+/// let stats = VulkanRendererStats::default();
+/// assert_eq!((stats.rects_rendered, stats.glyphs_rendered, stats.commands_ignored), (0, 0, 0));
+/// ```
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct VulkanRendererStats {
+    /// Solid/rounded fills and text-decoration rectangles emitted.
     pub rects_rendered: u32,
+    /// Text and Lucide glyph quads emitted.
     pub glyphs_rendered: u32,
+    /// Unsupported scene commands skipped.
     pub commands_ignored: u32,
 }
 
+/// Converts internal frame counters without changing their units.
 impl From<FrameStats> for VulkanRendererStats {
+    /// Copies all three saturating counters.
     fn from(stats: FrameStats) -> Self {
         Self {
             rects_rendered: stats.rects_rendered,
@@ -47,40 +83,82 @@ impl From<FrameStats> for VulkanRendererStats {
     }
 }
 
+/// Copyable handles needed while recording one render pass.
 #[derive(Clone, Copy)]
 struct PipelineHandles {
+    /// Format-compatible single-color render pass.
     render_pass: vk::RenderPass,
+    /// Solid rectangle pipeline.
     rect_pipeline: vk::Pipeline,
+    /// Rounded fill pipeline.
     rrect_pipeline: vk::Pipeline,
+    /// Rounded border pipeline.
     border_pipeline: vk::Pipeline,
+    /// Box-shadow pipeline.
     shadow_pipeline: vk::Pipeline,
+    /// Text-atlas pipeline.
     text_pipeline: vk::Pipeline,
+    /// Descriptor-aware layout used by the text pipeline.
     text_pipeline_layout: vk::PipelineLayout,
 }
 
+/// Pipelines and render pass cached for exactly one target format.
 struct FormatResources {
+    /// Pixel format for which all resources were created.
     format: vk::Format,
+    /// Single-color render pass.
     render_pass: vk::RenderPass,
+    /// Solid rectangle pipeline.
     rect_pipeline: vk::Pipeline,
+    /// Rounded fill pipeline.
     rrect_pipeline: vk::Pipeline,
+    /// Rounded border pipeline.
     border_pipeline: vk::Pipeline,
+    /// Box-shadow pipeline.
     shadow_pipeline: vk::Pipeline,
+    /// Text-atlas pipeline.
     text_pipeline: vk::Pipeline,
 }
 
+/// Stateful renderer for host-owned Vulkan frame targets.
+///
+/// One format-specific pipeline set is cached at a time. Changing target format
+/// destroys the prior set and rebuilds all five pipelines. The glyph atlas is
+/// lazy and remains independent of target format.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_vulkan::{VulkanRenderContext, VulkanRenderer};
+/// fn build(context: &VulkanRenderContext<'_>) {
+///     let renderer: VulkanRenderer = VulkanRenderer::new(context, Default::default()).unwrap();
+///     assert_eq!(renderer.stats().rects_rendered, 0);
+/// }
+/// ```
 pub struct VulkanRenderer {
+    /// Device whose dispatch table owns every renderer-created handle.
     device: ash::Device,
+    /// Immutable construction options.
     options: VulkanRendererOptions,
+    /// Counters from the most recently lowered scene.
     stats: VulkanRendererStats,
+    /// Caller-owned font blobs keyed by stable face ID.
     text_face_blobs: Arc<HashMap<u64, Arc<[u8]>>>,
+    /// Descriptor-free layout shared by solid/SDF pipelines.
     rect_pipeline_layout: vk::PipelineLayout,
+    /// One combined image/sampler binding used by atlas pages.
     text_descriptor_set_layout: vk::DescriptorSetLayout,
+    /// Pipeline layout containing [`Self::text_descriptor_set_layout`].
     text_pipeline_layout: vk::PipelineLayout,
+    /// Optional resources for the last rendered target format.
     format_resources: Option<FormatResources>,
+    /// Lazily allocated bounded glyph atlas.
     text_atlas: Option<TextAtlas>,
 }
 
+/// Debug output exposes options/stats without leaking raw Vulkan handles.
 impl std::fmt::Debug for VulkanRenderer {
+    /// Formats a non-exhaustive summary of stable diagnostic state.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VulkanRenderer")
             .field("options", &self.options)
@@ -89,7 +167,26 @@ impl std::fmt::Debug for VulkanRenderer {
     }
 }
 
+/// Construction, configuration, statistics, and synchronous frame rendering.
 impl VulkanRenderer {
+    /// Creates pipeline layouts; pipelines and the glyph atlas remain lazy.
+    ///
+    /// `context.memory_properties` is not needed until a frame allocates geometry
+    /// or a glyph-atlas image, so construction can succeed without it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed pipeline-layout or descriptor-layout error. Any layout
+    /// created before a later failure is destroyed before returning.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_vulkan::{VulkanRenderContext, VulkanRenderer, VulkanRendererError};
+    /// fn build(context: &VulkanRenderContext<'_>) -> Result<VulkanRenderer, VulkanRendererError> {
+    ///     VulkanRenderer::new(context, Default::default())
+    /// }
+    /// ```
     pub fn new(
         context: &VulkanRenderContext<'_>,
         options: VulkanRendererOptions,
@@ -157,18 +254,81 @@ impl VulkanRenderer {
         })
     }
 
+    /// Returns the copyable construction options.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_vulkan::VulkanRenderer;
+    /// fn inspect(renderer: &VulkanRenderer) {
+    ///     let enabled: bool = renderer.options().enable_debug_labels;
+    ///     assert!(!enabled);
+    /// }
+    /// ```
     pub fn options(&self) -> VulkanRendererOptions {
         self.options
     }
 
+    /// Returns counters for the most recently lowered scene.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_vulkan::{VulkanRenderer, VulkanRendererStats};
+    /// fn inspect(renderer: &VulkanRenderer) {
+    ///     let stats: VulkanRendererStats = renderer.stats();
+    ///     println!("glyphs: {}", stats.glyphs_rendered);
+    /// }
+    /// ```
     pub fn stats(&self) -> VulkanRendererStats {
         self.stats
     }
 
+    /// Replaces the shared map used to resolve non-Lucide text face IDs.
+    ///
+    /// Existing atlas entries are not invalidated. Callers must assign a new
+    /// face ID when blob contents change, or construct a new renderer. Missing
+    /// IDs skip affected glyphs without failing the frame.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::{collections::HashMap, sync::Arc};
+    /// use ailloli_ui_render_vulkan::VulkanRenderer;
+    /// fn install(renderer: &mut VulkanRenderer) {
+    ///     let blobs: Arc<HashMap<u64, Arc<[u8]>>> = Arc::new(HashMap::new());
+    ///     renderer.set_text_face_blobs(blobs);
+    /// }
+    /// ```
     pub fn set_text_face_blobs(&mut self, blobs: Arc<HashMap<u64, Arc<[u8]>>>) {
         self.text_face_blobs = blobs;
     }
 
+    /// Clears and renders one scene into a host-owned target, then waits for queue idle.
+    ///
+    /// Logical scene coordinates are multiplied by `scale.dpr`. Target image and
+    /// view ownership remain with the host; the renderer records transitions from
+    /// `initial_layout` to color attachment and then to `final_layout`. Geometry
+    /// buffers and framebuffer are allocated per call and destroyed after the
+    /// synchronous submission. An empty scene still clears the target.
+    ///
+    /// # Errors
+    ///
+    /// Rejects null handles and zero extents before Vulkan calls. Then propagates
+    /// glyph, memory, pipeline, framebuffer, command, submission, and queue-idle
+    /// errors. The target's actual layout after a driver error is host-dependent.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::{math::Scale, Color};
+    /// use ailloli_ui_render_vulkan::{VulkanFrameTarget, VulkanRenderContext, VulkanRenderer};
+    /// use ailloli_ui_runtime::Scene;
+    /// fn draw(renderer: &mut VulkanRenderer, context: &VulkanRenderContext<'_>,
+    ///     target: &VulkanFrameTarget, scene: &Scene) {
+    ///     renderer.render_scene(context, Color::BLACK, scene, Scale::new(1.0), target).unwrap();
+    /// }
+    /// ```
     pub fn render_scene(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -257,6 +417,10 @@ impl VulkanRenderer {
         render_result
     }
 
+    /// Returns cached handles or rebuilds all format-dependent resources.
+    ///
+    /// Only one format is retained. On any partial pipeline-build failure, every
+    /// resource created for the attempted format is destroyed and no cache is installed.
     fn ensure_format_resources(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -395,6 +559,7 @@ impl VulkanRenderer {
         })
     }
 
+    /// Takes and destroys every format-specific pipeline before its render pass.
     fn destroy_format_resources(&mut self) {
         let Some(resources) = self.format_resources.take() else {
             return;
@@ -424,6 +589,10 @@ impl VulkanRenderer {
     }
 }
 
+/// Releases atlas, format resources, pipeline layouts, then descriptor layout.
+///
+/// The host must ensure no in-flight work references these objects; normal
+/// [`VulkanRenderer::render_scene`] calls wait for queue idle before returning.
 impl Drop for VulkanRenderer {
     fn drop(&mut self) {
         self.text_atlas.take();
@@ -445,6 +614,7 @@ impl Drop for VulkanRenderer {
     }
 }
 
+/// Rejects null image/view handles and zero physical-pixel dimensions.
 fn validate_target(target: &VulkanFrameTarget) -> Result<(), VulkanRendererError> {
     if target.image == vk::Image::null() {
         return Err(VulkanRendererError::InvalidTargetImage);
@@ -461,6 +631,10 @@ fn validate_target(target: &VulkanFrameTarget) -> Result<(), VulkanRendererError
     Ok(())
 }
 
+/// Creates a one-sample, one-color render pass that clears then stores.
+///
+/// The attachment is color-optimal at both render-pass boundaries because
+/// explicit barriers outside the pass handle the host-requested layouts.
 fn create_render_pass(
     device: &ash::Device,
     format: vk::Format,
@@ -487,6 +661,11 @@ fn create_render_pass(
         .map_err(|result| VulkanRendererError::CreateRenderPass { result })
 }
 
+/// Creates a triangle-list pipeline with dynamic viewport/scissor and no culling.
+///
+/// Shader modules are always destroyed before return. Any pipelines returned
+/// alongside a Vulkan creation error are also destroyed. The static `main`
+/// entry point cannot contain an interior NUL.
 fn create_graphics_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
@@ -573,6 +752,10 @@ fn create_graphics_pipeline(
     }
 }
 
+/// Enables all RGBA writes and optional straight-alpha source-over blending.
+///
+/// Color uses `src_alpha`/`one_minus_src_alpha`; alpha uses
+/// `one`/`one_minus_src_alpha`. `false` disables blending without changing masks.
 fn color_blend_attachment(alpha_blend: bool) -> vk::PipelineColorBlendAttachmentState {
     let mut attachment = vk::PipelineColorBlendAttachmentState::default().color_write_mask(
         vk::ColorComponentFlags::R
@@ -593,6 +776,7 @@ fn color_blend_attachment(alpha_blend: bool) -> vk::PipelineColorBlendAttachment
     attachment
 }
 
+/// Creates one shader module from SPIR-V words and preserves the driver result on error.
 fn create_shader_module(
     device: &ash::Device,
     code: &[u32],
@@ -601,6 +785,7 @@ fn create_shader_module(
         .map_err(|result| VulkanRendererError::CreateShaderModule { result })
 }
 
+/// Creates a single-layer framebuffer over the exact target extent and view.
 fn create_framebuffer(
     device: &ash::Device,
     render_pass: vk::RenderPass,
@@ -618,6 +803,10 @@ fn create_framebuffer(
         .map_err(|result| VulkanRendererError::CreateFramebuffer { result })
 }
 
+/// Records one primary command buffer, submits it, and synchronously waits idle.
+///
+/// The command buffer is freed for all recoverable results after allocation.
+/// A panic in the recording closure unwinds before explicit freeing.
 fn submit_one_time_commands<F>(
     context: &VulkanRenderContext<'_>,
     record: F,
@@ -668,6 +857,18 @@ where
     result
 }
 
+/// Records target transitions, clear, ordered batches, and the final transition.
+///
+/// A missing type-specific buffer or atlas descriptor skips that batch
+/// defensively. The viewport covers the full physical extent and each batch sets
+/// its own scissor.
+///
+/// # Safety
+///
+/// All handles must be live and belong to `device`; `command_buffer` must be
+/// recording; pipeline/render-pass/framebuffer compatibility and vertex ranges
+/// must match the supplied geometry; and target layout ownership must follow the
+/// host contract.
 unsafe fn record_render_pass(
     device: &ash::Device,
     command_buffer: vk::CommandBuffer,
@@ -825,6 +1026,12 @@ unsafe fn record_render_pass(
     );
 }
 
+/// Records a one-mip, one-layer color-image barrier unless layouts are equal.
+///
+/// # Safety
+///
+/// The image and recording command buffer must belong to `device`, and
+/// `old_layout` must describe the target's actual current layout.
 unsafe fn transition_target(
     device: &ash::Device,
     command_buffer: vk::CommandBuffer,
@@ -861,6 +1068,7 @@ unsafe fn transition_target(
     );
 }
 
+/// Maps known layouts to exact access masks and falls back to memory read/write.
 fn access_mask_for_layout(layout: vk::ImageLayout) -> vk::AccessFlags {
     match layout {
         vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
@@ -872,6 +1080,7 @@ fn access_mask_for_layout(layout: vk::ImageLayout) -> vk::AccessFlags {
     }
 }
 
+/// Maps known layouts to precise stages and falls back to all commands.
 fn pipeline_stage_for_layout(layout: vk::ImageLayout) -> vk::PipelineStageFlags {
     match layout {
         vk::ImageLayout::UNDEFINED => vk::PipelineStageFlags::TOP_OF_PIPE,
