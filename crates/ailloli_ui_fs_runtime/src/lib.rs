@@ -818,6 +818,10 @@ impl FileTreeRuntime {
     /// [`FileTreeRuntimeError::Source`] if the factory fails, or
     /// [`FileTreeRuntimeError::ThreadPanicked`] if initialization disconnects.
     ///
+    /// # Panics
+    ///
+    /// Panics only if [`FILE_TREE_QUEUE_CAPACITY`] is changed to zero.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1171,6 +1175,12 @@ impl FileTreeRuntime {
     }
 
     /// Enqueues a watch configuration after reserving a diagnostics depth slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeRuntimeError::QueueFull`] when the worker queue is at
+    /// capacity, or [`FileTreeRuntimeError::Closed`] after worker disconnection.
+    /// The reserved diagnostics depth is cancelled on either failure.
     fn enqueue_watch_configuration(
         &self,
         uri: FileUri,
@@ -1198,6 +1208,10 @@ impl FileTreeRuntime {
     ///
     /// Returns [`FileTreeRuntimeError::Wake`] if inbox drain rearming fails.
     /// The drained response batch is not returned in that case.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if [`FILE_TREE_UI_DRAIN_BUDGET`] is changed to zero.
     ///
     /// # Examples
     ///
@@ -1424,6 +1438,11 @@ impl FileTreeRuntime {
     /// Returns `ThreadPanicked` when join observes a panic, or `FinishTimeout`
     /// after two seconds. On timeout the consumed value is dropped and its join
     /// handle detaches; shutdown is attempted once more by [`Drop`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`FILE_TREE_UI_DRAIN_BUDGET`] is zero or if the worker join
+    /// handle is absent after it reports that it is finished.
     ///
     /// # Examples
     ///

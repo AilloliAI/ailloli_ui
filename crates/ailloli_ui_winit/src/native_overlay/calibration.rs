@@ -316,8 +316,11 @@ enum Command {
     Snapshot(mpsc::Sender<Result<Vec<NativeOutputDescriptor>, NativeOverlayError>>),
     /// Display one marker and acknowledge presentation or failure.
     Show {
+        /// Native output on which the marker must be displayed.
         descriptor: NativeOutputDescriptor,
+        /// Marker geometry and encoded identity to present.
         spec: NativeCalibrationMarkerSpec,
+        /// One-shot channel used to report presentation success or failure.
         response: mpsc::Sender<Result<(), NativeOverlayError>>,
     },
     /// Remove the marker, optionally acknowledging an explicit caller.
@@ -755,6 +758,11 @@ mod linux {
     /// Wayland setup, command dispatch, catalogue maintenance, and marker rendering.
     impl Runtime {
         /// Connects required globals, performs two metadata round trips, and snapshots outputs.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`NativeOverlayError::Backend`] for Wayland connection,
+        /// registry/global binding, shared-memory pool, or round-trip failures.
         fn connect() -> Result<(wayland_client::EventQueue<Self>, Self), NativeOverlayError> {
             let connection = Connection::connect_to_env()
                 .map_err(|error| NativeOverlayError::Backend(error.to_string()))?;
@@ -926,6 +934,12 @@ mod linux {
         /// Replaces the active marker and waits up to eight protocol round trips for presentation.
         ///
         /// The descriptor must still exactly match one output in the current generation.
+        ///
+        /// # Errors
+        ///
+        /// Returns an output-missing/ambiguous error, or
+        /// [`NativeOverlayError::Backend`] for a stale catalogue, marker creation,
+        /// drawing, protocol dispatch, or unconfirmed presentation.
         fn show(
             &mut self,
             descriptor: NativeOutputDescriptor,
@@ -1019,6 +1033,12 @@ mod linux {
         /// Rasterizes the logical marker into scaled BGRA shared memory and commits it.
         ///
         /// Checked arithmetic reports dimension/stride overflow before allocation.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`NativeOverlayError::Closed`] without an active marker, or a
+        /// backend error for size/stride conversion overflow or shared-memory
+        /// buffer creation failure.
         fn draw_active(&mut self, qh: &QueueHandle<Self>) -> Result<(), NativeOverlayError> {
             let active = self.active.as_mut().ok_or(NativeOverlayError::Closed)?;
             let logical_width = active.descriptor.logical_rect.width as u32;

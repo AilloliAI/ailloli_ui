@@ -90,6 +90,13 @@ pub use application::run_app;
 /// Disabled collection returns `BenchInit::Disabled`; enabled initialization
 /// propagates typed path, writer, and global-install failures.
 ///
+/// # Errors
+///
+/// When collection is enabled, returns [`ailloli_ui_bench::BenchInitError`] for
+/// invalid metadata or paths, an occupied destination/global slot, filesystem
+/// or initial-write failure, or writer-thread startup failure. Disabled
+/// collection does not fail.
+///
 /// # Examples
 ///
 /// ```no_run

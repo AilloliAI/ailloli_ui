@@ -42,6 +42,7 @@ pub struct UploadFile {
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UploadAccept {
+    /// Ordered extension or MIME-style patterns accepted by the target.
     patterns: Vec<String>,
 }
 

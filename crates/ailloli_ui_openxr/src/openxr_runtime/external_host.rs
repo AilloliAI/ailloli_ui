@@ -247,11 +247,17 @@ impl<A> OpenXrExternalUiHostFrameResult<'_, A> {
 /// fn clear<A: 'static>(host: &mut OpenXrExternalUiHost<A>) { host.clear_input(); }
 /// ```
 pub struct OpenXrExternalUiHost<A> {
+    /// Optional Vulkan ray overlay, absent when the feature is disabled.
     ray: Option<OpenXrRayOverlay>,
+    /// Provider-neutral retained UI layer and Vulkan renderer.
     ui: OpenXrUiLayer<A>,
+    /// Optional internally managed OpenXR action input source.
     input: Option<OpenXrActionInput>,
+    /// Quad-layer composition policy and pose smoothing state.
     composer: OpenXrQuadComposer,
+    /// OpenXR Vulkan swapchain supplying the UI quad texture.
     swapchain: OpenXrQuadSwapchain,
+    /// Immutable host, UI, input, ray, and composition options.
     options: OpenXrExternalUiHostOptions,
 }
 

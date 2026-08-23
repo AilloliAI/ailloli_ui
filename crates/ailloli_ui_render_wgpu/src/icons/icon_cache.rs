@@ -79,8 +79,11 @@ pub struct IconGpu {
 /// let _ = cache;
 /// ```
 pub struct IconCache {
+    /// Parsed Lucide icon font retained for glyph rasterization.
     lucide_font: Font,
+    /// Parsed developer-icon font retained for glyph rasterization.
     devicon_font: Font,
+    /// GPU textures indexed by icon identity, size, tint, and scale.
     cache: HashMap<IconKey, IconGpu>,
 }
 

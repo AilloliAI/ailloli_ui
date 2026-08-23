@@ -38,18 +38,31 @@ use super::code_builder::DocumentChangeHandler;
 /// let _ = view;
 /// ```
 pub(crate) struct CodeEditorComponent<A> {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Caller-owned document state synchronized into the editor session.
     pub(crate) document: Signal<Document>,
+    /// Editing, rendering, and feature configuration.
     pub(crate) config: CodeEditorConfig,
+    /// Optional language override applied to the document.
     pub(crate) language: Option<EditorLanguage>,
+    /// Optional initial horizontal/vertical offsets in logical pixels.
     pub(crate) initial_scroll: Option<(f32, f32)>,
+    /// Optional initial search query.
     pub(crate) search_query: Option<SearchQuery>,
+    /// Optional active match index within the search result list.
     pub(crate) search_active_match: Option<usize>,
+    /// Diagnostics initially projected over the document.
     pub(crate) diagnostics: Vec<Diagnostic>,
+    /// Optional active diagnostic index.
     pub(crate) active_diagnostic: Option<usize>,
+    /// Optional caller-provided fold regions, replacing derived regions.
     pub(crate) fold_regions: Option<Vec<FoldRegion>>,
+    /// Optional precomputed symbol summary retained for feature consumers.
     pub(crate) symbol_summary: Option<CodeFileSummary>,
+    /// Optional initial UTF-8 byte anchor/caret pair, clamped to document length.
     pub(crate) initial_selection: Option<(usize, usize)>,
+    /// Optional callback invoked after edits synchronize the document.
     pub(crate) on_document_change: Option<DocumentChangeHandler<A>>,
 }
 
@@ -118,19 +131,33 @@ impl<A: 'static> ComponentNode<A> for CodeEditorComponent<A> {
 /// let _ = view;
 /// ```
 pub(crate) struct CodeEditorWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Caller-owned document state synchronized in both directions.
     document: Signal<Document>,
+    /// Retained editing, search, diagnostic, and folding session.
     session: Signal<CodeEditorSession>,
+    /// UI-local layout/paint cache shared across event and paint passes.
     engine: Rc<RefCell<EditorEngine>>,
+    /// Editing, rendering, and feature configuration.
     config: CodeEditorConfig,
+    /// Optional language override applied during prop reconciliation.
     language: Option<EditorLanguage>,
+    /// Optional initial scroll offsets used when a new document is installed.
     initial_scroll: Option<(f32, f32)>,
+    /// Optional search query reconciled into the session.
     search_query: Option<SearchQuery>,
+    /// Optional active search match index.
     search_active_match: Option<usize>,
+    /// Diagnostic set reconciled into the session.
     diagnostics: Vec<Diagnostic>,
+    /// Optional active diagnostic index.
     active_diagnostic: Option<usize>,
+    /// Optional caller-provided fold regions.
     fold_regions: Option<Vec<FoldRegion>>,
+    /// Optional precomputed symbol summary retained for enabled symbol tooling.
     symbol_summary: Option<CodeFileSummary>,
+    /// Optional callback invoked after a document-changing edit.
     on_document_change: Option<DocumentChangeHandler<A>>,
 }
 
@@ -367,6 +394,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
 
 /// Prop reconciliation and edit-to-document synchronization helpers.
 impl<A: 'static> CodeEditorWidget<A> {
+    /// Reconciles external document/configuration props into retained session state.
     fn sync_session_from_props(&self) -> CodeEditorSession {
         let mut session = self.session.read();
         let document = document_with_language(self.document.read(), self.language);
@@ -429,6 +457,7 @@ impl<A: 'static> CodeEditorWidget<A> {
         session
     }
 
+    /// Applies one edit, bridges clipboard effects, and publishes document changes.
     fn apply_edit_action(&self, ctx: &mut EventCtx<A>, action: TextEditAction) {
         let mut session = self.sync_session_from_props();
         let mut action = action;

@@ -100,6 +100,12 @@ pub trait LspBackend {
     /// The default performs no work and returns `Ok(())` regardless of document
     /// contents or metadata.
     ///
+    /// # Errors
+    ///
+    /// The default implementation never fails. A backend override may return a
+    /// categorized [`LspError`] for transport, protocol, availability, or I/O
+    /// failure.
+    ///
     /// # Examples
     ///
     /// ```
@@ -116,6 +122,12 @@ pub trait LspBackend {
     ///
     /// The default is a no-op success and performs no version validation.
     ///
+    /// # Errors
+    ///
+    /// The default implementation never fails. A backend override may return a
+    /// categorized [`LspError`] for transport, protocol, availability, or I/O
+    /// failure.
+    ///
     /// # Examples
     ///
     /// ```
@@ -131,6 +143,12 @@ pub trait LspBackend {
     /// Notifies the backend that a document closed.
     ///
     /// The default is a no-op success.
+    ///
+    /// # Errors
+    ///
+    /// The default implementation never fails. A backend override may return a
+    /// categorized [`LspError`] for transport, protocol, availability, or I/O
+    /// failure.
     ///
     /// # Examples
     ///
@@ -149,6 +167,12 @@ pub trait LspBackend {
     /// The default returns [`LspError::RequestCancelled`] containing the same ID;
     /// it does not track or signal any real request.
     ///
+    /// # Errors
+    ///
+    /// The default returns [`LspError::RequestCancelled`] with the supplied ID.
+    /// Backend overrides may additionally report availability, protocol,
+    /// transport, or I/O failures.
+    ///
     /// # Examples
     ///
     /// ```
@@ -162,6 +186,12 @@ pub trait LspBackend {
     /// Returns semantic symbols for a document.
     ///
     /// The default returns `CapabilityUnavailable("document_symbols")`.
+    ///
+    /// # Errors
+    ///
+    /// The default returns [`LspError::CapabilityUnavailable`]. A backend may
+    /// instead return cancellation, transport, protocol, availability, or I/O
+    /// failures while servicing the query.
     ///
     /// # Examples
     ///
@@ -182,6 +212,12 @@ pub trait LspBackend {
     ///
     /// The default returns `CapabilityUnavailable("references")`.
     ///
+    /// # Errors
+    ///
+    /// The default returns [`LspError::CapabilityUnavailable`]. A backend may
+    /// instead return cancellation, transport, protocol, availability, or I/O
+    /// failures while servicing the query.
+    ///
     /// # Examples
     ///
     /// ```
@@ -197,6 +233,12 @@ pub trait LspBackend {
     /// Returns version-tagged diagnostics for a document.
     ///
     /// The default returns `CapabilityUnavailable("diagnostics")`.
+    ///
+    /// # Errors
+    ///
+    /// The default returns [`LspError::CapabilityUnavailable`]. A backend may
+    /// instead return cancellation, transport, protocol, availability, or I/O
+    /// failures while servicing the query.
     ///
     /// # Examples
     ///

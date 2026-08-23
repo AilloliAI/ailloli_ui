@@ -638,15 +638,25 @@ impl<A: 'static> ContextMenu<A> {
 
 /// Component properties used to allocate retained menu and submenu state.
 struct ContextMenuComponent<A> {
+    /// Outer logical sizing policy for the underlying host child.
     layout: LayoutStyle,
+    /// Optional readable external open state.
     open: Option<Binding<bool>>,
+    /// Optional writable external open state.
     bound_open: Option<Signal<bool>>,
+    /// Initial open state used by an uncontrolled menu.
     default_open: bool,
+    /// Static or reactive preferred anchor in logical window coordinates.
     anchor: Binding<Point>,
+    /// Whether the caller explicitly supplied the anchor.
     anchor_explicit: bool,
+    /// Reactive root entry collection.
     entries: Binding<Vec<ContextMenuEntry<A>>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Popup, row, and submenu styling.
     style: ContextMenuStyle,
+    /// Optional underlying host content painted below the menu.
     child: Option<View<A>>,
 }
 
@@ -726,30 +736,51 @@ impl<A: 'static> IntoView<A> for ContextMenu<A> {
 
 /// Host widget that opens and synchronizes the root popup portal.
 struct ContextMenuWidget<A> {
+    /// Outer logical sizing policy for the underlying host child.
     layout: LayoutStyle,
+    /// Shared retained controller for root and submenu content.
     controller: ContextMenuController<A>,
+    /// Bridge synchronizing popup registry content and lifecycle.
     popup: PopupPortalBridge<A>,
 }
 
 /// Shared state machine used by the host and both retained popup widgets.
 struct ContextMenuController<A> {
+    /// UI-local runtime used to allocate and close popup registrations.
     runtime: RuntimeHandle<A>,
+    /// Optional readable external open state.
     open: Option<Binding<bool>>,
+    /// Optional writable external open state.
     bound_open: Option<Signal<bool>>,
+    /// Retained open state used by an uncontrolled menu.
     internal_open: Signal<bool>,
+    /// Last open state reconciled into the popup registry.
     last_requested_open: Signal<bool>,
+    /// Static or reactive preferred anchor in logical window coordinates.
     anchor: Binding<Point>,
+    /// Whether the caller explicitly supplied the anchor.
     anchor_explicit: bool,
+    /// Pointer-derived anchor captured for implicit context-menu opening.
     pointer_anchor: Signal<Option<Point>>,
+    /// Reactive root entry collection.
     entries: Binding<Vec<ContextMenuEntry<A>>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Popup, row, and submenu styling.
     style: ContextMenuStyle,
+    /// Keyboard-active root entry index.
     active_index: Signal<Option<usize>>,
+    /// Root entry whose submenu is currently open.
     submenu_parent_index: Signal<Option<usize>>,
+    /// Keyboard-active entry within the open submenu.
     submenu_active_index: Signal<Option<usize>>,
+    /// Entry and depth captured by the active pointer press.
     pressed_entry: Signal<Option<ContextMenuPressedEntry>>,
+    /// Last resolved root/submenu rectangles and entry rows.
     geometry: Signal<Option<ContextMenuGeometry>>,
+    /// Popup identity reserved for root menu content.
     root_popup_id: Option<PopupId>,
+    /// Popup identity reserved for the current submenu, if any.
     submenu_popup_id: Signal<Option<PopupId>>,
 }
 
@@ -1755,6 +1786,7 @@ impl<A: 'static> ContextMenuController<A> {
 
 /// Root popup component that obtains the child submenu popup identifier.
 struct RetainedContextMenuRootComponent<A> {
+    /// Shared controller used to build root popup content.
     controller: ContextMenuController<A>,
 }
 
@@ -1774,6 +1806,7 @@ impl<A: 'static> ComponentNode<A> for RetainedContextMenuRootComponent<A> {
 
 /// Retained root popup widget for painting and dispatching menu interaction.
 struct RetainedContextMenuRoot<A> {
+    /// Shared controller handling root layout, paint, and input.
     controller: ContextMenuController<A>,
 }
 
@@ -1878,6 +1911,7 @@ impl<A: 'static> Widget<A> for RetainedContextMenuRoot<A> {
 
 /// Retained first-level submenu widget sharing the root controller.
 struct RetainedContextSubmenu<A> {
+    /// Shared controller handling submenu layout, paint, and input.
     controller: ContextMenuController<A>,
 }
 

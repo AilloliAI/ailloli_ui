@@ -20,6 +20,10 @@ struct TestWake {
 /// Implements the UiWake test contract for TestWake.
 impl UiWake for TestWake {
     /// Records or coordinates a test wake notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiWakeError::TargetClosed`] exactly while `fail` is set.
     fn wake(&self) -> Result<(), UiWakeError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {
@@ -50,6 +54,10 @@ impl RecoveringWake {
 /// Implements the UiWake test contract for RecoveringWake.
 impl UiWake for RecoveringWake {
     /// Records or coordinates a test wake notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns the configured `first_error` on the first call only.
     fn wake(&self) -> Result<(), UiWakeError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             Err(self.first_error)
@@ -81,6 +89,11 @@ impl BlockingRecoveringWake {
 /// Implements the UiWake test contract for BlockingRecoveringWake.
 impl UiWake for BlockingRecoveringWake {
     /// Records or coordinates a test wake notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiWakeError::TemporarilyUnavailable`] after the first call is
+    /// released by the test barriers; later calls succeed.
     fn wake(&self) -> Result<(), UiWakeError> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             self.entered.wait();

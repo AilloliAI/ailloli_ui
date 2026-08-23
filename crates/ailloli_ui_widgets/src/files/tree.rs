@@ -130,10 +130,15 @@ pub(crate) enum ChildLoadReason {
 
 /// Immutable parameters threaded through recursive provider traversal.
 struct LoadEntryContext<'a> {
+    /// Provider used for lazy directory enumeration.
     provider: &'a dyn FileProvider,
+    /// Root URI from which recursive projection begins.
     root: &'a FileUri,
+    /// Directory URIs whose immediate children should be enumerated.
     expanded: &'a [FileUri],
+    /// Optional selected URI marked in the projected nodes.
     selected: Option<&'a FileUri>,
+    /// Depth and hidden-entry projection policy.
     options: FileTreeOptions,
 }
 
@@ -294,6 +299,12 @@ pub fn dedupe_file_uris(uris: impl IntoIterator<Item = FileUri>) -> Vec<FileUri>
 }
 
 /// Recursively loads one entry, guarding canonical cycles and appending limits.
+///
+/// # Errors
+///
+/// Propagates provider errors from canonicalization or directory reads, and the
+/// first recursive child-load error. A detected canonical cycle is represented
+/// by an error placeholder node and remains a successful result.
 fn load_entry(
     ctx: &LoadEntryContext<'_>,
     entry: FileEntry,

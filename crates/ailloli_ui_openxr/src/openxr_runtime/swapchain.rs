@@ -61,11 +61,17 @@ pub struct OpenXrAcquiredImage {
 /// fn extent(swapchain: &OpenXrQuadSwapchain) -> ash::vk::Extent2D { swapchain.extent() }
 /// ```
 pub struct OpenXrQuadSwapchain {
+    /// Vulkan device owning image views, absent after explicit teardown.
     device: Option<ash::Device>,
+    /// OpenXR swapchain governing image acquire/wait/release order.
     handle: xr::Swapchain<xr::Vulkan>,
+    /// Runtime-selected OpenXR/Vulkan image format.
     format: OpenXrSwapchainFormat,
+    /// Runtime-owned Vulkan images in stable swapchain index order.
     images: Vec<vk::Image>,
+    /// Vulkan image views created for each entry in `images`.
     views: Vec<vk::ImageView>,
+    /// Physical swapchain width and height in pixels.
     extent: vk::Extent2D,
 }
 
@@ -140,6 +146,12 @@ impl OpenXrQuadSwapchain {
     }
 
     /// Shared constructor implementing extent, format, handle, image, and view setup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenXrRuntimeError::InvalidSwapchainExtent`] for a zero
+    /// dimension, or propagates format enumeration/selection, swapchain
+    /// creation/image enumeration, and optional Vulkan image-view failures.
     fn new_internal(
         session: &xr::Session<xr::Vulkan>,
         device: Option<&ash::Device>,
@@ -372,6 +384,13 @@ impl Drop for OpenXrQuadSwapchain {
 
 /// Selects the first supported RGBA/BGRA UNORM/SRGB format in preference order.
 ///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::EnumerateSwapchainFormats`] if the runtime
+/// cannot enumerate formats, or [`OpenXrRuntimeError::UnsupportedSwapchainFormat`]
+/// with the complete reported list when none of the four preferred formats is
+/// available.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -405,6 +424,12 @@ pub(crate) fn select_swapchain_format(
 }
 
 /// Creates a color-attachment swapchain, falling back to transfer+sampled usage.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::CreateSwapchain`] when both the preferred
+/// color-attachment usage and the transfer-plus-sampled fallback are rejected;
+/// the error retains the fallback runtime result.
 fn create_swapchain(
     session: &xr::Session<xr::Vulkan>,
     format: OpenXrSwapchainFormat,
@@ -431,6 +456,11 @@ fn create_swapchain(
 }
 
 /// Creates one 2D color view per runtime-owned swapchain image.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::CreateSwapchainImageView`] with the first Vulkan
+/// driver failure. Views created for earlier images are not returned.
 fn create_swapchain_views(
     device: &ash::Device,
     images: &[vk::Image],

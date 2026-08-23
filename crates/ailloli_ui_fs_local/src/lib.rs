@@ -78,6 +78,12 @@ impl FileProvider for LocalFileProvider {
     ///
     /// An empty directory returns an empty vector. Per-entry metadata failures
     /// abort the complete read rather than returning a partial list.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI or an entry path
+    /// that cannot become a local URI, and maps directory iteration or metadata
+    /// failures through [`FileError::from_io`].
     fn read_dir(&self, uri: &FileUri) -> Result<Vec<FileEntry>, FileError> {
         let path = local_path(uri)?;
         let entries = fs::read_dir(&path)
@@ -101,6 +107,11 @@ impl FileProvider for LocalFileProvider {
     }
 
     /// Reads the complete file into an owned byte vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI and maps the host
+    /// read failure through [`FileError::from_io`].
     fn read_file(&self, uri: &FileUri) -> Result<Vec<u8>, FileError> {
         let path = local_path(uri)?;
         fs::read(&path).map_err(|err| FileError::from_io(&err, path.display().to_string()))
@@ -109,12 +120,22 @@ impl FileProvider for LocalFileProvider {
     /// Creates or truncates a file and writes `bytes` non-atomically.
     ///
     /// Empty bytes create an empty file. Missing parents are not created.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI and maps create,
+    /// truncate, or write failures through [`FileError::from_io`].
     fn write_file(&self, uri: &FileUri, bytes: &[u8]) -> Result<(), FileError> {
         let path = local_path(uri)?;
         fs::write(&path, bytes).map_err(|err| FileError::from_io(&err, path.display().to_string()))
     }
 
     /// Returns symlink-aware metadata without following the link for `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI or a mapped host
+    /// metadata error when the entry itself cannot be inspected.
     fn metadata(&self, uri: &FileUri) -> Result<FileMetadata, FileError> {
         metadata_for_path(&local_path(uri)?)
     }
@@ -123,6 +144,11 @@ impl FileProvider for LocalFileProvider {
     ///
     /// This deliberately collapses missing paths, permission failures, and
     /// other canonicalization errors to absence after URI validation succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] when the source is not local or a
+    /// successful canonical host path cannot be represented as a local URI.
     fn canonical_uri(&self, uri: &FileUri) -> Result<Option<FileUri>, FileError> {
         let path = local_path(uri)?;
         match fs::canonicalize(&path) {
@@ -132,12 +158,23 @@ impl FileProvider for LocalFileProvider {
     }
 
     /// Creates exactly one directory; parents are not created recursively.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI and maps the host
+    /// creation failure through [`FileError::from_io`].
     fn create_dir(&self, uri: &FileUri) -> Result<(), FileError> {
         let path = local_path(uri)?;
         fs::create_dir(&path).map_err(|err| FileError::from_io(&err, path.display().to_string()))
     }
 
     /// Delegates an OS rename/move without cross-filesystem fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] when either URI is non-local and maps
+    /// every host rename failure, including cross-device moves, through
+    /// [`FileError::from_io`].
     fn rename(&self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
         let from = local_path(from)?;
         let to = local_path(to)?;
@@ -150,6 +187,12 @@ impl FileProvider for LocalFileProvider {
     ///
     /// `symlink_metadata` ensures a link to a directory removes the link with
     /// `remove_file`, never the target directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI and maps metadata,
+    /// file removal, or empty-directory removal failures through
+    /// [`FileError::from_io`].
     fn remove(&self, uri: &FileUri) -> Result<(), FileError> {
         let path = local_path(uri)?;
         let metadata = fs::symlink_metadata(&path)
@@ -165,11 +208,22 @@ impl FileProvider for LocalFileProvider {
 }
 
 /// Converts only a local `file:` URI to its host path.
+///
+/// # Errors
+///
+/// Propagates [`FileError::InvalidUri`] when `uri` is not an authority-free
+/// local `file:` URI.
 fn local_path(uri: &FileUri) -> Result<PathBuf, FileError> {
     uri.to_local_path()
 }
 
 /// Reads link metadata and best-effort target kind for one host path.
+///
+/// # Errors
+///
+/// Maps failure to inspect the entry itself through [`FileError::from_io`]. A
+/// failure to follow a symlink target is intentionally reduced to unknown
+/// target kind instead of returned.
 fn metadata_for_path(path: &Path) -> Result<FileMetadata, FileError> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|err| FileError::from_io(&err, path.display().to_string()))?;

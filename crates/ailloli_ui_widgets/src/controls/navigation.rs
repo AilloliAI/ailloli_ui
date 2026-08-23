@@ -538,14 +538,23 @@ impl<A: 'static> NavItem<A> {
 
 /// Retained leaf resolving nav bindings, paint state, and activation.
 struct NavItemWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Primary user-visible navigation label.
     label: String,
+    /// Optional icon painted before the label.
     leading_icon: Option<IconId>,
+    /// Optional numeric badge displayed at the trailing edge.
     badge: Option<u32>,
+    /// Reactive selected-state source.
     selected: Binding<bool>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Sidebar, tab, or other navigation visual variant.
     variant: NavItemVariant,
+    /// Item colors and logical-pixel geometry.
     style: NavItemStyle,
+    /// Optional click action invoked for an enabled item.
     on_select: Option<ClickAction<A>>,
 }
 

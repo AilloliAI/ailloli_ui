@@ -158,6 +158,13 @@ pub enum IconError {
 /// case-insensitively for exact substrings `url(http:`, `url(https:`, `url(file:`,
 /// or `@import`. This is a deliberately specific syntactic screen, followed by
 /// `usvg` parsing; it is not a general sanitizer for arbitrary SVG consumers.
+///
+/// # Errors
+///
+/// Returns [`IconError::InvalidXml`] for non-UTF-8, malformed XML, or a non-SVG
+/// root; [`IconError::ExternalResource`] for a recognized active element or
+/// external reference; and [`IconError::MissingViewBox`] when the view box is
+/// absent, malformed, not four values, or has a non-positive extent.
 fn parse_view_box(bytes: &[u8]) -> Result<(f64, f64), IconError> {
     let text = std::str::from_utf8(bytes).map_err(|err| IconError::InvalidXml(err.to_string()))?;
     let doc =
@@ -267,6 +274,11 @@ pub fn validate_app_icon(icon: &AppIcon) -> Result<ValidatedIcon, IconError> {
 /// `px` clamps to one. Aspect ratio is preserved and unused space stays
 /// transparent. Output uses tiny-skia's premultiplied RGBA byte order. This
 /// helper does not check source policy, squareness, or visible alpha.
+///
+/// # Errors
+///
+/// Returns [`IconError::Allocation`] when tiny-skia cannot allocate the clamped
+/// square pixmap.
 fn rasterize_tree(tree: &usvg::Tree, px: u32) -> Result<RasterizedIcon, IconError> {
     let px = px.max(1);
     let mut pixmap = tiny_skia::Pixmap::new(px, px).ok_or(IconError::Allocation(px))?;

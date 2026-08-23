@@ -84,7 +84,9 @@ pub struct FileExplorerIoResponse {
 /// assert!(worker.try_recv_all().is_empty());
 /// ```
 pub struct LocalFileExplorerIoWorker {
+    /// Request producer consumed by the dedicated filesystem thread.
     tx: Sender<FileExplorerIoRequest>,
+    /// Response consumer drained by the UI-side polling path.
     rx: Receiver<FileExplorerIoResponse>,
 }
 

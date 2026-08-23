@@ -25,6 +25,11 @@ pub trait PtyBackend: Send + Sync + 'static {
     /// The exact use of program, environment, CWD, and terminal size is backend-
     /// specific. No generic validation occurs before this call.
     ///
+    /// # Errors
+    ///
+    /// Returns a backend-selected [`PtyError`] when allocation, process spawn,
+    /// configuration, or another required setup operation fails.
+    ///
     /// # Examples
     ///
     /// ```
@@ -52,6 +57,12 @@ pub trait PtyBackend: Send + Sync + 'static {
 pub(crate) trait PtySession: Send + Sync + 'static {
     /// Writes and backend-specifically flushes a raw input slice.
     ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Closed`] for a closed included session, or a
+    /// backend-specific write, flush, locking, I/O, or unsupported-operation
+    /// error.
+    ///
     /// # Examples
     ///
     /// ```
@@ -62,6 +73,11 @@ pub(crate) trait PtySession: Send + Sync + 'static {
     /// ```
     fn write(&self, bytes: &[u8]) -> Result<(), PtyError>;
     /// Requests an immediate backend size update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Closed`] for a closed included session, or a
+    /// backend-specific resize, locking, I/O, or unsupported-operation error.
     ///
     /// # Examples
     ///
@@ -84,6 +100,12 @@ pub(crate) trait PtySession: Send + Sync + 'static {
     /// ```
     fn drain_events(&self) -> Vec<PtyEvent>;
     /// Requests idempotent session termination.
+    ///
+    /// # Errors
+    ///
+    /// Returns a backend-specific shutdown, locking, I/O, or
+    /// unsupported-operation error. Included implementations keep shutdown
+    /// requested even when the first termination attempt fails.
     ///
     /// # Examples
     ///
@@ -156,6 +178,11 @@ impl PtyHandle {
     /// Closed sessions return [`PtyError::Closed`] in the included backends.
     /// The portable backend serializes writes and flushes after each call.
     ///
+    /// # Errors
+    ///
+    /// Propagates [`PtyError::Closed`] and the backend's categorized write,
+    /// flush, locking, I/O, or unsupported-operation failures.
+    ///
     /// # Examples
     ///
     /// ```
@@ -173,6 +200,11 @@ impl PtyHandle {
     ///
     /// The mock records fields verbatim, including public zero rows/columns; the
     /// portable adapter clamps those two dimensions to one before OS I/O.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`PtyError::Closed`] and the backend's categorized resize,
+    /// locking, I/O, or unsupported-operation failures.
     ///
     /// # Examples
     ///
@@ -216,6 +248,11 @@ impl PtyHandle {
     /// killer or calling `kill`; a returned failure therefore still leaves the
     /// handle closed, and later calls return success without retrying the kill.
     /// This does not join detached reader/batcher/wait threads.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a backend termination, killer-lock, I/O, or
+    /// unsupported-operation failure. An error does not reopen the handle.
     ///
     /// # Examples
     ///

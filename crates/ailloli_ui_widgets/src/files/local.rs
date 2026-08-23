@@ -90,19 +90,33 @@ pub struct LocalFileExplorer<A = ()> {
     pub(crate) layout: LayoutStyle,
     /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
+    /// Native filesystem root exposed by this explorer.
     root_path: PathBuf,
+    /// Optional initially selected native path.
     selected_path: Option<PathBuf>,
+    /// Native directory paths requested open at bootstrap.
     default_expanded_paths: Vec<PathBuf>,
+    /// Depth, node-limit, and hidden-entry projection policy.
     options: FileTreeOptions,
+    /// Lazy or controlled/full directory loading policy.
     loading_mode: LocalFileExplorerLoadingMode,
+    /// Retention/eviction policy for collapsed directory contents.
     cache_mode: LocalFileExplorerCacheMode,
+    /// Whether visible rows are bounded to the propagated viewport.
     virtualized: bool,
+    /// Whether the tree is wrapped in a vertical scroll viewport.
     scrollable: bool,
+    /// Whether filesystem requests run through the background worker.
     async_loading: bool,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Tree row colors and logical-pixel geometry.
     style: FileExplorerStyle,
+    /// Optional callback receiving semantic explorer actions.
     on_action: Option<ActionHandler<A>>,
+    /// Optional callback receiving selected canonical URIs.
     on_select: Option<UriHandler<A>>,
+    /// Optional callback receiving activated/opened canonical URIs.
     on_open: Option<UriHandler<A>>,
 }
 
@@ -654,20 +668,35 @@ impl<A: 'static> IntoView<A> for LocalFileExplorer<A> {
 
 /// Component boundary that persists one local runtime across rebuilds.
 struct LocalFileExplorerComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Native filesystem root exposed by this explorer.
     root_path: PathBuf,
+    /// Optional initially selected native path.
     selected_path: Option<PathBuf>,
+    /// Native directory paths requested open at bootstrap.
     default_expanded_paths: Vec<PathBuf>,
+    /// Depth, node-limit, and hidden-entry projection policy.
     options: FileTreeOptions,
+    /// Lazy or controlled/full directory loading policy.
     loading_mode: LocalFileExplorerLoadingMode,
+    /// Retention/eviction policy for collapsed directory contents.
     cache_mode: LocalFileExplorerCacheMode,
+    /// Whether visible rows are bounded to the propagated viewport.
     virtualized: bool,
+    /// Whether the tree is wrapped in a vertical scroll viewport.
     scrollable: bool,
+    /// Whether filesystem requests run through the background worker.
     async_loading: bool,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Tree row colors and logical-pixel geometry.
     style: FileExplorerStyle,
+    /// Optional retained semantic-action callback.
     on_action: Option<ActionHandler<A>>,
+    /// Optional retained selection callback.
     on_select: Option<UriHandler<A>>,
+    /// Optional retained activation callback.
     on_open: Option<UriHandler<A>>,
 }
 
@@ -761,18 +790,31 @@ impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
 
 /// Retained filesystem store, worker, watchers, and UI-service registration.
 struct LocalFileExplorerRuntime<A> {
+    /// Retained provider-neutral file-tree model.
     store: RetainedFileTreeStore,
+    /// Optional background request/response runtime.
     worker: Option<FileTreeRuntime>,
+    /// Depth, node-limit, and hidden-entry projection policy.
     options: FileTreeOptions,
+    /// Lazy or controlled/full directory loading policy.
     loading_mode: LocalFileExplorerLoadingMode,
+    /// Retention/eviction policy for collapsed directory contents.
     cache_mode: LocalFileExplorerCacheMode,
+    /// Canonical URI requested as the current selection.
     selected: Option<FileUri>,
+    /// Canonical directory URIs requested open by external state.
     desired_expanded: Vec<FileUri>,
+    /// Directory nodes whose last response was truncated by configured limits.
     truncated: std::collections::HashSet<RetainedFileTreeNodeId>,
+    /// Directory nodes with active provider-watch subscriptions.
     watched: HashSet<RetainedFileTreeNodeId>,
+    /// Latest user-visible worker/provider failure, cleared by later success.
     error: Option<String>,
+    /// Whether initial root loading and desired expansion were requested.
     bootstrapped: bool,
+    /// UI-local service callback retained for registration lifetime.
     service_callback: Option<Rc<dyn Fn() -> bool>>,
+    /// Runtime service registration removed when this state is dropped.
     service_registration: Option<UiServiceRegistration<A>>,
 }
 
@@ -1192,6 +1234,11 @@ fn error_nodes(message: impl Into<String>) -> Vec<FileExplorerNode> {
 }
 
 /// Converts a native path to the local URI namespace without swallowing errors.
+///
+/// # Errors
+///
+/// Propagates [`FileError::InvalidUri`] when `path` cannot be represented as an
+/// absolute local file URI on the current platform.
 fn local_uri_or_error(path: &Path) -> Result<FileUri, FileError> {
     FileUri::local(path)
 }

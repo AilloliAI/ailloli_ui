@@ -112,6 +112,13 @@ impl AsRef<str> for ApplicationId {
 }
 
 /// Checks the byte limit and component grammar used by [`ApplicationId`].
+///
+/// # Errors
+///
+/// Returns [`AppIdentityError::EmptyId`] for empty input,
+/// [`AppIdentityError::IdTooLong`] above 255 bytes, or
+/// [`AppIdentityError::InvalidId`] for non-ASCII input, fewer than three dot
+/// components, or a component that violates the lowercase reverse-DNS grammar.
 fn validate_application_id(value: &str) -> Result<(), AppIdentityError> {
     if value.is_empty() {
         return Err(AppIdentityError::EmptyId);
@@ -151,7 +158,9 @@ fn validate_application_id(value: &str) -> Result<(), AppIdentityError> {
 /// ```
 #[derive(Debug, Clone)]
 pub struct AppIcon {
+    /// Owned or static SVG bytes retained for runtime decoding.
     source: SvgSource,
+    /// Logical asset path reported in diagnostics and packaging metadata.
     source_path: String,
 }
 
@@ -273,8 +282,11 @@ impl AppIcon {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct AppIdentity {
+    /// Optional reverse-DNS identifier awaiting validation.
     id: Option<String>,
+    /// Optional user-visible application name awaiting validation.
     name: Option<String>,
+    /// Optional embedded SVG icon awaiting validation.
     icon: Option<AppIcon>,
 }
 
@@ -428,8 +440,11 @@ impl AppIdentity {
 /// ```
 #[derive(Debug, Clone)]
 pub struct ValidatedAppIdentity {
+    /// Validated reverse-DNS identifier suitable for native adapters.
     id: ApplicationId,
+    /// Non-empty user-visible application name.
     name: String,
+    /// Validated embedded SVG icon and its diagnostic source path.
     icon: AppIcon,
 }
 

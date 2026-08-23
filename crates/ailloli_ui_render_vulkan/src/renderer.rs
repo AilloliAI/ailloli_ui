@@ -318,6 +318,11 @@ impl VulkanRenderer {
     /// glyph, memory, pipeline, framebuffer, command, submission, and queue-idle
     /// errors. The target's actual layout after a driver error is host-dependent.
     ///
+    /// # Panics
+    ///
+    /// Panics only if successful text-atlas initialization fails to leave the
+    /// renderer's internal atlas slot populated.
+    ///
     /// # Examples
     ///
     /// ```no_run
@@ -421,6 +426,12 @@ impl VulkanRenderer {
     ///
     /// Only one format is retained. On any partial pipeline-build failure, every
     /// resource created for the attempted format is destroyed and no cache is installed.
+    ///
+    /// # Errors
+    ///
+    /// Propagates render-pass, shader-module, or graphics-pipeline creation
+    /// failures from the Vulkan driver. A failed rebuild leaves the format cache
+    /// empty after destroying all resources created by that attempt.
     fn ensure_format_resources(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -615,6 +626,12 @@ impl Drop for VulkanRenderer {
 }
 
 /// Rejects null image/view handles and zero physical-pixel dimensions.
+///
+/// # Errors
+///
+/// Returns [`VulkanRendererError::InvalidTargetImage`] for a null image,
+/// [`VulkanRendererError::InvalidTargetView`] for a null view, or
+/// [`VulkanRendererError::InvalidTargetExtent`] when either extent is zero.
 fn validate_target(target: &VulkanFrameTarget) -> Result<(), VulkanRendererError> {
     if target.image == vk::Image::null() {
         return Err(VulkanRendererError::InvalidTargetImage);
@@ -635,6 +652,11 @@ fn validate_target(target: &VulkanFrameTarget) -> Result<(), VulkanRendererError
 ///
 /// The attachment is color-optimal at both render-pass boundaries because
 /// explicit barriers outside the pass handle the host-requested layouts.
+///
+/// # Errors
+///
+/// Returns [`VulkanRendererError::CreateRenderPass`] with the original driver
+/// result when `vkCreateRenderPass` fails.
 fn create_render_pass(
     device: &ash::Device,
     format: vk::Format,
@@ -666,6 +688,18 @@ fn create_render_pass(
 /// Shader modules are always destroyed before return. Any pipelines returned
 /// alongside a Vulkan creation error are also destroyed. The static `main`
 /// entry point cannot contain an interior NUL.
+///
+/// # Errors
+///
+/// Propagates [`VulkanRendererError::CreateShaderModule`] for either shader, or
+/// returns [`VulkanRendererError::CreateGraphicsPipeline`] with the original
+/// driver result when pipeline creation fails.
+///
+/// # Panics
+///
+/// Panics only if the hard-coded `main` entry point unexpectedly contains an
+/// interior NUL, or a Vulkan implementation reports successful pipeline
+/// creation without returning the single requested pipeline.
 fn create_graphics_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
@@ -777,6 +811,11 @@ fn color_blend_attachment(alpha_blend: bool) -> vk::PipelineColorBlendAttachment
 }
 
 /// Creates one shader module from SPIR-V words and preserves the driver result on error.
+///
+/// # Errors
+///
+/// Returns [`VulkanRendererError::CreateShaderModule`] with the original driver
+/// result when `vkCreateShaderModule` fails.
 fn create_shader_module(
     device: &ash::Device,
     code: &[u32],
@@ -786,6 +825,11 @@ fn create_shader_module(
 }
 
 /// Creates a single-layer framebuffer over the exact target extent and view.
+///
+/// # Errors
+///
+/// Returns [`VulkanRendererError::CreateFramebuffer`] with the original driver
+/// result when `vkCreateFramebuffer` fails.
 fn create_framebuffer(
     device: &ash::Device,
     render_pass: vk::RenderPass,
@@ -807,6 +851,17 @@ fn create_framebuffer(
 ///
 /// The command buffer is freed for all recoverable results after allocation.
 /// A panic in the recording closure unwinds before explicit freeing.
+///
+/// # Errors
+///
+/// Returns the matching allocate, begin, end, queue-submit, or queue-idle
+/// [`VulkanRendererError`] with the original driver result.
+///
+/// # Panics
+///
+/// Propagates a panic from `record`. It may also panic if a Vulkan implementation
+/// reports successful allocation without returning the one requested command
+/// buffer; neither path reaches this helper's explicit free operation.
 fn submit_one_time_commands<F>(
     context: &VulkanRenderContext<'_>,
     record: F,

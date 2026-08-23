@@ -690,7 +690,9 @@ pub trait ComponentNode<A>: 'static {
 /// assert!(matches!(view.kind, ailloli_ui_runtime::component::ViewKind::Component(_)));
 /// ```
 pub struct Component<P, A> {
+    /// Cloneable properties passed by value to every render invocation.
     props: P,
+    /// Non-capturing render function used to build the retained view.
     render: fn(&mut Context<A>, P) -> View<A>,
 }
 

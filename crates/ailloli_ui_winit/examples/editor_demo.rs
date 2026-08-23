@@ -3,6 +3,11 @@
 use ailloli_ui::prelude::*;
 
 /// Builds the seeded editor window and runs it until the user exits.
+///
+/// # Errors
+///
+/// Propagates application identity, native window/event-loop, or rendering
+/// errors from [`App::run`](ailloli_ui::AppBuilder::run).
 fn main() -> ailloli_ui::Result<()> {
     let doc: String = (0..200)
         .map(|i| format!("{i:04}  The quick brown fox jumps over the lazy dog.\n"))

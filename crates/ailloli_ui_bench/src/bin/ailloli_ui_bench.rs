@@ -273,6 +273,12 @@ fn main() -> ExitCode {
 ///
 /// Operational, validation, serialization, and I/O failures are returned as
 /// errors and therefore map to the generic failure exit code in [`main`].
+///
+/// # Errors
+///
+/// Propagates command-specific matrix, artifact, statistical, serialization,
+/// and I/O failures. A completed comparison regression is `Ok(true)`, not an
+/// operational error.
 fn execute(cli: Cli) -> Result<bool, Box<dyn Error>> {
     match cli.command {
         CliCommand::RunMatrix(args) => {
@@ -298,6 +304,13 @@ fn execute(cli: Cli) -> Result<bool, Box<dyn Error>> {
 /// Steady mode requires at least 30 measured samples. Cold-start mode requires
 /// at least five independent measured processes. Existing artifacts are never
 /// overwritten, and a failed child leaves no index that could authorize a gate.
+///
+/// # Errors
+///
+/// Returns an error for an absent child command, invalid sample counts, path or
+/// geometry metadata, duplicate/incompatible scenarios, existing destinations,
+/// child process failures, invalid run metadata, hashing/serialization, or
+/// filesystem publication failures.
 fn run_matrix(args: &RunMatrixArgs) -> Result<(), Box<dyn Error>> {
     if args.child.is_empty() {
         return Err("child command is required".into());
@@ -408,6 +421,12 @@ fn matrix_scenario_root(args: &RunMatrixArgs, scenario: &str) -> PathBuf {
 }
 
 /// Rejects indexes, logs, output files, or file roots that would be overwritten.
+///
+/// # Errors
+///
+/// Returns an error when the scenario index or any planned output already
+/// exists, the scenario root is a file, or inspecting existing JSONL artifacts
+/// fails.
 fn preflight_matrix_destination(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -462,6 +481,11 @@ fn preflight_matrix_destination(
 /// The child must exit successfully before the timeout, which is the requested
 /// duration plus 30 seconds and never less than 60 seconds. Timeout termination
 /// waits for the process after killing it.
+///
+/// # Errors
+///
+/// Returns an error for an existing output, directory creation, spawn/wait/kill
+/// failure, frame-count overflow, non-success child status, or timeout.
 fn run_child(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -534,6 +558,10 @@ fn run_child(
 }
 
 /// Adds warmup and measured frame counts, rejecting `u32` overflow.
+///
+/// # Errors
+///
+/// Returns an error when `warmups + samples` exceeds [`u32::MAX`].
 fn matrix_frame_count(warmups: u32, samples: u32) -> Result<u32, Box<dyn Error>> {
     warmups
         .checked_add(samples)
@@ -541,6 +569,17 @@ fn matrix_frame_count(warmups: u32, samples: u32) -> Result<u32, Box<dyn Error>>
 }
 
 /// Validates a completed child log and constructs its confined, hashed index entry.
+///
+/// # Errors
+///
+/// Returns an error when the run cannot be read, is incomplete, lies outside
+/// `scenario_root`, has a non-UTF-8 relative path, uses an incompatible schema,
+/// disagrees with requested metadata, or cannot be hashed.
+///
+/// # Panics
+///
+/// Panics only if [`ParsedRun::is_gate_valid`] reports true without a start
+/// record, which would violate that parser invariant.
 fn index_run(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -602,6 +641,12 @@ fn index_run(
 ///
 /// Floating-point DPR values are compared by exact bit pattern. The explicit
 /// `scenario_gate_ready` extension must also permit gating when present.
+///
+/// # Errors
+///
+/// Returns an error for invalid window syntax, malformed or conflicting metadata
+/// aliases, any requested/observed identity mismatch, or a false scenario
+/// fidelity gate.
 fn validate_matrix_run_metadata(
     args: &RunMatrixArgs,
     scenario: &str,
@@ -654,6 +699,11 @@ fn validate_matrix_run_metadata(
 ///
 /// Absence means `true` for schema-one and third-party harness compatibility;
 /// a present non-boolean value is rejected.
+///
+/// # Errors
+///
+/// Returns an error when `scenario_gate_ready` is present but is not a JSON
+/// boolean.
 fn scenario_gate_ready(metadata: &RunMetadata) -> Result<bool, Box<dyn Error>> {
     match metadata.extensions.get("scenario_gate_ready") {
         Some(serde_json::Value::Bool(ready)) => Ok(*ready),
@@ -666,6 +716,11 @@ fn scenario_gate_ready(metadata: &RunMetadata) -> Result<bool, Box<dyn Error>> {
 }
 
 /// Serializes, creates, writes, and synchronizes an index without overwriting a file.
+///
+/// # Errors
+///
+/// Propagates JSON serialization and file write/synchronization failures. File
+/// creation also fails when `path` already exists because overwrite is disabled.
 fn publish_matrix_index(path: &Path, index: &MatrixIndex) -> Result<(), Box<dyn Error>> {
     let mut bytes = serde_json::to_vec_pretty(index)?;
     bytes.push(b'\n');
@@ -685,6 +740,10 @@ fn publish_matrix_index(path: &Path, index: &MatrixIndex) -> Result<(), Box<dyn 
 }
 
 /// Streams a file in 64-KiB chunks and returns its lowercase SHA-256 digest.
+///
+/// # Errors
+///
+/// Propagates file-open and read errors from `path`.
 fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
@@ -704,6 +763,17 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
 /// Diagnostic metrics may exist on only one side. Gating and correctness
 /// metrics must exist on both sides with equal roles and sufficient populations.
 /// The return value is `true` only for a completed comparison whose gate failed.
+///
+/// # Errors
+///
+/// Returns an error for unreadable/invalid artifacts, incompatible populations,
+/// missing or role-changing gate metrics, insufficient samples/processes,
+/// statistical summary failures, or JSON serialization failure.
+///
+/// # Panics
+///
+/// The internal `(None, None)` match arm is unreachable because each metric name
+/// is drawn from at least one summary map; violating that invariant panics.
 fn compare(args: &CompareArgs) -> Result<bool, Box<dyn Error>> {
     let baseline_runs = load_gate_runs(&args.baseline)?;
     let candidate_runs = load_gate_runs(&args.candidate)?;
@@ -773,6 +843,11 @@ fn compare(args: &CompareArgs) -> Result<bool, Box<dyn Error>> {
 /// Steady gates need 30 samples. Cold-start gates need five processes and
 /// exactly one sample per process. Diagnostics and correctness metrics need at
 /// least one measured sample.
+///
+/// # Errors
+///
+/// Returns an error when `summary` violates the minimum population or
+/// one-sample-per-process rule associated with its [`MetricRole`].
 fn validate_metric_population(
     side: &str,
     metric: &str,
@@ -805,6 +880,12 @@ fn validate_metric_population(
 ///
 /// Unindexed trees exclude artifacts below `warmup-*` components. Indexed trees
 /// instead receive full manifest, hash, identity, and population validation.
+///
+/// # Errors
+///
+/// Propagates artifact discovery/read/parse errors, rejects an empty measured
+/// population, and rejects every incomplete run. Indexed directories also
+/// propagate the stricter manifest checks from [`load_indexed_gate_runs`].
 fn load_gate_runs(path: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>> {
     if path.is_dir() && path.join(MATRIX_INDEX_FILE).exists() {
         return load_indexed_gate_runs(path);
@@ -839,6 +920,18 @@ fn load_gate_runs(path: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>> {
 /// Paths must be sorted and unique, cover exactly all JSONL artifacts below
 /// `root`, remain confined there, match their SHA-256 and run ID, and reproduce
 /// the index identity and expected process counts.
+///
+/// # Errors
+///
+/// Returns an error for index I/O/JSON failures, unsupported schemas, invalid
+/// geometry or historical status, unsafe/unsorted paths, manifest coverage or
+/// hash mismatches, invalid/duplicate runs, identity conflicts, and inconsistent
+/// warmup/replicate counts.
+///
+/// # Panics
+///
+/// Panics only if a run reports gate-valid without a start record, violating the
+/// parser invariant checked immediately beforehand.
 fn load_indexed_gate_runs(root: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>> {
     let index_path = root.join(MATRIX_INDEX_FILE);
     let index: MatrixIndex = serde_json::from_reader(File::open(&index_path)?)?;
@@ -1026,6 +1119,11 @@ fn load_indexed_gate_runs(root: &Path) -> Result<Vec<ParsedRun>, Box<dyn Error>>
 }
 
 /// Resolves a slash-separated index path while rejecting absolute or traversing paths.
+///
+/// # Errors
+///
+/// Returns an error for an empty or absolute path, backslashes, empty segments,
+/// or `.`/`..` traversal components.
 fn safe_indexed_path(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn Error>> {
     if relative.is_empty() || relative.starts_with('/') || relative.contains('\\') {
         return Err(format!("invalid matrix index run path: {relative:?}").into());
@@ -1044,6 +1142,12 @@ fn safe_indexed_path(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn Err
 ///
 /// The `winit` version is the sole optionally relaxed field. Floating-point
 /// scale factors are represented by their exact bits in the compatibility key.
+///
+/// # Errors
+///
+/// Returns an error when either side is empty/heterogeneous, required metadata
+/// is invalid, any compatibility field differs, or the winit version differs
+/// without `allow_winit_version_diff`.
 fn ensure_compatible(
     baseline: &[ParsedRun],
     candidate: &[ParsedRun],
@@ -1091,6 +1195,11 @@ fn ensure_compatible(
 }
 
 /// Returns one compatibility key when every run in a non-empty population agrees.
+///
+/// # Errors
+///
+/// Returns an error for an empty population, invalid required metadata in any
+/// run, or unequal compatibility keys within the population.
 fn homogeneous_compatibility(
     label: &str,
     runs: &[ParsedRun],
@@ -1151,6 +1260,12 @@ struct CompatibilityKey {
 }
 
 /// Extracts and validates the comparison identity of one parsed run.
+///
+/// # Errors
+///
+/// Returns an error for a missing start/schema contract, missing or empty
+/// identity strings, zero window dimensions, non-finite/non-positive DPR values,
+/// or malformed/conflicting legacy metadata aliases.
 fn compatibility_tuple(run: &ParsedRun) -> Result<CompatibilityKey, Box<dyn Error>> {
     let metadata = run.final_metadata();
     let scenario = required_metadata("scenario", metadata.scenario.clone())?;
@@ -1209,6 +1324,11 @@ fn compatibility_tuple(run: &ParsedRun) -> Result<CompatibilityKey, Box<dyn Erro
 }
 
 /// Returns the start-record schema after requiring all recognized records to match it.
+///
+/// # Errors
+///
+/// Returns an error when the start record is absent or any end, metadata-update,
+/// or event record uses a different schema version.
 fn run_schema_version(run: &ParsedRun) -> Result<u32, Box<dyn Error>> {
     let start = run
         .start
@@ -1233,6 +1353,10 @@ fn run_schema_version(run: &ParsedRun) -> Result<u32, Box<dyn Error>> {
 }
 
 /// Unwraps required string metadata and rejects absent or whitespace-only values.
+///
+/// # Errors
+///
+/// Returns an error when `value` is absent or contains only whitespace.
 fn required_metadata(label: &str, value: Option<String>) -> Result<String, Box<dyn Error>> {
     match value {
         Some(value) if !value.trim().is_empty() => Ok(value),
@@ -1241,6 +1365,11 @@ fn required_metadata(label: &str, value: Option<String>) -> Result<String, Box<d
 }
 
 /// Reconciles the explicit harness field with its legacy extension alias.
+///
+/// # Errors
+///
+/// Propagates empty, wrong-type, or conflicting harness metadata errors from
+/// [`metadata_string_with_extensions`].
 fn harness_identity(metadata: &RunMetadata) -> Result<Option<String>, Box<dyn Error>> {
     metadata_string_with_extensions(
         metadata,
@@ -1254,6 +1383,11 @@ fn harness_identity(metadata: &RunMetadata) -> Result<Option<String>, Box<dyn Er
 ///
 /// All representations must agree exactly. `None` means no representation was
 /// present; empty strings, wrong JSON types, and conflicting aliases are errors.
+///
+/// # Errors
+///
+/// Returns an error when an explicit or extension value is empty, an extension
+/// is not a JSON string, or two present representations disagree.
 fn metadata_string_with_extensions(
     metadata: &RunMetadata,
     label: &str,
@@ -1284,6 +1418,10 @@ fn metadata_string_with_extensions(
 }
 
 /// Returns the requested DPR when finite and greater than zero.
+///
+/// # Errors
+///
+/// Returns an error when the recorded DPR is non-finite or not strictly positive.
 fn requested_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn Error>> {
     match metadata.scale_factor {
         Some(value) if value.is_finite() && value > 0.0 => Ok(Some(value)),
@@ -1296,6 +1434,11 @@ fn requested_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn
 ///
 /// A present extension must be a non-empty string and must equal the explicit
 /// field when both exist.
+///
+/// # Errors
+///
+/// Returns an error when `winit_backend_actual` is not a non-empty JSON string
+/// or conflicts with the explicit window-backend field.
 fn effective_window_backend(metadata: &RunMetadata) -> Result<Option<String>, Box<dyn Error>> {
     let extension = metadata.extensions.get("winit_backend_actual");
     let extension = match extension {
@@ -1319,6 +1462,11 @@ fn effective_window_backend(metadata: &RunMetadata) -> Result<Option<String>, Bo
 }
 
 /// Reconciles observed-DPR fields and aliases as exact finite positive values.
+///
+/// # Errors
+///
+/// Returns an error when an alias is not numeric, any observed DPR is non-finite
+/// or non-positive, or alias and explicit values differ by exact bit pattern.
 fn observed_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn Error>> {
     let extension = metadata
         .extensions
@@ -1349,6 +1497,10 @@ fn observed_scale_factor(metadata: &RunMetadata) -> Result<Option<f64>, Box<dyn 
 }
 
 /// Rejects empty, dot, parent, and separator-containing path segments.
+///
+/// # Errors
+///
+/// Returns an error for an empty segment, `.` or `..`, or either path separator.
 fn validate_path_segment(label: &str, segment: &str) -> Result<(), Box<dyn Error>> {
     if segment.is_empty()
         || segment == "."
@@ -1362,6 +1514,10 @@ fn validate_path_segment(label: &str, segment: &str) -> Result<(), Box<dyn Error
 }
 
 /// Requires a string to contain at least one non-whitespace character.
+///
+/// # Errors
+///
+/// Returns an error when `value` is empty after trimming whitespace.
 fn validate_non_empty(label: &str, value: &str) -> Result<(), Box<dyn Error>> {
     if value.trim().is_empty() {
         return Err(format!("{label} must be a non-empty string").into());
@@ -1370,6 +1526,11 @@ fn validate_non_empty(label: &str, value: &str) -> Result<(), Box<dyn Error>> {
 }
 
 /// Parses `WIDTHxHEIGHT` as non-zero `u32` logical pixel dimensions.
+///
+/// # Errors
+///
+/// Returns an error when the separator is absent, either component is not a
+/// `u32`, or either parsed dimension is zero.
 fn parse_window(value: &str) -> Result<(u32, u32), Box<dyn Error>> {
     let (width, height) = value
         .split_once('x')

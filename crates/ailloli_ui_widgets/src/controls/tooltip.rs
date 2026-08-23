@@ -26,8 +26,11 @@ use super::popup::{
 
 pub use crate::overlay::tooltip::TooltipStyle;
 
+/// Default hover/focus dwell time before opening a tooltip.
 const DEFAULT_OPEN_DELAY: Duration = Duration::from_millis(500);
+/// Default grace period before an open tooltip closes.
 const DEFAULT_CLOSE_DELAY: Duration = Duration::from_millis(100);
+/// Default logical-pixel separation between trigger and tooltip surface.
 const DEFAULT_GAP: f32 = 6.0;
 
 /// Text displayed by a [`Tooltip`].
@@ -363,15 +366,25 @@ impl<A: 'static> Tooltip<A> {
 
 /// Component properties used to allocate one retained tooltip state machine.
 struct TooltipComponent<A> {
+    /// Outer logical sizing policy for the trigger child.
     layout: LayoutStyle,
+    /// Static or reactive tooltip text.
     content: TooltipContent,
+    /// Optional trigger view owning hover/focus interaction.
     child: Option<View<A>>,
+    /// Preferred side of the trigger for popup placement.
     placement: PopupPlacement,
+    /// Cross-axis alignment relative to the trigger.
     alignment: PopupAlignment,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Hover/focus dwell time before opening.
     open_delay: Duration,
+    /// Grace period before closing after interaction leaves.
     close_delay: Duration,
+    /// Logical-pixel separation from the trigger.
     gap: f32,
+    /// Popup surface and text styling.
     style: TooltipStyle,
 }
 
@@ -467,20 +480,35 @@ struct TooltipState {
 
 /// Retained portal owner and interaction state machine around the trigger child.
 struct TooltipWidget<A> {
+    /// Outer logical sizing policy for the trigger child.
     layout: LayoutStyle,
+    /// Static or reactive tooltip text.
     content: TooltipContent,
+    /// Preferred side of the trigger for popup placement.
     placement: PopupPlacement,
+    /// Cross-axis alignment relative to the trigger.
     alignment: PopupAlignment,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Hover/focus dwell time before opening.
     open_delay: Duration,
+    /// Grace period before closing after interaction leaves.
     close_delay: Duration,
+    /// Logical-pixel separation from the trigger.
     gap: f32,
+    /// Popup surface and text styling.
     style: TooltipStyle,
+    /// Retained hover/focus deadlines and open state.
     state: Signal<TooltipState>,
+    /// Retained element that owns popup lifecycle and focus semantics.
     owner: ailloli_ui_core::ElementId,
+    /// UI-local runtime used to register and close portal content.
     runtime: RuntimeHandle<A>,
+    /// Whether a trigger child received layout in the latest pass.
     has_trigger: Cell<bool>,
+    /// Whether this widget currently has content mounted in the portal.
     portal_presented: Signal<bool>,
+    /// Bridge that synchronizes retained popup content with the runtime registry.
     popup: PopupPortalBridge<A>,
 }
 

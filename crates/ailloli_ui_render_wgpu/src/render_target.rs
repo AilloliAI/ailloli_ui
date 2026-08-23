@@ -66,15 +66,18 @@ impl PhysicalExtent {
 pub struct RenderFrame {
     /// Texture view bound to the target image.
     pub view: wgpu::TextureView,
+    /// Owned source keeping the view's texture alive through submission.
     source: RenderFrameSource,
     /// Active frame dimensions.
     pub size: PhysicalExtent,
     /// Output format for this frame.
     pub format: wgpu::TextureFormat,
+    /// Optional target-specific callback executed before source presentation.
     present: Option<Box<dyn FnOnce()>>, // no-op for targets that do not need explicit present.
 }
 
 #[allow(dead_code)]
+/// Ownership form backing a frame's texture view and presentation behavior.
 enum RenderFrameSource {
     /// Surface-backed texture that must be explicitly presented.
     Surface(wgpu::SurfaceTexture),
@@ -85,6 +88,7 @@ enum RenderFrameSource {
 }
 
 impl RenderFrameSource {
+    /// Returns the copyable underlying texture when the ownership form exposes one.
     fn as_texture(&self) -> Option<&wgpu::Texture> {
         match self {
             Self::Surface(frame) => Some(&frame.texture),
@@ -93,6 +97,7 @@ impl RenderFrameSource {
         }
     }
 
+    /// Presents a surface texture and otherwise drops the owned source.
     fn present(self) {
         if let Self::Surface(frame) = self {
             frame.present();
@@ -101,6 +106,7 @@ impl RenderFrameSource {
 }
 
 impl RenderFrame {
+    /// Packages one acquired target view with its ownership and present callback.
     fn new(
         view: wgpu::TextureView,
         source: RenderFrameSource,

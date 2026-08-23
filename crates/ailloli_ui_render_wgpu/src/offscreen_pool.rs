@@ -67,11 +67,16 @@ impl PoolKey {
 
 /// One owned allocation and its frame-local in-use flag.
 struct PoolSlot {
+    /// Exact extent/format/sample key required for reuse.
     key: PoolKey,
     #[allow(dead_code)]
+    /// Owned offscreen color texture.
     color_texture: wgpu::Texture,
+    /// Default view spanning the full color texture.
     color_view: wgpu::TextureView,
+    /// Optional depth-stencil attachment matching the color extent.
     stencil: Option<StencilTarget>,
+    /// UI-thread lease flag preventing simultaneous reuse.
     in_use: Cell<bool>,
 }
 
@@ -90,6 +95,7 @@ struct PoolSlot {
 /// ```
 #[derive(Default)]
 pub struct OffscreenSurfacePool {
+    /// Reusable slots retained across frames.
     slots: Vec<PoolSlot>,
     /// Successful exact-key lease reuses across the pool lifetime.
     pub reuse_hits: u32,
@@ -114,6 +120,7 @@ pub struct LeasedOffscreen {
     pub width: u32,
     /// Slot height in physical pixels.
     pub height: u32,
+    /// Index of the leased slot in the owning pool.
     slot_index: usize,
 }
 

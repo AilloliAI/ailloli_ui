@@ -227,15 +227,25 @@ type AffordanceHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, WindowAffordanceEvent)>;
 /// let _ = frame;
 /// ```
 pub struct WindowAffordanceFrame<A = ()> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Parent-flex participation metadata.
     flex_item: FlexItemStyle,
+    /// Logical host-window identity used by window commands.
     logical_window_id: String,
+    /// User-visible title painted in the chrome row.
     title: String,
+    /// Optional body view placed below the title bar.
     content: Option<View<A>>,
+    /// Whether title-bar hit testing emits move gestures.
     movable: bool,
+    /// Whether edge/corner hit testing emits resize gestures.
     resizable: bool,
+    /// Whether close, minimize, and follow controls are painted and interactive.
     show_controls: bool,
+    /// Chrome colors and logical-pixel geometry.
     style: WindowAffordanceStyle,
+    /// Optional callback receiving semantic chrome events.
     on_affordance: Option<AffordanceHandler<A>>,
 }
 
@@ -413,22 +423,35 @@ impl<A: 'static> IntoView<A> for WindowAffordanceFrame<A> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 /// Captured drag origin and previous position for delta generation.
 struct AffordanceDragState {
+    /// Move, edge, or corner affordance captured by the press.
     kind: WindowAffordanceKind,
+    /// Logical window-coordinate pointer position at drag start.
     start: Point,
+    /// Pointer position used as the next incremental-delta origin.
     last: Point,
 }
 
 /// Retained builder snapshot rebuilt into the widget and its child views.
 struct WindowAffordanceFrameComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Parent-flex participation metadata.
     flex_item: FlexItemStyle,
+    /// Logical host-window identity used by window commands.
     logical_window_id: String,
+    /// User-visible title painted in the chrome row.
     title: String,
+    /// Optional body view placed below the title bar.
     content: Option<View<A>>,
+    /// Whether title-bar hit testing emits move gestures.
     movable: bool,
+    /// Whether edge/corner hit testing emits resize gestures.
     resizable: bool,
+    /// Whether window controls are painted and interactive.
     show_controls: bool,
+    /// Chrome colors and logical-pixel geometry.
     style: WindowAffordanceStyle,
+    /// Optional retained semantic-event callback.
     on_affordance: Option<AffordanceHandler<A>>,
 }
 
@@ -471,15 +494,25 @@ impl<A: 'static> ComponentNode<A> for WindowAffordanceFrameComponent<A> {
 
 /// Layout, paint, and pointer-event implementation for the chrome frame.
 struct WindowAffordanceFrameWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Logical host-window identity used by built-in commands.
     logical_window_id: String,
+    /// Whether title-bar hit testing emits move gestures.
     movable: bool,
+    /// Whether edge/corner hit testing emits resize gestures.
     resizable: bool,
+    /// Whether window controls are painted and interactive.
     show_controls: bool,
+    /// Chrome colors and logical-pixel geometry.
     style: WindowAffordanceStyle,
+    /// Optional retained semantic-event callback.
     on_affordance: Option<AffordanceHandler<A>>,
+    /// Affordance currently under the pointer.
     hover: Signal<Option<WindowAffordanceKind>>,
+    /// Affordance captured by the active press before dragging.
     press: Signal<Option<WindowAffordanceKind>>,
+    /// Active move/resize gesture state.
     drag: Signal<Option<AffordanceDragState>>,
 }
 
@@ -769,12 +802,14 @@ impl<A: 'static> Widget<A> for WindowAffordanceFrameWidget<A> {
 
 /// Callback dispatch and built-in host chrome actions.
 impl<A: 'static> WindowAffordanceFrameWidget<A> {
+    /// Forwards a semantic chrome event to the optional application callback.
     fn emit(&self, ctx: &mut EventCtx<A>, event: WindowAffordanceEvent) {
         if let Some(handler) = &self.on_affordance {
             handler(ctx, event);
         }
     }
 
+    /// Executes close/minimize host commands when no custom behavior is needed.
     fn default_chrome_action(&self, ctx: &EventCtx<A>, kind: WindowAffordanceKind) {
         match kind {
             WindowAffordanceKind::Close => ctx.request_close(),

@@ -36,6 +36,11 @@ impl SystemExternalUrlOpener {
 /// Delegates validated URLs to the platform-specific nonblocking launch path.
 impl ExternalUrlOpener for SystemExternalUrlOpener {
     /// Delegates a validated URL to the platform opener implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenUrlError::LaunchFailed`] when the native handoff is rejected,
+    /// or [`OpenUrlError::Unavailable`] on unsupported targets.
     fn open(&self, url: &ExternalUrl) -> Result<(), OpenUrlError> {
         open_system_url(url)
     }
@@ -49,12 +54,20 @@ impl ExternalUrlOpener for SystemExternalUrlOpener {
     target_os = "dragonfly"
 ))]
 /// Launches `xdg-open` on Linux and supported BSD targets.
+///
+/// # Errors
+///
+/// Returns [`OpenUrlError::LaunchFailed`] when `xdg-open` cannot be spawned.
 fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     spawn_opener("xdg-open", url)
 }
 
 #[cfg(target_os = "macos")]
 /// Launches the absolute macOS `/usr/bin/open` utility.
+///
+/// # Errors
+///
+/// Returns [`OpenUrlError::LaunchFailed`] when `/usr/bin/open` cannot be spawned.
 fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     spawn_opener("/usr/bin/open", url)
 }
@@ -68,6 +81,10 @@ fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     target_os = "macos"
 ))]
 /// Spawns `program` with the URL as one opaque argument and does not wait.
+///
+/// # Errors
+///
+/// Returns [`OpenUrlError::LaunchFailed`] when process creation fails.
 fn spawn_opener(program: &str, url: &ExternalUrl) -> Result<(), OpenUrlError> {
     std::process::Command::new(program)
         .arg(url.as_str())
@@ -78,6 +95,11 @@ fn spawn_opener(program: &str, url: &ExternalUrl) -> Result<(), OpenUrlError> {
 
 #[cfg(windows)]
 /// Passes a NUL-terminated UTF-16 URL to `ShellExecuteW` with operation `open`.
+///
+/// # Errors
+///
+/// Returns [`OpenUrlError::LaunchFailed`] when `ShellExecuteW` returns a value
+/// less than or equal to 32.
 fn open_system_url(url: &ExternalUrl) -> Result<(), OpenUrlError> {
     use std::iter;
     use std::ptr;
@@ -126,6 +148,10 @@ fn shell_execute_succeeded(result: isize) -> bool {
     windows
 )))]
 /// Reports platform unavailability without side effects.
+///
+/// # Errors
+///
+/// Always returns [`OpenUrlError::Unavailable`] on unsupported targets.
 fn open_system_url(_url: &ExternalUrl) -> Result<(), OpenUrlError> {
     Err(OpenUrlError::Unavailable)
 }

@@ -95,6 +95,11 @@ enum Scenario {
 /// Describes scenario capabilities, sampling metrics, and fidelity.
 impl Scenario {
     /// Parses canonical underscore names and supported hyphen/legacy aliases.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HarnessError`] when `value` is not a documented scenario name
+    /// or alias.
     fn parse(value: &str) -> Result<Self, HarnessError> {
         match value {
             "startup" | "cold_start" => Ok(Self::Startup),
@@ -336,6 +341,11 @@ struct EventLoopWake(EventLoopProxy<()>);
 /// Sends a unit event and reports a closed event-loop target explicitly.
 impl UiWake for EventLoopWake {
     /// Wakes the event loop or returns `TargetClosed` once its receiver is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiWakeError::TargetClosed`] when winit no longer accepts user
+    /// events.
     fn wake(&self) -> Result<(), UiWakeError> {
         self.0.send_event(()).map_err(|_| UiWakeError::TargetClosed)
     }
@@ -754,6 +764,11 @@ fn sample_count(suffix: &str, fallback: u32) -> u32 {
 }
 
 /// Enforces the locked popup warmup count and measured-sample minimum.
+///
+/// # Errors
+///
+/// Returns [`HarnessError`] for `popup_portal` unless warmups equal the locked
+/// default and measured samples meet the minimum. Other scenarios are unchecked.
 fn validate_sampling_contract(
     scenario: Scenario,
     warmup_samples: u32,
@@ -776,6 +791,11 @@ fn validate_sampling_contract(
 }
 
 /// Rejects popup injection when the compile-time test-support capability is absent.
+///
+/// # Errors
+///
+/// Returns [`HarnessError`] only when `popup_portal` is selected without the
+/// `test_support` feature.
 fn validate_scenario_capability(scenario: Scenario) -> Result<(), HarnessError> {
     if scenario == Scenario::PopupPortal && !cfg!(feature = "test_support") {
         return Err(HarnessError(
@@ -804,6 +824,11 @@ fn requested_backend() -> String {
 }
 
 /// Creates the requested platform event loop and returns its observed backend name.
+///
+/// # Errors
+///
+/// Returns an error for an unsupported backend selector or when winit cannot
+/// construct the requested event loop.
 fn create_event_loop(requested: &str) -> Result<(EventLoop<()>, String), Box<dyn Error>> {
     #[cfg(target_os = "linux")]
     {
@@ -993,6 +1018,11 @@ fn default_bench_path(scenario: &str) -> PathBuf {
 }
 
 /// Publishes backend, feature fidelity, timing, and scenario interpretation metadata.
+///
+/// # Errors
+///
+/// Propagates [`ailloli_ui_bench::BenchWriteError`] for invalid metadata, a
+/// closed/stopped session, bounded-queue saturation, or writer disconnection.
 fn update_harness_metadata(
     scenario: Scenario,
     requested_backend: &str,
@@ -1731,6 +1761,11 @@ impl NativeHarnessProbe {
 
 #[cfg(feature = "test_support")]
 /// Queues one lost and one outdated surface fault for the primary window.
+///
+/// # Errors
+///
+/// Returns [`HarnessError`] when the primary presentation fault target was not
+/// registered for either injected fault.
 fn queue_surface_recovery_faults(ui: &mut UiApp<WakeSample>) -> Result<(), HarnessError> {
     let logical_window_id = LogicalWindowId::new(MAIN_WINDOW_ID);
     for fault in [
@@ -1748,6 +1783,11 @@ fn queue_surface_recovery_faults(ui: &mut UiApp<WakeSample>) -> Result<(), Harne
 
 #[cfg(feature = "test_support")]
 /// Records lifecycle recovery counts and fails when presentation state is unavailable.
+///
+/// # Errors
+///
+/// Returns [`HarnessError`] when no test presentation state exists for the
+/// primary logical window.
 fn record_surface_recovery_correctness(ui: &UiApp<WakeSample>) -> Result<(), HarnessError> {
     let logical_window_id = LogicalWindowId::new(MAIN_WINDOW_ID);
     let state = ui
@@ -1782,6 +1822,11 @@ fn record_surface_recovery_correctness(ui: &UiApp<WakeSample>) -> Result<(), Har
 
 #[cfg(feature = "test_support")]
 /// Records zero-extent lifecycle mismatches after all expected round trips.
+///
+/// # Errors
+///
+/// Returns [`HarnessError`] when no test presentation state exists for the
+/// primary logical window.
 fn record_resize_zero_correctness(
     ui: &UiApp<WakeSample>,
     expected_round_trips: u32,
@@ -1806,6 +1851,17 @@ fn record_resize_zero_correctness(
 }
 
 /// Creates the native host, runs the selected workload, and emits final correctness data.
+///
+/// # Errors
+///
+/// Propagates scenario capability/sample-contract, event-loop, metadata, inbox
+/// wake, window/renderer/event-loop execution, producer-thread, host, and final
+/// correctness-state failures.
+///
+/// # Panics
+///
+/// Panics only if the compile-time non-zero mailbox capacity constant becomes
+/// zero.
 fn run_harness(
     scenario: Scenario,
     config: &ailloli_ui_bench::BenchConfig,
@@ -1935,6 +1991,12 @@ fn run_harness(
 }
 
 /// Initializes and finalizes benchmark output around one harness execution.
+///
+/// # Errors
+///
+/// Returns scenario parsing, benchmark initialization, harness execution, or
+/// finalization errors. Harness failure takes precedence while a simultaneous
+/// finalization failure is logged.
 fn execute() -> Result<(), Box<dyn Error>> {
     let started_at = Instant::now();
     let config = ailloli_ui_bench::config_from_env();

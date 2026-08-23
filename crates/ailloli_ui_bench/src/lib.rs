@@ -133,6 +133,10 @@ pub fn bench_enabled() -> bool {
 /// Propagates session path, metadata, writer startup, and global-install errors
 /// when collection is enabled.
 ///
+/// # Panics
+///
+/// Panics only if the fixed fallback queue-capacity constant is changed to zero.
+///
 /// # Examples
 ///
 /// ```no_run

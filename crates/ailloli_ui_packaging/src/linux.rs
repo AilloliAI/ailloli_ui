@@ -280,6 +280,11 @@ pub(crate) fn resolve_debian_plan(
 }
 
 /// Validates that a payload destination is normalized and strictly below libexec.
+///
+/// # Errors
+///
+/// Returns an error when `value` is not a normalized relative path or is not a
+/// strict descendant of `usr/libexec/<distribution_name>`.
 fn validate_destination(value: &str, distribution_name: &str) -> Result<PathBuf, PackagingError> {
     let destination = validate_relative_path(value, "payload destination")?;
     let required = Path::new("usr").join("libexec").join(distribution_name);
@@ -295,6 +300,11 @@ fn validate_destination(value: &str, distribution_name: &str) -> Result<PathBuf,
 /// Accepts a nonempty path containing only normal relative components.
 ///
 /// Absolute paths, `.` and `..`, platform prefixes, roots, and empty strings are rejected.
+///
+/// # Errors
+///
+/// Returns an error when `value` is empty, absolute, or contains any component
+/// other than a normal relative path component.
 fn validate_relative_path(value: &str, label: &str) -> Result<PathBuf, PackagingError> {
     let path = Path::new(value);
     if value.is_empty()
@@ -314,6 +324,11 @@ fn validate_relative_path(value: &str, label: &str) -> Result<PathBuf, Packaging
 ///
 /// Traversal stops successfully at the first missing component; the subsequent
 /// metadata lookup reports a missing final source with more context.
+///
+/// # Errors
+///
+/// Returns an error for the first symbolic-link component or for any metadata
+/// failure other than a missing component.
 fn reject_symlink_components(root: &Path, relative: &Path) -> Result<(), PackagingError> {
     let mut candidate = root.to_path_buf();
     for component in relative.components() {
@@ -342,6 +357,10 @@ fn path_to_slashes(path: &Path) -> String {
 }
 
 /// Streams a regular file into a lowercase SHA-256 digest using a 64-KiB buffer.
+///
+/// # Errors
+///
+/// Propagates file-open and streaming read errors.
 fn hash_file(path: &Path) -> Result<String, PackagingError> {
     let mut file = BufReader::new(File::open(path)?);
     let mut digest = Sha256::new();
@@ -433,6 +452,12 @@ pub fn stage_linux_root(
 /// Rechecking both the source path's symlink components and staged bytes closes
 /// the normal gap between plan resolution and archive construction. This is a
 /// consistency check, not a sandbox against a concurrently hostile filesystem.
+///
+/// # Errors
+///
+/// Returns an error for symlink/metadata validation, a changed/non-regular
+/// source, destination creation/copy/mode/metadata/hash failure, or staged
+/// size/digest mismatch.
 fn stage_payload(
     consumer_root: &Path,
     rootfs: &Path,
@@ -468,6 +493,10 @@ fn payload_changed_error(payload: &ResolvedPayload) -> PackagingError {
 
 #[cfg(unix)]
 /// Applies the exact Unix permission bits from a validated payload mode.
+///
+/// # Errors
+///
+/// Propagates failure to set the requested filesystem permissions.
 fn set_mode(path: &Path, mode: u32) -> Result<(), PackagingError> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
@@ -476,6 +505,10 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), PackagingError> {
 
 #[cfg(not(unix))]
 /// Leaves permissions unchanged on non-Unix hosts.
+///
+/// # Errors
+///
+/// This non-Unix implementation is infallible and never returns an error.
 fn set_mode(_path: &Path, _mode: u32) -> Result<(), PackagingError> {
     Ok(())
 }
@@ -485,6 +518,11 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), PackagingError> {
 /// Newlines are rejected to prevent field injection. Backslashes and tabs in
 /// human-readable fields are escaped; the executable and identity are expected
 /// to have already passed their upstream validators.
+///
+/// # Errors
+///
+/// Returns an error when the display or binary name contains a carriage return
+/// or newline.
 fn desktop_entry(context: &PackageContext) -> Result<String, PackagingError> {
     reject_line_breaks(&context.identity.display_name, "application name")?;
     reject_line_breaks(&context.binary_name, "binary name")?;
@@ -502,6 +540,11 @@ fn desktop_entry(context: &PackageContext) -> Result<String, PackagingError> {
 /// A missing override returns `generated` unchanged. Blank lines, comments, the
 /// section header, and matching authoritative assignments are omitted; all
 /// other trimmed lines retain their original order.
+///
+/// # Errors
+///
+/// Propagates override-file read errors and rejects any override that changes an
+/// authoritative `Type`, `Name`, `Exec`, `Icon`, or `StartupWMClass` value.
 fn merge_desktop_override(
     context: &PackageContext,
     generated: &str,
@@ -554,6 +597,10 @@ fn merge_desktop_override(
 /// Renders minimal AppStream XML from validated identity and Cargo metadata.
 ///
 /// Description and license must be present; all dynamic text is XML-escaped.
+///
+/// # Errors
+///
+/// Returns an error when Cargo `description` or `license` metadata is absent.
 fn appstream_metadata(context: &PackageContext) -> Result<String, PackagingError> {
     let description = context.description.as_deref().ok_or_else(|| {
         PackagingError::message("Cargo package.description is required for AppStream metadata")
@@ -627,6 +674,11 @@ pub fn build_deb(
 ///
 /// The operation's error takes precedence over a simultaneous cleanup error;
 /// after success, a cleanup failure becomes the returned error.
+///
+/// # Errors
+///
+/// Propagates work-directory allocation, operation, or post-success cleanup
+/// failure. An operation error takes precedence over cleanup failure.
 fn with_member_work_dir<T>(
     destination: &Path,
     operation: impl FnOnce(&Path) -> Result<T, PackagingError>,
@@ -645,6 +697,11 @@ fn with_member_work_dir<T>(
 ///
 /// Only regular-file byte sizes contribute, using `div_ceil(1024)`. Dependency
 /// and recommendation fields are omitted for empty lists.
+///
+/// # Errors
+///
+/// Returns an error when Cargo authors contain no `Name <email>` maintainer or
+/// when the package description is absent.
 fn debian_control(
     context: &PackageContext,
     architecture: &str,
@@ -718,11 +775,26 @@ enum ArchiveEntryKind {
 /// Directories use `0o755`; payload modes override file defaults, files below
 /// `usr/bin` use `0o755`, and other files use `0o644`. Symbolic links and all
 /// non-directory, non-regular entry kinds are rejected.
+///
+/// # Errors
+///
+/// Propagates recursive directory/metadata errors and rejects symbolic links or
+/// unsupported staged filesystem entry types.
 fn collect_files(
     root: &Path,
     payloads: &[ResolvedPayload],
 ) -> Result<Vec<ArchiveInventoryEntry>, PackagingError> {
     /// Depth-first collector whose callers sort both siblings and final paths.
+    ///
+    /// # Errors
+    ///
+    /// Propagates directory/metadata errors, rejects symbolic links and special
+    /// file types, and propagates failures from recursive descendants.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an entry returned below `base` cannot be stripped of that
+    /// prefix, violating the traversal invariant.
     fn visit(
         base: &Path,
         current: &Path,
@@ -788,6 +860,11 @@ fn collect_files(
 ///
 /// Gzip and tar timestamps are zero, ownership is root, and file contents are
 /// streamed rather than accumulated in memory.
+///
+/// # Errors
+///
+/// Propagates destination/source file I/O and tar/gzip header, append, finish,
+/// or flush failures.
 fn write_gzip_tar(
     entries: &[ArchiveInventoryEntry],
     destination: &Path,
@@ -832,6 +909,11 @@ fn write_gzip_tar(
 /// At most 100 collision attempts are made. The counter may wrap after
 /// `u64::MAX`; process identity and exclusive directory creation remain the
 /// final collision guard.
+///
+/// # Errors
+///
+/// Returns an error when the destination has no parent, directory creation fails
+/// for a reason other than collision, or all 100 exclusive attempts collide.
 fn create_member_work_dir(destination: &Path) -> Result<PathBuf, PackagingError> {
     let parent = destination.parent().ok_or_else(|| {
         PackagingError::message(format!(
@@ -857,6 +939,11 @@ fn create_member_work_dir(destination: &Path) -> Result<PathBuf, PackagingError>
 }
 
 /// Writes the Debian `ar` container with its three required members.
+///
+/// # Errors
+///
+/// Propagates destination creation/write/flush errors and failures while
+/// appending the required in-memory and file-backed members.
 fn write_deb_archive(
     destination: &Path,
     control_tar: &Path,
@@ -872,6 +959,10 @@ fn write_deb_archive(
 }
 
 /// Appends an in-memory `ar` member and a newline pad byte for odd lengths.
+///
+/// # Errors
+///
+/// Propagates invalid header width and output write errors.
 fn append_ar_bytes(
     output: &mut impl Write,
     name: &str,
@@ -887,6 +978,11 @@ fn append_ar_bytes(
 }
 
 /// Streams a file as an `ar` member and adds the required odd-length padding.
+///
+/// # Errors
+///
+/// Propagates source metadata/open/read, header, output write, and stream-copy
+/// errors.
 fn append_ar_file(
     output: &mut impl Write,
     name: &str,
@@ -908,6 +1004,11 @@ fn append_ar_file(
 /// Timestamp, owner, and group are fixed to zero. A name or numeric field that
 /// expands beyond the fixed widths is rejected rather than emitting malformed
 /// output.
+///
+/// # Errors
+///
+/// Returns an error when the formatted header is not exactly 60 bytes or when
+/// the output cannot accept the complete header.
 fn write_ar_header(
     output: &mut impl Write,
     name: &str,
@@ -939,6 +1040,10 @@ fn debian_description(description: &str) -> String {
 }
 
 /// Rejects carriage returns and newlines in a control-field value.
+///
+/// # Errors
+///
+/// Returns an error when `value` contains `\r` or `\n`.
 fn reject_line_breaks(value: &str, label: &str) -> Result<(), PackagingError> {
     if value.contains(['\n', '\r']) {
         return Err(PackagingError::message(format!(

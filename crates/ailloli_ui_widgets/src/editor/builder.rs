@@ -26,10 +26,15 @@ use super::widget::EditorComponent;
 /// let _ = editor;
 /// ```
 pub struct Editor {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Parent-flex participation metadata.
     pub(crate) flex_item: FlexItemStyle,
+    /// Caller-owned text buffer synchronized in both directions.
     pub(crate) buffer: Signal<TextBuffer>,
+    /// Editing and rendering configuration.
     pub(crate) config: EditorConfig,
+    /// Optional initial UTF-8 byte anchor/caret pair.
     pub(crate) initial_selection: Option<(usize, usize)>,
 }
 

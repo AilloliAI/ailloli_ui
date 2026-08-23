@@ -455,6 +455,11 @@ struct WinitUiWake(winit::event_loop::EventLoopProxy<()>);
 /// Converts a closed event-loop proxy into the provider-neutral wake error.
 impl UiWake for WinitUiWake {
     /// Enqueues one coalescible wake-only unit event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiWakeError::TargetClosed`] when winit's event-loop receiver no
+    /// longer accepts user events.
     fn wake(&self) -> Result<(), UiWakeError> {
         self.0.send_event(()).map_err(|_| UiWakeError::TargetClosed)
     }

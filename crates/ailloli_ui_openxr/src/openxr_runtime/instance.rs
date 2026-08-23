@@ -191,6 +191,11 @@ impl OpenXrInstance {
 ///
 /// Embedded NUL bytes are rejected. `max_bytes_with_nul` includes the trailing
 /// NUL, so the string itself must be strictly shorter than that limit.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::InvalidOpenXrName`] when `value` contains NUL or
+/// its UTF-8 byte length plus the terminator exceeds `max_bytes_with_nul`.
 fn validate_openxr_name(
     field: &'static str,
     value: &str,

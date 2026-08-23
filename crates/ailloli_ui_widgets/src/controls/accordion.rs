@@ -549,13 +549,21 @@ impl<A: 'static> Accordion<A> {
 
 /// Component properties used to allocate internal open-ID state and keyed rows.
 struct AccordionComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Single-open or multiple-open selection policy.
     mode: AccordionMode,
+    /// Ordered retained sections.
     items: Vec<AccordionItem<A>>,
+    /// Optional readable external list of open section IDs.
     open_ids: Option<Binding<Vec<String>>>,
+    /// Optional writable external list of open section IDs.
     bound_open_ids: Option<Signal<Vec<String>>>,
+    /// Initial IDs used when the accordion owns its state.
     default_open_ids: Vec<String>,
+    /// Optional callback receiving section ID and resulting open state.
     on_toggle: Option<AccordionToggleHandler<A>>,
+    /// Header/content colors and logical-pixel geometry.
     style: AccordionStyle,
 }
 
@@ -641,14 +649,23 @@ impl<A: 'static> IntoView<A> for Accordion<A> {
 
 /// Builder-to-view bridge for one keyed accordion header.
 struct AccordionHeader<A> {
+    /// Stable section identifier used in the open-ID collection.
     id: String,
+    /// User-visible section title.
     title: String,
+    /// Reactive interaction-disable flag for this section.
     disabled: Binding<bool>,
+    /// Readable current open-ID collection.
     open_ids: Binding<Vec<String>>,
+    /// Optional writable open-ID collection.
     mutable_open: Option<Signal<Vec<String>>>,
+    /// Single-open or multiple-open update policy.
     mode: AccordionMode,
+    /// Open state captured while building this header/content pair.
     open: bool,
+    /// Optional retained toggle callback.
     on_toggle: Option<AccordionToggleHandler<A>>,
+    /// Header/content colors and logical-pixel geometry.
     style: AccordionStyle,
 }
 
@@ -670,14 +687,23 @@ impl<A: 'static> IntoView<A> for AccordionHeader<A> {
 
 /// Retained focusable header that reads state and applies toggle requests.
 struct AccordionHeaderWidget<A> {
+    /// Stable section identifier used in the open-ID collection.
     id: String,
+    /// User-visible section title.
     title: String,
+    /// Reactive interaction-disable flag for this section.
     disabled: Binding<bool>,
+    /// Readable current open-ID collection.
     open_ids: Binding<Vec<String>>,
+    /// Optional writable open-ID collection.
     mutable_open: Option<Signal<Vec<String>>>,
+    /// Single-open or multiple-open update policy.
     mode: AccordionMode,
+    /// Open state used to paint the current retained frame.
     open: bool,
+    /// Optional retained toggle callback.
     on_toggle: Option<AccordionToggleHandler<A>>,
+    /// Header colors and logical-pixel geometry.
     style: AccordionStyle,
 }
 

@@ -26,10 +26,15 @@ use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 /// let _ = label;
 /// ```
 pub struct Text {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Parent-flex participation metadata.
     pub(crate) flex_item: FlexItemStyle,
+    /// Static or reactive UTF-8 label content.
     content: Binding<String>,
+    /// Font, size, color, and line-height configuration.
     style: TextStyle,
+    /// Wrapping policy used during text layout.
     wrap_mode: WrapMode,
 }
 
@@ -168,9 +173,13 @@ impl Text {
 /// let _view: View<()> = Text::new("Hello").into_view();
 /// ```
 pub struct TextWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Static or reactive UTF-8 label content.
     content: Binding<String>,
+    /// Font, size, color, and line-height configuration.
     style: TextStyle,
+    /// Wrapping policy used during text layout.
     wrap_mode: WrapMode,
 }
 

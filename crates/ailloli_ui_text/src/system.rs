@@ -269,6 +269,11 @@ impl TextSystem {
     /// Construction may scan the relative `assets/fonts` directory through the
     /// legacy Parley constructor.
     ///
+    /// # Panics
+    ///
+    /// Panics only if the fixed cache-capacity constant is changed from 2048 to
+    /// zero.
+    ///
     /// # Examples
     ///
     /// ```

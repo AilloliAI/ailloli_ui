@@ -145,6 +145,15 @@ impl Drop for WaylandOverlaySurface {
 /// Borrows a display handle whose lifetime is bounded by the owned connection.
 impl HasDisplayHandle for WaylandOverlaySurface {
     /// Returns a borrowed non-null display pointer owned by `connection`.
+    ///
+    /// # Errors
+    ///
+    /// This implementation never returns an error while the owned Wayland
+    /// connection is live.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a live connection exposes a null native display pointer.
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         let pointer = NonNull::new(self.connection.backend().display_ptr().cast())
             .expect("live Wayland connection has a display pointer");
@@ -157,6 +166,14 @@ impl HasDisplayHandle for WaylandOverlaySurface {
 /// Borrows a window handle whose lifetime is bounded by the owned surface.
 impl HasWindowHandle for WaylandOverlaySurface {
     /// Returns a borrowed non-null surface object pointer owned by `surface`.
+    ///
+    /// # Errors
+    ///
+    /// This implementation never returns an error while the owned surface is live.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the live Wayland surface exposes a null native object pointer.
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let pointer = NonNull::new(self.surface.id().as_ptr().cast())
             .expect("live Wayland surface has an object pointer");
@@ -192,6 +209,15 @@ pub(crate) struct CreatedWaylandOverlay {
 /// when supplied, the same name. The initial configure must arrive within five
 /// seconds and must equal the requested logical dimensions. A named dispatcher
 /// thread then owns event delivery; its unbounded channel wakes the UI host.
+///
+/// # Errors
+///
+/// Returns [`NativeOverlayError::InvalidTarget`] for invalid or non-integral
+/// geometry, `OutputMatchMissing`/`OutputMatchAmbiguous` when output identity is
+/// not unique, [`NativeOverlayError::Closed`] when the compositor closes before
+/// initial configuration, or [`NativeOverlayError::Backend`] for Wayland
+/// connection, protocol binding/dispatch, region, configure, or thread-spawn
+/// failures.
 ///
 /// # Examples
 ///
@@ -310,6 +336,12 @@ pub(crate) fn create(
 }
 
 /// Finds exactly one output matching integral geometry and optional exact name.
+///
+/// # Errors
+///
+/// Returns [`NativeOverlayError::InvalidTarget`] for non-integral/out-of-range
+/// geometry, [`NativeOverlayError::OutputMatchMissing`] for no match, or
+/// [`NativeOverlayError::OutputMatchAmbiguous`] for multiple exact matches.
 fn match_output(
     output_state: &OutputState,
     target: NativeOverlayRect,
@@ -341,6 +373,11 @@ fn match_output(
 ///
 /// Values may differ from their rounded integer by at most `1e-6`; dimensions
 /// have already been checked positive by the caller. Out-of-range values fail.
+///
+/// # Errors
+///
+/// Returns [`NativeOverlayError::InvalidTarget`] when any component is
+/// non-finite, outside `i32`, or farther than `1e-6` from an integer.
 fn logical_rect_as_i32(
     rect: NativeOverlayRect,
 ) -> Result<(i32, i32, i32, i32), NativeOverlayError> {

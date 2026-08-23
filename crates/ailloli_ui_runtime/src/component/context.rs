@@ -26,8 +26,11 @@ use std::time::Duration;
 /// assert_eq!(ctx.element_id(), ElementId(1));
 /// ```
 pub struct Context<A> {
+    /// Retained element currently being built.
     element_id: ElementId,
+    /// UI-local runtime used for hooks, actions, and invalidation.
     runtime: RuntimeHandle<A>,
+    /// Zero-based hook slot assigned to the next state lookup in this build.
     next_signal_slot: usize,
 }
 

@@ -20,6 +20,11 @@ fn multiline_seed() -> String {
 }
 
 /// Opens the multiline input demonstration and runs it until the user exits.
+///
+/// # Errors
+///
+/// Propagates application identity, native window/event-loop, or rendering
+/// errors from [`App::run`](ailloli_ui::AppBuilder::run).
 fn main() -> ailloli_ui::Result<()> {
     let draft = State::new(multiline_seed());
 

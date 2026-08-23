@@ -31,12 +31,19 @@ use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 /// let _ = icon;
 /// ```
 pub struct Icon {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Parent-flex participation metadata.
     pub(crate) flex_item: FlexItemStyle,
+    /// Icon catalogue identity resolved during painting.
     source: IconId,
+    /// Base RGBA tint applied to the icon mask.
     tint: Color,
+    /// Square logical-pixel icon extent.
     size: f32,
+    /// Whether hover/press/focus state modifies the base tint.
     interactive_tint: bool,
+    /// Clockwise rotation in radians around the icon center.
     rotation_rad: f32,
 }
 
@@ -216,11 +223,17 @@ impl From<IconId> for Icon {
 
 /// Frozen render state used after the declarative builder becomes a view.
 struct IconWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Icon catalogue identity resolved during painting.
     source: IconId,
+    /// Base RGBA tint applied to the icon mask.
     tint: Color,
+    /// Square logical-pixel icon extent.
     size: f32,
+    /// Whether hover/press/focus state modifies the base tint.
     interactive_tint: bool,
+    /// Clockwise rotation in radians around the icon center.
     rotation_rad: f32,
 }
 

@@ -36,6 +36,7 @@ pub struct LayoutContext<'a> {
     pub scale: Scale,
     /// Shared text layout engine (optional for text-free tests).
     pub text_system: Option<&'a mut TextSystem>,
+    /// Optional content-local viewport propagated by a virtualizing ancestor.
     virtual_viewport: Option<VirtualViewport>,
     #[cfg(feature = "devtools")]
     /// Latest developer-tooling layout record for each element in this context.

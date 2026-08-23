@@ -17,11 +17,17 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 /// Owns the native window, renderer, and deferred-resize state for the diagnostic.
 struct EmptyWindowDebug {
+    /// Native window after the event loop has resumed and created it.
     window: Option<Arc<Window>>,
+    /// GPU renderer bound to `window` once initialization succeeds.
     renderer: Option<Renderer>,
+    /// Latest physical size awaiting a successful surface resize.
     pending_resize: Option<PhysicalSize<u32>>,
+    /// Earliest instant at which a deferred resize may be retried.
     resize_retry_at: Option<Instant>,
+    /// Number of frames presented by this diagnostic session.
     rendered_frames: u64,
+    /// Minimum verbosity emitted by the diagnostic logger.
     log_level: LogLevel,
 }
 
@@ -31,9 +37,13 @@ const RESIZE_RETRY_DELAY: Duration = Duration::from_millis(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Verbosity threshold ordered from disabled output through per-frame traces.
 enum LogLevel {
+    /// Disable diagnostic output.
     None,
+    /// Report lifecycle events and aggregate progress.
     Info,
+    /// Include resize and renderer state transitions.
     Debug,
+    /// Include verbose per-frame diagnostics.
     Trace,
 }
 
@@ -500,6 +510,12 @@ fn now_ms() -> u128 {
 }
 
 /// Initializes optional benchmarking and runs the low-level diagnostic event loop.
+///
+/// # Errors
+///
+/// Propagates benchmark initialization/finalization, event-loop creation, and
+/// application-run failures. Run failure takes precedence because it is applied
+/// before the separately retained finalization result.
 fn main() -> Result<(), Box<dyn Error>> {
     let log_level = parse_log_level_arg();
 

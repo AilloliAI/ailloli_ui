@@ -587,6 +587,11 @@ impl DevToolsRemote {
     }
 
     /// Installs/replaces the host wake and immediately signals queued commands.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`UiWakeError`] when pending work requires an immediate wake
+    /// and the newly installed callback fails.
     fn install_wake(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         self.command_wake.install(wake)
     }
@@ -649,6 +654,15 @@ impl DevToolsCommandWake {
     /// Sends at most one wake per host-service interval.
     ///
     /// Missing late-bound wakes are successful no-ops and leave `signaled` false.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`UiWakeError`] from the installed callback after unlatching
+    /// and best-effort recording the first failure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the wake-state mutex is poisoned.
     fn signal(&self) -> Result<(), UiWakeError> {
         let wake = {
             let mut state = self.state.lock().expect("devtools wake lock poisoned");
@@ -664,6 +678,15 @@ impl DevToolsCommandWake {
     }
 
     /// Replaces the wake and signals immediately when pending commands exist.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`UiWakeError`] when pending commands trigger the newly
+    /// installed callback and it fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the wake-state mutex is poisoned.
     fn install(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         let wake = {
             let mut state = self.state.lock().expect("devtools wake lock poisoned");
@@ -691,6 +714,11 @@ impl DevToolsCommandWake {
     }
 
     /// Calls the wake outside the mutex, unlatching and storing its first failure.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the callback's [`UiWakeError`]. An absent wake is a successful
+    /// no-op; failure latching is best effort if the mutex is poisoned.
     fn invoke(&self, wake: Option<Arc<dyn UiWake>>) -> Result<(), UiWakeError> {
         let Some(wake) = wake else {
             return Ok(());
@@ -785,6 +813,11 @@ fn run_remote_server(
 }
 
 /// Serializes one server message, appends newline, and requires a complete write.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::InvalidData`] when JSON serialization fails, or
+/// propagates the socket's complete-write error.
 fn write_jsonl(stream: &mut TcpStream, message: &DevToolsServerMessage) -> std::io::Result<()> {
     let mut line = serde_json::to_vec(message)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
@@ -880,6 +913,10 @@ mod tests {
     /// Relaxed counter implementation sufficient for single-test observation.
     impl UiWake for CountingWake {
         /// Increments and succeeds.
+        ///
+        /// # Errors
+        ///
+        /// This test wake is infallible and never returns an error.
         fn wake(&self) -> Result<(), UiWakeError> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())
@@ -892,6 +929,10 @@ mod tests {
     /// Deterministic failure implementation for retry/error diagnostics.
     impl UiWake for FailingWake {
         /// Returns `TargetClosed` without side effects.
+        ///
+        /// # Errors
+        ///
+        /// Always returns [`UiWakeError::TargetClosed`].
         fn wake(&self) -> Result<(), UiWakeError> {
             Err(UiWakeError::TargetClosed)
         }

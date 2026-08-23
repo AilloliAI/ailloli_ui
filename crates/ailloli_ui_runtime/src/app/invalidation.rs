@@ -148,8 +148,11 @@ impl PartialOrd for Invalidation {
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FrameWorkPlan {
+    /// Whether retained components must be rebuilt before layout.
     needs_build: bool,
+    /// Whether geometry must be recomputed before painting.
     needs_layout: bool,
+    /// Whether a new scene must be painted for presentation.
     needs_paint: bool,
 }
 

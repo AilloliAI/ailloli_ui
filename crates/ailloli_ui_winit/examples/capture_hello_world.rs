@@ -30,6 +30,16 @@ fn repo_captures_dir() -> PathBuf {
 }
 
 /// Renders the fixture, captures its window and keyed label, and verifies both files.
+///
+/// # Errors
+///
+/// Propagates capture-directory, application/event-loop/rendering, and artifact
+/// metadata I/O failures.
+///
+/// # Panics
+///
+/// Panics when either requested capture file is absent or empty after the app
+/// exits successfully.
 fn main() -> ailloli_ui::Result<()> {
     let out_dir = repo_captures_dir();
     std::fs::create_dir_all(&out_dir)?;

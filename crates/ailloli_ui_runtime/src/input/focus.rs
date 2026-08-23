@@ -111,6 +111,7 @@ pub enum HoverCursorRole {
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct FocusManager {
+    /// Strict current focus owner, without implicit liveness validation.
     focused: Option<ElementId>,
 }
 

@@ -1,5 +1,6 @@
 //! WGSL shader sources (clip + primitives), concatenated at pipeline build time.
 
+/// Shared WGSL clip-distance and mask helpers concatenated into pipelines.
 const CLIP_WGSL: &str = include_str!("clip.wgsl");
 
 /// Solid-color rect shader with optional clip uniform.

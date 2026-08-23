@@ -234,7 +234,9 @@ impl OpenXrPointerFrame {
 #[derive(Debug, Default)]
 /// Last routed logical point and primary-button state for one stable source ID.
 struct SourceState {
+    /// Last valid logical UI position emitted by this source.
     last_pos: Option<Point>,
+    /// Whether the source's primary activation was pressed last frame.
     pressed: bool,
 }
 
@@ -253,6 +255,7 @@ struct SourceState {
 /// ```
 #[derive(Debug, Default)]
 pub struct OpenXrInputMapper {
+    /// Per-controller or hand state keyed by stable OpenXR source identity.
     source_state: HashMap<u64, SourceState>,
 }
 

@@ -704,12 +704,19 @@ impl<T: Clone + PartialEq + 'static, A: 'static> SegmentedControl<T, A> {
 
 /// Retained widget implementing equal-width measurement, paint, and selection.
 struct SegmentedWidget<T, A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Ordered value, label, and icon choices.
     options: Vec<SegmentedOption<T>>,
+    /// Optional readable external selected value.
     selected: Option<Binding<T>>,
+    /// Optional writable external selected value.
     bound: Option<Signal<T>>,
+    /// Reactive interaction-disable flag for the entire control.
     disabled: Binding<bool>,
+    /// Optional callback receiving changed values.
     on_change: Option<ChangeHandler<T, A>>,
+    /// Segment colors and logical-pixel geometry.
     style: SegmentedStyle,
 }
 

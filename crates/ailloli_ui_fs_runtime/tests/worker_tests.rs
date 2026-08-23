@@ -28,6 +28,14 @@ struct Factory(Arc<SourceState>);
 /// Creates the deterministic test source on the runtime worker.
 impl FileTreeSourceFactory for Factory {
     /// Records worker ownership and returns a source sharing the counters.
+    ///
+    /// # Errors
+    ///
+    /// This fixture always constructs the source successfully.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test-state mutex was poisoned by an earlier panic.
     fn create(&self) -> Result<Box<dyn FileTreeSource>, FileError> {
         *self.0.creator.lock().unwrap() = Some(std::thread::current().id());
         Ok(Box::new(Source(self.0.clone())))
@@ -40,6 +48,11 @@ struct Source(Arc<SourceState>);
 /// Supplies one child per read and records all supported mutation calls.
 impl FileTreeSource for Source {
     /// Records a read and returns one file child below the requested URI.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`FileError::InvalidUri`] if appending the fixed child segment
+    /// to the supplied URI violates its lexical URI contract.
     fn read_dir(&mut self, uri: &FileUri) -> Result<Vec<FileEntry>, FileError> {
         self.0.reads.fetch_add(1, Ordering::Relaxed);
         Ok(vec![FileEntry::new(
@@ -49,6 +62,10 @@ impl FileTreeSource for Source {
     }
 
     /// Derives a stable test identity from the exact URI bytes.
+    ///
+    /// # Errors
+    ///
+    /// This fixture always returns a deterministic identity successfully.
     fn identity(&mut self, uri: &FileUri) -> Result<Option<FileIdentity>, FileError> {
         Ok(Some(FileIdentity::new(
             "worker-test",
@@ -57,6 +74,14 @@ impl FileTreeSource for Source {
     }
 
     /// Records a successful directory creation.
+    ///
+    /// # Errors
+    ///
+    /// This fixture never returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the mutation-log mutex was poisoned by an earlier panic.
     fn create_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.0
             .mutations
@@ -67,6 +92,14 @@ impl FileTreeSource for Source {
     }
 
     /// Records a successful file creation.
+    ///
+    /// # Errors
+    ///
+    /// This fixture never returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the mutation-log mutex was poisoned by an earlier panic.
     fn create_file(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.0
             .mutations
@@ -77,6 +110,14 @@ impl FileTreeSource for Source {
     }
 
     /// Records a successful move with its source and destination.
+    ///
+    /// # Errors
+    ///
+    /// This fixture never returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the mutation-log mutex was poisoned by an earlier panic.
     fn move_entry(&mut self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
         self.0
             .mutations
@@ -87,6 +128,14 @@ impl FileTreeSource for Source {
     }
 
     /// Records a removal and its recursive flag.
+    ///
+    /// # Errors
+    ///
+    /// This fixture never returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the mutation-log mutex was poisoned by an earlier panic.
     fn remove_entry(&mut self, uri: &FileUri, recursive: bool) -> Result<(), FileError> {
         self.0
             .mutations

@@ -548,16 +548,27 @@ impl<A: 'static> ListItem<A> {
 
 /// Retained leaf resolving item bindings, paint state, and activation.
 struct ListItemWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Primary user-visible item title.
     title: String,
+    /// Optional secondary line below the title.
     subtitle: Option<String>,
+    /// Optional icon painted before the text stack.
     leading_icon: Option<IconId>,
+    /// Optional trailing text.
     trailing_text: Option<String>,
+    /// Optional numeric trailing badge.
     badge: Option<u32>,
+    /// Reactive selected-state source.
     selected: Binding<bool>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Compact or standard row presentation.
     variant: ListItemVariant,
+    /// Row colors and logical-pixel geometry.
     style: ListItemStyle,
+    /// Optional click action invoked for an enabled item.
     on_select: Option<ClickAction<A>>,
 }
 

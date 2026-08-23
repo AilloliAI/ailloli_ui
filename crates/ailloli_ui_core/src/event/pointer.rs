@@ -192,14 +192,23 @@ pub enum PointerSampleError {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointerSample {
+    /// Stable pointer identity within the provider session.
     id: PointerId,
+    /// Device family that produced the sample.
     source: PointerSource,
+    /// Pointer location in logical window coordinates.
     position: Point,
+    /// Whether this is the primary pointer for its source.
     is_primary: bool,
+    /// Optional normalized pressure in the inclusive range `0.0..=1.0`.
     pressure: Option<f32>,
+    /// Optional horizontal and vertical tilt angles in degrees.
     tilt: Option<(f32, f32)>,
+    /// Optional clockwise barrel rotation in degrees.
     twist: Option<f32>,
+    /// Optional contact footprint in logical pixels.
     contact_size: Option<Size>,
+    /// Activation semantics inferred from the provider event.
     activation: ActivationKind,
 }
 

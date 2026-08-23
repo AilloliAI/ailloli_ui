@@ -956,6 +956,12 @@ where
     }
 
     /// Applies one mutation to hierarchy only, used by bulk transactions.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the mutation-specific [`TreeModelError`] documented by
+    /// [`Self::insert`], [`Self::remove`], [`Self::update`],
+    /// [`Self::move_item`], or [`Self::set_expanded`].
     fn apply_one_hierarchy(&mut self, mutation: &TreeMutation<T>) -> Result<(), TreeModelError<T>> {
         match mutation {
             TreeMutation::Insert {
@@ -975,6 +981,17 @@ where
     }
 
     /// Applies one mutation and splices the persistent visible-row index.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the hierarchy-validation errors documented by the private
+    /// mutation helpers, plus [`TreeModelError::MissingId`] if a newly inserted
+    /// visible subtree cannot resolve its root.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if a successful hierarchy mutation leaves the private flat
+    /// index inconsistent with the active node and parent records.
     fn apply_one_incremental(
         &mut self,
         mutation: &TreeMutation<T>,
@@ -1035,6 +1052,18 @@ where
     }
 
     /// Validates and inserts an initially collapsed childless record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeModelError::DuplicateId`] or [`TreeModelError::ReusedId`]
+    /// for an invalid identity, [`TreeModelError::MissingId`] or
+    /// [`TreeModelError::ParentIsLeaf`] for an invalid parent, and
+    /// [`TreeModelError::InvalidIndex`] when `index` exceeds the append position.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the validated parent disappears from this exclusively
+    /// borrowed model before the child link is inserted.
     fn insert(
         &mut self,
         parent: Option<T>,
@@ -1095,6 +1124,15 @@ where
     }
 
     /// Detaches and iteratively retires an item and every descendant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeModelError::MissingId`] when `id` is not active.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the active item's recorded parent is absent, which would
+    /// violate the model's private hierarchy invariant.
     fn remove(&mut self, id: &T) -> Result<(), TreeModelError<T>> {
         let parent = self
             .nodes
@@ -1114,6 +1152,12 @@ where
     }
 
     /// Replaces metadata, rejecting leaf conversion for a populated branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeModelError::MissingId`] for an inactive item, or
+    /// [`TreeModelError::NonEmptyBranchToLeaf`] when the update would strand
+    /// existing children beneath a leaf.
     fn update(&mut self, item: TreeItem<T>) -> Result<(), TreeModelError<T>> {
         let id = item.id.clone();
         let record = self
@@ -1131,6 +1175,18 @@ where
     }
 
     /// Validates and moves one subtree to its final sibling position.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeModelError::MissingId`] for an absent item or parent,
+    /// [`TreeModelError::ParentIsLeaf`] for a leaf destination,
+    /// [`TreeModelError::Cycle`] for a self/descendant destination, or
+    /// [`TreeModelError::InvalidIndex`] for an invalid final sibling position.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if validated node/parent links disappear while this method
+    /// holds exclusive access, indicating an already-corrupt hierarchy.
     fn move_item(
         &mut self,
         id: &T,
@@ -1191,6 +1247,11 @@ where
     }
 
     /// Sets expansion only on an existing branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeModelError::MissingId`] for an inactive item or
+    /// [`TreeModelError::NotBranch`] when `id` identifies a leaf.
     fn set_expanded(&mut self, id: &T, expanded: bool) -> Result<(), TreeModelError<T>> {
         let record = self
             .nodes
@@ -1269,6 +1330,15 @@ where
     }
 
     /// Inserts a subtree's visible rows when its parent path is visible/expanded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeModelError::MissingId`] when `id` is not active.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an active record is not linked from its recorded parent or root,
+    /// or if a visible parent row is missing from the flat-row backing vector.
     fn insert_visible_subtree(&mut self, id: &T) -> Result<(), TreeModelError<T>> {
         let record = self
             .nodes

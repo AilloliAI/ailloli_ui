@@ -409,12 +409,19 @@ impl<A: 'static> Switch<A> {
 
 /// Retained leaf that reads bindings, mutates bound state, and paints the switch.
 struct SwitchWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Readable checked-state source.
     checked: Binding<bool>,
+    /// Optional writable checked state for controlled interaction.
     bound: Option<Signal<bool>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Optional callback receiving changed checked state.
     on_change: Option<ChangeHandler<A>>,
+    /// Horizontal or vertical track orientation.
     orientation: SwitchOrientation,
+    /// Track/thumb colors and logical-pixel geometry.
     style: SwitchStyle,
 }
 

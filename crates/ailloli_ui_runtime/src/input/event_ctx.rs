@@ -25,9 +25,13 @@ use super::EventMeta;
 /// assert!(ctx.event_meta().is_none());
 /// ```
 pub struct EventContext<A> {
+    /// UI-local runtime receiving dispatched actions and host requests.
     runtime: RuntimeHandle<A>,
+    /// Element to which the current event was routed.
     target: ElementId,
+    /// Optional immutable provider metadata shared across propagation stages.
     event_meta: Option<Arc<EventMeta>>,
+    /// Whether this handler stopped further propagation of the current event.
     propagation_stopped: bool,
 }
 
@@ -416,6 +420,11 @@ impl<A> EventContext<A> {
     /// Provider errors are returned as strings. The built-in memory provider
     /// accepts empty and arbitrary UTF-8 strings.
     ///
+    /// # Errors
+    ///
+    /// Returns the configured clipboard provider's display string when it
+    /// rejects or cannot complete the write.
+    ///
     /// # Examples
     ///
     /// ```
@@ -436,6 +445,12 @@ impl<A> EventContext<A> {
     /// Provider failure is returned and also recorded by the runtime handle as
     /// a non-fatal error. No parsing, shell escaping, or scheme validation is
     /// performed here; construct URLs with [`ExternalUrl::parse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenUrlError::Unavailable`] when no opener is available or
+    /// [`OpenUrlError::LaunchFailed`] when the configured opener rejects the
+    /// request. The runtime also records the same non-fatal error.
     ///
     /// # Examples
     ///

@@ -93,6 +93,10 @@ impl TryFrom<&str> for ExternalUrl {
     type Error = ExternalUrlError;
 
     /// Validates and performs the requested conversion.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the validation errors documented by [`ExternalUrl::parse`].
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::parse(value)
     }
@@ -104,6 +108,10 @@ impl TryFrom<String> for ExternalUrl {
     type Error = ExternalUrlError;
 
     /// Validates and performs the requested conversion.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the validation errors documented by [`ExternalUrl::parse`].
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::parse(value)
     }
@@ -202,6 +210,12 @@ pub trait ExternalUrlOpener {
     ///
     /// A successful return means the host accepted the request, not that a
     /// browser loaded the resource.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenUrlError::Unavailable`] when no host capability can accept
+    /// the URL, or [`OpenUrlError::LaunchFailed`] when an available capability
+    /// fails to launch it.
     ///
     /// # Examples
     ///
@@ -327,6 +341,14 @@ impl MemoryExternalUrlOpener {
 /// Implements the ExternalUrlOpener contract for MemoryExternalUrlOpener.
 impl ExternalUrlOpener for MemoryExternalUrlOpener {
     /// Attempts to open the validated external URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns and consumes the error installed by [`Self::fail_next`], if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a conflicting reentrant borrow of the opener's local state.
     fn open(&self, url: &ExternalUrl) -> Result<(), OpenUrlError> {
         if let Some(error) = self.next_error.borrow_mut().take() {
             return Err(error);

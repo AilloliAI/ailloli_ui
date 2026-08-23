@@ -20,8 +20,8 @@ use crate::FileError;
 ///
 /// ```
 /// use ailloli_ui_fs::FileUri;
-/// let uri = FileUri::parse("SFTP://host//home/user")?;
-/// assert_eq!(uri.to_string(), "sftp://host/home/user");
+/// let uri = FileUri::parse("SFTP://host//srv/project")?;
+/// assert_eq!(uri.to_string(), "sftp://host/srv/project");
 /// # Ok::<(), ailloli_ui_fs::FileError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -128,8 +128,8 @@ impl FileUri {
     ///
     /// ```
     /// use ailloli_ui_fs::FileUri;
-    /// let uri = FileUri::new("SFTP", Some("host"), "home\\user")?;
-    /// assert_eq!(uri.to_string(), "sftp://host/home/user");
+    /// let uri = FileUri::new("SFTP", Some("host"), "srv\\project")?;
+    /// assert_eq!(uri.to_string(), "sftp://host/srv/project");
     /// # Ok::<(), ailloli_ui_fs::FileError>(())
     /// ```
     pub fn new(
@@ -392,6 +392,11 @@ impl std::str::FromStr for FileUri {
 }
 
 /// Trims/lowercases a scheme and accepts only ASCII alphanumeric, `+`, `-`, `.`.
+///
+/// # Errors
+///
+/// Returns [`FileError::InvalidUri`] when the trimmed scheme is empty or
+/// contains any other character.
 fn normalize_scheme(scheme: &str) -> Result<String, FileError> {
     let scheme = scheme.trim().to_ascii_lowercase();
     let valid = !scheme.is_empty()
@@ -406,6 +411,11 @@ fn normalize_scheme(scheme: &str) -> Result<String, FileError> {
 }
 
 /// Splits the post-scheme target into optional authority and absolute path text.
+///
+/// # Errors
+///
+/// Returns [`FileError::InvalidUri`] for an empty target, a remote target with
+/// no slash-delimited path, or an empty authority.
 fn split_authority_and_path(rest: &str) -> Result<(Option<String>, String), FileError> {
     if rest.is_empty() {
         return Err(FileError::InvalidUri("uri target is empty".into()));
@@ -435,6 +445,10 @@ fn normalize_path(path: impl Into<String>) -> String {
 }
 
 /// Converts one UTF-8 platform path to the crate's minimally encoded URI path.
+///
+/// # Errors
+///
+/// Returns [`FileError::InvalidUri`] when `path` is not valid UTF-8.
 fn path_to_uri_path(path: &Path) -> Result<String, FileError> {
     let Some(path) = path.to_str() else {
         return Err(FileError::InvalidUri(

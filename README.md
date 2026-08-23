@@ -23,18 +23,23 @@ Then build an application through the public prelude:
 use ailloli_ui::prelude::*;
 
 fn main() -> ailloli_ui::Result<()> {
+    let headline = State::new(
+        "Build native Rust interfaces".to_string(),
+    );
+    let preview = headline.clone();
+
     App::new()
         .window(
             Window::new("main")
                 .title("Hello")
                 .size(800.0, 600.0)
                 .ailloli_ui_chrome()
-                .content(|| {
+                .content(move || {
                     Column::new()
                         .padding(16.0)
-                        .gap(8.0)
-                        .child(Text::new("Hello from Ailloli UI"))
-                        .child(Button::with_label("Continue"))
+                        .gap(12.0)
+                        .child(TextInput::<()>::new().bind(headline.clone()))
+                        .child(Text::new(preview.clone()).size(24.0))
                 }),
         )
         .run()
@@ -79,11 +84,18 @@ from the workspace root with:
 cargo run -p sandbox_app
 ```
 
-Or run `cargo run` directly from `apps/sandbox_app`. The sandbox depends only
-on the public `ailloli_ui` façade, so it exercises the same API and dependency
-direction as an external application. It is a workspace application rather
-than a crate-local Cargo example because its role is to validate the complete
-consumer experience across framework packages.
+Or run `cargo run` directly from `apps/sandbox_app`. The sandbox is a curated,
+interactive documentation showcase built only through the public `ailloli_ui`
+façade, so it exercises the same API and dependency direction as an external
+application. Its editable quick start, retained-state preview, architecture
+explorer, guide, and resource cards present real framework contracts instead
+of synthetic product data. GitHub and crates.io links use their reserved public
+destinations; hosted API documentation and the Ailloli UI Book stay visibly
+marked as coming soon until canonical sites exist.
+
+It is a workspace application rather than a crate-local Cargo example because
+its role is to validate the complete consumer experience across framework
+packages.
 
 ## Workspace packages
 

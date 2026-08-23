@@ -636,16 +636,27 @@ impl<A: 'static> CommandPalette<A> {
 
 /// Component properties used to allocate query/edit/navigation/scroll state.
 struct CommandPaletteComponent<A> {
+    /// Host-slot sizing and flex layout policy.
     layout: LayoutStyle,
+    /// Optional readable external open state.
     open: Option<Binding<bool>>,
+    /// Optional writable external open state.
     bound_open: Option<Signal<bool>>,
+    /// Initial open state used when the component is uncontrolled.
     default_open: bool,
+    /// Optional caller-owned query state.
     query: Option<Signal<String>>,
+    /// Initial query used when the component owns its state.
     default_query: String,
+    /// Reactive placeholder displayed for an empty query.
     placeholder: Binding<String>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Ordered command catalogue filtered by the query.
     items: Vec<CommandItem<A>>,
+    /// Visual and geometric palette configuration in logical pixels.
     style: CommandPaletteStyle,
+    /// Optional underlying host content painted below the overlay.
     child: Option<View<A>>,
 }
 
@@ -705,18 +716,31 @@ impl<A: 'static> IntoView<A> for CommandPalette<A> {
 
 /// Retained overlay widget implementing text input, filtering, and activation.
 struct CommandPaletteWidget<A> {
+    /// Host-slot sizing and flex layout policy.
     layout: LayoutStyle,
+    /// Optional readable external open state.
     open: Option<Binding<bool>>,
+    /// Optional writable external open state.
     bound_open: Option<Signal<bool>>,
+    /// Retained open state used by an uncontrolled palette.
     internal_open: Signal<bool>,
+    /// Retained query shared with text editing and filtering.
     query: Signal<String>,
+    /// Reactive placeholder displayed for an empty query.
     placeholder: Binding<String>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Ordered command catalogue addressed by stable vector indices.
     items: Vec<CommandItem<A>>,
+    /// Visual and geometric palette configuration in logical pixels.
     style: CommandPaletteStyle,
+    /// Retained vertical list offset in logical pixels.
     scroll: Signal<ScrollState>,
+    /// Selected command index in the unfiltered `items` vector.
     active_index: Signal<Option<usize>>,
+    /// Text buffer mirroring the current query.
     buffer: Signal<TextBuffer>,
+    /// Caret and selection state for single-line query editing.
     edit: Signal<TextEditState>,
 }
 
@@ -921,6 +945,7 @@ impl<A: 'static> Widget<A> for CommandPaletteWidget<A> {
 }
 
 impl<A: 'static> CommandPaletteWidget<A> {
+    /// Reads controlled state when present, otherwise the retained local state.
     fn is_open(&self) -> bool {
         self.open
             .as_ref()
@@ -928,6 +953,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
             .unwrap_or_else(|| self.internal_open.read())
     }
 
+    /// Closes writable or uncontrolled state and clears keyboard selection.
     fn close(&self) {
         if let Some(bound) = &self.bound_open {
             bound.set(false);
@@ -937,6 +963,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         self.active_index.set(None);
     }
 
+    /// Resolves input colors, applying disabled opacity when necessary.
     fn text_style(&self) -> TextInputStyle {
         if self.disabled.read() {
             let opacity = self.style.disabled_opacity;
@@ -952,6 +979,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         }
     }
 
+    /// Computes the centered, host-clamped overlay panel in logical pixels.
     fn panel_rect(&self, bounds: Rect) -> Rect {
         let width = self.style.width.min((bounds.w - 32.0).max(240.0));
         let height = self.panel_height();
@@ -963,6 +991,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         )
     }
 
+    /// Computes the query field inside the current panel bounds.
     fn input_rect(&self, bounds: Rect) -> Rect {
         let panel = self.panel_rect(bounds);
         Rect::new(
@@ -973,6 +1002,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         )
     }
 
+    /// Computes the scrollable result region below the query field.
     fn list_rect(&self, bounds: Rect) -> Rect {
         let panel = self.panel_rect(bounds);
         let input = self.input_rect(bounds);
@@ -984,10 +1014,12 @@ impl<A: 'static> CommandPaletteWidget<A> {
         )
     }
 
+    /// Computes the result region for origin-based layout measurement.
     fn list_rect_for_size(&self, size: Size) -> Rect {
         self.list_rect(Rect::new(0.0, 0.0, size.w, size.h))
     }
 
+    /// Returns content-driven panel height clamped by configured maxima.
     fn panel_height(&self) -> f32 {
         let rows = self.filtered_indices().len().max(1) as f32;
         let list_h = (rows * self.style.row_height).min(self.style.popup.popup_max_height);
@@ -995,16 +1027,19 @@ impl<A: 'static> CommandPaletteWidget<A> {
             .min(self.style.panel_max_height)
     }
 
+    /// Returns original item indices matching the current query in source order.
     fn filtered_indices(&self) -> Vec<usize> {
         filtered_indices(&self.query.read(), &self.items)
     }
 
+    /// Finds the first enabled result, or `None` when none can activate.
     fn first_enabled_index(&self) -> Option<usize> {
         self.filtered_indices()
             .into_iter()
             .find(|idx| !self.items[*idx].disabled.read())
     }
 
+    /// Finds the last enabled result, or `None` when none can activate.
     fn last_enabled_index(&self) -> Option<usize> {
         self.filtered_indices()
             .into_iter()
@@ -1012,16 +1047,19 @@ impl<A: 'static> CommandPaletteWidget<A> {
             .find(|idx| !self.items[*idx].disabled.read())
     }
 
+    /// Advances through filtered enabled items without wrapping past the helper policy.
     fn next_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let filtered = self.filtered_indices();
         next_enabled(&filtered, current, |idx| !self.items[idx].disabled.read())
     }
 
+    /// Moves backward through filtered enabled items using the shared policy.
     fn previous_enabled_index(&self, current: Option<usize>) -> Option<usize> {
         let filtered = self.filtered_indices();
         previous_enabled(&filtered, current, |idx| !self.items[idx].disabled.read())
     }
 
+    /// Clamps retained vertical offset to the current result viewport.
     fn clamp_scroll(&self, viewport: Size) {
         let rows = self.filtered_indices().len().max(1);
         let content = Size::new(viewport.w, rows as f32 * self.style.row_height);
@@ -1034,6 +1072,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         }
     }
 
+    /// Maps a logical pointer position to an unfiltered item index.
     fn item_at(&self, bounds: Rect, pos: ailloli_ui_core::Point) -> Option<usize> {
         let list = self.list_rect(bounds);
         let filtered = self.filtered_indices();
@@ -1045,6 +1084,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         filtered.get(row).copied()
     }
 
+    /// Runs one enabled command, closes the palette, and consumes the event.
     fn activate_item(&self, ctx: &mut EventCtx<A>, index: usize) {
         let Some(item) = self.items.get(index) else {
             return;
@@ -1061,6 +1101,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Applies a wheel delta to the result list and requests repaint on change.
     fn scroll_list(&self, ctx: &mut EventCtx<A>, bounds: Rect, delta: WheelDelta) {
         let list = self.list_rect(bounds);
         let rows = self.filtered_indices().len().max(1);
@@ -1082,6 +1123,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         }
     }
 
+    /// Routes navigation/activation keys before forwarding text-edit events.
     fn handle_keyboard(
         &self,
         ctx: &mut EventCtx<A>,
@@ -1143,6 +1185,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         self.after_text_event(ctx, before, handled);
     }
 
+    /// Resets scroll and selection after a handled query mutation.
     fn after_text_event(&self, ctx: &mut EventCtx<A>, before: String, handled: bool) {
         if handled && self.query.read() != before {
             self.scroll.set(ScrollState::new());
@@ -1151,6 +1194,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         }
     }
 
+    /// Selects the next enabled result in the requested direction.
     fn move_active(&self, ctx: &mut EventCtx<A>, direction: Direction) {
         let next = match direction {
             Direction::Next => self.next_enabled_index(self.active_index.read()),
@@ -1159,6 +1203,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         self.set_active(ctx, next);
     }
 
+    /// Updates keyboard selection, repaints on change, and consumes the event.
     fn set_active(&self, ctx: &mut EventCtx<A>, next: Option<usize>) {
         if self.active_index.read() != next {
             self.active_index.set(next);
@@ -1167,6 +1212,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         ctx.stop_propagation();
     }
 
+    /// Paints backdrop, panel shell, query field, results, and final border.
     fn paint_palette(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
         ctx.push_overlay(DrawCmd::Rect(DrawRect {
             rect: bounds,
@@ -1186,6 +1232,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         paint_popup_border(ctx, panel, &self.style.popup);
     }
 
+    /// Paints the focused single-line query editor into the overlay layer.
     fn paint_input(&self, ctx: &mut PaintCtx<'_>, input: Rect, layout: &LayoutResult) {
         let style = self.text_style();
         ctx.push_overlay(DrawCmd::RRect(DrawRRect {
@@ -1211,6 +1258,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         );
     }
 
+    /// Paints visible filtered rows under a list clip, or the empty-state label.
     fn paint_rows(&self, ctx: &mut PaintCtx<'_>, list: Rect) {
         let filtered = self.filtered_indices();
         ctx.with_overlay_clip(list, |ctx| {
@@ -1242,6 +1290,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         });
     }
 
+    /// Paints one result row with active and disabled visual state.
     fn paint_row(&self, ctx: &mut PaintCtx<'_>, row: Rect, item: &CommandItem<A>, active: bool) {
         let disabled = item.disabled.read();
         let opacity = if disabled {

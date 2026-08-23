@@ -249,6 +249,12 @@ fn observed_winit_backend(event_loop: &ActiveEventLoop) -> &'static str {
 ///
 /// Exact physical placement and size are derived from the target logical rect
 /// and current scale. Wayland is rejected because it requires layer-shell.
+///
+/// # Errors
+///
+/// Returns a string error for invalid target geometry, a non-X11 backend,
+/// cursor-hit-test configuration failure, coordinate/size overflow, or a native
+/// position/extent mismatch after applying the overlay request.
 fn configure_x11_overlay(
     event_loop: &ActiveEventLoop,
     window: &Window,
@@ -1130,6 +1136,11 @@ impl<A: 'static> UiApp<A> {
     /// accepted event ensures initial layout, routes input, and schedules redraw
     /// when routing or retained dirtiness requires it.
     ///
+    /// # Panics
+    ///
+    /// Panics only if the internal window map loses the resolved entry between
+    /// the immutable lookup and subsequent mutable lookup.
+    ///
     /// # Examples
     ///
     /// ```no_run
@@ -1422,6 +1433,11 @@ impl<A: 'static> UiApp<A> {
     /// The clear color defaults to transparent for transparent windows and
     /// `#1a1a1f` otherwise. Registration is append-only and performs no native
     /// work. The caller-provided visibility flag is overridden to hidden.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the fixed internal `#1a1a1f` color literal is changed to an
+    /// invalid hexadecimal color.
     ///
     /// # Examples
     ///
@@ -2066,6 +2082,11 @@ impl<A: 'static> UiApp<A> {
     ///
     /// Already-ready, destroyed, and future unsupported states become typed
     /// window-creation errors; an already-allowed state is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiAppError::WindowCreate`] for an attached/destroyed/unsupported
+    /// state or when the presentation lifecycle rejects the required transition.
     fn allow_presentation_creation(
         retained: &mut RetainedWindowState<A>,
     ) -> Result<(), UiAppError> {
@@ -2121,6 +2142,11 @@ impl<A: 'static> UiApp<A> {
     /// Marks an attached zero-sized presentation ready only after its surface
     /// accepted a later non-zero extent. This advances the generation so any
     /// event retained across the unavailable interval is rejected as stale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiAppError::WindowCreate`] when retry or attached transition is
+    /// rejected. States other than zero-extent unavailable are successful no-ops.
     fn complete_zero_extent_recovery(
         retained: &mut RetainedWindowState<A>,
     ) -> Result<(), UiAppError> {
@@ -2149,6 +2175,11 @@ impl<A: 'static> UiApp<A> {
     ///
     /// Every new attachment must render once before reveal, even if retained GPU
     /// context and element state were reused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiAppError::WindowCreate`] when the lifecycle rejects the
+    /// attached transition; native-only state is reset only after success.
     fn complete_attachment(retained: &mut RetainedWindowState<A>) -> Result<(), UiAppError> {
         let reduction = retained
             .lifecycle
@@ -2204,6 +2235,12 @@ impl<A: 'static> UiApp<A> {
     /// renderer fallback when necessary. Every failure returns ownership of the
     /// retained state inside [`AttachmentError`] after marking why it is
     /// unavailable. Successful intent replay precedes insertion into live state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttachmentError`] containing the original retained state for
+    /// lifecycle, host-wake, native-overlay/window creation, renderer attachment,
+    /// intent replay, or final lifecycle-transition failure.
     fn attach_retained_window(
         &mut self,
         event_loop: &ActiveEventLoop,

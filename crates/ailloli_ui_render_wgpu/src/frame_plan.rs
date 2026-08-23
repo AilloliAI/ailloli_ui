@@ -268,9 +268,13 @@ pub enum FramePlanError {
 
 /// Parent, depth, and identity controls for isolated-pass scheduling.
 struct IsoScheduleParams {
+    /// Parent offscreen pass, or `None` for a main-surface child.
     parent_id: Option<OffscreenPassId>,
+    /// Zero-based isolated nesting depth of the candidate pass.
     isolated_depth: u8,
+    /// Whether this pass ultimately composites directly onto the main target.
     composites_to_main: bool,
+    /// Optional externally assigned pass identity used during recursion.
     forced_pass_id: Option<OffscreenPassId>,
 }
 
@@ -377,7 +381,9 @@ fn link_child_to_parent(
 
 /// Surface, scale, and optional physical translation used while emitting a layer.
 struct LayerPlanCtx {
+    /// Main target width and height in logical pixels.
     surface: [f32; 2],
+    /// Logical-to-physical device scale.
     scale: Scale,
     /// When set, geometry is translated into local offscreen space.
     origin_px: Option<[f32; 2]>,
@@ -385,6 +391,18 @@ struct LayerPlanCtx {
 
 #[allow(clippy::too_many_arguments)]
 /// Plans one isolated layer, its captures, composite, and local subplan metadata.
+///
+/// # Errors
+///
+/// Returns [`FramePlanError::TooManyIsolatedPasses`] when the per-frame pass
+/// budget is exhausted, or [`FramePlanError::EmptyIsolatedBounds`] when the
+/// selected layer has no renderable prepared bounds. A byte-budget refusal is
+/// represented by `Ok(None)`, not an error.
+///
+/// # Panics
+///
+/// Panics if `layer_idx` does not index `layers`; callers derive it from that
+/// same slice.
 fn schedule_isolated_layer(
     plan: &mut FrameRenderPlan,
     layers: &[LayerPass<'_>],
@@ -530,6 +548,18 @@ fn schedule_isolated_layer(
 
 #[allow(clippy::too_many_arguments)]
 /// Flushes a contiguous depth-zero isolated segment into a root pass hierarchy.
+///
+/// # Errors
+///
+/// Propagates [`FramePlanError::TooManyIsolatedPasses`] or
+/// [`FramePlanError::EmptyIsolatedBounds`] from any child or root scheduled by
+/// [`schedule_isolated_layer`].
+///
+/// # Panics
+///
+/// Panics if a segment entry does not index `layers`, or if debug overflow
+/// checks detect that the private pass-ID reservation exceeds `u16`; the caller
+/// maintains both invariants through the configured pass budget.
 fn flush_depth_zero_segment(
     plan: &mut FrameRenderPlan,
     layers: &[LayerPass<'_>],

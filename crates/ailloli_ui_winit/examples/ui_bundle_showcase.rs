@@ -8,6 +8,11 @@ use ailloli_ui::prelude::*;
 use ui_bundle_showcase::{ui_bundle_showcase, ShowcaseMode};
 
 /// Selects the requested palette and opens the full widget showcase.
+///
+/// # Errors
+///
+/// Propagates application identity, native window/event-loop, or rendering
+/// errors from [`App::run`](ailloli_ui::AppBuilder::run).
 fn main() -> ailloli_ui::Result<()> {
     let mode = if std::env::args().any(|arg| arg == "--white") {
         ShowcaseMode::White

@@ -934,24 +934,39 @@ impl<T: Clone + PartialEq + 'static, A: 'static> RadioGroup<T, A> {
 
 /// Retained standalone radio widget.
 struct RadioButtonWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// User-visible option label.
     label: String,
+    /// Readable checked-state source.
     checked: Binding<bool>,
+    /// Optional writable checked state for controlled interaction.
     bound: Option<Signal<bool>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Optional action invoked when an enabled unchecked option is selected.
     on_select: Option<ClickAction<A>>,
+    /// Indicator and label colors plus logical-pixel geometry.
     style: RadioStyle,
 }
 
 /// Retained typed group widget implementing navigation and painting.
 struct RadioGroupWidget<T, A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Ordered value/label options.
     options: Vec<RadioOption<T>>,
+    /// Optional readable selected value.
     selected: Option<Binding<T>>,
+    /// Optional writable selected value.
     bound: Option<Signal<T>>,
+    /// Reactive interaction-disable flag for the whole group.
     disabled: Binding<bool>,
+    /// Row or column option arrangement.
     direction: RadioDirection,
+    /// Optional callback receiving a changed value.
     on_change: Option<ChangeHandler<T, A>>,
+    /// Indicator and label colors plus logical-pixel geometry.
     style: RadioStyle,
 }
 

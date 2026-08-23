@@ -51,6 +51,7 @@ pub struct FlexWidget {
 
 /// Private main/cross-axis projection and intrinsic-measurement helpers.
 impl FlexWidget {
+    /// Projects physical width/height onto the selected main and cross axes.
     fn main_cross(size: Size, direction: FlexDirection) -> (f32, f32) {
         match direction {
             FlexDirection::Column => (size.h, size.w),
@@ -58,6 +59,7 @@ impl FlexWidget {
         }
     }
 
+    /// Writes main/cross extents back into physical width/height axes.
     fn set_main_cross(size: &mut Size, main: f32, cross: f32, direction: FlexDirection) {
         match direction {
             FlexDirection::Column => {
@@ -71,6 +73,7 @@ impl FlexWidget {
         }
     }
 
+    /// Returns the maximum logical-pixel constraint on the main axis.
     fn main_available(constraints: Constraints, direction: FlexDirection) -> f32 {
         match direction {
             FlexDirection::Column => constraints.max_h,
@@ -78,6 +81,7 @@ impl FlexWidget {
         }
     }
 
+    /// Resolves explicit growth or the implicit unit growth of a fill child.
     fn effective_grow(item: FlexItemStyle, main_fill: bool) -> f32 {
         if item.flex_grow > 0.0 {
             item.flex_grow
@@ -88,6 +92,7 @@ impl FlexWidget {
         }
     }
 
+    /// Resolves a nonnegative explicit basis, with `auto` represented as zero.
     fn base_main_from_basis(item: FlexItemStyle, main_available: f32) -> f32 {
         if item.flex_basis.is_auto() {
             0.0
@@ -99,6 +104,7 @@ impl FlexWidget {
         }
     }
 
+    /// Builds loose intrinsic-probe constraints for one flex child.
     fn probe_constraints(
         loose: Constraints,
         direction: FlexDirection,
@@ -142,6 +148,7 @@ impl FlexWidget {
         child_c
     }
 
+    /// Selects the child's pre-distribution main extent from basis and measurement.
     fn compute_base_main(
         item: FlexItemStyle,
         hint: LayoutSizeHint,

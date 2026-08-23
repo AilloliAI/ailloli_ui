@@ -164,6 +164,15 @@ impl MockPtyBackend {
 
 impl PtyBackend for MockPtyBackend {
     /// Returns the configured error or records config and creates a fresh session.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error installed through [`Self::with_spawn_error`], when one
+    /// is configured. No session or spawn record is created in that case.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared mock-state mutex is poisoned.
     fn spawn(&self, config: PtySpawnConfig) -> Result<PtyHandle, PtyError> {
         let mut state = self.state.lock().expect("mock pty state");
         if let Some(error) = state.spawn_error.clone() {
@@ -188,6 +197,14 @@ struct MockPtySession {
 
 impl PtySession for MockPtySession {
     /// Records an owned byte copy unless this session is closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Closed`] after this session has shut down.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared mock-state mutex is poisoned.
     fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(PtyError::Closed);
@@ -201,6 +218,14 @@ impl PtySession for MockPtySession {
     }
 
     /// Records the exact dimensions unless this session is closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Closed`] after this session has shut down.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the shared mock-state mutex is poisoned.
     fn resize(&self, size: PtySize) -> Result<(), PtyError> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(PtyError::Closed);
@@ -224,6 +249,10 @@ impl PtySession for MockPtySession {
     }
 
     /// Sets this session's shutdown flag; repeated calls succeed.
+    ///
+    /// # Errors
+    ///
+    /// This mock implementation is infallible and never returns an error.
     fn shutdown(&self) -> Result<(), PtyError> {
         self.shutdown.store(true, Ordering::SeqCst);
         Ok(())

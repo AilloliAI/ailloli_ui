@@ -20,6 +20,7 @@ use ailloli_ui_runtime::scene::PaintCtx;
 /// let _ = clip;
 /// ```
 pub struct ClipRect<A = ()> {
+    /// Optional sole child clipped to the widget's laid-out rectangle.
     child: Option<View<A>>,
 }
 

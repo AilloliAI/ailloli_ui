@@ -341,6 +341,11 @@ where
 /// returns no bitmap. Degenerate or transparent supported images return `true`
 /// without geometry. Raster sizes are rounded and clamped to 8..=128 pixels;
 /// device scale identity is clamped to 1..=`u16::MAX` hundredths.
+///
+/// # Errors
+///
+/// Propagates any [`VulkanRendererError`] returned by `glyph_lookup`; geometry
+/// for the current image is not appended after that failure.
 fn push_lucide_icon<F>(
     geometry: &mut FrameGeometry,
     image: &DrawImage,
@@ -833,6 +838,11 @@ fn push_box_shadow(
 /// Glyph raster size is rounded and clamped to 8..=128 physical pixels. Bitmap
 /// origins are rounded to whole physical pixels. Missing/empty glyphs are
 /// skipped; lookup errors abort lowering.
+///
+/// # Errors
+///
+/// Propagates the first [`VulkanRendererError`] returned by `glyph_lookup`.
+/// Quads already emitted for earlier glyphs remain in `geometry`.
 fn push_text<F>(
     geometry: &mut FrameGeometry,
     text: &DrawText,

@@ -382,6 +382,7 @@ impl<A: 'static> UploadDropzone<A> {
 
 /// Component wrapper allocating retained hover state during reconciliation.
 struct UploadDropzoneComponent<A> {
+    /// Complete builder snapshot used to allocate retained hover state.
     props: UploadDropzone<A>,
 }
 
@@ -416,15 +417,25 @@ impl<A: 'static> IntoView<A> for UploadDropzone<A> {
 
 /// Retained leaf that filters file events and paints drop/browse affordances.
 struct UploadDropzoneWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Reactive primary instruction text.
     title: Binding<String>,
+    /// Reactive secondary constraint text.
     description: Binding<String>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Whether a drop may contain more than one file.
     multiple: bool,
+    /// Accepted extension and MIME-style patterns.
     accept: UploadAccept,
+    /// Surface colors and logical-pixel geometry.
     style: UploadDropzoneStyle,
+    /// Optional browse action shared by pointer and keyboard activation.
     on_browse: Option<Rc<ClickAction<A>>>,
+    /// Optional callback receiving validated dropped files.
     on_drop: Option<UploadDropHandler<A>>,
+    /// Whether an accepted drag currently hovers the surface.
     hovering: Signal<bool>,
 }
 

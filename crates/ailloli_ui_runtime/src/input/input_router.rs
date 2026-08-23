@@ -246,18 +246,26 @@ impl RouteOutcome {
 /// Signature used to detect identity changes behind a reused numeric ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TargetSignature {
+    /// Optional retained key distinguishing reused element identities.
     key: Option<Key>,
+    /// Target family and policies relevant to routing identity.
     kind: TargetKind,
 }
 
 /// Identity-relevant target kind and widget policies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TargetKind {
+    /// Structural element with no component or widget behavior.
     Empty,
+    /// Retained component boundary without direct input policies.
     Component,
+    /// Interactive widget and its identity-relevant routing policies.
     Widget {
+        /// Stable diagnostic widget type name.
         debug_name: &'static str,
+        /// Keyboard focus behavior for pointer activation.
         focus_policy: FocusPolicy,
+        /// Press/release activation behavior.
         activation_policy: ActivationPolicy,
     },
 }
@@ -265,15 +273,25 @@ enum TargetKind {
 /// Per-pointer hover, capture, press, activation, and semantic state.
 #[derive(Debug, Default, Clone)]
 struct PointerRouteState {
+    /// Current hit-test target for this pointer.
     hovered: Option<ElementId>,
+    /// Target on which the active button gesture began.
     pressed: Option<ElementId>,
+    /// Explicit pointer-capture owner overriding hit testing.
     capture: Option<ElementId>,
+    /// Identity signature paired with [`Self::hovered`].
     hovered_signature: Option<TargetSignature>,
+    /// Identity signature paired with [`Self::pressed`].
     pressed_signature: Option<TargetSignature>,
+    /// Identity signature paired with [`Self::capture`].
     capture_signature: Option<TargetSignature>,
+    /// Semantic input role paired with [`Self::hovered`].
     hovered_input_role: InputRole,
+    /// Semantic input role paired with [`Self::pressed`].
     pressed_input_role: InputRole,
+    /// Semantic input role paired with [`Self::capture`].
     capture_input_role: InputRole,
+    /// Activation semantics from the latest sample for this pointer.
     activation: ActivationKind,
     /// An outside-dismiss press is consumed through its matching release so
     /// a control behind the popup cannot activate on release alone.
@@ -283,9 +301,13 @@ struct PointerRouteState {
 /// Compact arguments for a pointer button transition.
 #[derive(Debug, Clone, Copy)]
 struct PointerButtonInput {
+    /// Pointer whose button changed state.
     pointer_id: PointerId,
+    /// Event location in logical window coordinates.
     pos: Point,
+    /// Button that transitioned.
     button: PointerButton,
+    /// `true` for a press and `false` for a release.
     pressed: bool,
 }
 
@@ -329,8 +351,11 @@ pub struct InputRouter {
     pub hit_test: HitTestEngine,
     /// Low-level strict keyboard-focus store.
     pub focus: FocusManager,
+    /// Per-pointer routing records ordered by stable pointer identity.
     pointers: BTreeMap<PointerId, PointerRouteState>,
+    /// Identity signature paired with the current keyboard focus owner.
     focused_signature: Option<TargetSignature>,
+    /// Semantic input role paired with the current focus owner.
     focused_input_role: InputRole,
 }
 

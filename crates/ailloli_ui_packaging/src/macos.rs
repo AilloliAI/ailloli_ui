@@ -91,6 +91,15 @@ pub fn build_bundle_archive(bundle: &Path, destination: &Path) -> Result<(), Pac
 }
 
 /// Appends all regular files below `path` relative to `base` in sorted order.
+///
+/// # Errors
+///
+/// Propagates recursive traversal, source read, or tar append failures.
+///
+/// # Panics
+///
+/// Panics if a collected entry is not below `base`; callers pass the staging
+/// parent of the traversed bundle.
 fn append_tree<W: Write>(
     builder: &mut tar::Builder<W>,
     path: &Path,
@@ -124,6 +133,10 @@ fn append_tree<W: Write>(
 ///
 /// Symbolic links are followed only insofar as `Path::is_dir` follows them;
 /// callers stage a framework-owned bundle tree without symlinks.
+///
+/// # Errors
+///
+/// Propagates directory iteration and entry-decoding errors from any descendant.
 fn collect(path: &Path, entries: &mut Vec<PathBuf>) -> Result<(), PackagingError> {
     entries.push(path.to_path_buf());
     if path.is_dir() {
@@ -180,6 +193,11 @@ fn numeric_bundle_version(version: &str) -> String {
 /// Empty or whitespace-only names and names containing `/`, `\`, or NUL are
 /// rejected. Colons are replaced with hyphens because Finder treats them as
 /// legacy path separators; other whitespace is preserved.
+///
+/// # Errors
+///
+/// Returns an error for an empty/whitespace-only name or one containing a slash,
+/// backslash, or NUL byte.
 fn safe_bundle_name(name: &str) -> Result<String, PackagingError> {
     if name.trim().is_empty() || name.contains(['/', '\\', '\0']) {
         return Err(PackagingError::message(

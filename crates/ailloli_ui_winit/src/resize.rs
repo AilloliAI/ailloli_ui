@@ -126,9 +126,19 @@ pub struct ResizeController {
 /// Minimal renderer seam used to test resize and forced-reconfigure choices.
 trait SurfaceResizeTarget {
     /// Applies an ordinary resize, allowing an unchanged-size fast path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a renderer attachment, format, or configuration error when the
+    /// target cannot apply the requested physical extent.
     fn try_resize_target(&mut self, size: PhysicalExtent) -> Result<ResizeOutcome, RendererError>;
 
     /// Forces surface configuration even when `size` has not changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a renderer attachment, format, or configuration error when the
+    /// target cannot force the requested physical extent.
     fn try_reconfigure_surface_target(
         &mut self,
         size: PhysicalExtent,
@@ -138,11 +148,19 @@ trait SurfaceResizeTarget {
 /// Connects the resize controller's testable seam to the production renderer.
 impl SurfaceResizeTarget for Renderer {
     /// Delegates ordinary resize to [`Renderer::try_resize`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates all errors from [`Renderer::try_resize`].
     fn try_resize_target(&mut self, size: PhysicalExtent) -> Result<ResizeOutcome, RendererError> {
         self.try_resize(size)
     }
 
     /// Delegates forced recovery to [`Renderer::try_reconfigure_surface`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates all errors from [`Renderer::try_reconfigure_surface`].
     fn try_reconfigure_surface_target(
         &mut self,
         size: PhysicalExtent,
@@ -338,6 +356,11 @@ impl ResizeController {
     }
 
     /// Applies a due request against the authoritative current physical size.
+    ///
+    /// # Errors
+    ///
+    /// Propagates renderer resize or forced-reconfiguration errors from
+    /// [`Self::apply_pending_update`].
     fn prepare_redraw_for_size<T: SurfaceResizeTarget>(
         &mut self,
         current_size: PhysicalSize<u32>,
@@ -365,6 +388,12 @@ impl ResizeController {
     }
 
     /// Performs the renderer operation and updates retry/recovery state.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the selected target's ordinary resize or forced surface
+    /// reconfiguration error. State after the call reflects that no successful
+    /// outcome was applied.
     fn apply_pending_update<T: SurfaceResizeTarget>(
         &mut self,
         size: PhysicalSize<u32>,
@@ -499,6 +528,10 @@ mod tests {
     /// Records which surface operation the controller selected.
     impl SurfaceResizeTarget for FakeSurfaceTarget {
         /// Records an ordinary call and returns the configured deterministic outcome.
+        ///
+        /// # Errors
+        ///
+        /// This test target is infallible and never returns an error.
         fn try_resize_target(
             &mut self,
             size: PhysicalExtent,
@@ -512,6 +545,10 @@ mod tests {
         }
 
         /// Records a forced call and returns the configured deterministic outcome.
+        ///
+        /// # Errors
+        ///
+        /// This test target is infallible and never returns an error.
         fn try_reconfigure_surface_target(
             &mut self,
             size: PhysicalExtent,

@@ -220,6 +220,11 @@ pub fn run_from_env() -> Result<(), PackagingError> {
 }
 
 /// Executes an already parsed command relative to `cwd`.
+///
+/// # Errors
+///
+/// Propagates Cargo metadata discovery and the selected icon-generation or
+/// packaging workflow error.
 fn run(cli: Cli, cwd: &Path) -> Result<(), PackagingError> {
     let metadata = cargo_metadata(cwd)?;
     match cli.command {
@@ -270,6 +275,11 @@ struct CargoTarget {
 }
 
 /// Queries Cargo without dependency metadata in `cwd`.
+///
+/// # Errors
+///
+/// Propagates process-launch I/O errors, returns a message error for non-success
+/// Cargo status, and propagates malformed JSON metadata errors.
 fn cargo_metadata(cwd: &Path) -> Result<CargoMetadata, PackagingError> {
     let output = Command::new(cargo_program())
         .args(["metadata", "--format-version", "1", "--no-deps"])
@@ -292,6 +302,11 @@ fn cargo_program() -> OsString {
 /// Selects one package explicitly, by current manifest, or by singleton fallback.
 ///
 /// An absent request never guesses when a multi-package workspace is ambiguous.
+///
+/// # Errors
+///
+/// Returns an error when an explicit package is absent/ambiguous or when no
+/// unambiguous current/singleton package can be inferred.
 fn select_package<'a>(
     cwd: &Path,
     metadata: &'a CargoMetadata,
@@ -336,6 +351,11 @@ fn select_package<'a>(
 }
 
 /// Selects one binary target, requiring `--bin` when several exist.
+///
+/// # Errors
+///
+/// Returns an error when the requested binary is absent, the package exposes no
+/// binary, or multiple binaries exist without an explicit request.
 fn select_binary<'a>(
     package: &'a CargoPackage,
     requested: Option<&str>,
@@ -387,6 +407,11 @@ fn conventional_icon_path(package: &CargoPackage) -> PathBuf {
 }
 
 /// Implements the icon-only command in the content-addressed target cache.
+///
+/// # Errors
+///
+/// Returns an error for package-selection failure, an absent conventional icon,
+/// invalid icon input, or generated-icon cache I/O/encoding failure.
 fn generate_icons_command(
     cwd: &Path,
     metadata: &CargoMetadata,
@@ -456,6 +481,18 @@ pub(crate) struct PackageContext {
 }
 
 /// Runs the build, attestation, staging, and artifact workflow for one package.
+///
+/// # Errors
+///
+/// Propagates selection/platform/configuration, icon validation, Cargo build,
+/// identity attestation, receipt, staging, archive, hashing, and manifest I/O
+/// failures. Existing temporary/final staging is replaced only at the documented
+/// transaction boundaries.
+///
+/// # Panics
+///
+/// Panics only if successful Linux platform resolution failed to retain its
+/// already-computed Debian plan or architecture.
 fn package_command(
     cwd: &Path,
     metadata: &CargoMetadata,
@@ -633,6 +670,11 @@ fn package_command(
 }
 
 /// Invokes Cargo for exactly the selected package, binary, profile, and target.
+///
+/// # Errors
+///
+/// Propagates failure to spawn/wait for Cargo and returns a message error for a
+/// non-success build status.
 fn build_consumer(
     cwd: &Path,
     package: &CargoPackage,
@@ -691,6 +733,12 @@ fn executable_path(
 /// [`AILLOLI_UI_PACKAGE_METADATA_PATH_ENV`]. A stale file with the same
 /// process-based name is removed first. The binary is trusted build output and
 /// runs with the packager's normal environment and permissions.
+///
+/// # Errors
+///
+/// Propagates package-directory/stale-file I/O, executable launch, non-success
+/// status, missing output, JSON decoding, cleanup, and unsupported identity
+/// schema failures.
 fn probe_identity(
     cwd: &Path,
     metadata: &CargoMetadata,
@@ -734,6 +782,11 @@ fn probe_identity(
 }
 
 /// Confirms that probed identity names the conventional icon and exact SVG digest.
+///
+/// # Errors
+///
+/// Returns an error when the binary does not report the conventional
+/// `app_icon!()` path or its embedded SVG digest differs from `source_icon`.
 fn validate_embedded_identity(
     identity: &AppIdentityMetadata,
     source_icon: &ailloli_ui_core::AppIcon,
@@ -798,6 +851,11 @@ fn receipt_path(metadata: &CargoMetadata, context: &PackageContext) -> PathBuf {
 }
 
 /// Recomputes every authenticated receipt field from current files and metadata.
+///
+/// # Errors
+///
+/// Propagates executable or Cargo-manifest open/read errors while hashing the
+/// current authenticated inputs.
 fn expected_receipt(
     context: &PackageContext,
     package: &CargoPackage,
@@ -825,6 +883,11 @@ fn expected_receipt(
 ///
 /// Parent directories are created as needed. The write is not atomic; a write
 /// error may leave a partial receipt, which validation rejects as stale.
+///
+/// # Errors
+///
+/// Propagates input hashing, parent-directory creation, JSON serialization, and
+/// receipt-file write errors.
 fn write_receipt(
     path: &Path,
     context: &PackageContext,
@@ -853,6 +916,11 @@ fn write_receipt(
 ///
 /// Missing, malformed, older-schema, or unequal receipts all produce the same
 /// actionable `--no-build` stale-receipt diagnostic.
+///
+/// # Errors
+///
+/// Returns a stale-receipt error when the file is missing, malformed, or differs
+/// from current inputs; propagates failures while hashing those current inputs.
 fn validate_receipt(
     path: &Path,
     context: &PackageContext,
@@ -935,6 +1003,16 @@ struct ArtifactEntry {
 }
 
 /// Atomically replaces the distribution manifest and GNU-style checksum file.
+///
+/// # Errors
+///
+/// Propagates artifact hashing/metadata, JSON serialization, and either atomic
+/// manifest/checksum write failure.
+///
+/// # Panics
+///
+/// Panics if `artifact` has no filename component; callers pass a concrete file
+/// below the distribution directory.
 fn write_distribution_manifest(
     dist: &Path,
     context: &PackageContext,
@@ -985,6 +1063,10 @@ fn write_distribution_manifest(
 ///
 /// On platforms where rename-over-existing is unavailable, the old file is
 /// removed first, leaving a small interval in which the final path is absent.
+///
+/// # Errors
+///
+/// Propagates temporary-file write, previous-file removal, or final rename errors.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PackagingError> {
     let temp = path.with_extension(format!("tmp-{}", std::process::id()));
     fs::write(&temp, bytes)?;
@@ -1000,6 +1082,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), PackagingError> {
 /// Failed callbacks trigger best-effort temporary-file cleanup and preserve an
 /// existing destination. A successful callback removes an old destination
 /// before renaming the temporary file.
+///
+/// # Errors
+///
+/// Propagates stale-temporary cleanup, callback, old-destination removal, or
+/// final rename errors. Callback failure preserves an existing destination.
 fn write_replacing(
     destination: &Path,
     write: impl FnOnce(&Path) -> Result<(), PackagingError>,
@@ -1022,6 +1109,10 @@ fn write_replacing(
 /// Streams a file through SHA-256 using a fixed 64-KiB buffer.
 ///
 /// Returns a lowercase 64-character hexadecimal digest, including for an empty file.
+///
+/// # Errors
+///
+/// Propagates file-open and streaming read errors.
 fn hash_file(path: &Path) -> Result<String, PackagingError> {
     let mut input = BufReader::new(File::open(path)?);
     let mut digest = Sha256::new();
@@ -1044,6 +1135,11 @@ fn hash_file(path: &Path) -> Result<String, PackagingError> {
 ///
 /// ASCII underscores become hyphens. Remaining characters must be lowercase
 /// ASCII letters, digits, `+`, `-`, or `.`; the result must not be empty.
+///
+/// # Errors
+///
+/// Returns an error when lowercase/underscore normalization yields an empty
+/// name or a character outside the Debian-safe set.
 fn distribution_name(name: &str) -> Result<String, PackagingError> {
     let name = name.to_ascii_lowercase().replace('_', "-");
     if name.is_empty()
@@ -1062,6 +1158,11 @@ fn distribution_name(name: &str) -> Result<String, PackagingError> {
 ///
 /// An explicit target must map to the current host OS. `Auto` selects that OS;
 /// every explicit format must also match it.
+///
+/// # Errors
+///
+/// Returns an error for an unsupported host/target triple, a cross-platform
+/// target, or an explicit format incompatible with the current host.
 fn requested_platform(
     format: PackageFormat,
     target: Option<&str>,
@@ -1093,6 +1194,10 @@ fn requested_platform(
 }
 
 /// Maps the compile-time host OS to a supported packaging platform.
+///
+/// # Errors
+///
+/// Returns an error when the compile-time OS is not Linux, Windows, or macOS.
 fn host_platform() -> Result<Platform, PackagingError> {
     match std::env::consts::OS {
         "linux" => Ok(Platform::Linux),
@@ -1105,6 +1210,11 @@ fn host_platform() -> Result<Platform, PackagingError> {
 }
 
 /// Infers a platform from conventional substrings in a Rust target triple.
+///
+/// # Errors
+///
+/// Returns an error when `target` contains none of the recognized Windows,
+/// Apple Darwin, or Linux markers.
 fn platform_from_target(target: &str) -> Result<Platform, PackagingError> {
     if target.contains("windows") {
         Ok(Platform::Windows)

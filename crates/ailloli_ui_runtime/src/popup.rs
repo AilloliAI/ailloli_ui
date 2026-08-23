@@ -2747,6 +2747,11 @@ impl<A> PopupPortal<A> {
     ///
     /// Returns `UnknownPopup` or `ParentNotOpen` without changing visibility.
     ///
+    /// # Panics
+    ///
+    /// Panics only if the internal popup map loses the entry between the initial
+    /// existence check and its mutation.
+    ///
     /// # Examples
     ///
     /// ```
@@ -3449,6 +3454,11 @@ fn rect_has_finite_edges(rect: Rect) -> bool {
 }
 
 /// Maps invalid anchor geometry to [`PopupPlacementError::InvalidAnchor`].
+///
+/// # Errors
+///
+/// Returns [`PopupPlacementError::InvalidAnchor`] for a negative dimension or
+/// any non-finite component or computed edge.
 fn validate_anchor(anchor: Rect) -> Result<(), PopupPlacementError> {
     if rect_is_valid(anchor) {
         Ok(())
@@ -3458,6 +3468,11 @@ fn validate_anchor(anchor: Rect) -> Result<(), PopupPlacementError> {
 }
 
 /// Accepts finite non-negative desired width and height, including zero.
+///
+/// # Errors
+///
+/// Returns [`PopupPlacementError::InvalidDesiredSize`] for a negative or
+/// non-finite width or height.
 fn validate_desired_size(desired_size: Size) -> Result<(), PopupPlacementError> {
     if desired_size.w.is_finite()
         && desired_size.h.is_finite()
@@ -3471,6 +3486,11 @@ fn validate_desired_size(desired_size: Size) -> Result<(), PopupPlacementError> 
 }
 
 /// Requires valid finite edges and strictly positive viewport dimensions.
+///
+/// # Errors
+///
+/// Returns [`PopupPlacementError::InvalidViewport`] for invalid geometry, or
+/// [`PopupPlacementError::EmptyViewport`] when either dimension is zero.
 fn validate_viewport(viewport: Rect) -> Result<(), PopupPlacementError> {
     if !rect_is_valid(viewport) {
         return Err(PopupPlacementError::InvalidViewport);
@@ -3482,6 +3502,10 @@ fn validate_viewport(viewport: Rect) -> Result<(), PopupPlacementError> {
 }
 
 /// Accepts a finite non-negative logical-pixel anchor gap.
+///
+/// # Errors
+///
+/// Returns [`PopupPlacementError::InvalidGap`] for a negative or non-finite gap.
 fn validate_gap(gap: f32) -> Result<(), PopupPlacementError> {
     if gap.is_finite() && gap >= 0.0 {
         Ok(())
@@ -3506,6 +3530,11 @@ fn available_vertical_space(
 /// Computes aligned bounds after callers validate finite input geometry.
 ///
 /// Arithmetic can still overflow, which maps to `UnrepresentableGeometry`.
+///
+/// # Errors
+///
+/// Returns [`PopupPlacementError::UnrepresentableGeometry`] when aligned-edge
+/// arithmetic produces a non-finite coordinate.
 fn position_popup_unchecked(
     anchor: Rect,
     desired_size: Size,

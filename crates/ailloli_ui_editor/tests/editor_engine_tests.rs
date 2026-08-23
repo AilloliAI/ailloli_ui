@@ -3023,24 +3023,40 @@ impl LspBackend for MockLspBackend {
     }
 
     /// Records that the fixture document opened.
+    ///
+    /// # Errors
+    ///
+    /// This in-memory fixture never returns an error.
     fn open_document(&mut self, _document: &Document) -> Result<(), LspError> {
         self.opened = true;
         Ok(())
     }
 
     /// Records that the fixture document changed.
+    ///
+    /// # Errors
+    ///
+    /// This in-memory fixture never returns an error.
     fn change_document(&mut self, _document: &Document) -> Result<(), LspError> {
         self.changed = true;
         Ok(())
     }
 
     /// Records that the fixture document closed.
+    ///
+    /// # Errors
+    ///
+    /// This in-memory fixture never returns an error.
     fn close_document(&mut self, _document: &Document) -> Result<(), LspError> {
         self.closed = true;
         Ok(())
     }
 
     /// Returns the configured symbol response.
+    ///
+    /// # Errors
+    ///
+    /// This in-memory fixture always returns a cloned successful response.
     fn document_symbols(
         &mut self,
         _document: &Document,
@@ -3049,11 +3065,19 @@ impl LspBackend for MockLspBackend {
     }
 
     /// Returns the configured reference response.
+    ///
+    /// # Errors
+    ///
+    /// This in-memory fixture always returns a cloned successful response.
     fn references(&mut self, _document: &Document) -> Result<Vec<SemanticReference>, LspError> {
         Ok(self.references.clone())
     }
 
     /// Returns the configured diagnostic response.
+    ///
+    /// # Errors
+    ///
+    /// This in-memory fixture always returns a cloned successful response.
     fn diagnostics(&mut self, _document: &Document) -> Result<Vec<LspDiagnostic>, LspError> {
         Ok(self.diagnostics.clone())
     }

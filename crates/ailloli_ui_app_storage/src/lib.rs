@@ -115,8 +115,8 @@ impl AppStorageError {
 ///
 /// ```
 /// use ailloli_ui_app_storage::AppId;
-/// assert_eq!(AppId::new("studio-2")?.as_str(), "studio-2");
-/// assert!(AppId::new("Studio_2").is_err());
+/// assert_eq!(AppId::new("demo-2")?.as_str(), "demo-2");
+/// assert!(AppId::new("Demo_2").is_err());
 /// # Ok::<(), ailloli_ui_app_storage::AppStorageError>(())
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -453,9 +453,13 @@ pub struct AppStorageDiagnostics {
 /// ```
 #[derive(Debug, Clone)]
 pub struct AppStorageBuilder {
+    /// Unvalidated application identifier supplied by the caller.
     app_id: String,
+    /// XDG or explicit single-directory resolution policy.
     mode: AppStorageMode,
+    /// Whether resolution should prepare the optional home symlink view.
     home_symlink_view: bool,
+    /// Optional caller-selected root for that compatibility view.
     home_symlink_root: Option<PathBuf>,
 }
 
@@ -602,7 +606,9 @@ impl AppStorageBuilder {
 
 /// Filters environment values and records app-specific paths that are consumed.
 struct EnvResolver<F> {
+    /// Environment lookup supplied by production code or a deterministic test.
     get: F,
+    /// App-specific environment overrides consumed during resolution.
     overrides: Vec<EnvOverride>,
 }
 
@@ -723,10 +729,15 @@ fn expand_home(path: PathBuf, home: Option<&Path>) -> PathBuf {
 /// ```
 #[derive(Debug, Clone)]
 pub struct AppStorage {
+    /// Validated filename-safe application identifier.
     app_id: AppId,
+    /// Resolution policy that produced [`Self::dirs`].
     mode: AppStorageMode,
+    /// Fully resolved configuration, state, data, and cache directories.
     dirs: AppStorageDirs,
+    /// Optional home-view configuration; no symlink is created by resolution.
     home_symlink_view: HomeSymlinkView,
+    /// App-specific environment values consumed while resolving paths.
     env_overrides: Vec<EnvOverride>,
 }
 
@@ -1183,6 +1194,11 @@ fn inspect_symlink_entry(link: &Path, target: &Path) -> HomeSymlinkEntryState {
 
 #[cfg(unix)]
 /// Creates one Unix directory-target symlink without replacing an existing path.
+///
+/// # Errors
+///
+/// Returns [`AppStorageError::Io`] with `link` as path context when the native
+/// symlink operation fails, including when the destination already exists.
 fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
     std::os::unix::fs::symlink(target, link)
         .map_err(|err| AppStorageError::io(Some(link.to_path_buf()), err))
@@ -1190,6 +1206,11 @@ fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
 
 #[cfg(windows)]
 /// Creates one Windows directory symlink without replacing an existing path.
+///
+/// # Errors
+///
+/// Returns [`AppStorageError::Io`] with `link` as path context when the native
+/// directory-symlink operation fails, including permission and collision errors.
 fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
     std::os::windows::fs::symlink_dir(target, link)
         .map_err(|err| AppStorageError::io(Some(link.to_path_buf()), err))
@@ -1197,6 +1218,11 @@ fn create_dir_symlink(target: &Path, link: &Path) -> Result<()> {
 
 #[cfg(not(any(unix, windows)))]
 /// Reports the lack of directory-symlink support on other targets.
+///
+/// # Errors
+///
+/// Always returns [`AppStorageError::SymlinkUnsupported`] because this target
+/// has no implementation for directory symlinks.
 fn create_dir_symlink(_target: &Path, _link: &Path) -> Result<()> {
     Err(AppStorageError::SymlinkUnsupported(
         "directory symlinks are not available on this platform".into(),
@@ -1450,6 +1476,11 @@ impl LogicalWindowPosition {
 }
 
 /// Accepts only the current preferences schema version, preserving all values.
+///
+/// # Errors
+///
+/// Returns [`AppStorageError::InvalidDocument`] when `document.version` differs
+/// from [`APP_PREFERENCES_VERSION`].
 fn validate_preferences(document: AppPreferencesDocument) -> Result<AppPreferencesDocument> {
     if document.version != APP_PREFERENCES_VERSION {
         return Err(AppStorageError::InvalidDocument(format!(
@@ -1461,6 +1492,11 @@ fn validate_preferences(document: AppPreferencesDocument) -> Result<AppPreferenc
 }
 
 /// Accepts only the current window-state version without validating snapshots.
+///
+/// # Errors
+///
+/// Returns [`AppStorageError::InvalidDocument`] when `document.version` differs
+/// from [`WINDOW_STATE_VERSION`].
 fn validate_window_state(document: WindowStateDocument) -> Result<WindowStateDocument> {
     if document.version != WINDOW_STATE_VERSION {
         return Err(AppStorageError::InvalidDocument(format!(
@@ -1584,6 +1620,11 @@ pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Derives the deterministic sibling temp path and requires a UTF-8 file name.
+///
+/// # Errors
+///
+/// Returns [`AppStorageError::InvalidDocument`] when `path` has no final file
+/// name or that name is not valid UTF-8.
 fn temp_path_for(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()

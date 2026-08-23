@@ -27,6 +27,7 @@ use ailloli_ui_runtime::app::ClipboardProvider;
 /// # Ok::<(), String>(())
 /// ```
 pub struct VrClipboard {
+    /// UI-local UTF-8 clipboard contents retained for the VR session.
     text: RefCell<String>,
 }
 

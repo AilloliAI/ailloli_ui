@@ -126,6 +126,7 @@ pub enum SurfaceReattachOutcome {
 /// Optional native attachment with explicit detach/reattach transitions.
 #[derive(Debug)]
 struct SurfaceAttachmentSlot<T> {
+    /// Current attachment value, absent while detached or after extraction.
     value: Option<T>,
 }
 
@@ -1463,11 +1464,17 @@ fn adapter_bootstrap_rank(device_type: wgpu::DeviceType) -> u8 {
 /// assert!(std::mem::size_of::<SurfaceGpuContext>() > 0);
 /// ```
 pub struct SurfaceGpuContext {
+    /// WGPU instance that created the adapter and any attached surfaces.
     instance: wgpu::Instance,
+    /// Physical or software adapter selected for this context.
     adapter: wgpu::Adapter,
+    /// Logical device owning pipelines, textures, and command encoders.
     device: wgpu::Device,
+    /// Submission queue paired with `device`.
     queue: wgpu::Queue,
+    /// Lazily populated render-pipeline and bind-layout cache.
     pipelines: PipelineCache,
+    /// Color format used by surface and compatible intermediate pipelines.
     format: wgpu::TextureFormat,
 }
 
@@ -1592,9 +1599,13 @@ impl SurfaceGpuContext {
 /// assert!(std::mem::size_of::<SurfaceAttachment>() > 0);
 /// ```
 pub struct SurfaceAttachment {
+    /// Native presentation surface tied to the source window lifetime contract.
     surface: wgpu::Surface<'static>,
+    /// Last successfully applied physical extent, format, and present policy.
     config: wgpu::SurfaceConfiguration,
+    /// Adapter-reported formats, present modes, and alpha modes.
     capabilities: wgpu::SurfaceCapabilities,
+    /// Optional callback invoked immediately before each present operation.
     pre_present: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -1680,10 +1691,15 @@ enum SurfaceAttachAttemptError {
 pub struct WgpuSurfaceBundle {
     // Declared first so Rust's field drop order releases the surface (and its
     // owned raw-handle target) before the reusable GPU context on full teardown.
+    /// Detachable native surface and its attachment lifecycle state.
     attachment: SurfaceAttachmentSlot<SurfaceAttachment>,
+    /// Reusable device, queue, adapter, and pipeline context.
     context: SurfaceGpuContext,
+    /// Most recent requested physical extent, including deferred zero extents.
     last_extent: PhysicalExtent,
+    /// Whether surface composition requests transparent alpha handling.
     transparent: bool,
+    /// Power, fallback, present, and alpha preferences used for reattachment.
     bootstrap: SurfaceBootstrapConfig,
 }
 
@@ -2143,6 +2159,13 @@ impl WgpuSurfaceBundle {
     ///
     /// Capability or configuration incompatibilities request a full rebuild;
     /// failure to create the native surface is fatal for this target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SurfaceAttachAttemptError::Fatal`] when native surface creation
+    /// fails. Returns [`SurfaceAttachAttemptError::RequiresRebuild`] when the
+    /// retained adapter or format is incompatible, capabilities are incomplete,
+    /// or wgpu panics while configuring the surface.
     fn create_attachment_with_context<T>(
         context: &SurfaceGpuContext,
         target: std::sync::Arc<T>,
@@ -2269,6 +2292,14 @@ impl WgpuSurfaceBundle {
     /// Surface configuration panics from wgpu are caught and converted to
     /// [`RendererError::SurfaceConfigFailed`]. Successful configuration records
     /// a benchmark event with a saturating wall-clock timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::RenderTargetUnavailable`] while detached,
+    /// [`RendererError::SurfaceRecreationRequired`] when the retained format is
+    /// no longer advertised, or [`RendererError::SurfaceConfigFailed`] when
+    /// wgpu panics during configuration. Incomplete capabilities yield a
+    /// successful [`ResizeOutcome::Deferred`] instead.
     fn configure_surface(
         &mut self,
         new_size: PhysicalExtent,
@@ -2641,6 +2672,12 @@ fn surface_context_reuse_failure(
 ///
 /// The compatibility caller must first establish that `format` appears in the
 /// advertised capabilities.
+///
+/// # Errors
+///
+/// Propagates [`SurfaceConfigDeferredReason::NoFormats`] or
+/// [`SurfaceConfigDeferredReason::NoPresentModes`] from
+/// [`build_surface_config`]. Format compatibility itself is a caller invariant.
 fn build_surface_config_for_format(
     capabilities: &wgpu::SurfaceCapabilities,
     size: PhysicalExtent,

@@ -533,12 +533,19 @@ impl<A: 'static> ToastHost<A> {
 
 /// Component properties used to build the overlay host node.
 struct ToastHostComponent<A> {
+    /// Outer logical sizing policy for the underlying host child.
     layout: LayoutStyle,
+    /// Readable ordered toast collection.
     toasts: Binding<Vec<Toast>>,
+    /// Optional writable collection used for built-in dismissal.
     bound_toasts: Option<Signal<Vec<Toast>>>,
+    /// Viewport corner or edge used to stack toast overlays.
     position: ToastPosition,
+    /// Toast colors, spacing, and logical-pixel geometry.
     style: ToastStyle,
+    /// Optional callback receiving dismissed toast identities.
     on_dismiss: Option<ToastDismissHandler<A>>,
+    /// Optional underlying host content painted below overlays.
     child: Option<View<A>>,
 }
 
@@ -582,11 +589,17 @@ impl<A: 'static> IntoView<A> for ToastHost<A> {
 
 /// Retained overlay widget resolving stack geometry and close activation.
 struct ToastHostWidget<A> {
+    /// Outer logical sizing policy for the underlying host child.
     layout: LayoutStyle,
+    /// Readable ordered toast collection.
     toasts: Binding<Vec<Toast>>,
+    /// Optional writable collection used for built-in dismissal.
     bound_toasts: Option<Signal<Vec<Toast>>>,
+    /// Viewport corner or edge used to stack toast overlays.
     position: ToastPosition,
+    /// Toast colors, spacing, and logical-pixel geometry.
     style: ToastStyle,
+    /// Optional retained dismissal callback.
     on_dismiss: Option<ToastDismissHandler<A>>,
 }
 

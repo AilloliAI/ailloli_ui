@@ -59,10 +59,15 @@ pub enum ViewKeyResolveError {
 /// assert!(tree.get(root).unwrap().dirty.layout);
 /// ```
 pub struct ElementTree<A> {
+    /// Last allocated wrapping element identifier; zero is never emitted.
     next_element: u64,
+    /// Last allocated wrapping widget identifier; zero is never emitted.
     next_widget: u64,
+    /// Retained elements indexed by stable element identity.
     elements: HashMap<ElementId, Element<A>>,
+    /// Optional root element; low-level mutations do not repair it automatically.
     root: Option<ElementId>,
+    /// Cumulative diagnostic counters for tree mutations and anomalies.
     diagnostics: ElementTreeDiagnostics,
 }
 

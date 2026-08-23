@@ -26,9 +26,13 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessResourceSnapshot {
+    /// Resident set size in bytes sampled from the current process.
     rss_bytes: u64,
+    /// Proportional set size in bytes, or the platform fallback value.
     pss_bytes: u64,
+    /// Number of process threads observed at sampling time.
     threads: usize,
+    /// Number of open file descriptors or platform handles observed.
     file_descriptors: usize,
 }
 

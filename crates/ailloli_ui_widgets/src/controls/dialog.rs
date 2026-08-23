@@ -484,19 +484,33 @@ impl<A: 'static> Dialog<A> {
 
 /// Component properties used to allocate internal visibility state.
 struct DialogComponent<A> {
+    /// Outer logical sizing policy for the underlying host child.
     layout: LayoutStyle,
+    /// Optional readable external open state.
     open: Option<Binding<bool>>,
+    /// Optional writable external open state.
     bound_open: Option<Signal<bool>>,
+    /// Initial open state used by an uncontrolled dialog.
     default_open: bool,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Reactive user-visible dialog title.
     title: Binding<String>,
+    /// Reactive user-visible dialog body.
     body: Binding<String>,
+    /// Reactive confirm-button label.
     confirm_label: Binding<String>,
+    /// Reactive cancel-button label.
     cancel_label: Binding<String>,
+    /// Semantic color tone for the confirm action.
     tone: DialogTone,
+    /// Surface, backdrop, and logical-pixel geometry.
     style: DialogStyle,
+    /// Optional confirm action shared by pointer and keyboard activation.
     on_confirm: Option<Rc<ClickAction<A>>>,
+    /// Optional cancel action shared by button, Escape, and outside dismissal.
     on_cancel: Option<Rc<ClickAction<A>>>,
+    /// Optional underlying host content painted below the modal overlay.
     child: Option<View<A>>,
 }
 
@@ -554,18 +568,31 @@ impl<A: 'static> IntoView<A> for Dialog<A> {
 
 /// Retained overlay widget resolving visibility and modal event paths.
 struct DialogWidget<A> {
+    /// Outer logical sizing policy for the underlying host child.
     layout: LayoutStyle,
+    /// Optional readable external open state.
     open: Option<Binding<bool>>,
+    /// Optional writable external open state.
     bound_open: Option<Signal<bool>>,
+    /// Retained open state used by an uncontrolled dialog.
     internal_open: Signal<bool>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Reactive user-visible dialog title.
     title: Binding<String>,
+    /// Reactive user-visible dialog body.
     body: Binding<String>,
+    /// Reactive confirm-button label.
     confirm_label: Binding<String>,
+    /// Reactive cancel-button label.
     cancel_label: Binding<String>,
+    /// Semantic color tone for the confirm action.
     tone: DialogTone,
+    /// Surface, backdrop, and logical-pixel geometry.
     style: DialogStyle,
+    /// Optional retained confirm action.
     on_confirm: Option<Rc<ClickAction<A>>>,
+    /// Optional retained cancel action.
     on_cancel: Option<Rc<ClickAction<A>>>,
 }
 

@@ -102,11 +102,17 @@ fn union_rect(a: Rect, b: Rect) -> Rect {
 /// let _ = card;
 /// ```
 pub struct Container<A = ()> {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Parent-flex participation metadata.
     pub(crate) flex_item: FlexItemStyle,
+    /// Background, border, radius, padding, and shadow styling.
     box_style: BoxStyle,
+    /// Whether child paint and hit testing are clipped to the content shape.
     clip_children: bool,
+    /// Whether this clip establishes the native window-root boundary.
     window_root_clip: bool,
+    /// Optional sole retained child.
     child: Option<View<A>>,
 }
 
@@ -457,9 +463,13 @@ impl<A: 'static> Container<A> {
 
 /// Frozen box/layout state installed in the retained tree.
 struct ContainerWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Background, border, radius, padding, and shadow styling.
     style: BoxStyle,
+    /// Whether child paint and hit testing are clipped to the content shape.
     clip_children: bool,
+    /// Whether this clip establishes the native window-root boundary.
     window_root_clip: bool,
 }
 

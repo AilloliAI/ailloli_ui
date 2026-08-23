@@ -763,25 +763,41 @@ impl<A: 'static> RangeSlider<A> {
 
 /// Component properties used to allocate single-thumb drag state.
 struct SliderComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Readable scalar value.
     value: Binding<f32>,
+    /// Optional writable scalar value.
     bound: Option<Signal<f32>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Finite range, step, and normalization policy.
     spec: SliderSpec,
+    /// Horizontal or vertical track orientation.
     orientation: SliderOrientation,
+    /// Optional callback receiving normalized stepped values.
     on_change: Option<SliderChangeHandler<A>>,
+    /// Track/thumb colors and logical-pixel geometry.
     style: SliderStyle,
 }
 
 /// Component properties used to allocate active range-thumb state.
 struct RangeSliderComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Readable lower/upper values.
     values: Binding<SliderRangeValue>,
+    /// Optional writable lower/upper values.
     bound: Option<Signal<SliderRangeValue>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Finite range, step, and normalization policy.
     spec: SliderSpec,
+    /// Horizontal or vertical track orientation.
     orientation: SliderOrientation,
+    /// Optional callback receiving normalized stepped value pairs.
     on_change: Option<RangeChangeHandler<A>>,
+    /// Track/thumb colors and logical-pixel geometry.
     style: SliderStyle,
 }
 
@@ -819,27 +835,45 @@ impl<A: 'static> ComponentNode<A> for RangeSliderComponent<A> {
 
 /// Retained single-thumb widget implementing paint and interaction.
 struct SliderWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Readable scalar value.
     value: Binding<f32>,
+    /// Optional writable scalar value.
     bound: Option<Signal<f32>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Finite range, step, and normalization policy.
     spec: SliderSpec,
+    /// Horizontal or vertical track orientation.
     orientation: SliderOrientation,
+    /// Optional retained change callback.
     on_change: Option<SliderChangeHandler<A>>,
+    /// Track/thumb colors and logical-pixel geometry.
     style: SliderStyle,
+    /// Whether this slider currently owns a captured pointer drag.
     dragging: Signal<bool>,
 }
 
 /// Retained range widget implementing nearest-thumb interaction.
 struct RangeSliderWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Readable lower/upper values.
     values: Binding<SliderRangeValue>,
+    /// Optional writable lower/upper values.
     bound: Option<Signal<SliderRangeValue>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Finite range, step, and normalization policy.
     spec: SliderSpec,
+    /// Horizontal or vertical track orientation.
     orientation: SliderOrientation,
+    /// Optional retained change callback.
     on_change: Option<RangeChangeHandler<A>>,
+    /// Track/thumb colors and logical-pixel geometry.
     style: SliderStyle,
+    /// Lower or upper thumb currently captured by pointer input.
     active_thumb: Signal<Option<SliderThumb>>,
 }
 
@@ -1188,12 +1222,19 @@ enum SliderPaintValue {
 
 /// Complete borrowed parameter set for shared slider painting.
 struct SliderPaintParams<'a> {
+    /// Slider bounds in logical window coordinates.
     bounds: Rect,
+    /// Horizontal or vertical track orientation.
     orientation: SliderOrientation,
+    /// Finite range used to normalize paint positions.
     spec: SliderSpec,
+    /// Scalar or lower/upper normalized values to paint.
     value: SliderPaintValue,
+    /// Whether disabled opacity should be applied.
     disabled: bool,
+    /// Whether active-drag styling should be applied.
     dragging: bool,
+    /// Borrowed track/thumb visual configuration.
     style: &'a SliderStyle,
 }
 

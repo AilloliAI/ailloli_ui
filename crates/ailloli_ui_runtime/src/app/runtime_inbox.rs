@@ -53,8 +53,11 @@ pub enum RuntimeSendError {
 /// Internal provider-neutral message variants crossing the thread boundary.
 #[derive(Debug)]
 enum RuntimeMessage<A> {
+    /// Provider-neutral application action delivered in channel order.
     Action(A),
+    /// Coalescible request to redraw every logical window.
     RedrawAll,
+    /// Coalescible request to redraw one logical window.
     RedrawWindow(LogicalWindowId),
 }
 
@@ -62,16 +65,23 @@ enum RuntimeMessage<A> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum WakeStatus {
     #[default]
+    /// No queued work currently requires a host notification.
     Idle,
+    /// Work is pending and the next producer or installer must notify the host.
     NeedsWake,
+    /// Callback invocation `u64` is executing outside the state mutex.
     InFlight(u64),
+    /// A callback succeeded for the currently pending work.
     Signaled,
 }
 
 /// Installed wake callback and wrapping attempt sequence.
 struct WakeState {
+    /// Optional thread-safe host notification callback.
     wake: Option<Arc<dyn UiWake>>,
+    /// Coalesced notification lifecycle for queued work.
     status: WakeStatus,
+    /// Wrapping nonzero-preferred identity reserved for the next invocation.
     next_attempt_id: u64,
 }
 
@@ -102,14 +112,23 @@ impl WakeState {
 /// Atomic mailbox counters shared across producers and the UI consumer.
 #[derive(Default)]
 struct MailboxStats {
+    /// Successfully enqueued action messages.
     enqueued: AtomicU64,
+    /// Action messages returned to the UI consumer.
     drained: AtomicU64,
+    /// Redraw requests merged into an already pending request.
     coalesced: AtomicU64,
+    /// Action sends rejected because the bounded channel was full.
     overflow: AtomicU64,
+    /// Sends or receives that observed the opposite channel endpoint closed.
     disconnected: AtomicU64,
+    /// Host wake callback invocations attempted.
     wake_calls: AtomicU64,
+    /// Host wake callbacks that returned an error.
     wake_failures: AtomicU64,
+    /// Best-effort queued or prefetched message depth.
     current_depth: AtomicUsize,
+    /// Maximum best-effort depth observed since channel creation.
     max_depth: AtomicUsize,
 }
 
@@ -151,10 +170,15 @@ pub struct RuntimeInboxStats {
 
 /// Shared wake, redraw-coalescing, disconnection, and counter state.
 struct MailboxShared {
+    /// Installed callback and coalesced wake lifecycle protected from producers.
     wake: Mutex<WakeState>,
+    /// Whether an all-window redraw is waiting for the consumer.
     pending_redraw_all: Mutex<bool>,
+    /// Logical windows with a pending targeted redraw request.
     pending_redraw_windows: Mutex<HashSet<LogicalWindowId>>,
+    /// Whether any operation has observed channel disconnection.
     disconnected_observed: AtomicBool,
+    /// Shared wrapping instrumentation counters.
     stats: MailboxStats,
 }
 
@@ -203,6 +227,11 @@ impl MailboxShared {
     }
 
     /// Coalesces or starts a host wake attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns the installed [`UiWake`] callback's error when this call starts
+    /// an attempt. Coalesced requests and requests without a callback succeed.
     fn request_wake(&self) -> Result<(), UiWakeError> {
         let attempt = {
             let mut state = self.wake.lock().unwrap_or_else(|error| error.into_inner());
@@ -224,6 +253,11 @@ impl MailboxShared {
     }
 
     /// Invokes a wake outside the mutex and commits only a matching attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact error produced by [`UiWake::wake`]. The wake remains
+    /// required so a later callback installation or send can retry it.
     fn invoke_wake_attempt(
         &self,
         attempt_id: u64,
@@ -258,6 +292,11 @@ impl MailboxShared {
     }
 
     /// Replaces the callback and immediately retries any outstanding wake.
+    ///
+    /// # Errors
+    ///
+    /// Returns the newly installed callback's [`UiWake::wake`] error when an
+    /// outstanding notification triggers an immediate attempt.
     fn install_wake(&self, wake: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         let attempt = {
             let mut state = self.wake.lock().unwrap_or_else(|error| error.into_inner());
@@ -315,7 +354,9 @@ impl MailboxShared {
 /// assert_eq!(sender.stats().enqueued, 0);
 /// ```
 pub struct RuntimeSender<A> {
+    /// Bounded MPSC producer for non-coalesced action messages.
     sender: SyncSender<RuntimeMessage<A>>,
+    /// Shared redraw, wake, disconnect, and instrumentation state.
     shared: Arc<MailboxShared>,
 }
 
@@ -349,6 +390,12 @@ impl<A> RuntimeSender<A> {
     /// The operation is nonblocking. `EnqueuedButWakeFailed` leaves the action
     /// queued; `Full` and `Closed` do not. Actions are not coalesced.
     ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSendError::Full`] or [`RuntimeSendError::Closed`] when
+    /// the action is not enqueued. [`RuntimeSendError::EnqueuedButWakeFailed`]
+    /// means the action remains queued but the host wake failed.
+    ///
     /// # Examples
     ///
     /// ```
@@ -367,6 +414,13 @@ impl<A> RuntimeSender<A> {
     /// At most one outstanding `RedrawAll` message is queued. Repeated calls
     /// increment `coalesced` and retry host wake without consuming capacity.
     /// Per-window redraw messages remain independent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSendError::Full`] or [`RuntimeSendError::Closed`] when a
+    /// new redraw message cannot be enqueued. A coalesced or newly enqueued
+    /// request returns [`RuntimeSendError::EnqueuedButWakeFailed`] if waking the
+    /// host fails; the pending redraw marker remains set in that case.
     ///
     /// # Examples
     ///
@@ -404,6 +458,13 @@ impl<A> RuntimeSender<A> {
     /// At most one outstanding message per exact logical ID is queued. Duplicate
     /// requests increment `coalesced`; different windows consume separate
     /// capacity. Failed enqueue removes the pending marker so retry can enqueue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSendError::Full`] or [`RuntimeSendError::Closed`] when a
+    /// new window redraw cannot be enqueued. A coalesced or newly enqueued
+    /// request returns [`RuntimeSendError::EnqueuedButWakeFailed`] if the host
+    /// wake fails; the pending marker remains set after that wake-only failure.
     ///
     /// # Examples
     ///
@@ -455,12 +516,23 @@ impl<A> RuntimeSender<A> {
     }
 
     /// Publishes a non-coalesced message then requests a host wake.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSendError::Full`] or [`RuntimeSendError::Closed`] when
+    /// enqueueing fails, or [`RuntimeSendError::EnqueuedButWakeFailed`] after a
+    /// successful enqueue whose host wake fails.
     fn send(&self, message: RuntimeMessage<A>) -> Result<(), RuntimeSendError> {
         self.try_enqueue(message)?;
         self.request_host_wake()
     }
 
     /// Maps a host wake failure without changing queue ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSendError::EnqueuedButWakeFailed`] with the underlying
+    /// [`UiWakeError`] when the host callback rejects the notification.
     fn request_host_wake(&self) -> Result<(), RuntimeSendError> {
         self.shared
             .request_wake()
@@ -468,6 +540,11 @@ impl<A> RuntimeSender<A> {
     }
 
     /// Attempts bounded publication and updates send-side diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeSendError::Full`] when the bounded queue is at capacity,
+    /// or [`RuntimeSendError::Closed`] after the receiver disconnects.
     fn try_enqueue(&self, message: RuntimeMessage<A>) -> Result<(), RuntimeSendError> {
         match self.sender.try_send(message) {
             Ok(()) => {
@@ -528,8 +605,11 @@ pub struct RuntimeDrain {
 /// assert_eq!(inbox.stats().drained, 0);
 /// ```
 pub struct RuntimeInbox<A> {
+    /// Single consumer for ordered action messages.
     receiver: Receiver<RuntimeMessage<A>>,
+    /// Shared redraw, wake, disconnect, and instrumentation state.
     shared: Arc<MailboxShared>,
+    /// One prefetched message retained when a bounded drain stops early.
     pending: Option<RuntimeMessage<A>>,
 }
 
@@ -584,6 +664,11 @@ impl<A> RuntimeInbox<A> {
     ///
     /// Callback invocation is synchronous and outside the wake mutex. On error,
     /// the callback remains installed and the wake remains retryable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the callback's [`UiWakeError`] when delivering an already
+    /// outstanding notification fails.
     ///
     /// # Examples
     ///
@@ -736,6 +821,10 @@ mod tests {
     /// Implements the UiWake contract for CountingWake.
     impl UiWake for CountingWake {
         /// Notifies the test or host wake target.
+        ///
+        /// # Errors
+        ///
+        /// This counting test callback never returns an error.
         fn wake(&self) -> Result<(), UiWakeError> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())

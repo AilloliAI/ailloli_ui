@@ -61,19 +61,30 @@ use wgpu::util::DeviceExt;
 /// assert!(std::mem::size_of::<Renderer>() > 0);
 /// ```
 pub struct Renderer {
+    /// Managed native surface or externally managed render-target backend.
     gpu: RenderBackend,
 
+    /// Rasterized icon textures cached by identity, scale, size, and tint.
     icon_cache: IconCache,
+    /// Paged glyph atlas and per-frame pinning state.
     text_atlas: TextAtlas,
+    /// UI font metrics used to align glyph baselines.
     text_metrics: FontMetrics,
     /// Font blobs per `face_id` (filled by `TextSystem` before each frame).
     text_face_blobs: Arc<HashMap<u64, Arc<[u8]>>>,
+    /// Depth-stencil attachment matching the latest main target extent.
     stencil_target: Option<StencilTarget>,
+    /// Reusable offscreen textures for isolated layers and backdrops.
     offscreen_pool: OffscreenSurfacePool,
+    /// Lazily initialized blur and color-matrix pipelines.
     effect_pipelines: Option<EffectPipelines>,
+    /// Lazily initialized non-normal blend-mode pipelines.
     composite_blend_pipelines: Option<CompositeBlendPipelines>,
+    /// Counters from the most recently completed isolated-layer frame.
     isolated_metrics: IsolatedFrameMetrics,
+    /// Per-frame isolated depth, surface, and byte limits.
     isolated_budget: IsolatedBudgetConfig,
+    /// Optional benchmark scenario identifier attached to metrics.
     bench_scenario: Option<String>,
     /// Holds offscreen leases until `end_frame` after the main pass composite.
     frame_leases: Vec<crate::offscreen_pool::LeasedOffscreen>,
@@ -139,6 +150,12 @@ impl RenderBackend {
     }
 
     /// Applies a resize using the backend-specific configuration path.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the native surface attachment, format, or configuration errors
+    /// documented by [`WgpuSurfaceBundle::try_resize`]. Detached targets resize
+    /// their virtual configuration infallibly.
     fn try_resize(
         &mut self,
         new_size: PhysicalExtent,
@@ -150,6 +167,12 @@ impl RenderBackend {
     }
 
     /// Forces native surface configuration, rejecting detached contexts.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from [`WgpuSurfaceBundle::try_reconfigure`] for a native
+    /// surface, or returns [`RendererError::RenderTargetUnavailable`] for a
+    /// detached render context.
     fn try_reconfigure_surface(
         &mut self,
         new_size: PhysicalExtent,
@@ -235,6 +258,11 @@ impl RenderBackend {
     }
 
     /// Mutably borrows the native surface or returns a typed availability error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::RenderTargetUnavailable`] when this backend owns
+    /// only a detached render context.
     fn require_surface_mut(
         &mut self,
     ) -> Result<&mut WgpuSurfaceBundle, crate::error::RendererError> {
@@ -760,6 +788,12 @@ impl Renderer {
     ///
     /// The current implementation is fallible for forward compatibility but
     /// performs only non-fallible CPU initialization and wgpu resource creation.
+    ///
+    /// # Errors
+    ///
+    /// The current implementation never returns `Err`; the result preserves a
+    /// fallible construction boundary for future cache initialization failures.
+    /// wgpu validation failures may panic as described by its resource APIs.
     fn new_from_backend(
         gpu: RenderBackend,
         options: RendererOptions,
@@ -1449,6 +1483,12 @@ impl Renderer {
     ///
     /// The frame must expose its source texture because backdrop and blend
     /// planning may copy from it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::FrameTextureUnavailable`] when the acquired
+    /// frame exposes no source texture. Command recording and queue submission
+    /// are otherwise represented by wgpu validation panics, not this result.
     fn render_layered_from_frame(
         &mut self,
         clear: Color,
@@ -1656,6 +1696,11 @@ impl Renderer {
     /// Physical width and height are clamped to one. Only RGBA8 and BGRA8,
     /// linear or sRGB, are accepted. The returned tuple carries buffer, width,
     /// height, padded bytes per row, tight bytes per row, and source format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::CaptureUnsupportedFormat`] when the render
+    /// backend uses any format other than RGBA8 or BGRA8, linear or sRGB.
     fn enqueue_surface_texture_readback(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1715,6 +1760,11 @@ impl Renderer {
     /// Padded rows are stripped and BGRA formats are channel-swapped. The
     /// staging buffer is unmapped before return. Mapping callback/channel errors
     /// become [`RendererError::CaptureMapFailed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError::CaptureMapFailed`] when the mapping callback
+    /// reports a GPU error or its completion channel disconnects.
     fn map_readback_to_rgba(
         &self,
         staging: &wgpu::Buffer,

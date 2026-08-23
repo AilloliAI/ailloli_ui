@@ -58,6 +58,11 @@ impl ClipboardProvider for NativeClipboard {
     }
 
     /// Replaces clipboard text and stringifies any platform-specific failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns `native clipboard unavailable` when lazy initialization fails, or
+    /// the platform clipboard error's display string when the write fails.
     fn write_text(&self, text: &str) -> Result<(), String> {
         self.with_clipboard(|clipboard| clipboard.set_text(text.to_string()))
             .ok_or_else(|| "native clipboard unavailable".to_string())?

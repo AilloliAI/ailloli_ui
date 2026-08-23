@@ -33,6 +33,12 @@ const TREE_ROW_LIMIT: u64 = 53;
 const TREE_FRAME_P95_LIMIT_US: f64 = 33_000.0;
 
 /// Validates the locked sample contract and runs the selected Phase 127 scenario.
+///
+/// # Errors
+///
+/// Returns an error for absent/unsupported scenario configuration, invalid sample
+/// counts, disabled/session setup, metadata/metric/process sampling, scenario
+/// execution, or benchmark finalization failure.
 fn main() -> Result<(), Box<dyn Error>> {
     let scenario = bench_scenario_from_env().ok_or("AILLOLI_UI_BENCH_SCENARIO is required")?;
     let initial_metadata = metadata_from_env();
@@ -66,6 +72,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// Publishes the exact, headless harness metadata used to interpret a run.
+///
+/// # Errors
+///
+/// Propagates benchmark metadata validation, queue-capacity, closed-session, or
+/// writer-disconnection errors.
 fn update_metadata(
     session: &BenchSession,
     initial: &RunMetadata,
@@ -109,6 +120,11 @@ fn default_bench_path(scenario: &str) -> PathBuf {
 }
 
 /// Records one timestamped metric with an explicit role and sample phase.
+///
+/// # Errors
+///
+/// Propagates benchmark non-finite-value, serialization, queue, closed-session,
+/// or writer-disconnection errors.
 fn record_metric(
     session: &BenchSession,
     name: &str,
@@ -129,6 +145,10 @@ fn record_metric(
 }
 
 /// Records an integer correctness counter as a measured, non-timing metric.
+///
+/// # Errors
+///
+/// Propagates the benchmark write failures documented by [`record_metric`].
 fn record_correctness(
     session: &BenchSession,
     name: &str,
@@ -144,6 +164,10 @@ fn record_correctness(
 }
 
 /// Samples RSS, PSS, threads, and file descriptors for the current process.
+///
+/// # Errors
+///
+/// Propagates process sampling failures and any diagnostic metric write failure.
 fn record_process_sample(session: &BenchSession, phase: SamplePhase) -> Result<(), Box<dyn Error>> {
     let sample = sample_current_process()?;
     record_metric(
@@ -298,6 +322,14 @@ impl Widget<()> for HorizontalRoot {
 }
 
 /// Measures whether chat and terminal updates avoid rebuilding the file subtree.
+///
+/// # Errors
+///
+/// Propagates timing/process/correctness benchmark metric write failures.
+///
+/// # Panics
+///
+/// Panics if reconciliation failed to initialize either retained test signal.
 fn run_component_isolation(
     session: &BenchSession,
     warmups: u32,
@@ -397,6 +429,11 @@ fn run_component_isolation(
 }
 
 /// Measures bounded work for a 100,000-row virtualized tree around its midpoint.
+///
+/// # Errors
+///
+/// Propagates tree-model mutation/revision errors and benchmark metric or process
+/// sampling failures.
 fn run_tree_virtualization(
     session: &BenchSession,
     warmups: u32,

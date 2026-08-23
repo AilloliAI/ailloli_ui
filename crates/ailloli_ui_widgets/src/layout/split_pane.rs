@@ -63,7 +63,9 @@ type ResizeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, SplitResizeEvent)>;
 #[derive(Clone, Copy, Debug, PartialEq)]
 /// Initial seam distance measured from the start or end edge.
 enum SplitPaneInitialPosition {
+    /// Logical-pixel distance measured from the leading edge.
     Start(f32),
+    /// Logical-pixel distance measured from the trailing edge.
     End(f32),
 }
 
@@ -81,16 +83,27 @@ enum SplitPaneInitialPosition {
 /// let _ = split;
 /// ```
 pub struct SplitPane<A = ()> {
+    /// Outer logical sizing policy inherited by the retained view.
     pub(crate) layout: LayoutStyle,
+    /// Parent-flex participation metadata preserved during conversion.
     pub(crate) flex_item: FlexItemStyle,
+    /// Physical axis along which the two children are divided.
     axis: ResizeAxis,
+    /// Child occupying the leading side of the seam.
     start: View<A>,
+    /// Child occupying the trailing side of the seam.
     end: View<A>,
+    /// Optional initial seam distance used until retained state exists.
     initial_position: Option<SplitPaneInitialPosition>,
+    /// Optional caller-owned seam distance in logical pixels from the start.
     bound_position: Option<Signal<f32>>,
+    /// Minimum logical-pixel extent reserved for the leading child.
     min_start: f32,
+    /// Minimum logical-pixel extent reserved for the trailing child.
     min_end: f32,
+    /// Seam hit target and visual style.
     style: SplitPaneStyle,
+    /// Optional callback receiving start, drag, and end resize events.
     on_resize: Option<ResizeHandler<A>>,
 }
 
@@ -286,15 +299,25 @@ impl<A: 'static> SplitPane<A> {
 
 /// Retained builder snapshot used to allocate local position/drag state.
 struct SplitPaneComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Physical split axis.
     axis: ResizeAxis,
+    /// Leading retained child.
     start: View<A>,
+    /// Trailing retained child.
     end: View<A>,
+    /// Initial seam distance before local or bound state takes precedence.
     initial_position: Option<SplitPaneInitialPosition>,
+    /// Optional caller-owned seam distance.
     bound_position: Option<Signal<f32>>,
+    /// Minimum leading-child extent in logical pixels.
     min_start: f32,
+    /// Minimum trailing-child extent in logical pixels.
     min_end: f32,
+    /// Seam hit target and visual style.
     style: SplitPaneStyle,
+    /// Optional retained resize callback.
     on_resize: Option<ResizeHandler<A>>,
 }
 
@@ -323,23 +346,37 @@ impl<A: 'static> ComponentNode<A> for SplitPaneComponent<A> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 /// Captured pointer and seam positions for incremental drag events.
 struct SplitPaneDragState {
+    /// Pointer start/current samples shared with standalone resize bars.
     pointer: ResizeDragState,
+    /// Seam distance in logical pixels captured at press time.
     start_position: f32,
+    /// Most recently emitted clamped seam distance.
     last_position: f32,
 }
 
 /// Retained layout, seam-state, hover, and drag implementation.
 struct SplitPaneWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Physical split axis.
     axis: ResizeAxis,
+    /// Initial seam distance before retained state takes precedence.
     initial_position: Option<SplitPaneInitialPosition>,
+    /// Optional caller-owned seam distance.
     bound_position: Option<Signal<f32>>,
+    /// Uncontrolled retained seam distance, absent before first write.
     local_position: Signal<Option<f32>>,
+    /// Minimum leading-child extent in logical pixels.
     min_start: f32,
+    /// Minimum trailing-child extent in logical pixels.
     min_end: f32,
+    /// Seam hit target and visual style.
     style: SplitPaneStyle,
+    /// Optional retained resize callback.
     on_resize: Option<ResizeHandler<A>>,
+    /// Active pointer drag state, or `None` outside a captured gesture.
     drag: Signal<Option<SplitPaneDragState>>,
+    /// Whether the pointer currently intersects the seam hit target.
     hover_seam: Signal<bool>,
 }
 
@@ -538,6 +575,7 @@ impl<A: 'static> Widget<A> for SplitPaneWidget<A> {
 
 /// Position priority/clamping, state writes, event dispatch, and seam geometry.
 impl<A: 'static> SplitPaneWidget<A> {
+    /// Resolves bound, local, initial, or centered position and clamps it.
     fn current_position(&self, available: f32) -> f32 {
         let raw = self
             .bound_position
@@ -554,11 +592,13 @@ impl<A: 'static> SplitPaneWidget<A> {
         self.clamp_position(available, raw)
     }
 
+    /// Clamps the seam so both configured minimum extents remain satisfied.
     fn clamp_position(&self, available: f32, position: f32) -> f32 {
         let max = (available - self.min_end).max(self.min_start);
         position.clamp(self.min_start.min(max), max)
     }
 
+    /// Writes a changed position to controlled or local retained state.
     fn set_position(&self, position: f32) {
         if let Some(bound) = &self.bound_position {
             if (bound.read() - position).abs() > f32::EPSILON {
@@ -573,6 +613,7 @@ impl<A: 'static> SplitPaneWidget<A> {
         }
     }
 
+    /// Emits one resize phase with incremental and press-relative deltas.
     fn emit(
         &self,
         ctx: &mut EventCtx<A>,
@@ -595,6 +636,7 @@ impl<A: 'static> SplitPaneWidget<A> {
         }
     }
 
+    /// Computes the origin-local seam hit rectangle for a laid-out size.
     fn seam_rect_for(&self, size: Size, position: f32) -> Rect {
         let half = self.style.resize_bar.hit_thickness * 0.5;
         match self.axis {
@@ -613,6 +655,7 @@ impl<A: 'static> SplitPaneWidget<A> {
         }
     }
 
+    /// Computes the seam hit rectangle in logical window coordinates.
     fn seam_rect_abs(&self, bounds: Rect, layout: &LayoutResult) -> Rect {
         let available = main_extent(self.axis, layout.size);
         self.seam_rect_for(layout.size, self.current_position(available))

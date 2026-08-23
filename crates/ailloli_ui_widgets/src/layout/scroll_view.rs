@@ -73,12 +73,19 @@ impl Default for ScrollbarStyle {
 /// let _ = scroll;
 /// ```
 pub struct ScrollView<A = ()> {
+    /// Axes on which content may exceed the viewport and scroll.
     axes: ScrollAxes,
+    /// Initial content offset in logical pixels.
     initial_offset: Offset,
+    /// Wheel scaling and axis-filtering policy.
     behavior: ScrollBehavior,
+    /// Whether content growth should remain pinned to its end edge.
     follow_end: bool,
+    /// Whether overflow paints visual scrollbars.
     scrollbars: bool,
+    /// Scrollbar colors and logical-pixel geometry.
     scrollbar_style: ScrollbarStyle,
+    /// Optional sole content child.
     child: Option<View<A>>,
 }
 
@@ -303,12 +310,19 @@ impl<A: 'static> ScrollView<A> {
 
 /// Retained builder snapshot used to allocate scroll/follow signals.
 struct ScrollViewComponent<A> {
+    /// Axes on which content may scroll.
     axes: ScrollAxes,
+    /// Initial retained content offset in logical pixels.
     initial_offset: Offset,
+    /// Wheel scaling and axis-filtering policy.
     behavior: ScrollBehavior,
+    /// Whether content growth should remain pinned to its end edge.
     follow_end: bool,
+    /// Whether overflow paints visual scrollbars.
     scrollbars: bool,
+    /// Scrollbar colors and logical-pixel geometry.
     scrollbar_style: ScrollbarStyle,
+    /// Optional sole content child.
     child: Option<View<A>>,
 }
 
@@ -343,12 +357,19 @@ impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
 
 /// Stateful retained viewport implementation.
 struct ScrollViewWidget {
+    /// Axes on which content may scroll.
     axes: ScrollAxes,
+    /// Retained content offset in logical pixels.
     state: Signal<ScrollState>,
+    /// Wheel scaling and axis-filtering policy.
     behavior: ScrollBehavior,
+    /// Whether end-following is enabled for this viewport.
     follow_end: bool,
+    /// Whether the viewport currently remains attached to the content end.
     follow_end_active: Signal<bool>,
+    /// Whether overflow paints visual scrollbars.
     scrollbars: bool,
+    /// Scrollbar colors and logical-pixel geometry.
     scrollbar_style: ScrollbarStyle,
 }
 
@@ -485,11 +506,13 @@ impl<A: 'static> IntoView<A> for ScrollView<A> {
 
 /// Scroll-state synchronization, follow-end policy, and child constraints.
 impl ScrollViewWidget {
+    /// Returns whether every enabled scroll axis has a finite viewport extent.
     fn has_bounded_scroll_viewport(&self, viewport: Size) -> bool {
         (!self.axes.horizontal || viewport.w.is_finite())
             && (!self.axes.vertical || viewport.h.is_finite())
     }
 
+    /// Clamps offset and applies the retained follow-end policy during layout.
     fn sync_scroll_state_for_layout(
         &self,
         state: ScrollState,
@@ -522,6 +545,7 @@ impl ScrollViewWidget {
         target
     }
 
+    /// Updates end-following after a wheel or other manual offset change.
     fn sync_follow_end_after_manual_scroll(&self, offset: Offset, max_offset: Offset) {
         if !self.follow_end {
             return;
@@ -529,12 +553,14 @@ impl ScrollViewWidget {
         self.set_follow_end_active(offset_at_end(offset, max_offset, self.axes));
     }
 
+    /// Writes the follow-end flag only when its value changes.
     fn set_follow_end_active(&self, active: bool) {
         if self.follow_end_active.read() != active {
             self.follow_end_active.set(active);
         }
     }
 
+    /// Makes enabled axes unbounded while preserving the viewport on other axes.
     fn child_constraints(&self, viewport: Size) -> Constraints {
         Constraints::loose(
             if self.axes.horizontal {

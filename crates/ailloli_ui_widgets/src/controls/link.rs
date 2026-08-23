@@ -312,11 +312,17 @@ impl<A: 'static> Link<A> {
 
 /// Retained interaction shell around one laid-out content child.
 struct LinkWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Optional validated external destination.
     href: Option<ExternalUrl>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Link colors, underline policy, and focus geometry.
     style: LinkStyle,
+    /// Whether retained child content was assigned layout in the latest pass.
     laid_out_content: Cell<bool>,
+    /// UI-local hover, press, and focus state shared with the label child.
     interaction: Rc<Cell<InteractionState>>,
 }
 
@@ -431,8 +437,11 @@ impl<A: 'static> Widget<A> for LinkWidget {
 
 /// Styled text child sharing its parent's latest interaction snapshot.
 struct LinkLabelWidget {
+    /// User-visible fallback label painted when no custom child is supplied.
     label: String,
+    /// Text colors and underline policy resolved from interaction state.
     style: LinkStyle,
+    /// Shared UI-local hover, press, and focus state from the parent link.
     interaction: Rc<Cell<InteractionState>>,
 }
 

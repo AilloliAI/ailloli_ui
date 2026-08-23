@@ -75,6 +75,11 @@ impl Default for SmokeArgs {
 
 #[cfg(feature = "openxr")]
 /// Initializes the runtime, builds the view, and processes actions until exit.
+///
+/// # Errors
+///
+/// Returns a string error for invalid environment/CLI configuration, log-file
+/// setup, OpenXR initialization, host/frame processing, or runtime shutdown.
 fn run() -> Result<(), String> {
     use std::time::{Duration, Instant};
 
@@ -335,6 +340,11 @@ fn smoke_view(args: SmokeArgs) -> ailloli_ui_runtime::component::View<SmokeActio
 
 #[cfg(feature = "openxr")]
 /// Parses environment defaults followed by overriding command-line flags.
+///
+/// # Errors
+///
+/// Returns an error for malformed environment values, unknown flags, missing
+/// flag values, invalid numeric ranges, or an unsupported panel-facing mode.
 fn parse_args() -> Result<SmokeArgs, String> {
     let mut args = SmokeArgs::from_env()?;
     let mut iter = std::env::args().skip(1);
@@ -390,6 +400,12 @@ fn parse_args() -> Result<SmokeArgs, String> {
 #[cfg(feature = "openxr")]
 impl SmokeArgs {
     /// Reads primary Ailloli variables with legacy OctavUI fallbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-boolean configured flag, a malformed/non-finite
+    /// numeric value, a non-positive distance/scale/timeout, or an unsupported
+    /// panel-facing mode.
     fn from_env() -> Result<Self, String> {
         let mut args = SmokeArgs::default();
         if env_bool("AILLOLI_UI_XR_PREFER_LEFT", "OCTAVUI_XR_PREFER_LEFT")? {
@@ -454,6 +470,11 @@ fn optional_env(primary: &str, legacy: &str) -> Option<String> {
 
 #[cfg(feature = "openxr")]
 /// Parses a boolean environment variable from the documented eight literals.
+///
+/// # Errors
+///
+/// Returns an error when a present value is not one of
+/// `1,true,yes,on,0,false,no,off` after ASCII case normalization.
 fn env_bool(primary: &str, legacy: &str) -> Result<bool, String> {
     let Some(value) = optional_env(primary, legacy) else {
         return Ok(false);
@@ -469,6 +490,10 @@ fn env_bool(primary: &str, legacy: &str) -> Result<bool, String> {
 
 #[cfg(feature = "openxr")]
 /// Returns the next CLI token or a flag-specific missing-value error plus usage.
+///
+/// # Errors
+///
+/// Returns an error when the iterator is exhausted.
 fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {
     iter.next()
         .ok_or_else(|| format!("{flag} expects a value\n\n{}", usage()))
@@ -476,6 +501,11 @@ fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<Str
 
 #[cfg(feature = "openxr")]
 /// Parses a finite floating-point value strictly greater than zero.
+///
+/// # Errors
+///
+/// Returns an error when parsing fails, the result is non-finite, or it is not
+/// strictly positive.
 fn parse_positive_f32(flag: &str, value: &str) -> Result<f32, String> {
     let parsed = parse_finite_f32(flag, value)?;
     if parsed > 0.0 {
@@ -487,6 +517,10 @@ fn parse_positive_f32(flag: &str, value: &str) -> Result<f32, String> {
 
 #[cfg(feature = "openxr")]
 /// Parses a finite floating-point value, rejecting NaN and infinities.
+///
+/// # Errors
+///
+/// Returns an error when `value` is not an `f32` or parses to NaN or infinity.
 fn parse_finite_f32(flag: &str, value: &str) -> Result<f32, String> {
     let parsed = value
         .parse::<f32>()
@@ -500,6 +534,11 @@ fn parse_finite_f32(flag: &str, value: &str) -> Result<f32, String> {
 
 #[cfg(feature = "openxr")]
 /// Parses fixed, yaw-only aliases, or yaw-pitch panel-facing mode.
+///
+/// # Errors
+///
+/// Returns an error when the normalized value is not `fixed`, a documented
+/// yaw-only alias, or a documented yaw-pitch alias.
 fn parse_panel_facing(
     flag: &str,
     value: &str,
@@ -528,6 +567,11 @@ struct SmokeLogger {
 #[cfg(feature = "openxr")]
 impl SmokeLogger {
     /// Opens the optional log path, creating non-empty parent directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contextual string error when the parent directory cannot be
+    /// created or the append-only log file cannot be opened.
     fn new(path: Option<&std::path::Path>) -> Result<Self, String> {
         let Some(path) = path else {
             return Ok(Self { file: None });

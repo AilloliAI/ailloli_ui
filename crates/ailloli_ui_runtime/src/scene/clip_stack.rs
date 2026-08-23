@@ -60,6 +60,7 @@ impl ClipEntry {
 /// ```
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ClipStackSnapshot {
+    /// Owned outermost-to-innermost clip entries captured from a stack.
     entries: Vec<ClipEntry>,
 }
 
@@ -236,6 +237,7 @@ impl ClipStackSnapshot {
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct ClipStack {
+    /// Mutable outermost-to-innermost clip entries active during painting.
     clips: Vec<ClipEntry>,
 }
 

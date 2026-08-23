@@ -351,15 +351,25 @@ impl<A: 'static> DisclosureRow<A> {
 
 /// Retained leaf widget that reads bindings and handles activation.
 struct DisclosureRowWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Primary user-visible row label.
     label: String,
+    /// Optional icon painted before the label.
     leading_icon: Option<IconId>,
+    /// Optional secondary text painted at the trailing edge.
     trailing_text: Option<String>,
+    /// Reactive selected-state source.
     selected: Binding<bool>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Visual variant controlling row emphasis.
     variant: DisclosureRowVariant,
+    /// Row colors and logical-pixel geometry.
     style: DisclosureRowStyle,
+    /// Whether the trailing disclosure chevron is painted.
     show_chevron: bool,
+    /// Optional click action invoked for an enabled row.
     on_select: Option<ClickAction<A>>,
 }
 

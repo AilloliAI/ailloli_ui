@@ -50,6 +50,7 @@ pub enum FileTreeModelBridgeError {
 /// ```
 #[derive(Debug, Clone)]
 pub struct FileTreeModelBridge {
+    /// Retained generic tree model updated from file-store deltas.
     model: TreeModelHandle<FileTreeNodeId>,
 }
 
@@ -200,6 +201,12 @@ impl FileTreeModelBridge {
 }
 
 /// Iteratively emits parent-before-child insertions without recursion depth risk.
+///
+/// # Errors
+///
+/// Returns [`FileTreeModelBridgeError::MissingNode`] when `id` or any referenced
+/// descendant is absent from `store`. Mutations already appended before the
+/// missing node remain in the caller-owned vector.
 fn collect_subtree(
     store: &FileTreeStore,
     id: FileTreeNodeId,

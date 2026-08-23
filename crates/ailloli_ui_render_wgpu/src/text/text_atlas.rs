@@ -103,15 +103,21 @@ pub struct TextAtlasStats {
 #[derive(Debug)]
 /// Shelf allocator cursor for one atlas page.
 struct Shelf {
+    /// Next free horizontal texel coordinate on the current shelf.
     x: u32,
+    /// Top texel coordinate of the current shelf.
     y: u32,
+    /// Maximum glyph height in texels on the current shelf.
     h: u32,
 }
 
 /// Texture, binding, and allocator state for one atlas page.
 struct AtlasPage {
+    /// RGBA8 glyph texture owned by this page.
     texture: wgpu::Texture,
+    /// Bind group exposing `texture` and the shared sampler to shaders.
     bind_group: wgpu::BindGroup,
+    /// Monotonic shelf allocator state for new glyph rectangles.
     shelf: Shelf,
 }
 
@@ -128,17 +134,26 @@ struct AtlasPage {
 /// let _: usize = std::mem::size_of::<TextAtlas>();
 /// ```
 pub struct TextAtlas {
+    /// Width and height in physical texels of every square page.
     tex_size: u32,
+    /// Maximum number of pages, representable by the `u8` glyph page index.
     max_pages: u8,
+    /// Shared sampler used by every atlas page bind group.
     sampler: wgpu::Sampler,
 
+    /// Allocated pages in stable `u8` index order.
     pages: Vec<AtlasPage>,
 
+    /// Cached glyph metadata paired with its page index.
     glyphs: HashMap<GlyphKey, (u8, Glyph)>,
+    /// Least-recently-used glyph keys, oldest at the front.
     lru: VecDeque<GlyphKey>,
+    /// Per-page pin flags preventing reset during the active frame.
     frame_pinned_pages: Vec<bool>,
+    /// Counters accumulated during the active frame.
     frame_stats: TextAtlasStats,
 
+    /// Swash scale context reused for CPU glyph rasterization.
     scale_cx: ScaleContext,
 }
 
@@ -154,6 +169,7 @@ pub struct TextAtlas {
 /// let _: usize = std::mem::size_of::<TextAtlasFrame<'static>>();
 /// ```
 pub struct TextAtlasFrame<'a> {
+    /// Exclusively borrowed atlas whose pages remain pinned for this guard.
     atlas: &'a mut TextAtlas,
 }
 

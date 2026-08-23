@@ -24,6 +24,7 @@ type ClickHandler<A> = Rc<dyn Fn(&mut EventCtx<A>)>;
 /// assert_eq!((action.resolve(), action.resolve()), (1, 2));
 /// ```
 pub struct DeferredAction<A> {
+    /// UI-local factory invoked afresh for each resolution.
     factory: Rc<dyn Fn() -> A>,
 }
 
@@ -84,6 +85,7 @@ impl<A> DeferredAction<A> {
 /// assert_eq!(runtime.take_actions(), vec![7]);
 /// ```
 pub struct ClickAction<A> {
+    /// UI-local callback executed synchronously for the click event.
     handler: ClickHandler<A>,
 }
 

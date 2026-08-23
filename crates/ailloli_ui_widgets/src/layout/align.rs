@@ -22,8 +22,11 @@ use ailloli_ui_runtime::scene::PaintCtx;
 /// let _ = centered;
 /// ```
 pub struct Align<A = ()> {
+    /// Horizontal interpolation factor, normally in `0.0..=1.0`.
     x: f32,
+    /// Vertical interpolation factor, normally in `0.0..=1.0`.
     y: f32,
+    /// Optional sole child positioned inside the available bounds.
     child: Option<View<A>>,
 }
 
@@ -62,7 +65,9 @@ impl<A: 'static> Align<A> {
 
 /// Frozen normalized factors used by retained layout.
 struct AlignWidget {
+    /// Horizontal interpolation factor used after child measurement.
     x: f32,
+    /// Vertical interpolation factor used after child measurement.
     y: f32,
 }
 

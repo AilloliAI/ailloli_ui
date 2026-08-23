@@ -168,9 +168,13 @@ impl Default for OpenXrRayOverlayOptions {
 
 /// Persistently mapped host-visible upload buffer for generated ray pixels.
 struct RayStagingBuffer {
+    /// Host-visible Vulkan buffer used as the texture upload source.
     buffer: vk::Buffer,
+    /// Device allocation bound to `buffer`.
     memory: vk::DeviceMemory,
+    /// Persistently mapped start address valid for the allocation lifetime.
     mapped_ptr: *mut u8,
+    /// Allocation capacity in bytes.
     size: vk::DeviceSize,
 }
 
@@ -187,14 +191,23 @@ struct RayStagingBuffer {
 /// fn update(overlay: &mut OpenXrRayOverlay) { let _ = overlay; }
 /// ```
 pub struct OpenXrRayOverlay {
+    /// Vulkan device owning buffer, image, and synchronization resources.
     device: ash::Device,
+    /// OpenXR Vulkan swapchain containing overlay images.
     handle: xr::Swapchain<xr::Vulkan>,
+    /// Runtime-selected Vulkan image format.
     format: OpenXrSwapchainFormat,
+    /// Borrowed-from-runtime swapchain images in stable index order.
     images: Vec<vk::Image>,
+    /// Persistently mapped CPU-to-GPU upload buffer.
     staging: RayStagingBuffer,
+    /// Image containing uploaded pixels and ready for layer submission.
     ready_image_index: Option<u32>,
+    /// Ray-hit category represented by the currently uploaded texture.
     uploaded_hit: Option<OpenXrRayHitKind>,
+    /// Whether at least one valid texture upload has completed.
     has_texture: bool,
+    /// Texture extent, quad size, pose, color, and style policy.
     options: OpenXrRayOverlayOptions,
 }
 
@@ -361,6 +374,12 @@ impl OpenXrRayOverlay {
     }
 
     /// Copies pixels, acquires/waits an image, submits upload, then releases it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching acquire, wait, image-index, Vulkan command, or
+    /// release [`OpenXrRuntimeError`]. Upload failure takes precedence over a
+    /// simultaneous release failure, while release is still attempted.
     fn upload_rgba(
         &mut self,
         context: OpenXrExternalVulkanContext<'_>,
@@ -425,6 +444,11 @@ impl Drop for OpenXrRayOverlay {
 
 impl RayStagingBuffer {
     /// Allocates, binds, and persistently maps a transfer-source buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching create-buffer, missing host-visible memory type,
+    /// allocate-memory, bind-memory, or map-memory [`OpenXrRuntimeError`].
     fn new(
         device: &ash::Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -501,6 +525,16 @@ fn find_host_visible_memory_type(
 }
 
 /// Allocates, records, submits, waits for, and frees one primary command buffer.
+///
+/// # Errors
+///
+/// Returns the matching allocate, begin, end, queue-submit, or queue-idle
+/// [`OpenXrRuntimeError`] with the original Vulkan result.
+///
+/// # Panics
+///
+/// Propagates a panic from `record`. It may also panic if Vulkan reports a
+/// successful allocation without returning the single requested command buffer.
 fn submit_one_time_commands(
     context: OpenXrExternalVulkanContext<'_>,
     record: impl FnOnce(vk::CommandBuffer),

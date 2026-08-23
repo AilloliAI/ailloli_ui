@@ -6,12 +6,17 @@ use wgpu::util::DeviceExt;
 use crate::isolated_plan::{IsolatedEffect, IsolatedEffectChain};
 use crate::vertices::TexVertex;
 
+/// Uniform payload for one separable blur pass.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct BlurParamsGpu {
+    /// Unit sampling direction in texture-coordinate axes.
     direction: [f32; 2],
+    /// Source texture width and height in physical texels.
     tex_size: [f32; 2],
+    /// Blur radius in physical texels.
     radius: f32,
+    /// Explicit alignment padding required by the GPU uniform layout.
     _pad: f32,
 }
 
@@ -296,6 +301,7 @@ pub fn run_effect_chain(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Encodes one horizontal or vertical blur pass into `encoder`.
 fn blur_pass(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,

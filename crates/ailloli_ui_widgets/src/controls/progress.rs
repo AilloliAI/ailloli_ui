@@ -549,22 +549,35 @@ impl CircularProgress {
 
 /// Retained non-interactive leaf for a linear bar.
 struct ProgressBarWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Reactive progress value interpreted by `spec`.
     value: Binding<f32>,
+    /// Reactive disabled-state source affecting opacity.
     disabled: Binding<bool>,
+    /// Determinate/indeterminate range and normalization policy.
     spec: ProgressSpec,
+    /// Linear progress visual variant.
     variant: ProgressVariant,
+    /// Track/fill colors and logical-pixel geometry.
     style: ProgressStyle,
 }
 
 /// Retained non-interactive leaf for a circular ring and optional label.
 struct CircularProgressWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Reactive progress value interpreted by `spec`.
     value: Binding<f32>,
+    /// Reactive disabled-state source affecting opacity.
     disabled: Binding<bool>,
+    /// Determinate/indeterminate range and normalization policy.
     spec: ProgressSpec,
+    /// Arc colors and logical-pixel geometry.
     style: ProgressStyle,
+    /// Whether center text is painted.
     show_label: bool,
+    /// Optional reactive center label overriding formatted progress.
     label: Option<Binding<String>>,
 }
 

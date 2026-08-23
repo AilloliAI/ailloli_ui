@@ -7,14 +7,19 @@ use wgpu::util::DeviceExt;
 use crate::isolated_plan::PlannedIsolatedComposite;
 use crate::vertices::TexVertex;
 
+/// Uniform payload selecting blend equation and source opacity.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CompositeBlendParamsGpu {
+    /// Shader-side numeric identifier for the requested blend mode.
     mode: u32,
+    /// Finite source opacity applied before blending.
     opacity: f32,
+    /// Explicit alignment padding required by the GPU uniform layout.
     _pad: [f32; 2],
 }
 
+/// Maps the provider-neutral blend enum to its stable shader identifier.
 fn blend_mode_shader_id(mode: BlendMode) -> u32 {
     match mode {
         BlendMode::Multiply => 1,

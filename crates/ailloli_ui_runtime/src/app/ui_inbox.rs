@@ -23,6 +23,12 @@ use std::sync::{Arc, Mutex};
 pub trait UiWake: Send + Sync + 'static {
     /// Signals the UI host or reports a closed/transient target.
     ///
+    /// # Errors
+    ///
+    /// Returns [`UiWakeError::TargetClosed`] when the target cannot accept any
+    /// future wake, or [`UiWakeError::TemporarilyUnavailable`] when retrying may
+    /// succeed.
+    ///
     /// # Examples
     ///
     /// ```
@@ -114,13 +120,21 @@ pub struct UiInboxStats {
 /// Atomic backing counters shared between producers and consumer.
 #[derive(Default)]
 struct AtomicStats {
+    /// Messages accepted by the bounded channel.
     enqueued: AtomicU64,
+    /// Messages returned to the UI consumer.
     drained: AtomicU64,
+    /// Sends rejected because the bounded channel was full.
     overflow: AtomicU64,
+    /// Operations that observed the opposite endpoint closed.
     disconnected: AtomicU64,
+    /// Host wake callback invocations attempted.
     wake_calls: AtomicU64,
+    /// Host wake callbacks that returned an error.
     wake_failures: AtomicU64,
+    /// Messages queued or prefetched but not yet delivered.
     current_depth: AtomicUsize,
+    /// Maximum observed pending depth since channel creation.
     max_depth: AtomicUsize,
 }
 
@@ -128,16 +142,23 @@ struct AtomicStats {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum WakeStatus {
     #[default]
+    /// No queued work currently requires a host notification.
     Idle,
+    /// Work is pending and still needs a host notification.
     NeedsWake,
+    /// Callback invocation `u64` is executing outside the state mutex.
     InFlight(u64),
+    /// A callback succeeded for the currently pending work.
     Signaled,
 }
 
 /// Installed callback, notification state, and wrapping attempt sequence.
 struct WakeState {
+    /// Optional thread-safe host notification callback.
     callback: Option<Arc<dyn UiWake>>,
+    /// Coalesced notification lifecycle for queued work.
     status: WakeStatus,
+    /// Wrapping identity reserved for the next callback invocation.
     next_attempt: u64,
 }
 
@@ -155,8 +176,11 @@ impl Default for WakeState {
 
 /// Shared synchronization and instrumentation state.
 struct Shared {
+    /// Installed callback and wake lifecycle protected from producers.
     wake: Mutex<WakeState>,
+    /// Whether any operation has observed channel disconnection.
     disconnected_observed: AtomicBool,
+    /// Shared wrapping instrumentation counters.
     stats: AtomicStats,
 }
 
@@ -210,6 +234,11 @@ impl Shared {
     }
 
     /// Coalesces or starts a host wake attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns the installed [`UiWake`] callback's error when this call starts
+    /// an attempt. Coalesced requests and requests without a callback succeed.
     fn request_wake(&self) -> Result<(), UiWakeError> {
         let attempt = {
             let mut state = self.wake.lock().unwrap_or_else(|error| error.into_inner());
@@ -231,6 +260,11 @@ impl Shared {
     }
 
     /// Invokes a callback outside the mutex and conditionally commits its result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exact error produced by [`UiWake::wake`]. Failed attempts
+    /// leave the notification pending for a later retry.
     fn invoke_wake(&self, attempt: u64, callback: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         self.stats.wake_calls.fetch_add(1, Ordering::Relaxed);
         let result = callback.wake();
@@ -249,6 +283,11 @@ impl Shared {
     }
 
     /// Replaces the callback and immediately retries outstanding notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns the newly installed callback's [`UiWake::wake`] error when an
+    /// outstanding notification triggers an immediate attempt.
     fn install_wake(&self, callback: Arc<dyn UiWake>) -> Result<(), UiWakeError> {
         let attempt = {
             let mut state = self.wake.lock().unwrap_or_else(|error| error.into_inner());
@@ -313,7 +352,9 @@ impl Shared {
 /// assert_eq!(sender.stats().enqueued, 0);
 /// ```
 pub struct UiSender<T> {
+    /// Bounded MPSC producer preserving standard channel order.
     sender: SyncSender<T>,
+    /// Shared wake, disconnect, and instrumentation state.
     shared: Arc<Shared>,
 }
 
@@ -347,6 +388,12 @@ impl<T> UiSender<T> {
     /// the queue is unchanged. `EnqueuedButWakeFailed` means the message remains
     /// queued. With no callback installed, the send succeeds and records a wake
     /// requirement for late installation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiSendError::Full`] or [`UiSendError::Closed`] without
+    /// enqueueing. [`UiSendError::EnqueuedButWakeFailed`] means enqueueing
+    /// succeeded but the installed wake callback failed.
     ///
     /// # Examples
     ///
@@ -389,6 +436,12 @@ impl<T> UiSender<T> {
     /// This can block indefinitely while the receiver remains alive but does
     /// not drain a full queue. A wake failure still leaves the message queued.
     ///
+    /// # Errors
+    ///
+    /// Returns [`UiSendError::Closed`] if the receiver disappears before the
+    /// enqueue, or [`UiSendError::EnqueuedButWakeFailed`] after a successful
+    /// enqueue whose host wake failed.
+    ///
     /// # Examples
     ///
     /// ```
@@ -415,6 +468,11 @@ impl<T> UiSender<T> {
     ///
     /// A signaled/in-flight wake coalesces to success. With no callback this
     /// records `NeedsWake` and also returns success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UiSendError::EnqueuedButWakeFailed`] when the installed wake
+    /// callback reports a closed or temporarily unavailable target.
     ///
     /// # Examples
     ///
@@ -482,8 +540,11 @@ pub struct UiDrain<T> {
 /// assert_eq!(inbox.stats().current_depth, 0);
 /// ```
 pub struct UiInbox<T> {
+    /// Single consumer for queued messages.
     receiver: Receiver<T>,
+    /// Shared wake, disconnect, and instrumentation state.
     shared: Arc<Shared>,
+    /// One prefetched message retained when a bounded drain stops early.
     pending: Option<T>,
 }
 
@@ -524,6 +585,11 @@ impl<T> UiInbox<T> {
     /// If a wake is outstanding, the new callback is invoked synchronously
     /// before this method returns. Its error is returned; the callback remains
     /// installed and notification stays retryable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the installed callback's [`UiWakeError`] when delivering an
+    /// already outstanding notification fails.
     ///
     /// # Examples
     ///
@@ -654,6 +720,10 @@ mod tests {
     /// Implements the UiWake contract for Wake.
     impl UiWake for Wake {
         /// Notifies the test or host wake target.
+        ///
+        /// # Errors
+        ///
+        /// This counting test callback never returns an error.
         fn wake(&self) -> Result<(), UiWakeError> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())

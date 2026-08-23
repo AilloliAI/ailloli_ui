@@ -284,6 +284,11 @@ fn linear_to_srgb_u8(v: f32) -> u8 {
 }
 
 /// Expands three/four-nibble notation and validates the accepted byte lengths.
+///
+/// # Errors
+///
+/// Returns [`ColorParseError::InvalidLength`] unless `hex` contains exactly
+/// three, four, six, or eight UTF-8 bytes. Character validity is checked later.
 fn expand_hex_shorthand(hex: &str) -> Result<String, ColorParseError> {
     let len = hex.len();
     if !matches!(len, 3 | 4 | 6 | 8) {
@@ -302,6 +307,12 @@ fn expand_hex_shorthand(hex: &str) -> Result<String, ColorParseError> {
 }
 
 /// Parses expanded six/eight-digit hexadecimal channels, defaulting alpha to 255.
+///
+/// # Errors
+///
+/// Returns [`ColorParseError::InvalidLength`] unless `hex` is six or eight
+/// bytes, or [`ColorParseError::InvalidChar`] when any channel contains a
+/// non-ASCII-hexadecimal byte.
 fn parse_hex_channels(hex: &str) -> Result<(u8, u8, u8, u8), ColorParseError> {
     let bytes = hex.as_bytes();
     let (r, g, b, a) = match bytes.len() {
@@ -322,7 +333,17 @@ fn parse_hex_channels(hex: &str) -> Result<(u8, u8, u8, u8), ColorParseError> {
     Ok((r, g, b, a))
 }
 
-/// Parses exactly two ASCII hexadecimal digits.
+/// Parses the first two bytes as ASCII hexadecimal digits.
+///
+/// # Errors
+///
+/// Returns [`ColorParseError::InvalidChar`] when either byte is not an ASCII
+/// hexadecimal digit.
+///
+/// # Panics
+///
+/// Panics when `bytes` contains fewer than two bytes. Internal callers pass
+/// fixed two-byte channel slices.
 fn parse_hex_byte(bytes: &[u8]) -> Result<u8, ColorParseError> {
     let hi = hex_digit(bytes[0])?;
     let lo = hex_digit(bytes[1])?;
@@ -330,6 +351,11 @@ fn parse_hex_byte(bytes: &[u8]) -> Result<u8, ColorParseError> {
 }
 
 /// Converts one ASCII hexadecimal digit to its numeric nibble.
+///
+/// # Errors
+///
+/// Returns [`ColorParseError::InvalidChar`] for every byte outside `0-9`,
+/// `a-f`, and `A-F`.
 fn hex_digit(byte: u8) -> Result<u8, ColorParseError> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),

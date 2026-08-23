@@ -272,11 +272,17 @@ impl<'a> OpenXrExternalHostFrame<'a> {
 /// fn clear<A: 'static>(layer: &mut OpenXrUiLayer<A>) { layer.clear_input(); }
 /// ```
 pub struct OpenXrUiLayer<A> {
+    /// Provider-neutral retained runtime and action queue.
     runtime: Runtime<A>,
+    /// Font discovery, shaping, and prepared-layout cache.
     text_system: TextSystem,
+    /// Vulkan renderer initialized lazily from the external host context.
     renderer: Option<VulkanRenderer>,
+    /// Per-window focus, capture, hover, and event routing state.
     input_router: InputRouter,
+    /// OpenXR source-state mapper producing provider-neutral pointer events.
     input_mapper: OpenXrInputMapper,
+    /// Logical window identity, dimensions, scale, and action-drain limits.
     options: OpenXrUiLayerOptions,
 }
 
@@ -321,6 +327,11 @@ impl<A: 'static> OpenXrUiLayer<A> {
     /// # Errors
     ///
     /// Returns Vulkan renderer initialization or frame-render errors.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if successful renderer initialization fails to populate the
+    /// layer's internal renderer slot.
     ///
     /// # Examples
     ///

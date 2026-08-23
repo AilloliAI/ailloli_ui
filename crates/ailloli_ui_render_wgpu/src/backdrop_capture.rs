@@ -22,6 +22,7 @@ use crate::offscreen_pool::{LeasedOffscreen, OffscreenSurfacePool, PoolKey};
 pub struct BackdropTable {
     /// Sample bindings indexed by the frame-local `u16` pass identifier.
     pub bind_groups: HashMap<u16, wgpu::BindGroup>,
+    /// Offscreen leases retained until every backdrop consumer has rendered.
     leases: Vec<LeasedOffscreen>,
 }
 

@@ -301,6 +301,17 @@ impl TextAtlas {
     }
 
     /// Adds and clears one page, failing at the eight-page ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VulkanRendererError::TextAtlasFull`] at the page ceiling, or
+    /// propagates image, view, descriptor-set, staging-buffer, and command
+    /// submission failures while constructing or clearing the new page.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the Vulkan driver reports a successful descriptor-set
+    /// allocation without returning the single requested set.
     fn allocate_page(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -356,6 +367,16 @@ impl TextAtlas {
     ///
     /// The region must fit the page and `rgba` must contain `width * height * 4`
     /// bytes; internal callers establish both invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VulkanRendererError::Host`] for an empty staging upload, or
+    /// propagates staging-buffer allocation and one-time command failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `page` does not index an allocated atlas page. This private
+    /// helper requires the caller-maintained page invariant stated above.
     fn upload_region(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -422,6 +443,17 @@ impl TextAtlas {
     ///
     /// Requests larger than one page fail immediately. Returned coordinates are
     /// the padded allocation origin, not the glyph's visible origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VulkanRendererError::TextAtlasFull`] when the rectangle exceeds
+    /// a page or still cannot fit after growth/eviction. Propagates page
+    /// allocation and reset/upload failures.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called before the atlas owns at least one page; construction
+    /// establishes that private invariant.
     fn alloc_or_grow(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -449,6 +481,15 @@ impl TextAtlas {
     }
 
     /// Clears one page, resets its shelf, and removes all resident cache keys.
+    ///
+    /// # Errors
+    ///
+    /// Propagates staging-buffer or one-time command failures while clearing the
+    /// page; cache eviction is performed only after a successful upload.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `page` does not index an allocated atlas page.
     fn reset_page(
         &mut self,
         context: &VulkanRenderContext<'_>,
@@ -559,6 +600,17 @@ impl Drop for TextAtlas {
 /// The command buffer is freed on every result after allocation, including
 /// begin/end/submit/wait errors. A panic in `record` unwinds before explicit
 /// freeing and is therefore outside this helper's recoverable error contract.
+///
+/// # Errors
+///
+/// Returns the matching allocate, begin, end, queue-submit, or queue-idle
+/// [`VulkanRendererError`] with the original driver result.
+///
+/// # Panics
+///
+/// Propagates a panic from `record`. It may also panic if a Vulkan implementation
+/// reports successful allocation without returning the one requested command
+/// buffer; neither path reaches this helper's explicit free operation.
 fn submit_one_time_commands<F>(
     context: &VulkanRenderContext<'_>,
     record: F,

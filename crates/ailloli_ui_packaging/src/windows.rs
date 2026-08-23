@@ -69,6 +69,12 @@ pub fn stage_windows(
 /// Version components are packed into Windows' four 16-bit slots as
 /// `(major, minor, patch, 0)`. String metadata uses language `0x0409` and code
 /// page 1200. Missing authors fall back to `Ailloli UI` as the company name.
+///
+/// # Errors
+///
+/// Returns an error when the executable cannot be parsed/written as PE, the icon
+/// path is not UTF-8, or icon, version-info, or resource-directory injection
+/// fails.
 fn inject_windows_resources(
     context: &PackageContext,
     executable: &Path,

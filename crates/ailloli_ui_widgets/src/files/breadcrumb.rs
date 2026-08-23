@@ -103,10 +103,15 @@ pub struct FileBreadcrumb<A = ()> {
     pub(crate) layout: LayoutStyle,
     /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
+    /// Current file or directory URI expanded into segments.
     uri: FileUri,
+    /// Optional ancestor URI that limits visible segments.
     base: Option<FileUri>,
+    /// Optional display label replacing the base/root segment.
     root_label: Option<String>,
+    /// Segment colors and logical-pixel geometry.
     style: FileBreadcrumbStyle,
+    /// Optional callback receiving an activated ancestor URI.
     on_activate: Option<SegmentHandler<A>>,
 }
 

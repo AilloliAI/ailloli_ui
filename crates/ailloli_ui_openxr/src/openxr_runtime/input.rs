@@ -329,23 +329,41 @@ struct PointerCandidate {
 /// fn reset(input: &mut OpenXrActionInput) { input.clear(); }
 /// ```
 pub struct OpenXrActionInput {
+    /// OpenXR action set synchronized once per polling frame.
     action_set: xr::ActionSet,
+    /// Controller/hand aim-pose action for both subaction paths.
     aim_action: xr::Action<xr::Posef>,
+    /// Normalized primary-trigger action.
     trigger_action: xr::Action<f32>,
+    /// Horizontal scroll-axis action.
     scroll_x_action: xr::Action<f32>,
+    /// Vertical scroll-axis action.
     scroll_y_action: xr::Action<f32>,
+    /// `/user/hand/right` subaction path.
     right_path: xr::Path,
+    /// `/user/hand/left` subaction path.
     left_path: xr::Path,
+    /// Right-hand aim space created after action-set attachment.
     right_aim_space: Option<xr::Space>,
+    /// Left-hand aim space created after action-set attachment.
     left_aim_space: Option<xr::Space>,
+    /// Optional right-hand joint tracker.
     right_hand_tracker: Option<xr::HandTracker>,
+    /// Optional left-hand joint tracker.
     left_hand_tracker: Option<xr::HandTracker>,
+    /// Dead zones, thresholds, source IDs, and hand-input policy.
     options: OpenXrUiInputOptions,
+    /// Whether the runtime advertises hand-tracking support.
     hand_tracking_supported: bool,
+    /// Whether the runtime advertises hand-aim support.
     hand_aim_supported: bool,
+    /// Whether this action set has been attached to a session.
     attached: bool,
+    /// Source retained through a pressed gesture to prevent hand switching.
     locked_source_id: Option<u64>,
+    /// Most recently selected source used for deterministic tie breaking.
     last_selected_source_id: Option<u64>,
+    /// Timestamp of the previous poll used to derive wheel delta time.
     last_poll: Option<Instant>,
 }
 
@@ -642,6 +660,11 @@ impl OpenXrActionInput {
     }
 
     /// Creates an identity-offset action space for one controller aim pose.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenXrRuntimeError::CreateActionSpace`] with the hand label and
+    /// runtime result when OpenXR rejects the action-space creation.
     fn create_aim_space(
         &self,
         session: &xr::Session<xr::Vulkan>,
@@ -657,6 +680,11 @@ impl OpenXrActionInput {
     }
 
     /// Polls one active controller into a ray candidate with time-scaled scroll.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching action-state or action-space-location
+    /// [`OpenXrRuntimeError`] while reading aim, trigger, or scroll state.
     fn poll_controller_candidate(
         &self,
         session: &xr::Session<xr::Vulkan>,
@@ -749,6 +777,11 @@ impl OpenXrActionInput {
     }
 
     /// Polls one hand via FB aim or index-joint fallback when controller aim is inactive.
+    ///
+    /// # Errors
+    ///
+    /// Propagates controller aim-state errors and hand-joint location errors from
+    /// the selected FB-aim or joint-fallback path.
     fn poll_hand_candidate(
         &self,
         xr_instance: &xr::Instance,
@@ -798,6 +831,11 @@ impl OpenXrActionInput {
     }
 
     /// Reports whether the configured controller aim action is active for one side.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenXrRuntimeError::ActionState`] when the runtime cannot query
+    /// the selected hand's aim-pose action.
     fn aim_active(
         &self,
         session: &xr::Session<xr::Vulkan>,
@@ -825,6 +863,11 @@ impl OpenXrActionInput {
 }
 
 /// Converts a static interaction path and retains it in any error.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::StringToPath`] with the original static path
+/// when OpenXR rejects its conversion.
 fn path(instance: &xr::Instance, path: &'static str) -> Result<xr::Path, OpenXrRuntimeError> {
     instance
         .string_to_path(path)
@@ -832,6 +875,12 @@ fn path(instance: &xr::Instance, path: &'static str) -> Result<xr::Path, OpenXrR
 }
 
 /// Suggests identical actions for all known Touch profiles, requiring one success.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::NoInteractionProfileBindings`] when every known
+/// profile fails. Individual profile errors are deliberately tolerated if at
+/// least one profile accepts the bindings.
 fn suggest_bindings(
     instance: &xr::Instance,
     aim_action: &xr::Action<xr::Posef>,
@@ -861,6 +910,12 @@ fn suggest_bindings(
 }
 
 /// Builds right/left aim, trigger, and thumbstick bindings for one profile.
+///
+/// # Errors
+///
+/// Propagates static path-conversion errors, or returns
+/// [`OpenXrRuntimeError::SuggestInteractionProfileBindings`] when the runtime
+/// rejects the complete binding set.
 fn suggest_bindings_for_profile(
     instance: &xr::Instance,
     profile: &'static str,
@@ -911,6 +966,11 @@ fn suggest_bindings_for_profile(
 }
 
 /// Reads a float action, mapping an inactive action to zero.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::ActionState`] with the action/source labels when
+/// the runtime query fails.
 fn action_f32(
     action: &xr::Action<f32>,
     session: &xr::Session<xr::Vulkan>,
@@ -1195,6 +1255,12 @@ fn ray_quad_from_layer(layer: OpenXrQuadLayerOptions) -> RayQuad {
 }
 
 /// Calls the FB hand-aim chain and returns a pinch-classified ray when valid.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::LocateHandJoints`] when the raw extension call
+/// reports a negative OpenXR result. Unsupported/inactive/invalid aim state is
+/// represented by `Ok(None)`.
 fn locate_hand_with_aim(
     instance: &xr::Instance,
     reference_space: &xr::Space,
@@ -1254,6 +1320,11 @@ fn locate_hand_with_aim(
 }
 
 /// Builds an index-finger ray and 3.5 cm thumb/index pinch from joint locations.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::LocateHandJoints`] when the safe OpenXR joint
+/// query fails. Inactive, invalid, or degenerate joints return `Ok(None)`.
 fn locate_hand_joints_fallback(
     reference_space: &xr::Space,
     tracker: &xr::HandTracker,

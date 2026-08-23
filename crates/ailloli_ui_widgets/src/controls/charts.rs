@@ -765,34 +765,55 @@ impl RadialGauge {
 
 /// Retained leaf widget that paints grouped bar series.
 struct BarChartWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Ordered bar series; each series is aligned with `labels` by index.
     series: Vec<ChartSeries>,
+    /// Ordered category labels along the horizontal axis.
     labels: Vec<String>,
+    /// Optional explicit vertical domain; otherwise finite data determines it.
     y_range: Option<ChartRange>,
+    /// Shared colors and logical-pixel chart geometry.
     style: ChartStyle,
+    /// Message painted when no finite samples are available.
     empty_text: String,
 }
 
 /// Retained leaf widget that paints one-color polyline series.
 struct LineChartWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Ordered polyline series.
     series: Vec<ChartSeries>,
+    /// Optional explicit horizontal domain.
     x_range: Option<ChartRange>,
+    /// Optional explicit vertical domain.
     y_range: Option<ChartRange>,
+    /// Whether finite samples receive point markers.
     show_points: bool,
+    /// Shared colors and logical-pixel chart geometry.
     style: ChartStyle,
+    /// Semantic palette tone applied to fallback series colors.
     tone: ChartTone,
+    /// Message painted when no finite samples are available.
     empty_text: String,
 }
 
 /// Retained leaf widget that reads and paints a reactive gauge value/label.
 struct RadialGaugeWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Reactive gauge value; non-finite values use the range minimum.
     value: Binding<f32>,
+    /// Inclusive value domain mapped onto the arc sweep.
     range: ChartRange,
+    /// Optional reactive center label.
     label: Option<Binding<String>>,
+    /// Whether a formatted numeric value is painted below the label.
     show_value: bool,
+    /// Shared colors and logical-pixel gauge geometry.
     style: ChartStyle,
+    /// Semantic palette tone used for the filled arc.
     tone: ChartTone,
 }
 

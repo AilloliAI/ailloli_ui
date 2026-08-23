@@ -108,13 +108,21 @@ pub struct FileTreeNode {
 /// ```
 #[derive(Debug, Clone)]
 pub struct FileTreeStore {
+    /// Stable root node identity.
     root: FileTreeNodeId,
+    /// Dense node storage indexed by [`FileTreeNodeId`].
     nodes: Vec<FileTreeNode>,
+    /// Canonical URI-to-node lookup table.
     uri_index: HashMap<FileUri, FileTreeNodeId>,
+    /// Expanded directory identities in deterministic presentation order.
     expanded: Vec<FileTreeNodeId>,
+    /// Selected canonical URI, retained across compatible rebuilds.
     selected: Option<FileUri>,
+    /// Cached flattened preorder rows for the current expansion state.
     visible_rows: Vec<FileTreeNodeId>,
+    /// Whether [`Self::visible_rows`] must be recomputed before reading.
     visible_dirty: bool,
+    /// Wrapping model revision incremented by observable mutations.
     revision: u64,
 }
 
@@ -781,6 +789,15 @@ impl FileTreeStore {
     }
 
     /// Detects equality between this node's canonical URI and any ancestor's.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the first [`ailloli_ui_fs::FileError`] returned while querying
+    /// or memoizing the selected node's or an ancestor's canonical URI.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` or a recorded parent does not index the private node arena.
     fn node_has_canonical_cycle(
         &mut self,
         id: FileTreeNodeId,
@@ -803,6 +820,15 @@ impl FileTreeStore {
     ///
     /// Because `None` is also the uninitialized sentinel, providers that return
     /// `None` are queried again on later checks.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the provider's [`ailloli_ui_fs::FileError`] from
+    /// [`FileProvider::canonical_uri`]; the cache remains `None` on failure.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not index the private node arena.
     fn ensure_canonical_uri(
         &mut self,
         id: FileTreeNodeId,

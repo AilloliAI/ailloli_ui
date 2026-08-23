@@ -36,12 +36,17 @@ pub struct PaintContext<'a> {
     pub clip: ClipStackSnapshot,
     /// Optional shared shaping engine and prepared-layout cache.
     pub text_system: Option<&'a mut TextSystem>,
+    /// Immutable input state observed by widgets during this paint pass.
     input: InputSnapshot,
+    /// Interaction role of the widget currently being painted.
     current_interaction: InputInteraction,
+    /// Monotonic frame timestamp in milliseconds supplied by the host.
     frame_time_ms: u128,
     /// Indices into `layers` for active isolated scopes (outermost first).
     isolated_scope_stack: Vec<usize>,
+    /// Overlay-layer indices temporarily selected by nested overlay scopes.
     overlay_target_stack: Vec<usize>,
+    /// Lazily allocated fallback overlay layer used outside explicit scopes.
     default_overlay_layer: Option<usize>,
 }
 

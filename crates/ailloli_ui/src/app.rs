@@ -81,7 +81,10 @@ enum AppIconConfigurationSite {
     /// The application-wide identity icon.
     AppIdentity,
     /// A per-window override, including its logical window identifier.
-    Window { logical_id: String },
+    Window {
+        /// Logical identifier of the window whose override is invalid.
+        logical_id: String,
+    },
 }
 
 #[cfg(feature = "winit")]
@@ -149,6 +152,12 @@ impl std::error::Error for AppIconConfigurationError {
 
 #[cfg(feature = "winit")]
 /// Validates an SVG icon and attaches the configuration site to any failure.
+///
+/// # Errors
+///
+/// Returns [`AppIconConfigurationError`] when
+/// [`ailloli_ui_icon::validate_app_icon`] rejects the embedded SVG; the error
+/// retains the builder site, source label, and underlying icon validation cause.
 fn validate_configured_app_icon(
     icon: &AppIcon,
     site: AppIconConfigurationSite,
@@ -1073,6 +1082,11 @@ impl<A> Default for Windows<A> {
 
 #[cfg(any(feature = "winit", test))]
 /// Rejects duplicate logical IDs before any native window is created.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::InvalidInput`] for the first repeated logical
+/// window ID. An empty collection and collections of unique IDs succeed.
 fn validate_unique_window_ids<A>(windows: &Windows<A>) -> std::io::Result<()> {
     let mut logical_window_ids = std::collections::HashSet::new();
     for window in windows.iter() {
@@ -2015,6 +2029,12 @@ impl std::error::Error for AppRunAndBenchError {
 
 #[cfg(all(feature = "winit", test))]
 /// Test-facing root composer that deliberately supplies no application icon.
+///
+/// # Errors
+///
+/// Propagates [`std::io::ErrorKind::InvalidInput`] from
+/// [`compose_window_root_with_icon`] when custom-titlebar content and the chrome
+/// mode are inconsistent.
 fn compose_window_root<A: 'static>(
     logical_window_id: String,
     window_title: String,
@@ -2061,6 +2081,12 @@ struct WindowRootOptions {
 /// OS and borderless modes use content directly. Built-in and custom client
 /// chrome allocate a column with title and flex-growing content. Surface style
 /// is applied after composition.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::InvalidInput`] when a custom titlebar is
+/// supplied outside [`WindowChrome::Custom`], or when custom chrome has no
+/// titlebar content.
 fn compose_window_root_with_icon<A: 'static>(
     options: WindowRootOptions,
     custom_titlebar: Option<Content<A>>,
@@ -2121,6 +2147,12 @@ fn compose_window_root_with_icon<A: 'static>(
 ///
 /// `create_new(true)` prevents overwriting an existing probe file. Bytes are
 /// pretty JSON and `sync_all` is called before success.
+///
+/// # Errors
+///
+/// Propagates JSON serialization errors and filesystem errors from exclusive
+/// creation, writing, or synchronizing `path`. An existing destination is never
+/// overwritten.
 fn write_package_metadata(path: &std::path::Path, identity: &ValidatedAppIdentity) -> Result<()> {
     use std::io::Write;
     let bytes = serde_json::to_vec_pretty(&identity.metadata())?;

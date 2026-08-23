@@ -52,6 +52,11 @@ pub trait ClipboardProvider {
     /// Empty text is a valid value and is not equivalent to clearing provider
     /// availability.
     ///
+    /// # Errors
+    ///
+    /// Returns a provider-defined display string when the backend rejects or
+    /// cannot complete the write.
+    ///
     /// # Examples
     ///
     /// ```
@@ -106,6 +111,14 @@ impl ClipboardProvider for MemoryClipboard {
     }
 
     /// Replaces stored text and always succeeds unless a conflicting borrow panics.
+    ///
+    /// # Errors
+    ///
+    /// This in-memory implementation currently never returns `Err`.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a conflicting reentrant borrow of the clipboard text slot.
     fn write_text(&self, text: &str) -> Result<(), String> {
         *self.text.borrow_mut() = text.to_string();
         Ok(())
@@ -1175,6 +1188,11 @@ impl<A> RuntimeHandle<A> {
     ///
     /// Errors are returned verbatim and are not recorded by the runtime.
     ///
+    /// # Errors
+    ///
+    /// Returns the provider-defined display string when the configured
+    /// clipboard rejects or cannot complete the write.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1903,6 +1921,11 @@ impl<A> RuntimeHandle<A> {
     }
 
     /// Records either lifecycle intents or a cloned portal error, preserving the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`PopupPortalError`] supplied in `result`, after cloning
+    /// it into the runtime's diagnostic error queue.
     fn record_popup_result(
         &self,
         result: Result<PopupPortalOutcome, PopupPortalError>,

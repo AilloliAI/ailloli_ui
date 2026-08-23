@@ -503,6 +503,12 @@ impl OpenXrRuntime {
     /// READY begins the stereo session once, STOPPING ends it once, and exit/loss
     /// signals stop immediately. Any loss of focus requests input reset.
     ///
+    /// # Errors
+    ///
+    /// Returns [`OpenXrRuntimeError::PollEvent`] when event polling fails,
+    /// [`OpenXrRuntimeError::BeginSession`] when entering READY cannot start the
+    /// session, or [`OpenXrRuntimeError::EndSession`] when STOPPING cannot end it.
+    ///
     /// # Examples
     ///
     /// ```no_run
@@ -580,6 +586,11 @@ impl OpenXrRuntime {
 
 /// Combines render and release results while preserving render-error priority.
 ///
+/// # Errors
+///
+/// Returns the render error when rendering failed, even if release also failed;
+/// otherwise returns the release error. It succeeds only when both inputs do.
+///
 /// # Examples
 ///
 /// ```
@@ -600,6 +611,11 @@ pub(crate) fn combine_render_release(
 }
 
 /// Creates local/stage space according to the requested fallback policy.
+///
+/// # Errors
+///
+/// Returns [`OpenXrRuntimeError::CreateReferenceSpace`] with the attempted local
+/// and/or stage runtime results when the requested policy cannot create a space.
 fn create_reference_space(
     session: &xr::Session<xr::Vulkan>,
     preference: ReferenceSpacePreference,

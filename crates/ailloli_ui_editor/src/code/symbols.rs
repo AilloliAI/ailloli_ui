@@ -430,6 +430,15 @@ pub fn index_symbols_with_fallback(
 }
 
 /// Executes one external ctags process and returns UTF-8 JSON Lines.
+///
+/// # Errors
+///
+/// Returns [`CtagsError::MissingBinary`] when the command is absent,
+/// [`CtagsError::Timeout`] when it exceeds the configured deadline,
+/// [`CtagsError::OutputTooLarge`] when stdout exceeds its byte budget,
+/// [`CtagsError::NonZeroStatus`] for an unsuccessful exit,
+/// [`CtagsError::Utf8`] for non-UTF-8 stdout, or [`CtagsError::Io`] for temp-file
+/// and child-process I/O failures.
 fn run_ctags(document: &Document, config: &CtagsRunnerConfig) -> Result<String, CtagsError> {
     let temp_path = ctags_temp_path(document);
     std::fs::write(&temp_path, document.buffer.as_str())

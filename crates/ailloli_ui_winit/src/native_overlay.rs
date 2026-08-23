@@ -53,6 +53,11 @@ impl NativeOverlayRect {
 
     /// Accepts finite coordinates and strictly positive finite dimensions.
     ///
+    /// # Errors
+    ///
+    /// Returns [`NativeOverlayError::InvalidTarget`] when either coordinate is
+    /// non-finite or either dimension is non-finite or not strictly positive.
+    ///
     /// # Examples
     ///
     /// ```

@@ -35,9 +35,13 @@ use super::adapter::paint_editor_frame;
 /// let _ = view;
 /// ```
 pub(crate) struct EditorComponent {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Caller-owned text buffer synchronized in both directions.
     pub(crate) buffer: Signal<TextBuffer>,
+    /// Editing and rendering configuration.
     pub(crate) config: EditorConfig,
+    /// Optional initial UTF-8 byte anchor/caret pair, clamped to buffer length.
     pub(crate) initial_selection: Option<(usize, usize)>,
 }
 
@@ -76,10 +80,15 @@ impl<A: 'static> ComponentNode<A> for EditorComponent {
 /// let _ = view;
 /// ```
 pub(crate) struct EditorWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Caller-owned text buffer synchronized in both directions.
     buffer: Signal<TextBuffer>,
+    /// Retained buffer, selection, IME, undo, and scroll state.
     session: Signal<EditorSession>,
+    /// UI-local layout/paint cache shared across event and paint passes.
     engine: Rc<RefCell<EditorEngine>>,
+    /// Editing and rendering configuration reconciled into the session.
     config: EditorConfig,
 }
 
@@ -261,6 +270,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
 
 /// Reconciles external props and applies editor actions/clipboard effects.
 impl EditorWidget {
+    /// Reconciles external buffer/configuration props into retained session state.
     fn sync_session_from_props(&self) -> EditorSession {
         let mut session = self.session.read();
         let mut changed = session.set_config(self.config);
@@ -271,6 +281,7 @@ impl EditorWidget {
         session
     }
 
+    /// Applies one edit, bridges clipboard effects, and publishes buffer changes.
     fn apply_edit_action<A>(&self, ctx: &mut EventCtx<A>, action: TextEditAction) {
         let mut session = self.sync_session_from_props();
         let mut action = action;

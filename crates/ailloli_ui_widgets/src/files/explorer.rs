@@ -54,7 +54,9 @@ type TreeCreateCommandHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, FileUri, &'static
 
 /// Cloneable pair of context-menu-to-tree edit command adapters.
 struct FileExplorerTreeCommands<A> {
+    /// Callback translating an inline rename into an explorer action.
     rename: TreeRenameCommandHandler<A>,
+    /// Callback translating an inline create into an explorer action.
     create: TreeCreateCommandHandler<A>,
 }
 
@@ -482,24 +484,43 @@ pub struct FileExplorer<A = ()> {
     pub(crate) layout: LayoutStyle,
     /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
+    /// Read-only fallback flat file-node snapshot.
     nodes: Vec<FileExplorerNode>,
+    /// Optional reactive authoritative node snapshot.
     bound_nodes: Option<Signal<Vec<FileExplorerNode>>>,
+    /// Optional readable selected URI.
     selected: Option<Binding<FileUri>>,
+    /// Optional writable selected URI.
     bound_selected: Option<Signal<FileUri>>,
+    /// Optional readable expanded-directory URI list.
     expanded: Option<Binding<Vec<FileUri>>>,
+    /// Optional writable expanded-directory URI list.
     bound_expanded: Option<Signal<Vec<FileUri>>>,
+    /// Initial expansion list used when the explorer owns its state.
     default_expanded: Vec<FileUri>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Reactive capability indicating whether paste actions are available.
     clipboard_can_paste: Binding<bool>,
+    /// Tree row colors and logical-pixel geometry.
     style: FileExplorerStyle,
+    /// Whether visible rows are bounded to the propagated viewport.
     virtualized: bool,
+    /// Whether the tree is wrapped in a vertical scroll viewport.
     scrollable: bool,
+    /// Optional callback receiving semantic explorer actions.
     on_action: Option<ActionHandler<A>>,
+    /// Optional callback receiving selected URIs.
     on_select: Option<UriHandler<A>>,
+    /// Optional callback receiving activated/opened URIs.
     on_open: Option<UriHandler<A>>,
+    /// Optional callback receiving directory expansion changes.
     on_toggle: Option<ToggleHandler<A>>,
+    /// Optional callback receiving inline rename requests.
     on_rename: Option<RenameHandler<A>>,
+    /// Optional callback receiving removal requests.
     on_remove: Option<RemoveHandler<A>>,
+    /// Optional callback receiving directory-creation requests.
     on_create_dir: Option<CreateDirHandler<A>>,
 }
 
@@ -1061,25 +1082,45 @@ impl<A: 'static> IntoView<A> for FileExplorer<A> {
 
 /// Snapshot explorer component inputs retained across runtime builds.
 struct FileExplorerComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Read-only fallback flat file-node snapshot.
     nodes: Vec<FileExplorerNode>,
+    /// Optional reactive authoritative node snapshot.
     bound_nodes: Option<Signal<Vec<FileExplorerNode>>>,
+    /// Optional readable selected URI.
     selected: Option<Binding<FileUri>>,
+    /// Optional writable selected URI.
     bound_selected: Option<Signal<FileUri>>,
+    /// Optional readable expanded-directory URI list.
     expanded: Option<Binding<Vec<FileUri>>>,
+    /// Optional writable expanded-directory URI list.
     bound_expanded: Option<Signal<Vec<FileUri>>>,
+    /// Initial expansion list used for uncontrolled state.
     default_expanded: Vec<FileUri>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Reactive capability indicating whether paste actions are available.
     clipboard_can_paste: Binding<bool>,
+    /// Tree row colors and logical-pixel geometry.
     style: FileExplorerStyle,
+    /// Whether visible rows are bounded to the propagated viewport.
     virtualized: bool,
+    /// Whether the tree is wrapped in a vertical scroll viewport.
     scrollable: bool,
+    /// Optional retained semantic-action callback.
     on_action: Option<ActionHandler<A>>,
+    /// Optional retained selection callback.
     on_select: Option<UriHandler<A>>,
+    /// Optional retained activation callback.
     on_open: Option<UriHandler<A>>,
+    /// Optional retained expansion callback.
     on_toggle: Option<ToggleHandler<A>>,
+    /// Optional retained rename callback.
     on_rename: Option<RenameHandler<A>>,
+    /// Optional retained removal callback.
     on_remove: Option<RemoveHandler<A>>,
+    /// Optional retained directory-creation callback.
     on_create_dir: Option<CreateDirHandler<A>>,
 }
 
@@ -1382,19 +1423,33 @@ pub struct RetainedFileExplorer<T, A = ()> {
     pub(crate) layout: LayoutStyle,
     /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
+    /// Retained generic tree model and its revisioned state.
     model: TreeModelHandle<T>,
+    /// Resolver mapping stable model IDs to file explorer rows.
     resolve_node: RetainedNodeResolver<T>,
+    /// Resolver mapping canonical URIs back to stable model IDs.
     resolve_id: RetainedIdResolver<T>,
+    /// Reservation callback used before inline create commits.
     reserve_node: RetainedNodeReserve<T>,
+    /// Release callback used when a reserved create is cancelled.
     release_node: RetainedNodeRelease<T>,
+    /// Optional readable selected model ID.
     selected: Option<Binding<T>>,
+    /// Optional writable selected model ID.
     bound_selected: Option<Signal<T>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Reactive capability indicating whether paste actions are available.
     clipboard_can_paste: Binding<bool>,
+    /// Tree row colors and logical-pixel geometry.
     style: FileExplorerStyle,
+    /// Whether the tree is wrapped in a vertical scroll viewport.
     scrollable: bool,
+    /// Optional worker/cache diagnostic snapshot displayed by the tree.
     diagnostics: Option<TreeViewDiagnostics>,
+    /// Optional callback receiving semantic explorer actions.
     on_action: Option<ActionHandler<A>>,
+    /// Optional callback receiving retained-model events.
     on_model_event: Option<RetainedEventHandler<T, A>>,
 }
 
@@ -1703,20 +1758,35 @@ where
 
 /// Retained-model explorer inputs and identity resolver lifecycle callbacks.
 struct RetainedFileExplorerComponent<T, A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Retained generic tree model and its revisioned state.
     model: TreeModelHandle<T>,
+    /// Resolver mapping stable model IDs to file explorer rows.
     resolve_node: RetainedNodeResolver<T>,
+    /// Resolver mapping canonical URIs back to stable model IDs.
     resolve_id: RetainedIdResolver<T>,
+    /// Reservation callback used before inline create commits.
     reserve_node: RetainedNodeReserve<T>,
+    /// Release callback used when a reserved create is cancelled.
     release_node: RetainedNodeRelease<T>,
+    /// Optional readable selected model ID.
     selected: Option<Binding<T>>,
+    /// Optional writable selected model ID.
     bound_selected: Option<Signal<T>>,
+    /// Reactive interaction-disable flag.
     disabled: Binding<bool>,
+    /// Reactive capability indicating whether paste actions are available.
     clipboard_can_paste: Binding<bool>,
+    /// Tree row colors and logical-pixel geometry.
     style: FileExplorerStyle,
+    /// Whether the tree is wrapped in a vertical scroll viewport.
     scrollable: bool,
+    /// Optional worker/cache diagnostic snapshot displayed by the tree.
     diagnostics: Option<TreeViewDiagnostics>,
+    /// Optional retained semantic-action callback.
     on_action: Option<ActionHandler<A>>,
+    /// Optional retained model-event callback.
     on_model_event: Option<RetainedEventHandler<T, A>>,
 }
 

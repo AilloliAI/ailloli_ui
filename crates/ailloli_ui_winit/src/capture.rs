@@ -708,6 +708,11 @@ impl CaptureHandle {
     }
 
     /// Invokes a wake outside the mutex and stores only the first failure.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`UiWakeError`] from the installed wake callback after
+    /// best-effort latching it. An absent callback succeeds without side effects.
     fn invoke_wake_result(&self, wake: Option<Arc<dyn UiWake>>) -> Result<(), UiWakeError> {
         let Some(wake) = wake else {
             return Ok(());

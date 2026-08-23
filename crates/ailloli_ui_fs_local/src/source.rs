@@ -104,6 +104,10 @@ impl Default for LocalFileTreeSourceFactory {
 /// Allocates a configured local source on the calling worker thread.
 impl FileTreeSourceFactory for LocalFileTreeSourceFactory {
     /// Returns a source or maps native watcher initialization to [`FileError`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::Io`] when the platform watcher cannot be created.
     fn create(&self) -> Result<Box<dyn FileTreeSource>, FileError> {
         Ok(Box::new(LocalFileTreeSource::with_max_watchers(
             self.max_watchers,
@@ -227,6 +231,11 @@ impl LocalFileTreeSource {
     /// Access and unknown variants are ignored. `Other` becomes `Overflow` when
     /// a path or watched fallback URI exists. Complete renames use the first two
     /// paths and classify same-parent changes as rename, otherwise move.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] when any native event path cannot be
+    /// represented as a local [`FileUri`].
     fn map_event(&mut self, event: Event) -> Result<Vec<WatchEvent>, FileError> {
         let paths = event.paths;
         match event.kind {
@@ -269,6 +278,11 @@ impl LocalFileTreeSource {
     ///
     /// Output order follows the raw burst except paired halves emit at the first
     /// encountered matching half. Conversion failure aborts the full burst.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`FileError::InvalidUri`] from any paired or ordinary native
+    /// path conversion; no partial normalized batch is returned.
     fn normalize_events(&mut self, raw: Vec<Event>) -> Result<Vec<WatchEvent>, FileError> {
         let now = Instant::now();
         self.recent_rename_sources
@@ -375,6 +389,11 @@ impl LocalFileTreeSource {
     }
 
     /// Maps every supplied path to one event of `kind`, preserving path order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] when any path cannot become a local URI;
+    /// the complete collection is discarded.
     fn events_for_paths(
         &mut self,
         kind: WatchEventKind,
@@ -390,31 +409,60 @@ impl LocalFileTreeSource {
 /// Adapts local I/O, stable identity, mutations, and native watch to the worker contract.
 impl FileTreeSource for LocalFileTreeSource {
     /// Delegates one sorted, non-recursive directory read to the local provider.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the URI, directory iteration, and metadata errors documented
+    /// by [`LocalFileProvider::read_dir`].
     fn read_dir(&mut self, uri: &FileUri) -> Result<Vec<FileEntry>, FileError> {
         self.provider.read_dir(uri)
     }
 
     /// Returns Unix device/inode identity or an unsupported error elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI, a mapped metadata
+    /// error on Unix, or [`FileError::Unsupported`] on non-Unix targets.
     fn identity(&mut self, uri: &FileUri) -> Result<Option<FileIdentity>, FileError> {
         identity_for_path(&uri.to_local_path()?).map(Some)
     }
 
     /// Creates one directory without recursively creating parents.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the URI and host creation errors documented by
+    /// [`LocalFileProvider::create_dir`].
     fn create_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.provider.create_dir(uri)
     }
 
     /// Creates or truncates an empty file.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the URI and host write errors documented by
+    /// [`LocalFileProvider::write_file`].
     fn create_file(&mut self, uri: &FileUri) -> Result<(), FileError> {
         self.provider.write_file(uri, &[])
     }
 
     /// Moves through the provider's rename-only policy; no cross-device fallback exists.
+    ///
+    /// # Errors
+    ///
+    /// Propagates invalid local URIs and host rename failures from the provider.
     fn move_entry(&mut self, from: &FileUri, to: &FileUri) -> Result<(), FileError> {
         self.provider.move_entry(from, to)
     }
 
     /// Chooses recursive or single-entry removal exactly from `recursive`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates invalid local URIs and host traversal/removal failures from
+    /// the selected provider operation.
     fn remove_entry(&mut self, uri: &FileUri, recursive: bool) -> Result<(), FileError> {
         if recursive {
             self.provider.remove_recursive(uri)
@@ -427,6 +475,12 @@ impl FileTreeSource for LocalFileTreeSource {
     ///
     /// A distinct watch at the configured ceiling returns `FileError::Other`.
     /// Successful additions saturating-increment the watch generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI,
+    /// [`FileError::Other`] when the configured watcher ceiling is reached, or
+    /// [`FileError::Io`] when the native watcher rejects the path.
     fn watch_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         let path = uri.to_local_path()?;
         if self.watched.contains_key(&path) {
@@ -449,6 +503,11 @@ impl FileTreeSource for LocalFileTreeSource {
     /// Removes a known watch idempotently and increments generation on success.
     ///
     /// Unknown paths return success without calling the native watcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::InvalidUri`] for a non-local URI or [`FileError::Io`]
+    /// when the native watcher fails to remove a known path.
     fn unwatch_directory(&mut self, uri: &FileUri) -> Result<(), FileError> {
         let path = uri.to_local_path()?;
         if self.watched.remove(&path).is_some() {
@@ -464,6 +523,11 @@ impl FileTreeSource for LocalFileTreeSource {
     /// remain pending; normalized overflow remains queued for future calls.
     /// Exact `(kind, uri, previous_uri)` duplicates are removed within each
     /// returned batch. A disconnected callback channel is an I/O error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError::Io`] for a disconnected callback channel or native
+    /// watcher error, and [`FileError::InvalidUri`] when normalizing an event path.
     fn poll_watch(&mut self, limit: usize) -> Result<Vec<WatchEvent>, FileError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -519,6 +583,10 @@ impl FileTreeSource for LocalFileTreeSource {
 
 #[cfg(unix)]
 /// Builds a 16-byte little-endian `(device, inode)` identity without following links.
+///
+/// # Errors
+///
+/// Maps failure to read symlink-aware metadata through [`FileError::from_io`].
 fn identity_for_path(path: &Path) -> Result<FileIdentity, FileError> {
     use std::os::unix::fs::MetadataExt;
 
@@ -532,6 +600,10 @@ fn identity_for_path(path: &Path) -> Result<FileIdentity, FileError> {
 
 #[cfg(not(unix))]
 /// Reports that this implementation has no stable non-Unix local identity.
+///
+/// # Errors
+///
+/// Always returns [`FileError::Unsupported`] on non-Unix targets.
 fn identity_for_path(_path: &Path) -> Result<FileIdentity, FileError> {
     Err(FileError::Unsupported(
         "stable local file identity is not available on this target".into(),

@@ -175,18 +175,31 @@ pub fn run_openxr_smoke(
 /// Owned runtime, external UI host, and diagnostic state for the smoke loop.
 struct OpenXrSmokeApp {
     // Drop the UI host before `OpenXrRuntime`; its swapchains depend on the runtime session/device.
+    /// External UI host driving swapchain, input, composition, and ray overlay.
     host: OpenXrExternalUiHost<SmokeAction>,
+    /// OpenXR instance, session, spaces, and frame-wait lifecycle.
     runtime: OpenXrRuntime,
+    /// Mutable world-space slate pose, size, and active grab state.
     slate: SmokeSlateState,
+    /// Runtime duration and initial layer/input configuration.
     options: OpenXrSmokeOptions,
+    /// Monotonic start time used to enforce the requested smoke duration.
     started_at: Instant,
+    /// Whether successful first-frame evidence has been logged.
     first_frame_logged: bool,
+    /// Whether successful first-pointer evidence has been logged.
     first_pointer_logged: bool,
+    /// Whether successful first-ray-overlay evidence has been logged.
     first_ray_overlay_logged: bool,
 }
 
 impl OpenXrSmokeApp {
     /// Initializes runtime, panel options, runtime tree, input, and swapchains.
+    ///
+    /// # Errors
+    ///
+    /// Propagates OpenXR instance/session/Vulkan initialization or external UI
+    /// host construction errors.
     fn new(options: OpenXrSmokeOptions) -> Result<Self, OpenXrRuntimeError> {
         let runtime = OpenXrRuntime::new(smoke_runtime_options(&options))?;
         log::info!(
@@ -226,6 +239,12 @@ impl OpenXrSmokeApp {
     }
 
     /// Drives events, timing, input, panel affordances, rendering, and submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching OpenXR event/session/frame/input/render/composition
+    /// error encountered before normal exit. The loop returns a smoke result
+    /// only after a clean shutdown condition.
     fn main_loop(
         &mut self,
         shutdown: impl Fn() -> bool,
@@ -483,16 +502,27 @@ enum SmokeAction {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 /// Detailed diagnostics returned after applying one affordance event.
 struct SmokeSlateApplyResult {
+    /// Whether applying this input changed slate pose or dimensions.
     changed: bool,
+    /// Whether a valid HMD pose contributed to the update.
     hmd_pose_seen: bool,
+    /// Whether grab initialization intersected the world-space slate.
     grab_world_hit: bool,
+    /// Whether controller yaw changed the slate orientation.
     yaw_applied: bool,
+    /// Whether the retained grab point remained stable during motion.
     grab_point_stable: bool,
+    /// Whether translation fell back to controller delta without a world hit.
     fallback_delta: bool,
+    /// Whether a usable depth-axis sample was observed.
     depth_axis_seen: bool,
+    /// Applied depth translation in metres.
     depth_delta_m: f32,
+    /// Whether that depth translation changed the slate pose.
     depth_applied: bool,
+    /// Requested pitch in degrees before clamping.
     pitch_deg: f32,
+    /// Whether pitch was clamped to the allowed range.
     pitch_clamped: bool,
 }
 
@@ -509,10 +539,15 @@ impl SmokeSlateApplyResult {
 #[derive(Clone, Copy)]
 /// Mutable physical panel geometry and active stable-grab state.
 struct SmokeSlateState {
+    /// Current quad pose, dimensions, and composition options.
     layer: OpenXrQuadLayerOptions,
+    /// Minimum allowed quad width/height in metres.
     min_size_m: xr::Extent2Df,
+    /// Maximum allowed quad width/height in metres.
     max_size_m: xr::Extent2Df,
+    /// HMD-facing yaw/pitch constraint policy.
     facing: OpenXrPanelFacingOptions,
+    /// Active controller grab state, or `None` between gestures.
     active_grab: Option<OpenXrPanelGrabState>,
 }
 

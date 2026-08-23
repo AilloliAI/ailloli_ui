@@ -372,18 +372,31 @@ pub struct EditorPane<A = ()> {
     pub(crate) layout: LayoutStyle,
     /// Standard flex-parent participation settings.
     pub(crate) flex_item: FlexItemStyle,
+    /// Retained editor/content view painted below the chrome.
     content: View<A>,
+    /// Read-only fallback tab list.
     tabs: Vec<EditorPaneTab>,
+    /// Optional writable tab collection used by built-in close behavior.
     bound_tabs: Option<Signal<Vec<EditorPaneTab>>>,
+    /// Optional readable active tab ID.
     active_tab: Option<Binding<String>>,
+    /// Optional writable active tab ID.
     bound_active_tab: Option<Signal<String>>,
+    /// Optional active-document title overriding tab metadata.
     active_title: Option<Binding<String>>,
+    /// Optional active-document path used by breadcrumb projection.
     active_path: Option<Binding<String>>,
+    /// Optional active-document dirty state overriding tab metadata.
     dirty: Option<Binding<bool>>,
+    /// Optional active document whose metadata fills missing chrome values.
     active_document: Option<Signal<Document>>,
+    /// Tab, breadcrumb, action, and frame styling.
     style: EditorPaneStyle,
+    /// Optional callback receiving selected tab IDs.
     on_select_tab: Option<TabHandler<A>>,
+    /// Optional callback receiving requested close tab IDs.
     on_close_tab: Option<TabHandler<A>>,
+    /// Optional callback receiving pane-level actions.
     on_action: Option<ActionHandler<A>>,
 }
 
@@ -775,19 +788,33 @@ impl<A: 'static> IntoView<A> for EditorPane<A> {
 
 /// Component boundary that expands the builder into frame/chrome/content nodes.
 struct EditorPaneComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Retained editor/content view painted below the chrome.
     content: View<A>,
+    /// Read-only fallback tab list.
     tabs: Vec<EditorPaneTab>,
+    /// Optional writable tab collection.
     bound_tabs: Option<Signal<Vec<EditorPaneTab>>>,
+    /// Optional readable active tab ID.
     active_tab: Option<Binding<String>>,
+    /// Optional writable active tab ID.
     bound_active_tab: Option<Signal<String>>,
+    /// Optional active-document title override.
     active_title: Option<Binding<String>>,
+    /// Optional active-document path override.
     active_path: Option<Binding<String>>,
+    /// Optional active-document dirty-state override.
     dirty: Option<Binding<bool>>,
+    /// Optional active document supplying fallback metadata.
     active_document: Option<Signal<Document>>,
+    /// Tab, breadcrumb, action, and frame styling.
     style: EditorPaneStyle,
+    /// Optional retained tab-selection callback.
     on_select_tab: Option<TabHandler<A>>,
+    /// Optional retained tab-close callback.
     on_close_tab: Option<TabHandler<A>>,
+    /// Optional retained pane-action callback.
     on_action: Option<ActionHandler<A>>,
 }
 
@@ -829,7 +856,9 @@ impl<A: 'static> ComponentNode<A> for EditorPaneComponent<A> {
 
 /// Lays out and clips the two-row chrome above the editor content.
 struct EditorPaneFrameWidget {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Frame background, border, and logical-pixel geometry.
     style: EditorPaneStyle,
 }
 
@@ -909,17 +938,29 @@ impl<A: 'static> Widget<A> for EditorPaneFrameWidget {
 
 /// Resolves reactive tab metadata and paints/handles the two chrome rows.
 struct EditorPaneChromeWidget<A> {
+    /// Read-only fallback tab list.
     tabs: Vec<EditorPaneTab>,
+    /// Optional writable tab collection.
     bound_tabs: Option<Signal<Vec<EditorPaneTab>>>,
+    /// Optional readable active tab ID.
     active_tab: Option<Binding<String>>,
+    /// Optional writable active tab ID.
     bound_active_tab: Option<Signal<String>>,
+    /// Optional active-document title override.
     active_title: Option<Binding<String>>,
+    /// Optional active-document path override.
     active_path: Option<Binding<String>>,
+    /// Optional active-document dirty-state override.
     dirty: Option<Binding<bool>>,
+    /// Optional active document supplying fallback metadata.
     active_document: Option<Signal<Document>>,
+    /// Tab, breadcrumb, action, and frame styling.
     style: EditorPaneStyle,
+    /// Optional retained tab-selection callback.
     on_select_tab: Option<TabHandler<A>>,
+    /// Optional retained tab-close callback.
     on_close_tab: Option<TabHandler<A>>,
+    /// Optional retained pane-action callback.
     on_action: Option<ActionHandler<A>>,
 }
 
@@ -1309,11 +1350,17 @@ impl<A: 'static> EditorPaneChromeWidget<A> {
 #[cfg(feature = "files")]
 /// Paint-only breadcrumb whose URI follows pane title/path precedence.
 struct EditorPaneBreadcrumbWidget {
+    /// Read-only fallback tab list used to resolve active metadata.
     tabs: Vec<EditorPaneTab>,
+    /// Optional writable tab collection, read as the authoritative list.
     bound_tabs: Option<Signal<Vec<EditorPaneTab>>>,
+    /// Optional readable active tab ID.
     active_tab: Option<Binding<String>>,
+    /// Optional active-document path override.
     active_path: Option<Binding<String>>,
+    /// Optional active document supplying fallback path metadata.
     active_document: Option<Signal<Document>>,
+    /// Breadcrumb colors and logical-pixel geometry.
     style: FileBreadcrumbStyle,
 }
 
@@ -1455,7 +1502,9 @@ fn model_has_breadcrumb(model: &EditorPaneChromeModel) -> bool {
 
 /// Header title and optional display path derived from a document source.
 struct DocumentMeta {
+    /// User-visible document title derived from editor metadata.
     title: String,
+    /// Optional provider path or URI text.
     path: Option<String>,
 }
 
@@ -1490,12 +1539,19 @@ fn path_file_name(path: &Path) -> Option<String> {
 #[derive(Clone)]
 /// Internal tab projection consumed by the shared tab-bar renderer.
 struct ResolvedEditorPaneTab {
+    /// Stable tab identity used by selection and close actions.
     id: String,
+    /// User-visible tab title after active-document overrides.
     title: String,
+    /// Whether this tab is the resolved active selection.
     selected: bool,
+    /// Whether this tab has unsaved changes.
     dirty: bool,
+    /// Preview or pinned tab behavior.
     kind: EditorPaneTabKind,
+    /// Optional resolved tab icon.
     icon: Option<IconId>,
+    /// Optional resolved icon tint.
     icon_tint: Option<Color>,
 }
 
@@ -1535,13 +1591,20 @@ impl TabsItem for ResolvedEditorPaneTab {
 
 /// Immutable per-frame chrome values resolved from all static/reactive inputs.
 struct EditorPaneChromeModel {
+    /// Fully resolved tabs in paint and hit-test order.
     tabs: Vec<ResolvedEditorPaneTab>,
+    /// User-visible title for the active document.
     active_title: String,
     #[cfg(feature = "files")]
+    /// Parsed active file URI used to build breadcrumb segments.
     breadcrumb_uri: Option<FileUri>,
+    /// Raw active path retained when URI parsing is unavailable.
     active_path: Option<String>,
+    /// Whether the active document has unsaved changes.
     active_dirty: bool,
+    /// Optional active document icon.
     active_icon: Option<IconId>,
+    /// Optional active icon tint.
     active_icon_tint: Option<Color>,
 }
 

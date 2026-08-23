@@ -46,19 +46,33 @@ pub(crate) type DocumentChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Document)
 /// let _ = editor;
 /// ```
 pub struct CodeEditor<A = ()> {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Parent-flex participation metadata.
     pub(crate) flex_item: FlexItemStyle,
+    /// Caller-owned document state synchronized in both directions.
     pub(crate) document: Signal<Document>,
+    /// Editing, rendering, and feature configuration.
     pub(crate) config: CodeEditorConfig,
+    /// Optional language override applied to the document.
     pub(crate) language: Option<EditorLanguage>,
+    /// Optional initial horizontal/vertical offsets in logical pixels.
     pub(crate) initial_scroll: Option<(f32, f32)>,
+    /// Optional initial search query.
     pub(crate) search_query: Option<SearchQuery>,
+    /// Optional active search match index.
     pub(crate) search_active_match: Option<usize>,
+    /// Diagnostics projected over the document.
     pub(crate) diagnostics: Vec<Diagnostic>,
+    /// Optional active diagnostic index.
     pub(crate) active_diagnostic: Option<usize>,
+    /// Optional caller-provided fold regions.
     pub(crate) fold_regions: Option<Vec<FoldRegion>>,
+    /// Optional precomputed symbol summary.
     pub(crate) symbol_summary: Option<CodeFileSummary>,
+    /// Optional initial UTF-8 byte anchor/caret pair.
     pub(crate) initial_selection: Option<(usize, usize)>,
+    /// Optional callback invoked after document-changing edits.
     pub(crate) on_document_change: Option<DocumentChangeHandler<A>>,
 }
 

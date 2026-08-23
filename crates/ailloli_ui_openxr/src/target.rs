@@ -159,6 +159,7 @@ pub struct OpenXrRenderTarget<S>
 where
     S: OpenXrImageSource<TextureFormat = wgpu::TextureFormat> + Send + 'static,
 {
+    /// Thread-safe adapter around the host-owned image source.
     source: Arc<dyn SourceProxy<S>>,
 }
 
@@ -217,8 +218,18 @@ trait SourceProxy<S: OpenXrImageSource<TextureFormat = wgpu::TextureFormat>>: Se
     /// Forwards the source's pre-presentation hook.
     fn pre_present_notify(&self);
     /// Acquires a frame and erases the structured host error to text.
+    ///
+    /// # Errors
+    ///
+    /// Returns the source acquisition error converted to its display string, or
+    /// a synchronization error when the proxy cannot lock its source.
     fn acquire(&self) -> Result<OpenXrImageFrame<S::FrameToken>, String>;
     /// Presents a token and erases the structured host error to text.
+    ///
+    /// # Errors
+    ///
+    /// Returns the source presentation error converted to its display string, or
+    /// a synchronization error when the proxy cannot lock its source.
     fn present(&self, token: S::FrameToken) -> Result<(), String>;
 }
 
@@ -345,9 +356,13 @@ where
     Fa: FnMut() -> OpenXrHostResult<OpenXrImageFrame<FrameToken>> + Send,
     Fp: FnMut(FrameToken) -> OpenXrHostResult<()> + Send,
 {
+    /// Physical width and height of every acquired image.
     size: PhysicalExtent,
+    /// WGPU texture format shared by acquired images.
     format: wgpu::TextureFormat,
+    /// Serialized callback that acquires the next host image.
     acquire: Arc<Mutex<Fa>>,
+    /// Serialized callback that releases or presents an acquired image.
     present: Arc<Mutex<Fp>>,
 }
 

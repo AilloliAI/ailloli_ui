@@ -67,6 +67,11 @@ fn now_ms() -> u128 {
 }
 
 /// Records one frame duration as warmup or gating-steady benchmark data.
+///
+/// # Errors
+///
+/// Propagates [`ailloli_ui_bench::BenchWriteError`] when the benchmark session is
+/// closed/stopped, the metric is non-finite, or its bounded queue is full.
 fn record_frame_metric(
     scenario: &str,
     frame_index: u32,
@@ -91,6 +96,11 @@ fn record_frame_metric(
 }
 
 /// Creates the requested platform event loop and returns its observed backend name.
+///
+/// # Errors
+///
+/// Returns an error for an unsupported backend selector or when winit cannot
+/// construct the requested platform event loop.
 fn create_bench_event_loop(requested: &str) -> Result<(EventLoop<()>, String), Box<dyn Error>> {
     #[cfg(target_os = "linux")]
     {
@@ -457,6 +467,11 @@ struct ScenarioStats {
 }
 
 /// Renders `frames` copies of one scenario and records every frame duration.
+///
+/// # Errors
+///
+/// Propagates renderer acquisition/render/readback errors and benchmark metric
+/// write failures from the first unsuccessful frame.
 fn run_scenario(
     renderer: &mut Renderer,
     scenario: &str,
@@ -503,6 +518,11 @@ fn resize_sweep_size(frame_index: u32, total_frames: u32) -> u32 {
 }
 
 /// Configures the surface-backed renderer and executes the selected benchmark scenario.
+///
+/// # Errors
+///
+/// Propagates event-loop/window/renderer initialization, resize/reconfigure,
+/// frame rendering/readback, benchmark metadata, and metric-write failures.
 fn run_benchmark() -> Result<(), Box<dyn Error>> {
     let cfg = ailloli_ui_bench::config_from_env();
     let scenario = cfg.scenario.clone();
@@ -617,6 +637,11 @@ fn run_benchmark() -> Result<(), Box<dyn Error>> {
 }
 
 /// Initializes the benchmark writer and finalizes it even when rendering fails.
+///
+/// # Errors
+///
+/// Returns benchmark initialization, rendering, or finalization errors. A render
+/// failure takes precedence while a simultaneous finalization failure is logged.
 fn execute() -> Result<(), Box<dyn Error>> {
     let default_path = default_bench_path();
     let bench = try_init_ailloli_ui_bench_from_env(&default_path.to_string_lossy())?;

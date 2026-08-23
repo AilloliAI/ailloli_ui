@@ -1277,6 +1277,11 @@ impl FileTreeStore {
     /// Returns [`FileTreeStoreError::RevisionExhausted`] after eviction state
     /// has changed if a non-empty delta cannot advance the revision.
     ///
+    /// # Panics
+    ///
+    /// Panics only if the internal cache/node index becomes inconsistent while
+    /// an eligible candidate is being evicted.
+    ///
     /// # Examples
     ///
     /// ```
@@ -1467,6 +1472,17 @@ impl FileTreeStore {
     }
 
     /// Implements attested insertion with an already consumed monotone ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeStoreError::MissingNode`] when `parent` is absent, or
+    /// [`FileTreeStoreError::RevisionExhausted`] when committing the resulting
+    /// delta cannot advance the revision.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the URI or parent-child indexes violate the store's
+    /// internal consistency invariant after the initial parent check.
     fn apply_attested_insert_with_id(
         &mut self,
         parent: FileTreeNodeId,
@@ -1579,6 +1595,11 @@ impl FileTreeStore {
     /// Returns [`FileTreeStoreError::MissingNode`],
     /// [`FileTreeStoreError::MissingDestinationParent`], or, after mutation,
     /// [`FileTreeStoreError::RevisionExhausted`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal node index loses either the validated source node
+    /// or destination parent while the move is applied.
     ///
     /// # Examples
     ///
@@ -1696,6 +1717,11 @@ impl FileTreeStore {
     /// non-directory as the parent to stale, or
     /// [`FileTreeStoreError::RevisionExhausted`] after mutation when a non-empty
     /// delta cannot advance the revision. Missing event parents are ignored.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal URI/node indexes become inconsistent after a watch
+    /// move resolves an existing node or destination parent.
     ///
     /// # Examples
     ///
@@ -1839,6 +1865,11 @@ impl FileTreeStore {
     /// [`FileTreeStoreError::IdentifierExhausted`]. A
     /// [`FileTreeStoreError::RevisionExhausted`] error occurs after the request
     /// and loading state have been installed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the validated directory node disappears from the internal node
+    /// index before its loading state is installed.
     ///
     /// # Examples
     ///
@@ -2059,6 +2090,18 @@ impl FileTreeStore {
     /// assumptions because this private primitive deliberately does not validate
     /// the provider contract. Mutation is incremental and not rolled back if ID
     /// or revision exhaustion occurs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeStoreError::MissingNode`] when `parent` is absent,
+    /// [`FileTreeStoreError::IdentifierExhausted`] while allocating a new child,
+    /// or [`FileTreeStoreError::RevisionExhausted`] while committing the delta.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the URI, identity, or parent-child indexes are internally
+    /// inconsistent. Callers must supply the validated direct-child snapshot
+    /// described above to preserve those invariants.
     fn reconcile_directory(
         &mut self,
         parent: FileTreeNodeId,
@@ -2280,6 +2323,12 @@ impl FileTreeStore {
     }
 
     /// Marks a retained lexical parent stale; absent parents are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`FileTreeStoreError::MissingNode`] or
+    /// [`FileTreeStoreError::NotDirectory`] if a retained parent index resolves
+    /// to an invalid node.
     fn mark_event_parent_stale(
         &mut self,
         uri: &FileUri,
@@ -2294,6 +2343,11 @@ impl FileTreeStore {
     /// Marks a directory stale once and appends its state delta.
     ///
     /// Returns `MissingNode` or `NotDirectory` without appending a change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeStoreError::MissingNode`] when `id` is absent, or
+    /// [`FileTreeStoreError::NotDirectory`] when it is not directory-like.
     fn mark_directory_stale_into(
         &mut self,
         id: FileTreeNodeId,
@@ -2455,6 +2509,11 @@ impl FileTreeStore {
     }
 
     /// Allocates the next monotone ID; `u64::MAX` itself is never returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeStoreError::IdentifierExhausted`] when incrementing the
+    /// next `u64` identifier would overflow.
     fn allocate_node_id(&mut self) -> Result<FileTreeNodeId, FileTreeStoreError> {
         let id = FileTreeNodeId(self.next_node_id);
         self.next_node_id = self
@@ -2468,6 +2527,11 @@ impl FileTreeStore {
     ///
     /// Revision exhaustion does not roll back earlier caller mutation. The
     /// emitted-delta diagnostic counter saturates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileTreeStoreError::RevisionExhausted`] when a non-empty delta
+    /// would advance the revision beyond `u64::MAX`.
     fn commit(
         &mut self,
         changes: Vec<FileTreeDelta>,

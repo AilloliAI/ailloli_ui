@@ -203,10 +203,15 @@ type ResizeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, SplitResizeEvent)>;
 /// let _ = bar;
 /// ```
 pub struct ResizeBar<A = ()> {
+    /// Outer logical sizing policy inherited by the retained view.
     pub(crate) layout: LayoutStyle,
+    /// Parent-flex participation metadata preserved during conversion.
     pub(crate) flex_item: FlexItemStyle,
+    /// Coordinate axis changed by a drag.
     axis: ResizeAxis,
+    /// Hit target and visual line geometry in logical pixels.
     style: ResizeBarStyle,
+    /// Optional callback receiving start, drag, and end events.
     on_resize: Option<ResizeHandler<A>>,
 }
 
@@ -315,9 +320,13 @@ impl<A: 'static> Default for ResizeBar<A> {
 
 /// Retained builder snapshot used to allocate drag state.
 struct ResizeBarComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Coordinate axis changed by a drag.
     axis: ResizeAxis,
+    /// Hit target and visual line geometry in logical pixels.
     style: ResizeBarStyle,
+    /// Optional retained resize callback.
     on_resize: Option<ResizeHandler<A>>,
 }
 
@@ -354,10 +363,15 @@ pub(crate) struct ResizeDragState {
 
 /// Retained leaf implementing layout, paint, pointer capture, and cursor role.
 struct ResizeBarWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Coordinate axis changed by a drag.
     axis: ResizeAxis,
+    /// Hit target and visual line geometry in logical pixels.
     style: ResizeBarStyle,
+    /// Optional retained resize callback.
     on_resize: Option<ResizeHandler<A>>,
+    /// Captured pointer state, or `None` outside an active drag.
     drag: Signal<Option<ResizeDragState>>,
 }
 
@@ -477,6 +491,7 @@ impl<A: 'static> Widget<A> for ResizeBarWidget<A> {
 
 /// Constructs and dispatches one resize event when a handler exists.
 impl<A: 'static> ResizeBarWidget<A> {
+    /// Builds and dispatches one axis-projected resize event when configured.
     fn emit(
         &self,
         ctx: &mut EventCtx<A>,

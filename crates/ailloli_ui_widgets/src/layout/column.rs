@@ -20,9 +20,13 @@ use ailloli_ui_runtime::component::{IntoView, View};
 /// let _ = column;
 /// ```
 pub struct Column<A = ()> {
+    /// Outer logical sizing policy.
     pub(crate) layout: LayoutStyle,
+    /// Vertical direction, gap, and cross-axis alignment.
     pub(crate) flex: FlexStyle,
+    /// Parent-flex participation metadata.
     pub(crate) flex_item: ailloli_ui_core::style::FlexItemStyle,
+    /// Ordered retained children laid out from top to bottom.
     children: Vec<View<A>>,
 }
 

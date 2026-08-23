@@ -666,11 +666,17 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
 
 /// Component properties used to allocate persistent edit and buffer signals.
 struct TextInputComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Caller-owned UTF-8 text value.
     value: Signal<String>,
+    /// Optional reactive placeholder for an empty value.
     placeholder: Option<Binding<String>>,
+    /// Text, border, caret, and selection styling.
     style: TextInputStyle,
+    /// Single-line or multiline input behavior.
     mode: TextInputMode,
+    /// Optional callback receiving text after a committed change.
     on_change: Option<TextInputChangeHandler<A>>,
 }
 

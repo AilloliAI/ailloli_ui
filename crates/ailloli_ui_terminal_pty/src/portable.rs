@@ -98,6 +98,12 @@ impl PtyBackend for PortablePtyBackend {
     /// [`PtyError::Io`] with backend strings. A failure after child spawn but
     /// before handle construction has no explicit kill path here and relies on
     /// dropped backend objects. The successful threads are detached and unjoined.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Spawn`] if the native PTY cannot be allocated or the
+    /// child cannot be started. Returns [`PtyError::Io`] if the spawned PTY's
+    /// reader or writer handle cannot be acquired.
     fn spawn(&self, config: PtySpawnConfig) -> Result<PtyHandle, PtyError> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
@@ -163,6 +169,12 @@ impl PtySession for PortablePtySession {
     ///
     /// Shutdown can race after the initial flag check, so a concurrent write may
     /// still reach the OS or fail with a backend write error.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Closed`] when shutdown was already observed, or
+    /// [`PtyError::Write`] if the writer mutex is poisoned or the native write
+    /// or flush fails.
     fn write(&self, bytes: &[u8]) -> Result<(), PtyError> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(PtyError::Closed);
@@ -182,6 +194,12 @@ impl PtySession for PortablePtySession {
     /// Serializes a clamped master resize, rejecting observed shutdown.
     ///
     /// Shutdown can race after the initial flag check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Closed`] when shutdown was already observed, or
+    /// [`PtyError::Resize`] if the master mutex is poisoned or the native resize
+    /// fails.
     fn resize(&self, size: PtySize) -> Result<(), PtyError> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(PtyError::Closed);
@@ -205,6 +223,12 @@ impl PtySession for PortablePtySession {
     /// The flag changes before lock/kill. Thus a failure is not retryable through
     /// this session: later calls observe the flag and return `Ok(())`. Workers are
     /// not joined and the wait thread can still enqueue an exit event afterward.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::Shutdown`] when the child-killer mutex is poisoned or
+    /// the native kill request fails. Repeated calls after the first attempt are
+    /// successful even when that first attempt returned an error.
     fn shutdown(&self) -> Result<(), PtyError> {
         if self.shutdown.swap(true, Ordering::SeqCst) {
             return Ok(());

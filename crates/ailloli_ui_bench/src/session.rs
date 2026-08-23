@@ -263,6 +263,13 @@ impl SessionCore {
     ///
     /// Identifier allocation and enqueue are serialized across producers so
     /// accepted records remain sequential on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchWriteError::Closed`] after finalization,
+    /// [`BenchWriteError::NonFiniteValue`] for invalid numeric event data,
+    /// [`BenchWriteError::Serialize`] for JSON conversion failure, or the queue
+    /// capacity/disconnection errors documented by [`Self::enqueue`].
     fn record(&self, event: Event, context: EventContext) -> Result<EventId, BenchWriteError> {
         let _order = self
             .record_order
@@ -290,6 +297,12 @@ impl SessionCore {
     }
 
     /// Validates and queues a sparse metadata overlay in producer order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchWriteError::Closed`] after finalization,
+    /// [`BenchWriteError::NonFiniteValue`] for invalid numeric metadata, or the
+    /// queue capacity/disconnection errors documented by [`Self::enqueue`].
     fn update_metadata(&self, metadata: RunMetadata) -> Result<(), BenchWriteError> {
         let _order = self
             .record_order
@@ -317,6 +330,12 @@ impl SessionCore {
     }
 
     /// Attempts one nonblocking queue insertion and records sticky failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchWriteError::Closed`] when producers are no longer accepted,
+    /// [`BenchWriteError::WriterStopped`] after writer failure/disconnection, or
+    /// [`BenchWriteError::QueueFull`] when the bounded channel has no capacity.
     fn enqueue(&self, record: WireRecord) -> Result<(), BenchWriteError> {
         if !self.accepting.load(Ordering::Acquire) {
             return Err(BenchWriteError::Closed);
@@ -414,6 +433,13 @@ impl BenchSession {
 
     /// Starts a session and installs a weak reference in the process-global sink.
     ///
+    /// # Errors
+    ///
+    /// Returns [`BenchInitError::AlreadyInitialized`] when the global slot is
+    /// active, poisoned, or changes during initialization. Otherwise propagates
+    /// every path, metadata, filesystem, initial-write, or writer-spawn failure
+    /// documented by [`Self::start`].
+    ///
     /// # Examples
     ///
     /// ```no_run
@@ -460,6 +486,12 @@ impl BenchSession {
     }
 
     /// Validates paths/metadata, writes `run_start`, and spawns the writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the matching [`BenchInitError`] for non-finite metadata, an
+    /// invalid/existing destination or staging path, directory/file creation,
+    /// initial-record serialization/write, or writer-thread spawn failure.
     fn start_inner(
         path: &Path,
         metadata: RunMetadata,
@@ -687,6 +719,13 @@ impl BenchSession {
     }
 
     /// Shared explicit/drop finalization path; may be called only once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BenchWriteError::Closed`] after the worker was already taken,
+    /// [`BenchWriteError::WriterPanicked`] if it unwinds,
+    /// [`BenchWriteError::WriterStopped`] if finish delivery fails before an
+    /// otherwise successful worker result, or the worker's flush/publication error.
     fn finish_inner(&mut self) -> Result<CompletedRun, BenchWriteError> {
         let Some(worker) = self.worker.take() else {
             return Err(BenchWriteError::Closed);
@@ -722,6 +761,12 @@ impl Drop for BenchSession {
 /// A disconnected channel without `Finish` counts as one dropped record. Counts
 /// saturate rather than wrap. `sync_all` precedes the non-overwriting rename;
 /// invalid runs return with staging data intact.
+///
+/// # Errors
+///
+/// Returns the matching [`BenchWriteError`] for record serialization/write,
+/// periodic/final flush, file synchronization, dropped records, an existing
+/// final destination, or atomic publication rename failure.
 fn writer_loop(
     mut writer: BufWriter<File>,
     mut hasher: Sha256,
@@ -798,6 +843,11 @@ fn writer_loop(
 }
 
 /// Serializes one compact JSON object plus newline, then hashes identical bytes.
+///
+/// # Errors
+///
+/// Returns [`BenchWriteError::Serialize`] when JSON encoding fails or
+/// [`BenchWriteError::Write`] when the complete encoded line cannot be written.
 fn write_wire_record(
     writer: &mut BufWriter<File>,
     hasher: &mut Sha256,
@@ -905,6 +955,7 @@ pub(crate) struct RecorderInner {
 /// ```
 #[derive(Debug)]
 pub struct Recorder {
+    /// Serialized writer, path, schema, and frame-correlation state.
     inner: Mutex<RecorderInner>,
 }
 
@@ -1015,6 +1066,11 @@ static GLOBAL: Lazy<Mutex<GlobalSink>> = Lazy::new(|| Mutex::new(GlobalSink::Emp
 
 /// Installs the append-only compatibility recorder if the global slot is empty.
 ///
+/// # Errors
+///
+/// Returns [`BenchInitError::AlreadyInitialized`] when a session/legacy recorder
+/// already owns the global slot or its mutex is poisoned.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -1035,6 +1091,13 @@ pub(crate) fn install_legacy(recorder: Recorder) -> Result<(), BenchInitError> {
 }
 
 /// Dispatches an event to the active gating session or legacy/global no-op.
+///
+/// # Errors
+///
+/// Returns [`BenchWriteError::WriterStopped`] if the global slot is poisoned, or
+/// propagates [`BenchWriteError::NonFiniteValue`], `Closed`, `QueueFull`, and
+/// `WriterStopped` from the active gating session. No active or legacy-only sink
+/// returns `Ok(None)`.
 ///
 /// # Examples
 ///
@@ -1081,6 +1144,13 @@ pub(crate) fn record_global(
 
 /// Queues a metadata overlay on the active global gating session.
 ///
+/// # Errors
+///
+/// Returns [`BenchWriteError::WriterStopped`] when the global slot or active
+/// writer is unavailable, [`BenchWriteError::Closed`] when the session stopped
+/// accepting updates, [`BenchWriteError::NonFiniteValue`] for invalid metadata,
+/// or [`BenchWriteError::QueueFull`] when the bounded queue cannot accept it.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -1103,6 +1173,12 @@ pub(crate) fn update_global_metadata(metadata: RunMetadata) -> Result<bool, Benc
 
 /// Allocates a frame ID from the active global gating session.
 ///
+/// # Errors
+///
+/// Returns [`BenchWriteError::WriterStopped`] when the global sink mutex is
+/// poisoned. An absent, legacy, initializing, or expired session is not an
+/// error and returns `Ok(None)`.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -1116,6 +1192,11 @@ pub(crate) fn allocate_global_frame_id() -> Result<Option<FrameId>, BenchWriteEr
 }
 
 /// Upgrades and returns the active global session without holding the mutex.
+///
+/// # Errors
+///
+/// Returns [`BenchWriteError::WriterStopped`] when the global sink mutex is
+/// poisoned. Missing, initializing, legacy, or expired sessions return `Ok(None)`.
 fn active_global_session() -> Result<Option<Arc<SessionCore>>, BenchWriteError> {
     let mut global = GLOBAL.lock().map_err(|_| BenchWriteError::WriterStopped)?;
     global.clear_dead_session();

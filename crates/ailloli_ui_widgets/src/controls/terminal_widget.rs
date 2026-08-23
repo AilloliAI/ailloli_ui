@@ -709,18 +709,31 @@ impl<A: 'static> Terminal<A> {
 
 /// Component properties used to allocate scroll, geometry, and selection state.
 struct TerminalComponent<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Caller-owned terminal grid, history, cursor, and mode state.
     state: Signal<TerminalState>,
+    /// Font, color, padding, cursor, selection, and scrollbar styling.
     style: TerminalWidgetStyle,
+    /// Initial vertical history offset in logical lines.
     initial_scroll_y: f32,
+    /// Optional initial terminal-cell selection.
     selection: Option<TerminalSelection>,
+    /// Character, word, or line selection expansion mode.
     selection_mode: TerminalSelectionMode,
+    /// Whether new output should keep the viewport at the history end.
     follow_output: bool,
+    /// Whether committed layout should resize terminal rows and columns.
     auto_resize: bool,
+    /// Whether overflow paints visual scrollbars.
     scrollbars: bool,
+    /// Optional callback receiving encoded keyboard/mouse input bytes.
     on_input: Option<InputHandler<A>>,
+    /// Optional sink receiving widget-driven terminal-state changes.
     state_sync: Option<StateSync>,
+    /// Optional sink receiving row/column resize requests.
     resize_sync: Option<ResizeSync>,
+    /// Optional sink receiving committed logical/pixel geometry.
     geometry_sync: Option<GeometrySync>,
 }
 
@@ -782,26 +795,47 @@ impl<A: 'static> IntoView<A> for Terminal<A> {
 
 /// Retained terminal widget implementing synchronization, input, and painting.
 struct TerminalWidget<A> {
+    /// Outer logical sizing policy.
     layout: LayoutStyle,
+    /// Caller-owned terminal grid, history, cursor, and mode state.
     state: Signal<TerminalState>,
+    /// Retained viewport offset in logical pixels.
     scroll: Signal<ScrollState>,
+    /// Last geometry emitted after committed layout.
     last_geometry: Signal<Option<TerminalGeometry>>,
+    /// Terminal size last written through state synchronization.
     last_resize_state_size: Signal<Option<TerminalSize>>,
+    /// Whether output growth currently keeps the viewport at the end.
     follow_output: Signal<bool>,
+    /// Line count observed during the previous synchronization pass.
     last_line_count: Signal<usize>,
+    /// Retained terminal-cell selection.
     selection: Signal<Option<TerminalSelection>>,
+    /// Character, word, or line selection expansion mode.
     selection_mode: Signal<TerminalSelectionMode>,
+    /// Terminal cell captured at pointer-drag start.
     drag_anchor: Signal<Option<TerminalPosition>>,
+    /// Mouse button currently captured for selection or reporting.
     mouse_button: Signal<Option<MouseButton>>,
+    /// Terminal cell of the previous click for multi-click detection.
     last_click: Signal<Option<TerminalPosition>>,
+    /// Saturating consecutive click count at the same cell.
     click_count: Signal<u8>,
+    /// Font, color, padding, cursor, selection, and scrollbar styling.
     style: TerminalWidgetStyle,
+    /// Wheel scaling and vertical axis-filtering policy.
     behavior: ScrollBehavior,
+    /// Whether committed layout should resize terminal rows and columns.
     auto_resize: bool,
+    /// Whether overflow paints visual scrollbars.
     scrollbars: bool,
+    /// Optional callback receiving encoded keyboard/mouse input bytes.
     on_input: Option<InputHandler<A>>,
+    /// Optional sink receiving widget-driven terminal-state changes.
     state_sync: Option<StateSync>,
+    /// Optional sink receiving row/column resize requests.
     resize_sync: Option<ResizeSync>,
+    /// Optional sink receiving committed logical/pixel geometry.
     geometry_sync: Option<GeometrySync>,
 }
 
@@ -1672,11 +1706,17 @@ fn key_character_upper(key: &KeyEvent) -> Option<String> {
 
 /// Borrowed state required to paint the currently visible terminal rows.
 struct TerminalPaintModel<'a> {
+    /// Borrowed font, color, padding, cursor, and selection styling.
     style: &'a TerminalWidgetStyle,
+    /// Shared cell advance and line-height geometry in logical pixels.
     metrics: TerminalCellMetrics,
+    /// Borrowed terminal cursor and mode state.
     state: &'a TerminalState,
+    /// Visible history/screen lines in paint order.
     lines: &'a [&'a CoreTerminalLine],
+    /// Current viewport offset in logical pixels.
     scroll: ScrollState,
+    /// Optional terminal-cell selection to highlight.
     selection: Option<TerminalSelection>,
 }
 

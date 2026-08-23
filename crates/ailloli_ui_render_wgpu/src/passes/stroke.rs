@@ -7,7 +7,9 @@ use ailloli_ui_runtime::DrawPolyline;
 use crate::passes::to_ndc;
 use crate::vertices::StrokeVertex;
 
+/// Physical-pixel segment length below which a line is treated as degenerate.
 const MIN_SEGMENT_LENGTH_PX: f32 = 0.001;
+/// Physical-pixel antialias fringe added on each side of a stroke.
 const AA_FRINGE_PX: f32 = 1.0;
 
 /// Appends antialiased triangles for a logical-coordinate polyline.
@@ -17,6 +19,11 @@ const AA_FRINGE_PX: f32 = 1.0;
 /// transparent strokes are skipped. Each open path gets one-pixel AA fringes,
 /// square AA caps, and bevel joins; output is always a triangle-list multiple of
 /// three.
+///
+/// # Panics
+///
+/// Panics only if internal segment construction reports a nonempty collection
+/// whose final segment cannot be retrieved.
 ///
 /// # Examples
 ///
@@ -94,9 +101,13 @@ fn clean_points_physical(points: &[Point], scale: Scale) -> Vec<[f32; 2]> {
 #[derive(Debug, Clone, Copy)]
 /// One normalized physical-pixel line segment and its left normal.
 struct Segment {
+    /// Physical-pixel start point.
     a: [f32; 2],
+    /// Physical-pixel end point.
     b: [f32; 2],
+    /// Unit direction from `a` to `b`.
     dir: [f32; 2],
+    /// Perpendicular unit vector used to expand stroke width.
     normal: [f32; 2],
 }
 
