@@ -32,9 +32,12 @@ REQUIRED_FILES = {
     ".cargo/audit.toml",
     "Cargo.toml",
     "Cargo.lock",
+    "ARCHITECTURE.md",
+    "BENCHMARKING.md",
     "README.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
+    "MIGRATION.md",
     "SUPPORT.md",
     "RELEASING.md",
     "RUSTSEC.md",
@@ -294,6 +297,9 @@ def validate_relative_markdown_links(root: Path) -> int:
     count = 0
     for name in (
         "README.md",
+        "ARCHITECTURE.md",
+        "BENCHMARKING.md",
+        "MIGRATION.md",
         "SECURITY.md",
         "CONTRIBUTING.md",
         "SUPPORT.md",
@@ -375,6 +381,22 @@ def validate_governance(root: Path, require_funding: bool) -> str:
         fail("CODEOWNERS must assign the complete tree to @MrRise-RiCorp")
 
     required_phrases = {
+        "ARCHITECTURE.md": [
+            "Workspace packages",
+            "Targeted work and retained trees",
+            "invalidating one component never rebuilds",
+        ],
+        "BENCHMARKING.md": [
+            "ailloli-ui-bench",
+            "AILLOLI_UI_BENCH_PATH",
+            "GPU",
+            "device-pixel ratio (DPR)",
+        ],
+        "MIGRATION.md": [
+            "Cargo feature migration",
+            "`native-overlay`",
+            "`native_overlay`",
+        ],
         "SECURITY.md": [
             "private GitHub Security Advisory",
             "Do not open a public issue",
