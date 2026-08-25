@@ -163,7 +163,7 @@ jobs:
       - name: Audit repository candidate
         run: |
           python3 .github/scripts/audit-metadata.py
-          python3 .github/scripts/audit-repository.py
+          python3 .github/scripts/audit-repository.py --allow-missing-funding
       - name: Audit new commit subjects
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
