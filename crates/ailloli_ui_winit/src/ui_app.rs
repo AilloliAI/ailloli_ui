@@ -822,7 +822,7 @@ impl InputBenchCounters {
 
 /// Multi-window winit application (one runtime + one renderer per window).
 ///
-/// MVP flow:
+/// Retained rendering flow:
 /// - reconcile runs once at startup per window,
 /// - each redraw: `layout → paint → ailloli_ui_render_wgpu`.
 ///

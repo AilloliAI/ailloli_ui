@@ -9,7 +9,7 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawPolyline, DrawRRect, DrawRect,
 /// text / caret) inside a dedicated `with_clip` viewport so out-of-viewport
 /// glyphs and selection rects are clipped on the GPU.
 ///
-/// Phase 29 fix in `ailloli_ui_render_wgpu::renderer` (per-layer vertex buffers) is what
+/// multilayer compositing fix in `ailloli_ui_render_wgpu::renderer` (per-layer vertex buffers) is what
 /// makes this safe again — previously a second scene layer would corrupt the
 /// previously rendered chrome through the shared vertex buffer being
 /// overwritten.

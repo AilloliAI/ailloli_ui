@@ -1414,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn input_options_defaults_match_phase_contract() {
+    fn input_options_defaults_match_documented_contract() {
         let options = OpenXrUiInputOptions::default();
         assert!(options.enabled);
         assert!(options.controllers);

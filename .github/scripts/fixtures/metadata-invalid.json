@@ -1,0 +1,14 @@
+{
+  "name": "ailloli_ui",
+  "version": "0.1.0-beta.1",
+  "authors": ["Rising Corporation and Ailloli UI contributors"],
+  "description": "Retained-mode desktop UI framework façade for Rust",
+  "license": "Apache-2.0 OR MIT",
+  "rust_version": "1.88",
+  "repository": "https://github.com/AilloliAI/ailloli_ui",
+  "homepage": "https://ailloliai.github.io/ailloli_ui/",
+  "documentation": "https://example.invalid/ailloli_ui/",
+  "keywords": ["ui", "gui", "desktop", "retained-mode", "rust"],
+  "categories": ["gui"],
+  "publish": []
+}

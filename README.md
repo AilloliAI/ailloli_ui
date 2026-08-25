@@ -6,7 +6,11 @@ renderer, and optional Vulkan and OpenXR hosts.
 
 The project is pre-1.0 and under active development. Every package in this
 workspace is currently `publish = false`; consumers use a path or pinned Git
-dependency until a separate publication phase is authorized.
+dependency until publication is separately authorized.
+
+Project resources: [API documentation](https://ailloliai.github.io/ailloli_ui/),
+[contribution guide](CONTRIBUTING.md), [support policy](SUPPORT.md), and
+[security policy](SECURITY.md).
 
 ## Quick start
 
@@ -89,13 +93,43 @@ interactive documentation showcase built only through the public `ailloli_ui`
 façade, so it exercises the same API and dependency direction as an external
 application. Its editable quick start, retained-state preview, architecture
 explorer, guide, and resource cards present real framework contracts instead
-of synthetic product data. GitHub and crates.io links use their reserved public
-destinations; hosted API documentation and the Ailloli UI Book stay visibly
-marked as coming soon until canonical sites exist.
+of synthetic product data. GitHub, contribution, sponsorship, and hosted API
+documentation links use their canonical destinations. crates.io and the
+Ailloli UI Book stay visibly marked as coming soon until they exist.
 
 It is a workspace application rather than a crate-local Cargo example because
 its role is to validate the complete consumer experience across framework
 packages.
+
+## Sponsorship
+
+Ailloli UI is open source and can be used for individual, commercial, and
+open-source work under its Apache-2.0/MIT license without sponsoring the
+project. Voluntary [GitHub sponsorship](https://github.com/sponsors/AilloliAI)
+funds maintenance, bug fixes, performance, documentation, features, and
+stability. It does not provide private access, exclusive functionality,
+support guarantees, bug priority, or roadmap control. See the complete
+[sponsorship policy](SPONSORS.md).
+
+### Corporate
+
+No public sponsors are listed yet.
+
+### Gold
+
+No public sponsors are listed yet.
+
+### Silver
+
+No public sponsors are listed yet.
+
+### Bronze
+
+No public sponsors are listed yet.
+
+### Backers and Supporters
+
+No public sponsors are listed yet.
 
 ## Workspace packages
 
@@ -146,7 +180,7 @@ The façade exposes only generic framework capabilities:
 
 ### Cargo feature migration
 
-Phase 126 removes the former kebab-case first-party feature aliases. Update
+feature-alias migration removes the former kebab-case first-party feature aliases. Update
 consumer manifests and `--features` arguments by replacing the complete legacy
 name with its snake_case counterpart:
 
@@ -278,7 +312,7 @@ CARGO_INCREMENTAL=0 cargo build --release --locked \
 CARGO_INCREMENTAL=0 cargo run --release --locked \
   -p ailloli_ui_bench --features cli --bin ailloli-ui-bench -- \
   run-matrix \
-  --output-root artifacts/bench/phase125 \
+  --output-root artifacts/bench/winit_host_architecture \
   --phase candidate --winit-version 0.30.13 --backend wayland \
   --profile release --harness winit_regression_bench \
   --target x86_64-unknown-linux-gnu --machine local-wayland-01 \
@@ -289,7 +323,7 @@ CARGO_INCREMENTAL=0 cargo run --release --locked \
 CARGO_INCREMENTAL=0 cargo run --release --locked \
   -p ailloli_ui_bench --features cli --bin ailloli-ui-bench -- \
   summarize --input \
-  artifacts/bench/phase125/candidate/winit-0.30.13/wayland/wake_single
+  artifacts/bench/winit_host_architecture/candidate/winit-0.30.13/wayland/wake_single
 ```
 
 Run Wayland and X11 separately and compare only artifacts produced by the same

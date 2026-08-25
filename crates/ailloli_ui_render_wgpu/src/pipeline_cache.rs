@@ -534,7 +534,7 @@ pub struct PipelineCache {
     pub box_shadow: wgpu::RenderPipeline,
     /// Analytic circular progress-ring pipeline without stencil.
     pub ring_progress: wgpu::RenderPipeline,
-    /// Phase 30 — same as `rect`, but with a stencil-compatible depth_stencil
+    /// single-pass compositing — same as `rect`, but with a stencil-compatible depth_stencil
     /// (compare=Always, op=Keep). Used inside a single `RenderPass` that has a
     /// stencil attachment, for layers that are NOT in stencil mode.
     pub rect_passthrough_stencil: wgpu::RenderPipeline,
@@ -913,7 +913,7 @@ impl PipelineCache {
             read_mask: 0xff,
             write_mask: 0x00,
         };
-        // Phase 30 — passthrough stencil state: compare=Always, no write.
+        // single-pass compositing — passthrough stencil state: compare=Always, no write.
         // Used by `*_passthrough_stencil` pipelines so that non-stencil-mode
         // layers can coexist inside a single RenderPass that already has a
         // depth_stencil_attachment (required when any other layer is stencil).

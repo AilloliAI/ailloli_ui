@@ -31,7 +31,7 @@ const MATRIX_INDEX_FILE: &str = "matrix-index.json";
 const HISTORICAL_WAKE_BASELINE_STATUS: &str = "N/A";
 /// Stable explanation accompanying [`HISTORICAL_WAKE_BASELINE_STATUS`].
 const HISTORICAL_WAKE_BASELINE_REASON: &str =
-    "the wake/mailbox path did not exist before Phase 125; no comparable historical run exists";
+    "the wake/mailbox path did not exist before Winit host architecture; no comparable historical run exists";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -162,7 +162,7 @@ struct CompareArgs {
 struct SummaryOutput {
     /// Number of complete measured runs included.
     runs: usize,
-    /// Explicit status for the unavailable pre-Phase-125 wake baseline.
+    /// Explicit status for the unavailable legacy pre-architecture wake baseline.
     historical_wake_baseline: HistoricalWakeBaseline,
     /// Summaries keyed by metric name.
     metrics: BTreeMap<String, MetricSummary>,

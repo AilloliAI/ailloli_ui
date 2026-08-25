@@ -1,12 +1,17 @@
 [package]
 name = "sandbox_app"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
-authors = ["Rising Corporation and Ailloli UI contributors <admin@risingcorporation.com>"]
-description = "Ailloli UI public API and widget sandbox"
-publish = false
+repository.workspace = true
+homepage.workspace = true
+description = "Native presentation and documentation showcase for Ailloli UI"
+documentation = "https://ailloliai.github.io/ailloli_ui/sandbox_app/"
+keywords = ["showcase", "example", "gui", "desktop", "rust"]
+categories = ["development-tools"]
+publish.workspace = true
 default-run = "sandbox_app"
 
 [[bin]]

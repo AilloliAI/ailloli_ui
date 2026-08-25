@@ -1,11 +1,11 @@
-//! Frame render plan (Phase 30) — **pure CPU**.
+//! Frame render plan (single-pass compositing) — **pure CPU**.
 //!
 //! Given a frame's layers + a [`PreparedResources`] snapshot, [`FrameRenderPlan::build_cpu`]
 //! produces:
 //!   - vertex arenas (one [`Vec`] per primitive type, accumulated for the whole frame),
 //!   - planned layers (scissor / stencil_ref / clip params / stencil mask range),
 //!   - planned batches (pipeline + clip_bind + texture + vertex_range),
-//!   - isolated offscreen passes + composite batches (Phase 31).
+//!   - isolated offscreen passes + composite batches (isolated compositor).
 //!
 //! No [`wgpu::Device`] / [`wgpu::Queue`] / [`crate::text::TextAtlas`] /
 //! [`crate::icons::IconCache`] access here. Tests can mock [`PreparedResources`]

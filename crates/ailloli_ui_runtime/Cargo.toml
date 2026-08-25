@@ -1,9 +1,16 @@
 [package]
 name = "ailloli_ui_runtime"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Retained element tree, layout, paint, input, and reactivity for Ailloli UI"
+documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_runtime/"
+keywords = ["gui", "retained-mode", "layout", "reactive", "widgets"]
+categories = ["gui"]
 publish.workspace = true
 
 [features]

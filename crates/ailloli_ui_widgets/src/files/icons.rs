@@ -161,7 +161,7 @@ mod tests {
     use ailloli_ui_core::IconId;
 
     #[test]
-    fn maps_mvp_extensions_to_devicons_and_fallbacks() {
+    fn maps_supported_extensions_to_devicons_and_fallbacks() {
         assert_eq!(file_icon_for_name("main.rs"), IconId::Devicon('\u{e68b}'));
         assert_eq!(
             file_icon_for_name("Cargo.toml"),

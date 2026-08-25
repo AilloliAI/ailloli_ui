@@ -1,9 +1,16 @@
 [package]
 name = "ailloli_ui_render_wgpu"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "WGPU renderer for retained Ailloli UI scenes"
+documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_render_wgpu/"
+keywords = ["wgpu", "renderer", "graphics", "gpu", "gui"]
+categories = ["graphics", "rendering"]
 publish.workspace = true
 
 [dependencies]

@@ -1,11 +1,17 @@
 [package]
 name = "ailloli_ui_devicons_font"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "License-audited file-icon font bytes for Ailloli UI rendering"
-publish = false
+documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_devicons_font/"
+keywords = ["icons", "font", "glyphs", "assets", "gui"]
+categories = ["graphics", "rendering"]
+publish.workspace = true
 
 [lib]
 path = "src/lib.rs"

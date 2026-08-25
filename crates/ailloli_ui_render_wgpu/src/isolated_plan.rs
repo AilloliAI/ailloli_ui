@@ -1,5 +1,5 @@
-//! Phase 31 — isolated offscreen pass planning (CPU pure).
-//! Phase 33 — parent/child DAG for nested isolated passes.
+//! isolated compositor — isolated offscreen pass planning (CPU pure).
+//! nested isolated compositor — parent/child DAG for nested isolated passes.
 
 use std::collections::HashMap;
 use std::ops::Range;

@@ -54,7 +54,7 @@ fn one_hundred_thousand_rows_layout_only_the_viewport_and_overscan() {
     app.layout(Constraints::tight(720.0, 520.0), Scale::new(1.0), &mut text);
     let scene = app.paint(&mut text);
 
-    // The Phase 127 contract allows at most the visible rows plus eight rows
+    // The tree virtualization contract allows at most the visible rows plus eight rows
     // of overscan on either side. The 53-row ceiling also covers partial rows
     // introduced by padding and fractional scroll offsets.
     assert!(

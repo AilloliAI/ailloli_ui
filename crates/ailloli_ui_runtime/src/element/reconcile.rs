@@ -49,7 +49,7 @@ pub struct ReconcileOutputChild {
     pub reused: bool,
 }
 
-/// MVP child reconciliation: by index when no keys, otherwise by stable key.
+/// Reconciles children by index when no keys exist, otherwise by stable key.
 ///
 /// - If `new_keys[i]` is `Some(k)`, reuse the old child with the same key when present.
 /// - Otherwise try reuse by index when possible.

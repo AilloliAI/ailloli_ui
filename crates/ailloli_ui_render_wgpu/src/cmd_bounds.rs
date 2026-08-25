@@ -1,4 +1,4 @@
-//! Device-space bounds for draw commands (Phase 31).
+//! Device-space bounds for draw commands (isolated compositor).
 
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::Rect;

@@ -1,4 +1,4 @@
-//! Per-layer isolated compositing effects (Phase 31).
+//! Per-layer isolated compositing effects (isolated compositor).
 
 /// Blend mode when compositing an isolated pass into the main framebuffer.
 ///
@@ -45,7 +45,7 @@ pub struct IsolatedEffects {
     pub opacity: f32,
     /// Gaussian-ish blur radius in physical pixels (`0.0` = disabled) on layer content.
     pub blur_radius_px: f32,
-    /// Blur of content already rendered behind this layer (Phase 34 backdrop).
+    /// Blur of content already rendered behind this layer (backdrop filter backdrop).
     pub backdrop_blur_radius_px: f32,
     /// Blend operation used when recombining the isolated pass.
     pub blend_mode: BlendMode,

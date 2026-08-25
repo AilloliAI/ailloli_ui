@@ -1,4 +1,4 @@
-//! Phase 34 — copy a region from the main framebuffer into an offscreen texture.
+//! backdrop filter — copy a region from the main framebuffer into an offscreen texture.
 
 use std::collections::HashMap;
 

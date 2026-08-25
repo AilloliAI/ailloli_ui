@@ -19,32 +19,32 @@
 
 mod env_control;
 
-/// Phase 34 — backdrop region capture from swapchain.
+/// backdrop filter — backdrop region capture from swapchain.
 pub mod backdrop_capture;
 /// Frame readback types and PNG encoding helpers.
 pub mod capture;
 /// GPU clip mode selection (not in `ailloli_ui_core`).
 pub mod clip;
-/// Phase 31 — draw-command bounds for isolated offscreen regions.
+/// isolated compositor — draw-command bounds for isolated offscreen regions.
 pub mod cmd_bounds;
-/// Phase 31 — post-effect chain (blur) for isolated passes.
+/// isolated compositor — post-effect chain (blur) for isolated passes.
 pub mod effect_chain;
 /// Renderer and surface errors.
 pub mod error;
-/// Phase 30 — CPU-pure frame render plan (vertex arenas + planned layers/batches).
+/// single-pass compositing — CPU-pure frame render plan (vertex arenas + planned layers/batches).
 pub mod frame_plan;
-/// Phase 30 — GPU-touching frame resource preparation (atlas pin, icon cache).
+/// single-pass compositing — GPU-touching frame resource preparation (atlas pin, icon cache).
 pub mod frame_prep;
-/// Phase 32 — isolated offscreen budgets and downgrade policy.
+/// isolated compositor hardening — isolated offscreen budgets and downgrade policy.
 pub mod isolated_budget;
-/// Phase 31 — isolated pass planning types.
+/// isolated compositor — isolated pass planning types.
 pub mod isolated_plan;
-/// Phase 31 — offscreen texture pool.
+/// isolated compositor — offscreen texture pool.
 pub mod offscreen_pool;
 pub use backdrop_capture::BackdropTable;
-/// Phase 34 — backdrop blur pipeline.
+/// backdrop filter — backdrop blur pipeline.
 pub mod backdrop_blur;
-/// Phase 35 — Multiply / Screen composite shader.
+/// blend modes — Multiply / Screen composite shader.
 pub mod composite_blend;
 /// Icon rasterization and GPU texture cache.
 pub mod icons;

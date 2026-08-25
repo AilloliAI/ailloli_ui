@@ -189,7 +189,7 @@ fn smoke_view(args: SmokeArgs) -> ailloli_ui_runtime::component::View<SmokeActio
             .padding(36.0)
             .child(
                 WindowAffordanceFrame::<SmokeAction>::new("XR Window Affordances")
-                    .logical_window_id("ui-xr17-xr-smoke")
+                    .logical_window_id("window-affordances-xr-smoke")
                     .width(860.0)
                     .height(430.0)
                     .on_affordance(|event| match event.kind {
@@ -258,7 +258,7 @@ fn smoke_view(args: SmokeArgs) -> ailloli_ui_runtime::component::View<SmokeActio
                             ),
                     ),
             )
-            .key("ui-xr17-window-affordances-smoke")
+            .key("window-affordances-window-affordances-smoke")
             .into_view();
     }
 
@@ -644,7 +644,7 @@ fn usage() -> &'static str {
      Options:\n\
        --prefer-left          Prefer the left controller pointer\n\
        --no-hands             Disable OpenXR hand input collection\n\
-       --affordance-demo      Show the UI-XR 17 window affordance slate\n\
+       --affordance-demo      Show the Window affordances window affordance slate\n\
        --distance-m <meters>  Place the UI quad at this forward distance, default 2.0\n\
        --scale <dpr>          Logical scale / DPR, default 1.0\n\
        --timeout-sec <sec>    Stop automatically after this duration\n\

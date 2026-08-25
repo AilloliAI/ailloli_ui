@@ -27,7 +27,7 @@
 //!   --features test_support --example winit_regression_bench
 //! cargo run --release --locked -p ailloli_ui_bench --features cli \
 //!   --bin ailloli-ui-bench -- run-matrix \
-//!   --output-root artifacts/bench/phase125 --phase candidate \
+//!   --output-root artifacts/bench/winit_host_architecture --phase candidate \
 //!   --winit-version 0.30.13 --backend wayland --profile release \
 //!   --harness winit_regression_bench --scenario wake_single \
 //!   -- target/release/examples/winit_regression_bench
@@ -40,15 +40,15 @@
 //! ```text
 //! cargo run --release --locked -p ailloli_ui_bench --features cli \
 //!   --bin ailloli-ui-bench -- compare \
-//!   --baseline artifacts/bench/phase125/baseline/winit-0.30.13/wayland/wake_single \
-//!   --candidate artifacts/bench/phase125/candidate/winit-0.30.13/wayland/wake_single
+//!   --baseline artifacts/bench/winit_host_architecture/baseline/winit-0.30.13/wayland/wake_single \
+//!   --candidate artifacts/bench/winit_host_architecture/candidate/winit-0.30.13/wayland/wake_single
 //! ```
 //!
 //! The only compatibility field which can be waived is `winit_version`, via an
 //! explicit `compare --allow-winit-version-diff`; schema, scenario, profile,
 //! geometry, requested/observed DPR and environment identity remain exact.
 //!
-//! There is no valid pre-Phase-125 wake/mailbox baseline: that path did not
+//! There is no valid legacy pre-architecture wake/mailbox baseline: that path did not
 //! exist before the refactor. Its historical value is therefore **N/A**, not a
 //! synthetic measurement. The matrix index exposes this status explicitly.
 

@@ -259,7 +259,7 @@ impl<A: 'static> Widget<A> for TextWidget {
         };
         let baseline = prepared.lines.first().map(|l| l.baseline_y).unwrap_or(0.0);
         let cmd = DrawCmd::Text(DrawText {
-            // Contract: pos.y is baseline (Phase 27).
+            // Contract: pos.y is baseline (baseline contract).
             pos: [bounds.x, bounds.y + baseline],
             color: self.style.color,
             decoration: self.style.decoration,

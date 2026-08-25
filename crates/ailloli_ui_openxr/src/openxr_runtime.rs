@@ -1,7 +1,7 @@
 //! OpenXR runtime scaffolding for Ailloli UI.
 //!
-//! This module intentionally stays lightweight in this phase and focuses on reusable
-//! integration points:
+//! This module focuses on reusable integration points while keeping host-specific
+//! session policy outside the framework:
 //!
 //! - host can build their own OpenXR session loop
 //! - map controller/hand sample input into `ailloli_ui_runtime` events via

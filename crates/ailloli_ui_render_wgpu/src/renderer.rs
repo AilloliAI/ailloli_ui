@@ -48,7 +48,7 @@ use wgpu::util::DeviceExt;
 
 /// GPU renderer for a host-owned surface or externally managed render target.
 ///
-/// Phase 30: a single `wgpu::RenderPass` is opened per frame, driven by a
+/// single-pass compositing: a single `wgpu::RenderPass` is opened per frame, driven by a
 /// [`FrameRenderPlan`]. Per-layer stencil_ref counters are assigned by
 /// `FrameRenderPlan::build_cpu`, removing the previous `StencilFrameState`
 /// field.
@@ -432,7 +432,7 @@ impl RendererOptions {
 /// One scene layer: draw commands plus a non-destructive clip stack.
 ///
 /// `isolated == true` requests an offscreen pass when [`IsolatedEffects::needs_offscreen`]
-/// is true (opacity < 1, blur, etc.). Phase 31 renders content to a pooled
+/// is true (opacity < 1, blur, etc.). isolated compositor renders content to a pooled
 /// texture, runs the effect chain, then composites into the main pass.
 ///
 /// # Examples
@@ -1842,7 +1842,7 @@ impl Renderer {
         }
     }
 
-    /// Phase 30 — records all layers into a single `wgpu::RenderPass`.
+    /// single-pass compositing — records all layers into a single `wgpu::RenderPass`.
     ///
     /// The four-step layout matches the plan:
     ///   1. `text_atlas.start_frame()` + `PreparedResources::prepare(...)`
@@ -1855,7 +1855,7 @@ impl Renderer {
     ///      if needed); iterate `PlannedLayer`s setting scissor / stencil_ref
     ///      / pipeline / bind groups / vertex range for each batch.
     ///
-    /// Invariants enforced here (anti-Phase-29 traps):
+    /// Invariants enforced here (anti-multilayer compositing traps):
     ///   - one `wgpu::Buffer` per arena per frame ; never rewrite a region
     ///     before submit,
     ///   - scissor is reset for every layer (`apply_layer_scissor` with the
@@ -3192,7 +3192,7 @@ fn record_planned_layer<'a>(
             continue;
         };
 
-        // Phase 30 — if the frame has a stencil attachment but this layer is
+        // single-pass compositing — if the frame has a stencil attachment but this layer is
         // not in stencil mode, the wgpu validation requires that the pipeline
         // declares a compatible depth_stencil state. Use the passthrough
         // variants in that case (compare=Always, no write).
@@ -3277,7 +3277,7 @@ fn record_planned_layer<'a>(
     }
 }
 
-// Phase 29 legacy `render_layer_pass` body removed in Phase 30.
+// multilayer compositing legacy `render_layer_pass` body removed in single-pass compositing.
 //
 // The single-pass implementation lives in `Renderer::record_single_pass`
 // (open one `wgpu::RenderPass`, iterate `FrameRenderPlan::layers`) and the

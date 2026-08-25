@@ -112,7 +112,7 @@ impl FontDb {
         }
     }
 
-    /// Returns the first matching `QueryFont` for the requested style (MVP).
+    /// Returns the first matching `QueryFont` for the requested style.
     ///
     /// Matching uses the ordered families from [`Self::families_for`], the
     /// supplied weight/stretch/style attributes, and a Latin-script fallback.

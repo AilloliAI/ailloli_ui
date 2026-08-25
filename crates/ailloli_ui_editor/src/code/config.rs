@@ -125,7 +125,7 @@ impl Default for GutterConfig {
     }
 }
 
-/// Minimal visual theme for the CodeEditor MVP.
+/// Minimal visual theme for the CodeEditor.
 ///
 /// Colors are semantic paint inputs and do not affect shaping/cache geometry.
 ///

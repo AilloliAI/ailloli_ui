@@ -1,9 +1,16 @@
 [package]
 name = "ailloli_ui_bench"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Versioned performance recording and regression gates for Ailloli UI"
+documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_bench/"
+keywords = ["benchmark", "performance", "jsonl", "gui", "rust"]
+categories = ["development-tools"]
 publish.workspace = true
 
 [features]

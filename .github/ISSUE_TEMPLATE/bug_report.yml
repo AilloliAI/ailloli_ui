@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible problem in the public Ailloli UI framework.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report vulnerabilities here. Use the private Security Advisory link in SECURITY.md.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This report contains no vulnerability details, credentials, private source, or personal data.
+          required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Ailloli UI revision or version
+      placeholder: Commit SHA or beta version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Rust version, operating system, display backend, GPU, and enabled features where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide focused source and exact commands without secrets or private paths.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include relevant logs or screenshots after removing sensitive data.
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Note regressions, workarounds, or accessibility impact.

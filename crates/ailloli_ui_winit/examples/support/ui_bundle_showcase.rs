@@ -62,8 +62,8 @@ impl ShowcaseMode {
     /// Returns the stable root view key used by capture tests.
     fn root_key(self) -> &'static str {
         match self {
-            Self::White => "phase39-white-root",
-            Self::DefaultTheme => "phase39-default-root",
+            Self::White => "scrollable_showcase-white-root",
+            Self::DefaultTheme => "scrollable_showcase-default-root",
         }
     }
 
@@ -146,7 +146,7 @@ pub fn ui_bundle_switches_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
             mode,
             "section-switches",
             "Switches",
-            "Phase 41 native boolean control states.",
+            "Boolean controls in enabled, disabled, and selected states.",
             switches_section(mode),
         ))
 }
@@ -172,7 +172,7 @@ pub fn ui_bundle_radio_group_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
             mode,
             "section-radio-groups",
             "Radio Groups",
-            "Phase 42 native exclusive selection controls.",
+            "Exclusive selection controls backed by retained state.",
             radio_groups_section(mode),
         ))
 }
@@ -198,7 +198,7 @@ pub fn ui_bundle_segmented_control_showcase(mode: ShowcaseMode) -> impl IntoView
             mode,
             "section-segmented-controls",
             "Segmented Controls",
-            "Phase 43 native exclusive segmented controls.",
+            "Exclusive segmented controls with retained selection.",
             segmented_controls_section(mode),
         ))
 }
@@ -224,7 +224,7 @@ pub fn ui_bundle_slider_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
             mode,
             "section-sliders",
             "Sliders",
-            "Phase 44 native value and range controls.",
+            "Scalar and range controls with deterministic values.",
             sliders_section(mode),
         ))
 }
@@ -250,7 +250,7 @@ pub fn ui_bundle_progress_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
             mode,
             "section-progress",
             "Progress",
-            "Phase 45 native determinate progress indicators.",
+            "Determinate linear and circular progress indicators.",
             progress_section(mode),
         ))
 }
@@ -276,7 +276,7 @@ pub fn ui_bundle_select_dropdown_showcase(mode: ShowcaseMode) -> impl IntoView<(
             mode,
             "section-select-dropdowns",
             "Select & Dropdown",
-            "Phase 46 native anchored popup controls.",
+            "Anchored selection and menu popup controls.",
             select_dropdowns_section(mode),
         ))
 }
@@ -302,7 +302,7 @@ pub fn ui_bundle_combobox_autocomplete_showcase(mode: ShowcaseMode) -> impl Into
             mode,
             "section-combobox-autocomplete",
             "ComboBox & Autocomplete",
-            "Phase 47 native filtered text popup controls.",
+            "Filtered text entry with anchored suggestion popups.",
             combobox_autocomplete_section(mode),
         ))
 }
@@ -328,7 +328,7 @@ pub fn ui_bundle_cards_avatar_status_divider_showcase(mode: ShowcaseMode) -> imp
             mode,
             "section-cards-avatar-status-divider",
             "Cards, Avatars & Indicators",
-            "Phase 48 native composition primitives.",
+            "Composition primitives for identity, status, grouping, and separation.",
             cards_avatar_status_divider_section(mode),
         ))
 }
@@ -354,7 +354,7 @@ pub fn ui_bundle_navigation_lists_showcase(mode: ShowcaseMode) -> impl IntoView<
             mode,
             "section-navigation-lists",
             "Navigation & Lists",
-            "Phase 49 native navigation rows and simple list compositions.",
+            "Navigation rows and retained list compositions.",
             navigation_lists_section(mode),
         ))
 }
@@ -380,7 +380,7 @@ pub fn ui_bundle_accordion_tree_showcase(mode: ShowcaseMode) -> impl IntoView<()
             mode,
             "section-accordion-tree",
             "Accordion & TreeView",
-            "Phase 50 native disclosure and hierarchical controls.",
+            "Disclosure and hierarchical navigation controls.",
             accordion_tree_section(mode),
         ))
 }
@@ -406,7 +406,7 @@ pub fn ui_bundle_tree_edit_drag_showcase(mode: ShowcaseMode) -> impl IntoView<()
             mode,
             "section-tree-edit-drag",
             "TreeView Edit & Drag",
-            "Phase 50.1 mutable tree operations and inline editing states.",
+            "Mutable tree operations, drag targets, and inline editing states.",
             tree_edit_drag_section(mode),
         ))
 }
@@ -432,7 +432,7 @@ pub fn ui_bundle_table_view_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
             mode,
             "section-table-view",
             "TableView",
-            "Phase 51 native static data grid with sticky header and internal scroll.",
+            "Static data grid with sticky headers and internal scrolling.",
             table_view_section(mode),
         ))
 }
@@ -458,7 +458,7 @@ pub fn ui_bundle_feedback_overlays_showcase(mode: ShowcaseMode) -> impl IntoView
             mode,
             "section-feedback-overlays",
             "Feedback & Overlays",
-            "Phase 52 native toast host and confirmation dialog overlays.",
+            "Toast notifications and confirmation dialog overlays.",
             feedback_overlays_section(mode),
         ))
 }
@@ -484,7 +484,7 @@ pub fn ui_bundle_command_palette_showcase(mode: ShowcaseMode) -> impl IntoView<(
             mode,
             "section-command-palette",
             "Command Palette",
-            "Phase 52 native filtered action palette overlay.",
+            "Filtered command discovery in an action palette overlay.",
             command_palette_section(mode),
         ))
 }
@@ -510,7 +510,7 @@ pub fn ui_bundle_pickers_upload_showcase(mode: ShowcaseMode) -> impl IntoView<()
             mode,
             "section-pickers-upload",
             "Pickers & Upload",
-            "Phase 53 native date, time, color and abstract upload controls.",
+            "Date, time, color, and abstract upload controls.",
             pickers_upload_section(mode),
         ))
 }
@@ -536,38 +536,38 @@ pub fn ui_bundle_charts_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
             mode,
             "section-charts",
             "Charts",
-            "Phase 54 native simple charts rendered with existing primitives.",
+            "Simple charts rendered from public drawing primitives.",
             charts_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle terminal phase54 1 showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle terminal view showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_terminal_phase54_1_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_terminal_view_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_terminal_phase54_1_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
-    terminal_phase54_1_showcase(mode, TerminalShowcaseScenario::Default)
+pub fn ui_bundle_terminal_view_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+    terminal_view_showcase(mode, TerminalShowcaseScenario::Default)
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle terminal phase77 showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle terminal terminal_widget showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_terminal_phase77_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_terminal_widget_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_terminal_phase77_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_terminal_widget_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -577,23 +577,23 @@ pub fn ui_bundle_terminal_phase77_showcase(mode: ShowcaseMode) -> impl IntoView<
             mode,
             "section-terminal-widget-v2",
             "Terminal",
-            "Phase 77 state-backed terminal widget with ANSI color, cursor, selection and input mapping.",
-            terminal_phase77_section(mode),
+            "terminal widget state-backed terminal widget with ANSI color, cursor, selection and input mapping.",
+            terminal_widget_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle terminal phase78 showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle terminal terminal_scrollback_tui showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_terminal_phase78_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_terminal_scrollback_tui_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_terminal_phase78_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_terminal_scrollback_tui_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -606,31 +606,31 @@ pub fn ui_bundle_terminal_phase78_showcase(mode: ShowcaseMode) -> impl IntoView<
                     mode,
                     "section-terminal-scrollback-selection",
                     "Terminal scrollback",
-                    "Phase 78 follow-output, scrollback viewport, selection and clipboard-ready extraction.",
-                    terminal_phase78_scrollback_section(mode),
+                    "terminal scrollback and TUI follow-output, scrollback viewport, selection and clipboard-ready extraction.",
+                    terminal_scrollback_tui_scrollback_section(mode),
                 ))
                 .child(section(
                     mode,
                     "section-terminal-tui",
                     "Terminal TUI",
-                    "Phase 78 alternate screen, bracketed paste, application cursor and mouse tracking modes.",
-                    terminal_phase78_tui_section(mode),
+                    "terminal scrollback and TUI alternate screen, bracketed paste, application cursor and mouse tracking modes.",
+                    terminal_scrollback_tui_tui_section(mode),
                 )),
         )
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle terminal phase80 showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle terminal terminal_diagnostics showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_terminal_phase80_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_terminal_diagnostics_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_terminal_phase80_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_terminal_diagnostics_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -640,55 +640,53 @@ pub fn ui_bundle_terminal_phase80_showcase(mode: ShowcaseMode) -> impl IntoView<
             mode,
             "section-terminal-diagnostics",
             "Terminal diagnostics",
-            "Phase 80 output classification with IDE-ready diagnostics and visual markers.",
-            terminal_phase80_section(mode),
+            "terminal diagnostics output classification with IDE-ready diagnostics and visual markers.",
+            terminal_diagnostics_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle terminal phase54 1 search showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle terminal view search showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_terminal_phase54_1_search_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_terminal_view_search_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_terminal_phase54_1_search_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
-    terminal_phase54_1_showcase(mode, TerminalShowcaseScenario::Search)
+pub fn ui_bundle_terminal_view_search_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+    terminal_view_showcase(mode, TerminalShowcaseScenario::Search)
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle terminal phase54 1 selection showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle terminal view selection showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_terminal_phase54_1_selection_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_terminal_view_selection_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_terminal_phase54_1_selection_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
-    terminal_phase54_1_showcase(mode, TerminalShowcaseScenario::Selection)
+pub fn ui_bundle_terminal_view_selection_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+    terminal_view_showcase(mode, TerminalShowcaseScenario::Selection)
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle terminal phase54 1 capture suite showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle terminal view capture suite showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_terminal_phase54_1_capture_suite_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_terminal_view_capture_suite_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_terminal_phase54_1_capture_suite_showcase(
-    mode: ShowcaseMode,
-) -> impl IntoView<()> {
+pub fn ui_bundle_terminal_view_capture_suite_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -700,7 +698,7 @@ pub fn ui_bundle_terminal_phase54_1_capture_suite_showcase(
                 .child(
                     Container::new()
                         .width(400.0)
-                        .child(terminal_phase54_1_section(
+                        .child(terminal_view_showcase_section(
                             mode,
                             "section-terminal-view",
                             TerminalShowcaseScenario::Default,
@@ -709,7 +707,7 @@ pub fn ui_bundle_terminal_phase54_1_capture_suite_showcase(
                 .child(
                     Container::new()
                         .width(400.0)
-                        .child(terminal_phase54_1_section(
+                        .child(terminal_view_showcase_section(
                             mode,
                             "section-terminal-view-search",
                             TerminalShowcaseScenario::Search,
@@ -718,7 +716,7 @@ pub fn ui_bundle_terminal_phase54_1_capture_suite_showcase(
                 .child(
                     Container::new()
                         .width(400.0)
-                        .child(terminal_phase54_1_section(
+                        .child(terminal_view_showcase_section(
                             mode,
                             "section-terminal-view-selection",
                             TerminalShowcaseScenario::Selection,
@@ -740,8 +738,8 @@ enum TerminalShowcaseScenario {
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase54 1 showcase` deterministic showcase fixture.
-fn terminal_phase54_1_showcase(
+/// Builds or computes the `terminal view showcase` deterministic showcase fixture.
+fn terminal_view_showcase(
     mode: ShowcaseMode,
     scenario: TerminalShowcaseScenario,
 ) -> impl IntoView<()> {
@@ -750,7 +748,7 @@ fn terminal_phase54_1_showcase(
         .fill()
         .background(colors.background)
         .padding(18.0)
-        .child(terminal_phase54_1_section(
+        .child(terminal_view_showcase_section(
             mode,
             "section-terminal-view",
             scenario,
@@ -758,8 +756,8 @@ fn terminal_phase54_1_showcase(
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase54 1 section` deterministic showcase fixture.
-fn terminal_phase54_1_section(
+/// Builds or computes the `terminal view section` deterministic showcase fixture.
+fn terminal_view_showcase_section(
     mode: ShowcaseMode,
     key: &'static str,
     scenario: TerminalShowcaseScenario,
@@ -768,7 +766,7 @@ fn terminal_phase54_1_section(
         mode,
         key,
         "TerminalView",
-        "Phase 54.1 read-only terminal widget with bounded history, search and selection.",
+        "Read-only terminal with bounded history, search, and selection.",
         terminal_view_section(mode, scenario),
     )
 }
@@ -794,23 +792,23 @@ pub fn ui_bundle_code_editor_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
             mode,
             "section-code-editor",
             "CodeEditor",
-            "Phase 54.2 code editor MVP with gutter and horizontal scroll.",
+            "Code editor with a line gutter and horizontal scrolling.",
             code_editor_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_advanced_code_editor_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -818,25 +816,25 @@ pub fn ui_bundle_code_editor_phase54_3_showcase(mode: ShowcaseMode) -> impl Into
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3",
+            "section-advanced-code-editor",
             "CodeEditor Advanced",
-            "Phase 54.3 startup scenario with fixed gutter and deterministic initial scroll.",
-            code_editor_phase54_3_section(mode),
+            "Advanced CodeEditor startup scenario with fixed gutter and deterministic initial scroll.",
+            advanced_code_editor_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 baseline showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor baseline showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_baseline_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_baseline_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_baseline_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_advanced_code_editor_baseline_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -844,25 +842,25 @@ pub fn ui_bundle_code_editor_phase54_3_baseline_showcase(mode: ShowcaseMode) -> 
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-baseline",
+            "section-advanced-code-editor-baseline",
             "CodeEditor Baseline",
-            "Phase 54.3 styled Rust baseline alignment regression.",
-            code_editor_phase54_3_baseline_section(mode),
+            "Advanced CodeEditor styled Rust baseline alignment regression.",
+            advanced_code_editor_baseline_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 active line showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor active line showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_active_line_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_active_line_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_active_line_showcase(
+pub fn ui_bundle_advanced_code_editor_active_line_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -872,25 +870,25 @@ pub fn ui_bundle_code_editor_phase54_3_active_line_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-active-line",
+            "section-advanced-code-editor-active-line",
             "CodeEditor Active Line",
-            "Phase 54.3 active line ring scenario.",
-            code_editor_phase54_3_active_line_section(mode),
+            "Advanced CodeEditor active line ring scenario.",
+            advanced_code_editor_active_line_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 tree sitter showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor tree sitter showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_tree_sitter_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_tree_sitter_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_tree_sitter_showcase(
+pub fn ui_bundle_advanced_code_editor_tree_sitter_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -900,25 +898,25 @@ pub fn ui_bundle_code_editor_phase54_3_tree_sitter_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-tree-sitter",
+            "section-advanced-code-editor-tree-sitter",
             "CodeEditor Tree-sitter",
-            "Phase 54.3 hybrid Tree-sitter Rust syntax tokens with lexical gap-fill.",
-            code_editor_phase54_3_tree_sitter_section(mode),
+            "Advanced CodeEditor hybrid Tree-sitter Rust syntax tokens with lexical gap-fill.",
+            advanced_code_editor_tree_sitter_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 extension detection showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor extension detection showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_extension_detection_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_extension_detection_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_extension_detection_showcase(
+pub fn ui_bundle_advanced_code_editor_extension_detection_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -928,25 +926,25 @@ pub fn ui_bundle_code_editor_phase54_3_extension_detection_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-extension-detection",
+            "section-advanced-code-editor-extension-detection",
             "CodeEditor Extension Detection",
-            "Phase 54.3 auto-detect Rust syntax from the document .rs path.",
-            code_editor_phase54_3_extension_detection_section(mode),
+            "Advanced CodeEditor auto-detect Rust syntax from the document .rs path.",
+            advanced_code_editor_extension_detection_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 symbol outline showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor symbol outline showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_symbol_outline_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_symbol_outline_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_symbol_outline_showcase(
+pub fn ui_bundle_advanced_code_editor_symbol_outline_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -956,25 +954,25 @@ pub fn ui_bundle_code_editor_phase54_3_symbol_outline_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-symbol-outline",
+            "section-advanced-code-editor-symbol-outline",
             "CodeEditor Symbol Outline",
-            "Phase 54.3 Tree-sitter Rust symbol summary and outline IR.",
-            code_editor_phase54_3_symbol_outline_section(mode),
+            "Advanced CodeEditor Tree-sitter Rust symbol summary and outline IR.",
+            advanced_code_editor_symbol_outline_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 ctags fallback showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor ctags fallback showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_ctags_fallback_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_ctags_fallback_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_ctags_fallback_showcase(
+pub fn ui_bundle_advanced_code_editor_ctags_fallback_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -984,25 +982,25 @@ pub fn ui_bundle_code_editor_phase54_3_ctags_fallback_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-ctags-fallback",
+            "section-advanced-code-editor-ctags-fallback",
             "CodeEditor Ctags Fallback",
-            "Phase 54.3 Universal Ctags fallback summary with Ctags source provenance.",
-            code_editor_phase54_3_ctags_fallback_section(mode),
+            "Advanced CodeEditor Universal Ctags fallback summary with Ctags source provenance.",
+            advanced_code_editor_ctags_fallback_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 symbol graph showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor symbol graph showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_symbol_graph_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_symbol_graph_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_symbol_graph_showcase(
+pub fn ui_bundle_advanced_code_editor_symbol_graph_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -1012,25 +1010,25 @@ pub fn ui_bundle_code_editor_phase54_3_symbol_graph_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-symbol-graph",
+            "section-advanced-code-editor-symbol-graph",
             "CodeEditor Symbol Graph",
-            "Phase 54.3 Tree-sitter Rust symbol graph with Contains, Imports and Calls edges.",
-            code_editor_phase54_3_symbol_graph_section(mode),
+            "Advanced CodeEditor Tree-sitter Rust symbol graph with Contains, Imports and Calls edges.",
+            advanced_code_editor_symbol_graph_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 search showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor search showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_search_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_search_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_search_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_advanced_code_editor_search_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -1038,25 +1036,25 @@ pub fn ui_bundle_code_editor_phase54_3_search_showcase(mode: ShowcaseMode) -> im
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-search",
+            "section-advanced-code-editor-search",
             "CodeEditor Search",
-            "Phase 54.3 search highlights with an active match.",
-            code_editor_phase54_3_search_section(mode),
+            "Advanced CodeEditor search highlights with an active match.",
+            advanced_code_editor_search_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 multiclick selection showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor multiclick selection showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_multiclick_selection_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_multiclick_selection_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_multiclick_selection_showcase(
+pub fn ui_bundle_advanced_code_editor_multiclick_selection_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -1066,25 +1064,25 @@ pub fn ui_bundle_code_editor_phase54_3_multiclick_selection_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-multiclick-selection",
+            "section-advanced-code-editor-multiclick-selection",
             "CodeEditor Multi-click Selection",
-            "Post-54.3 double-click word/token and gutter line selection scenario.",
-            code_editor_phase54_3_multiclick_selection_section(mode),
+            "Double-click word/token and gutter line selection scenario.",
+            advanced_code_editor_multiclick_selection_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 diagnostics showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor diagnostics showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_diagnostics_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_diagnostics_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_diagnostics_showcase(
+pub fn ui_bundle_advanced_code_editor_diagnostics_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -1094,25 +1092,25 @@ pub fn ui_bundle_code_editor_phase54_3_diagnostics_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-diagnostics",
+            "section-advanced-code-editor-diagnostics",
             "CodeEditor Diagnostics",
-            "Phase 54.3 diagnostics with gutter markers and visible underlines.",
-            code_editor_phase54_3_diagnostics_section(mode),
+            "Advanced CodeEditor diagnostics with gutter markers and visible underlines.",
+            advanced_code_editor_diagnostics_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 folding showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor folding showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_folding_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_folding_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_folding_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_advanced_code_editor_folding_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -1120,25 +1118,25 @@ pub fn ui_bundle_code_editor_phase54_3_folding_showcase(mode: ShowcaseMode) -> i
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-folding",
+            "section-advanced-code-editor-folding",
             "CodeEditor Folding",
-            "Phase 54.3 collapsed regions with gutter fold markers and placeholders.",
-            code_editor_phase54_3_folding_section(mode),
+            "Advanced CodeEditor collapsed regions with gutter fold markers and placeholders.",
+            advanced_code_editor_folding_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 ide folding gutter showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor ide folding gutter showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_ide_folding_gutter_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_ide_folding_gutter_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_ide_folding_gutter_showcase(
+pub fn ui_bundle_advanced_code_editor_ide_folding_gutter_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -1148,25 +1146,25 @@ pub fn ui_bundle_code_editor_phase54_3_ide_folding_gutter_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-ide-folding-gutter",
+            "section-advanced-code-editor-ide-folding-gutter",
             "CodeEditor IDE Folding Gutter",
-            "Post-54.3 folding gutter with IDE chevrons, guide rails and stable line-number reserve.",
-            code_editor_phase54_3_ide_folding_gutter_section(mode),
+            "Folding gutter with IDE chevrons, guide rails and stable line-number reserve.",
+            advanced_code_editor_ide_folding_gutter_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 lsp showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor lsp showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_lsp_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_lsp_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_lsp_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_advanced_code_editor_lsp_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -1174,25 +1172,25 @@ pub fn ui_bundle_code_editor_phase54_3_lsp_showcase(mode: ShowcaseMode) -> impl 
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-lsp",
+            "section-advanced-code-editor-lsp",
             "CodeEditor LSP Enrichment",
-            "Phase 54.3 optional LSP diagnostics and semantic symbols from a mock backend.",
-            code_editor_phase54_3_lsp_section(mode),
+            "Advanced CodeEditor optional LSP diagnostics and semantic symbols from a mock backend.",
+            advanced_code_editor_lsp_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 scip showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor scip showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_scip_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_scip_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_scip_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
+pub fn ui_bundle_advanced_code_editor_scip_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -1200,27 +1198,25 @@ pub fn ui_bundle_code_editor_phase54_3_scip_showcase(mode: ShowcaseMode) -> impl
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-scip",
+            "section-advanced-code-editor-scip",
             "CodeEditor SCIP Project Index",
-            "Phase 54.3 optional SCIP project summary with cross-file navigation model.",
-            code_editor_phase54_3_scip_section(mode),
+            "Advanced CodeEditor optional SCIP project summary with cross-file navigation model.",
+            advanced_code_editor_scip_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 large file showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor large file showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_large_file_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_large_file_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_large_file_showcase(
-    mode: ShowcaseMode,
-) -> impl IntoView<()> {
+pub fn ui_bundle_advanced_code_editor_large_file_showcase(mode: ShowcaseMode) -> impl IntoView<()> {
     let colors = mode.palette();
     Container::new()
         .fill()
@@ -1228,25 +1224,25 @@ pub fn ui_bundle_code_editor_phase54_3_large_file_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-large-file",
+            "section-advanced-code-editor-large-file",
             "CodeEditor Large File",
-            "Phase 54.3 large NoWrap file scrolled deeply with instrumentation overlay.",
-            code_editor_phase54_3_large_file_section(mode),
+            "Advanced CodeEditor large NoWrap file scrolled deeply with instrumentation overlay.",
+            advanced_code_editor_large_file_section(mode),
         ))
 }
 
 #[cfg(test)]
 #[allow(dead_code)]
-/// Builds the `ui bundle code editor phase54 3 theme variants showcase` deterministic retained-view scenario.
+/// Builds the `ui bundle advanced code editor theme variants showcase` deterministic retained-view scenario.
 ///
 /// `mode` selects either the fixed white palette or default theme tokens; it
 /// does not mutate global theme state.
 ///
 /// # Examples
 ///
-/// In this example target, call `ui_bundle_code_editor_phase54_3_theme_variants_showcase(ShowcaseMode::White)` and pass the
+/// In this example target, call `ui_bundle_advanced_code_editor_theme_variants_showcase(ShowcaseMode::White)` and pass the
 /// returned view to the sandbox or capture harness.
-pub fn ui_bundle_code_editor_phase54_3_theme_variants_showcase(
+pub fn ui_bundle_advanced_code_editor_theme_variants_showcase(
     mode: ShowcaseMode,
 ) -> impl IntoView<()> {
     let colors = mode.palette();
@@ -1256,10 +1252,10 @@ pub fn ui_bundle_code_editor_phase54_3_theme_variants_showcase(
         .padding(18.0)
         .child(section(
             mode,
-            "section-code-editor-phase54-3-theme-variants",
+            "section-advanced-code-editor-theme-variants",
             "CodeEditor Theme Variants",
-            "Phase 54.3 default and white CodeTheme variants using comparable Rust documents.",
-            code_editor_phase54_3_theme_variants_section(mode),
+            "Advanced CodeEditor default and white CodeTheme variants using comparable Rust documents.",
+            advanced_code_editor_theme_variants_section(mode),
         ))
 }
 
@@ -1320,7 +1316,7 @@ fn build_showcase(mode: ShowcaseMode) -> View<()> {
                             .gap(4.0)
                             .child(text(mode.title(), 24, colors.text))
                             .child(text(
-                                "Phase 39 scrollable showcase. Native widgets are shown as-is; missing widgets stay as planned placeholders.",
+                                "Scrollable native widget showcase with deterministic presentation states.",
                                 13,
                                 colors.muted,
                             )),
@@ -1336,7 +1332,7 @@ fn build_showcase(mode: ShowcaseMode) -> View<()> {
                         mode,
                         "section-badges-chips-tags",
                         "Badges, Chips & Tags",
-                        "Phase 40 native compact status and filter pills.",
+                        "Compact status, metadata, and filter pills.",
                         badges_chips_tags_section(),
                     ))
                     .child(section(
@@ -1357,133 +1353,133 @@ fn build_showcase(mode: ShowcaseMode) -> View<()> {
                         mode,
                         "section-code-editor",
                         "CodeEditor",
-                        "Phase 54.2 code editor MVP with gutter and horizontal scroll.",
+                        "Code editor with a line gutter and horizontal scrolling.",
                         code_editor_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-terminal-view",
                         "TerminalView",
-                        "Phase 54.1 read-only terminal widget with bounded history, search and selection.",
+                        "Read-only terminal with bounded history, search, and selection.",
                         terminal_view_section(mode, TerminalShowcaseScenario::Default),
                     ))
                     .child(section(
                         mode,
-                        "section-planned-widgets",
-                        "Planned Widgets",
-                        "Missing or partial widgets intentionally represented as roadmap placeholders.",
-                        planned_widgets_section(mode),
+                        "section-extension-points",
+                        "Extension Points",
+                        "Public composition patterns for custom retained views and host integrations.",
+                        extension_points_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-switches",
                         "Switches",
-                        "Phase 41 native boolean control states.",
+                        "Boolean controls in enabled, disabled, and selected states.",
                         switches_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-radio-groups",
                         "Radio Groups",
-                        "Phase 42 native exclusive selection controls.",
+                        "Exclusive selection controls backed by retained state.",
                         radio_groups_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-segmented-controls",
                         "Segmented Controls",
-                        "Phase 43 native exclusive segmented controls.",
+                        "Exclusive segmented controls with retained selection.",
                         segmented_controls_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-sliders",
                         "Sliders",
-                        "Phase 44 native value and range controls.",
+                        "Scalar and range controls with deterministic values.",
                         sliders_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-progress",
                         "Progress",
-                        "Phase 45 native determinate progress indicators.",
+                        "Determinate linear and circular progress indicators.",
                         progress_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-select-dropdowns",
                         "Select & Dropdown",
-                        "Phase 46 native anchored popup controls.",
+                        "Anchored selection and menu popup controls.",
                         select_dropdowns_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-combobox-autocomplete",
                         "ComboBox & Autocomplete",
-                        "Phase 47 native filtered text popup controls.",
+                        "Filtered text entry with anchored suggestion popups.",
                         combobox_autocomplete_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-cards-avatar-status-divider",
                         "Cards, Avatars & Indicators",
-                        "Phase 48 native composition primitives.",
+                        "Composition primitives for identity, status, grouping, and separation.",
                         cards_avatar_status_divider_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-navigation-lists",
                         "Navigation & Lists",
-                        "Phase 49 native navigation rows and simple list compositions.",
+                        "Navigation rows and retained list compositions.",
                         navigation_lists_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-accordion-tree",
                         "Accordion & TreeView",
-                        "Phase 50 native disclosure and hierarchical controls.",
+                        "Disclosure and hierarchical navigation controls.",
                         accordion_tree_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-tree-edit-drag",
                         "TreeView Edit & Drag",
-                        "Phase 50.1 mutable tree operations and inline editing states.",
+                        "Mutable tree operations, drag targets, and inline editing states.",
                         tree_edit_drag_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-table-view",
                         "TableView",
-                        "Phase 51 native static data grid with sticky header and internal scroll.",
+                        "Static data grid with sticky headers and internal scrolling.",
                         table_view_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-feedback-overlays",
                         "Feedback & Overlays",
-                        "Phase 52 native toast host and confirmation dialog overlays.",
+                        "Toast notifications and confirmation dialog overlays.",
                         feedback_overlays_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-command-palette",
                         "Command Palette",
-                        "Phase 52 native filtered action palette overlay.",
+                        "Filtered command discovery in an action palette overlay.",
                         command_palette_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-pickers-upload",
                         "Pickers & Upload",
-                        "Phase 53 native date, time, color and abstract upload controls.",
+                        "Date, time, color, and abstract upload controls.",
                         pickers_upload_section(mode),
                     ))
                     .child(section(
                         mode,
                         "section-charts",
                         "Charts",
-                        "Phase 54 native simple charts rendered with existing primitives.",
+                        "Simple charts rendered from public drawing primitives.",
                         charts_section(mode),
                     ))
                     .child(section(
@@ -4165,14 +4161,14 @@ fn code_editor_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 section` deterministic showcase fixture.
-fn code_editor_phase54_3_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor section` deterministic showcase fixture.
+fn advanced_code_editor_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_code_editor_fixture();
+    let code = advanced_code_editor_fixture();
     let document = State::new(
         Document::new(DocumentId(543), TextBuffer::from_string(code))
             .with_language(EditorLanguage::Rust)
-            .with_path("src/phase54_3.rs"),
+            .with_path("src/advanced_code_editor.rs"),
     );
 
     Container::new()
@@ -4190,13 +4186,13 @@ fn code_editor_phase54_3_section(mode: ShowcaseMode) -> View<()> {
                 .width(860.0)
                 .height(230.0),
         )
-        .key("code-editor-phase54-3-widget")
+        .key("advanced-code-editor-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 baseline section` deterministic showcase fixture.
-fn code_editor_phase54_3_baseline_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor baseline section` deterministic showcase fixture.
+fn advanced_code_editor_baseline_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
         "fn main() {",
@@ -4229,13 +4225,13 @@ fn code_editor_phase54_3_baseline_section(mode: ShowcaseMode) -> View<()> {
                 .width(860.0)
                 .height(190.0),
         )
-        .key("code-editor-phase54-3-baseline-widget")
+        .key("advanced-code-editor-baseline-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 active line section` deterministic showcase fixture.
-fn code_editor_phase54_3_active_line_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor active line section` deterministic showcase fixture.
+fn advanced_code_editor_active_line_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
         "const test: &str = \"test\";",
@@ -4265,13 +4261,13 @@ fn code_editor_phase54_3_active_line_section(mode: ShowcaseMode) -> View<()> {
                 .width(860.0)
                 .height(170.0),
         )
-        .key("code-editor-phase54-3-active-line-widget")
+        .key("advanced-code-editor-active-line-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 tree sitter section` deterministic showcase fixture.
-fn code_editor_phase54_3_tree_sitter_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor tree sitter section` deterministic showcase fixture.
+fn advanced_code_editor_tree_sitter_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
         "#[derive(Debug)]",
@@ -4311,13 +4307,13 @@ fn code_editor_phase54_3_tree_sitter_section(mode: ShowcaseMode) -> View<()> {
                 .width(860.0)
                 .height(270.0),
         )
-        .key("code-editor-phase54-3-tree-sitter-widget")
+        .key("advanced-code-editor-tree-sitter-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 extension detection section` deterministic showcase fixture.
-fn code_editor_phase54_3_extension_detection_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor extension detection section` deterministic showcase fixture.
+fn advanced_code_editor_extension_detection_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
         "pub struct ExtensionDetected {",
@@ -4350,15 +4346,15 @@ fn code_editor_phase54_3_extension_detection_section(mode: ShowcaseMode) -> View
                 .width(860.0)
                 .height(220.0),
         )
-        .key("code-editor-phase54-3-extension-detection-widget")
+        .key("advanced-code-editor-extension-detection-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 symbol outline section` deterministic showcase fixture.
-fn code_editor_phase54_3_symbol_outline_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor symbol outline section` deterministic showcase fixture.
+fn advanced_code_editor_symbol_outline_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_symbol_outline_fixture();
+    let code = advanced_code_editor_symbol_outline_fixture();
     let document = Document::new(DocumentId(548), TextBuffer::from_string(code.clone()))
         .with_language(EditorLanguage::Rust)
         .with_path("src/symbol_outline.rs");
@@ -4385,13 +4381,13 @@ fn code_editor_phase54_3_symbol_outline_section(mode: ShowcaseMode) -> View<()> 
                 ),
         )
         .child(symbol_outline_panel(mode, &summary))
-        .key("code-editor-phase54-3-symbol-outline-widget")
+        .key("advanced-code-editor-symbol-outline-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 ctags fallback section` deterministic showcase fixture.
-fn code_editor_phase54_3_ctags_fallback_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor ctags fallback section` deterministic showcase fixture.
+fn advanced_code_editor_ctags_fallback_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let code = [
         "struct App {",
@@ -4437,15 +4433,15 @@ fn code_editor_phase54_3_ctags_fallback_section(mode: ShowcaseMode) -> View<()> 
                 ),
         )
         .child(ctags_fallback_panel(mode, &summary))
-        .key("code-editor-phase54-3-ctags-fallback-widget")
+        .key("advanced-code-editor-ctags-fallback-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 symbol graph section` deterministic showcase fixture.
-fn code_editor_phase54_3_symbol_graph_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor symbol graph section` deterministic showcase fixture.
+fn advanced_code_editor_symbol_graph_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_symbol_graph_fixture();
+    let code = advanced_code_editor_symbol_graph_fixture();
     let document = Document::new(DocumentId(550), TextBuffer::from_string(code.clone()))
         .with_language(EditorLanguage::Rust)
         .with_path("src/symbol_graph.rs");
@@ -4472,15 +4468,15 @@ fn code_editor_phase54_3_symbol_graph_section(mode: ShowcaseMode) -> View<()> {
                 ),
         )
         .child(symbol_graph_panel(mode, &summary))
-        .key("code-editor-phase54-3-symbol-graph-widget")
+        .key("advanced-code-editor-symbol-graph-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 search section` deterministic showcase fixture.
-fn code_editor_phase54_3_search_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor search section` deterministic showcase fixture.
+fn advanced_code_editor_search_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_search_fixture();
+    let code = advanced_code_editor_search_fixture();
     let document = State::new(
         Document::new(DocumentId(551), TextBuffer::from_string(code))
             .with_language(EditorLanguage::Rust)
@@ -4509,15 +4505,15 @@ fn code_editor_phase54_3_search_section(mode: ShowcaseMode) -> View<()> {
                 ),
         )
         .child(search_panel(mode))
-        .key("code-editor-phase54-3-search-widget")
+        .key("advanced-code-editor-search-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 multiclick selection section` deterministic showcase fixture.
-fn code_editor_phase54_3_multiclick_selection_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor multiclick selection section` deterministic showcase fixture.
+fn advanced_code_editor_multiclick_selection_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_multiclick_selection_fixture();
+    let code = advanced_code_editor_multiclick_selection_fixture();
     let word_start = code.find("foo_bar").expect("foo_bar fixture");
     let line_start = code.find("let r#async").expect("line fixture");
     let line_end = code[line_start..]
@@ -4571,16 +4567,16 @@ fn code_editor_phase54_3_multiclick_selection_section(mode: ShowcaseMode) -> Vie
                         .height(270.0),
                 ),
         )
-        .key("code-editor-phase54-3-multiclick-selection-widget")
+        .key("advanced-code-editor-multiclick-selection-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 diagnostics section` deterministic showcase fixture.
-fn code_editor_phase54_3_diagnostics_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor diagnostics section` deterministic showcase fixture.
+fn advanced_code_editor_diagnostics_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_diagnostics_fixture();
-    let diagnostics = phase54_3_diagnostics_for_fixture(&code);
+    let code = advanced_code_editor_diagnostics_fixture();
+    let diagnostics = advanced_code_editor_diagnostics_for_fixture(&code);
     let document = State::new(
         Document::new(DocumentId(552), TextBuffer::from_string(code))
             .with_language(EditorLanguage::Rust)
@@ -4608,15 +4604,15 @@ fn code_editor_phase54_3_diagnostics_section(mode: ShowcaseMode) -> View<()> {
                 ),
         )
         .child(diagnostics_panel(mode))
-        .key("code-editor-phase54-3-diagnostics-widget")
+        .key("advanced-code-editor-diagnostics-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 folding section` deterministic showcase fixture.
-fn code_editor_phase54_3_folding_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor folding section` deterministic showcase fixture.
+fn advanced_code_editor_folding_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_folding_fixture();
+    let code = advanced_code_editor_folding_fixture();
     let document = State::new(
         Document::new(DocumentId(553), TextBuffer::from_string(code))
             .with_language(EditorLanguage::Rust)
@@ -4646,15 +4642,15 @@ fn code_editor_phase54_3_folding_section(mode: ShowcaseMode) -> View<()> {
                 ),
         )
         .child(folding_panel(mode))
-        .key("code-editor-phase54-3-folding-widget")
+        .key("advanced-code-editor-folding-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 ide folding gutter section` deterministic showcase fixture.
-fn code_editor_phase54_3_ide_folding_gutter_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor ide folding gutter section` deterministic showcase fixture.
+fn advanced_code_editor_ide_folding_gutter_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_ide_folding_gutter_fixture();
+    let code = advanced_code_editor_ide_folding_gutter_fixture();
     let document = State::new(
         Document::new(DocumentId(563), TextBuffer::from_string(code))
             .with_language(EditorLanguage::Rust)
@@ -4675,26 +4671,26 @@ fn code_editor_phase54_3_ide_folding_gutter_section(mode: ShowcaseMode) -> View<
                     CodeEditor::new(document)
                         .language(EditorLanguage::Rust)
                         .line_numbers(true)
-                        .fold_regions(phase54_3_ide_folding_regions())
+                        .fold_regions(advanced_code_editor_ide_folding_regions())
                         .initial_scroll(0.0, 29_295.0)
                         .width(430.0)
                         .height(430.0),
                 ),
         )
         .child(ide_folding_gutter_panel(mode))
-        .key("code-editor-phase54-3-ide-folding-gutter-widget")
+        .key("advanced-code-editor-ide-folding-gutter-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 lsp section` deterministic showcase fixture.
-fn code_editor_phase54_3_lsp_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor lsp section` deterministic showcase fixture.
+fn advanced_code_editor_lsp_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_lsp_fixture();
+    let code = advanced_code_editor_lsp_fixture();
     let document_data = Document::new(DocumentId(554), TextBuffer::from_string(code.clone()))
         .with_language(EditorLanguage::Rust)
         .with_path("src/lsp_enrichment.rs");
-    let enrichment = phase54_3_lsp_mock_enrichment(&document_data, &code);
+    let enrichment = advanced_code_editor_lsp_mock_enrichment(&document_data, &code);
     let document = State::new(document_data);
 
     Row::new()
@@ -4718,21 +4714,21 @@ fn code_editor_phase54_3_lsp_section(mode: ShowcaseMode) -> View<()> {
                 ),
         )
         .child(lsp_enrichment_panel(mode, &enrichment))
-        .key("code-editor-phase54-3-lsp-widget")
+        .key("advanced-code-editor-lsp-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 scip section` deterministic showcase fixture.
-fn code_editor_phase54_3_scip_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor scip section` deterministic showcase fixture.
+fn advanced_code_editor_scip_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_scip_code_fixture();
+    let code = advanced_code_editor_scip_code_fixture();
     let document = State::new(
         Document::new(DocumentId(555), TextBuffer::from_string(code))
             .with_language(EditorLanguage::Rust)
             .with_path("src/lib.rs"),
     );
-    let project = phase54_3_scip_project_summary();
+    let project = advanced_code_editor_scip_project_summary();
 
     Row::new()
         .gap(12.0)
@@ -4753,15 +4749,15 @@ fn code_editor_phase54_3_scip_section(mode: ShowcaseMode) -> View<()> {
                 ),
         )
         .child(scip_project_panel(mode, &project))
-        .key("code-editor-phase54-3-scip-widget")
+        .key("advanced-code-editor-scip-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 large file section` deterministic showcase fixture.
-fn code_editor_phase54_3_large_file_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor large file section` deterministic showcase fixture.
+fn advanced_code_editor_large_file_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let code = phase54_3_large_file_fixture();
+    let code = advanced_code_editor_large_file_fixture();
     let document = State::new(
         Document::new(DocumentId(556), TextBuffer::from_string(code))
             .with_language(EditorLanguage::Rust)
@@ -4788,15 +4784,15 @@ fn code_editor_phase54_3_large_file_section(mode: ShowcaseMode) -> View<()> {
                 ),
         )
         .child(large_file_metrics_panel(mode))
-        .key("code-editor-phase54-3-large-file-widget")
+        .key("advanced-code-editor-large-file-widget")
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `code editor phase54 3 theme variants section` deterministic showcase fixture.
-fn code_editor_phase54_3_theme_variants_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `advanced code editor theme variants section` deterministic showcase fixture.
+fn advanced_code_editor_theme_variants_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let white_code = phase54_3_theme_variants_fixture("white");
+    let white_code = advanced_code_editor_theme_variants_fixture("white");
     let right = State::new(
         Document::new(DocumentId(558), TextBuffer::from_string(white_code))
             .with_language(EditorLanguage::Rust)
@@ -4828,10 +4824,10 @@ fn code_editor_phase54_3_theme_variants_section(mode: ShowcaseMode) -> View<()> 
                         .width(590.0)
                         .height(330.0)
                         .into_view()
-                        .key("code-editor-phase54-3-theme-white-editor"),
+                        .key("advanced-code-editor-theme-white-editor"),
                 ),
         )
-        .key("code-editor-phase54-3-theme-variants-widget")
+        .key("advanced-code-editor-theme-variants-widget")
         .into_view()
 }
 
@@ -4872,7 +4868,7 @@ fn code_theme_static_preview(theme: CodeTheme, border: Color, label: &'static st
                 .child(mono("5      computed_value", 12, theme.syntax_identifier))
                 .child(mono("6  }", 12, theme.syntax_punctuation)),
         )
-        .key("code-editor-phase54-3-theme-dark-preview")
+        .key("advanced-code-editor-theme-dark-preview")
         .into_view()
 }
 
@@ -5284,8 +5280,8 @@ fn symbol_depth(summary: &ailloli_ui_editor::code::CodeFileSummary, id: SymbolId
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 symbol graph fixture` deterministic showcase fixture.
-fn phase54_3_symbol_graph_fixture() -> String {
+/// Builds or computes the `advanced code editor symbol graph fixture` deterministic showcase fixture.
+fn advanced_code_editor_symbol_graph_fixture() -> String {
     [
         "use crate::runtime::build;",
         "",
@@ -5318,8 +5314,8 @@ fn phase54_3_symbol_graph_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 search fixture` deterministic showcase fixture.
-fn phase54_3_search_fixture() -> String {
+/// Builds or computes the `advanced code editor search fixture` deterministic showcase fixture.
+fn advanced_code_editor_search_fixture() -> String {
     [
         "pub fn main() {",
         "    let value = 1;",
@@ -5342,8 +5338,8 @@ fn phase54_3_search_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 multiclick selection fixture` deterministic showcase fixture.
-fn phase54_3_multiclick_selection_fixture() -> String {
+/// Builds or computes the `advanced code editor multiclick selection fixture` deterministic showcase fixture.
+fn advanced_code_editor_multiclick_selection_fixture() -> String {
     [
         "pub fn demo<'a>() {",
         "    let foo_bar = parser.parse::<usize>();",
@@ -5356,8 +5352,8 @@ fn phase54_3_multiclick_selection_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 diagnostics fixture` deterministic showcase fixture.
-fn phase54_3_diagnostics_fixture() -> String {
+/// Builds or computes the `advanced code editor diagnostics fixture` deterministic showcase fixture.
+fn advanced_code_editor_diagnostics_fixture() -> String {
     [
         "pub fn main() {",
         "    let unused_value = compute(1);",
@@ -5375,10 +5371,10 @@ fn phase54_3_diagnostics_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 folding fixture` deterministic showcase fixture.
-fn phase54_3_folding_fixture() -> String {
+/// Builds or computes the `advanced code editor folding fixture` deterministic showcase fixture.
+fn advanced_code_editor_folding_fixture() -> String {
     [
-        "pub mod phase54_3 {",
+        "pub mod advanced_code_editor {",
         "    pub fn collapsed_region(input: i32) -> i32 {",
         "        let doubled = input * 2;",
         "        let adjusted = doubled + 4;",
@@ -5399,8 +5395,8 @@ fn phase54_3_folding_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 ide folding gutter fixture` deterministic showcase fixture.
-fn phase54_3_ide_folding_gutter_fixture() -> String {
+/// Builds or computes the `advanced code editor ide folding gutter fixture` deterministic showcase fixture.
+fn advanced_code_editor_ide_folding_gutter_fixture() -> String {
     let mut lines = Vec::with_capacity(1_655);
     for idx in 1..=1_655 {
         let line = match idx {
@@ -5434,8 +5430,8 @@ fn phase54_3_ide_folding_gutter_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 ide folding regions` deterministic showcase fixture.
-fn phase54_3_ide_folding_regions() -> Vec<FoldRegion> {
+/// Builds or computes the `advanced code editor ide folding regions` deterministic showcase fixture.
+fn advanced_code_editor_ide_folding_regions() -> Vec<FoldRegion> {
     vec![
         FoldRegion::new(1627, 1630),
         FoldRegion::new(1631, 1633).collapsed(true),
@@ -5447,8 +5443,8 @@ fn phase54_3_ide_folding_regions() -> Vec<FoldRegion> {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 lsp fixture` deterministic showcase fixture.
-fn phase54_3_lsp_fixture() -> String {
+/// Builds or computes the `advanced code editor lsp fixture` deterministic showcase fixture.
+fn advanced_code_editor_lsp_fixture() -> String {
     [
         "pub fn main() {",
         "    let value = compute(41);",
@@ -5464,8 +5460,8 @@ fn phase54_3_lsp_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 scip code fixture` deterministic showcase fixture.
-fn phase54_3_scip_code_fixture() -> String {
+/// Builds or computes the `advanced code editor scip code fixture` deterministic showcase fixture.
+fn advanced_code_editor_scip_code_fixture() -> String {
     [
         "pub mod helper;",
         "",
@@ -5478,15 +5474,15 @@ fn phase54_3_scip_code_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 large file fixture` deterministic showcase fixture.
-fn phase54_3_large_file_fixture() -> String {
+/// Builds or computes the `advanced code editor large file fixture` deterministic showcase fixture.
+fn advanced_code_editor_large_file_fixture() -> String {
     let mut lines = Vec::with_capacity(10_050);
     lines.push("pub fn large_file_entry() {".to_string());
     for idx in 0..10_020 {
         if idx == 9_999 {
             lines.push(format!(
                 "    let very_long_binding_{idx} = \"{}\";",
-                "phase54_3_large_file_horizontal_width_probe_".repeat(18)
+                "advanced_code_editor_large_file_horizontal_width_probe_".repeat(18)
             ));
         } else {
             lines.push(format!(
@@ -5500,8 +5496,8 @@ fn phase54_3_large_file_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 theme variants fixture` deterministic showcase fixture.
-fn phase54_3_theme_variants_fixture(label: &str) -> String {
+/// Builds or computes the `advanced code editor theme variants fixture` deterministic showcase fixture.
+fn advanced_code_editor_theme_variants_fixture(label: &str) -> String {
     [
         "pub fn themed_editor(value: i32) -> i32 {",
         "    let computed_value = value + 42;",
@@ -5580,8 +5576,8 @@ fn code_theme_dark_variant() -> CodeTheme {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 scip project summary` deterministic showcase fixture.
-fn phase54_3_scip_project_summary() -> ailloli_ui_editor::code::ScipProjectSummary {
+/// Builds or computes the `advanced code editor scip project summary` deterministic showcase fixture.
+fn advanced_code_editor_scip_project_summary() -> ailloli_ui_editor::code::ScipProjectSummary {
     let json = r#"{
         "metadata": { "project_root": "/repo", "tool_info": "mock-scip" },
         "documents": [
@@ -5645,8 +5641,8 @@ fn phase54_3_scip_project_summary() -> ailloli_ui_editor::code::ScipProjectSumma
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 lsp mock enrichment` deterministic showcase fixture.
-fn phase54_3_lsp_mock_enrichment(
+/// Builds or computes the `advanced code editor lsp mock enrichment` deterministic showcase fixture.
+fn advanced_code_editor_lsp_mock_enrichment(
     document: &Document,
     code: &str,
 ) -> ailloli_ui_editor::code::LspEnrichment {
@@ -5700,8 +5696,8 @@ fn phase54_3_lsp_mock_enrichment(
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 diagnostics for fixture` deterministic showcase fixture.
-fn phase54_3_diagnostics_for_fixture(code: &str) -> Vec<Diagnostic> {
+/// Builds or computes the `advanced code editor diagnostics for fixture` deterministic showcase fixture.
+fn advanced_code_editor_diagnostics_for_fixture(code: &str) -> Vec<Diagnostic> {
     vec![
         Diagnostic::new(
             diagnostic_fixture_range(code, "unused_value = compute(1)"),
@@ -5734,8 +5730,8 @@ fn diagnostic_fixture_range(code: &str, needle: &str) -> std::ops::Range<usize> 
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 symbol outline fixture` deterministic showcase fixture.
-fn phase54_3_symbol_outline_fixture() -> String {
+/// Builds or computes the `advanced code editor symbol outline fixture` deterministic showcase fixture.
+fn advanced_code_editor_symbol_outline_fixture() -> String {
     [
         "use crate::fmt::Display;",
         "",
@@ -5777,20 +5773,20 @@ fn phase54_3_symbol_outline_fixture() -> String {
 }
 
 #[cfg(test)]
-/// Builds or computes the `phase54 3 code editor fixture` deterministic showcase fixture.
-fn phase54_3_code_editor_fixture() -> String {
+/// Builds or computes the `advanced code editor code editor fixture` deterministic showcase fixture.
+fn advanced_code_editor_fixture() -> String {
     let mut lines = vec![
         "use ailloli_ui::prelude::*;".to_string(),
         "use ailloli_ui_widgets::editor::{CodeEditor, Document, DocumentId};".to_string(),
         String::new(),
-        "pub fn build_phase54_3_editor() -> View<()> {".to_string(),
+        "pub fn build_advanced_editor() -> View<()> {".to_string(),
         "    // styled spans should color comments without changing layout".to_string(),
         "    let document = State::new(Document::new(DocumentId(54), TextBuffer::from_string(String::new())));".to_string(),
         "    let very_long_binding_name_for_horizontal_scroll_validation = \"this line is intentionally long so the visual test can confirm text scrolls under a fixed gutter\";".to_string(),
     ];
     for i in 0..48 {
         lines.push(format!(
-            "    let row_{i:02} = format!(\"phase54_3 deterministic row {i:02}: {{}}\", very_long_binding_name_for_horizontal_scroll_validation);"
+            "    let row_{i:02} = format!(\"advanced_code_editor deterministic row {i:02}: {{}}\", very_long_binding_name_for_horizontal_scroll_validation);"
         ));
     }
     lines.extend([
@@ -5840,7 +5836,7 @@ fn terminal_view_section(mode: ShowcaseMode, scenario: TerminalShowcaseScenario)
     let mut terminal = TerminalView::new()
         .terminal_style(terminal_style)
         .fill_width()
-        .lines(terminal_phase54_1_fixture())
+        .lines(terminal_view_fixture())
         .search_query(query)
         .initial_scroll_y(scroll_y);
     if let Some(selection) = selection {
@@ -5861,8 +5857,8 @@ fn terminal_view_section(mode: ShowcaseMode, scenario: TerminalShowcaseScenario)
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase77 section` deterministic showcase fixture.
-fn terminal_phase77_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `terminal terminal_widget section` deterministic showcase fixture.
+fn terminal_widget_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     let mut terminal_style = TerminalWidgetStyle::from_theme(Theme::default());
     terminal_style.height = 292.0;
@@ -5878,7 +5874,7 @@ fn terminal_phase77_section(mode: ShowcaseMode) -> View<()> {
                 .child(terminal_badge(colors, "cursor/input-ready")),
         )
         .child(
-            Terminal::new(State::new(terminal_phase77_fixture()))
+            Terminal::new(State::new(terminal_widget_fixture()))
                 .terminal_style(terminal_style)
                 .auto_resize(false)
                 .selection(TerminalSelection::lines(12, 14))
@@ -5890,8 +5886,8 @@ fn terminal_phase77_section(mode: ShowcaseMode) -> View<()> {
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase77 fixture` deterministic showcase fixture.
-fn terminal_phase77_fixture() -> ailloli_ui::terminal_core::TerminalState {
+/// Builds or computes the `terminal terminal_widget fixture` deterministic showcase fixture.
+fn terminal_widget_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
             size: ailloli_ui::terminal_core::TerminalSize::new(14, 76),
@@ -5901,8 +5897,8 @@ fn terminal_phase77_fixture() -> ailloli_ui::terminal_core::TerminalState {
     );
     let mut parser = ailloli_ui::terminal_core::VteTerminalParser::new();
     let fixture = concat!(
-        "\x1b]2;Ailloli UI Phase 77 terminal\x07",
-        "\x1b[1;36mailloli_ui terminal fixture - phase 77\x1b[0m\r\n",
+        "\x1b]2;Ailloli UI terminal widget terminal\x07",
+        "\x1b[1;36mailloli_ui terminal fixture - terminal widget\x1b[0m\r\n",
         "\x1b[32m$ cargo test -p ailloli_ui_terminal_core parser\x1b[0m\r\n",
         "running 9 tests\r\n",
         "\x1b[32mtest parser::osc8_hyperlink_on_cells ... ok\x1b[0m\r\n",
@@ -5926,8 +5922,8 @@ fn terminal_phase77_fixture() -> ailloli_ui::terminal_core::TerminalState {
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase78 style` deterministic showcase fixture.
-fn terminal_phase78_style(height: f32) -> TerminalWidgetStyle {
+/// Builds or computes the `terminal terminal_scrollback_tui style` deterministic showcase fixture.
+fn terminal_scrollback_tui_style(height: f32) -> TerminalWidgetStyle {
     let mut terminal_style = TerminalWidgetStyle::from_theme(Theme::default());
     terminal_style.height = height;
     terminal_style.width = 820.0;
@@ -5935,8 +5931,8 @@ fn terminal_phase78_style(height: f32) -> TerminalWidgetStyle {
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase78 scrollback section` deterministic showcase fixture.
-fn terminal_phase78_scrollback_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `terminal terminal_scrollback_tui scrollback section` deterministic showcase fixture.
+fn terminal_scrollback_tui_scrollback_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
         .gap(8.0)
@@ -5948,8 +5944,8 @@ fn terminal_phase78_scrollback_section(mode: ShowcaseMode) -> View<()> {
                 .child(terminal_badge(colors, "selection/copy")),
         )
         .child(
-            Terminal::new(State::new(terminal_phase78_scrollback_fixture()))
-                .terminal_style(terminal_phase78_style(236.0))
+            Terminal::new(State::new(terminal_scrollback_tui_scrollback_fixture()))
+                .terminal_style(terminal_scrollback_tui_style(236.0))
                 .auto_resize(false)
                 .follow_output(false)
                 .selection(TerminalSelection::new(
@@ -5959,14 +5955,14 @@ fn terminal_phase78_scrollback_section(mode: ShowcaseMode) -> View<()> {
                 .selection_mode(TerminalSelectionMode::Line)
                 .initial_scroll_y(190.0)
                 .fill_width()
-                .key("terminal-phase78-scrollback-widget"),
+                .key("terminal-scrollback-widget"),
         )
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase78 tui section` deterministic showcase fixture.
-fn terminal_phase78_tui_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `terminal terminal_scrollback_tui tui section` deterministic showcase fixture.
+fn terminal_scrollback_tui_tui_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
         .gap(8.0)
@@ -5978,19 +5974,19 @@ fn terminal_phase78_tui_section(mode: ShowcaseMode) -> View<()> {
                 .child(terminal_badge(colors, "mouse tracking")),
         )
         .child(
-            Terminal::new(State::new(terminal_phase78_tui_fixture()))
-                .terminal_style(terminal_phase78_style(236.0))
+            Terminal::new(State::new(terminal_scrollback_tui_tui_fixture()))
+                .terminal_style(terminal_scrollback_tui_style(236.0))
                 .auto_resize(false)
                 .follow_output(true)
                 .fill_width()
-                .key("terminal-phase78-tui-widget"),
+                .key("terminal-tui-widget"),
         )
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase78 scrollback fixture` deterministic showcase fixture.
-fn terminal_phase78_scrollback_fixture() -> ailloli_ui::terminal_core::TerminalState {
+/// Builds or computes the `terminal terminal_scrollback_tui scrollback fixture` deterministic showcase fixture.
+fn terminal_scrollback_tui_scrollback_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
             size: ailloli_ui::terminal_core::TerminalSize::new(10, 76),
@@ -6000,7 +5996,7 @@ fn terminal_phase78_scrollback_fixture() -> ailloli_ui::terminal_core::TerminalS
     );
     let mut parser = ailloli_ui::terminal_core::VteTerminalParser::new();
     let fixture = concat!(
-        "\x1b[1;36mphase 78 scrollback fixture\x1b[0m\r\n",
+        "\x1b[1;36mterminal scrollback and TUI scrollback fixture\x1b[0m\r\n",
         "$ cargo test -p ailloli_ui_widgets terminal\r\n",
         "running terminal viewport tests\r\n",
         "01 append while following keeps the prompt visible\r\n",
@@ -6025,8 +6021,8 @@ fn terminal_phase78_scrollback_fixture() -> ailloli_ui::terminal_core::TerminalS
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase78 tui fixture` deterministic showcase fixture.
-fn terminal_phase78_tui_fixture() -> ailloli_ui::terminal_core::TerminalState {
+/// Builds or computes the `terminal terminal_scrollback_tui tui fixture` deterministic showcase fixture.
+fn terminal_scrollback_tui_tui_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
             size: ailloli_ui::terminal_core::TerminalSize::new(10, 76),
@@ -6054,8 +6050,8 @@ fn terminal_phase78_tui_fixture() -> ailloli_ui::terminal_core::TerminalState {
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase80 section` deterministic showcase fixture.
-fn terminal_phase80_section(mode: ShowcaseMode) -> View<()> {
+/// Builds or computes the `terminal terminal_diagnostics section` deterministic showcase fixture.
+fn terminal_diagnostics_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
     Column::new()
         .gap(8.0)
@@ -6067,20 +6063,20 @@ fn terminal_phase80_section(mode: ShowcaseMode) -> View<()> {
                 .child(terminal_badge(colors, "IDE links")),
         )
         .child(
-            Terminal::new(State::new(terminal_phase80_fixture()))
-                .terminal_style(terminal_phase78_style(292.0))
+            Terminal::new(State::new(terminal_diagnostics_fixture()))
+                .terminal_style(terminal_scrollback_tui_style(292.0))
                 .auto_resize(false)
                 .follow_output(false)
                 .initial_scroll_y(0.0)
                 .fill_width()
-                .key("terminal-phase80-diagnostics-widget"),
+                .key("terminal-diagnostics-widget"),
         )
         .into_view()
 }
 
 #[cfg(test)]
-/// Builds or computes the `terminal phase80 fixture` deterministic showcase fixture.
-fn terminal_phase80_fixture() -> ailloli_ui::terminal_core::TerminalState {
+/// Builds or computes the `terminal terminal_diagnostics fixture` deterministic showcase fixture.
+fn terminal_diagnostics_fixture() -> ailloli_ui::terminal_core::TerminalState {
     let mut state = ailloli_ui::terminal_core::TerminalState::with_config(
         ailloli_ui::terminal_core::TerminalConfig {
             size: ailloli_ui::terminal_core::TerminalSize::new(14, 76),
@@ -6123,10 +6119,10 @@ fn terminal_badge(colors: ShowcasePalette, label: &'static str) -> View<()> {
         .into_view()
 }
 
-/// Builds or computes the `terminal phase54 1 fixture` deterministic showcase fixture.
-fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
+/// Builds or computes the `terminal view fixture` deterministic showcase fixture.
+fn terminal_view_fixture() -> Vec<TerminalLine> {
     vec![
-        TerminalLine::system("ailloli_ui terminal fixture - phase 54.1"),
+        TerminalLine::system("ailloli_ui terminal fixture - TerminalView"),
         TerminalLine::prompt(
             "dev@example:~/projects/ailloli_ui$ cargo check -p ailloli_ui_widgets terminal",
         ),
@@ -6138,10 +6134,10 @@ fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
         TerminalLine::new(" M ailloli_ui_widgets/src/controls/terminal.rs"),
         TerminalLine::new(" M ailloli_ui_winit/examples/support/ui_bundle_showcase.rs"),
         TerminalLine::prompt("dev@example:~/projects/ailloli_ui$ rg TerminalView README.md"),
-        TerminalLine::new("1021:### Phase 54.1 - TerminalView"),
+        TerminalLine::new("1021:### TerminalView - TerminalView"),
         TerminalLine::new("1022:- [x] finished Implementer TerminalView read-only monospace"),
         TerminalLine::new(
-            "1025:- [x] finished Ajouter capture opt-in ui_bundle_phase54_1_terminal_view.png",
+            "1025:- [x] finished Ajouter capture opt-in ui_bundle_terminal_view_terminal_view.png",
         ),
         TerminalLine::prompt(
             "dev@example:~/projects/ailloli_ui$ cargo test -p ailloli_ui_widgets terminal",
@@ -6168,36 +6164,40 @@ fn terminal_phase54_1_fixture() -> Vec<TerminalLine> {
         TerminalLine::new("[stream] target terminal-readonly produced 27 visible history rows"),
         TerminalLine::new("[search] cache hit: target/debug/incremental/ailloli_ui_widgets"),
         TerminalLine::new("[search] cache hit: target/debug/deps/ailloli_ui_widgets_terminal"),
-        TerminalLine::stderr("stderr: no PTY backend attached in phase 54.1"),
+        TerminalLine::stderr("stderr: no PTY backend attached in TerminalView"),
         TerminalLine::system("status: waiting for external consumer events"),
         TerminalLine::prompt("dev@example:~/projects/ailloli_ui$ _"),
     ]
 }
 
-/// Builds or computes the `planned widgets section` deterministic showcase fixture.
-fn planned_widgets_section(mode: ShowcaseMode) -> View<()> {
+/// Builds the deterministic extension-point catalog used by the showcase.
+fn extension_points_section(mode: ShowcaseMode) -> View<()> {
     let colors = mode.palette();
-    let items = [("Final visual audit", "Phase 55", "missing")];
+    let items = [
+        ("Custom controls", "Retained composition", "supported"),
+        ("Theme variants", "Semantic tokens", "supported"),
+        ("Host adapters", "Public façade", "supported"),
+    ];
 
     let mut outer = Column::new().gap(8.0);
     for chunk in items.chunks(4) {
         let mut row = Row::new().gap(8.0);
-        for (name, phase, status) in chunk {
-            row = row.child(planned_card(name, phase, status, colors));
+        for (name, capability, availability) in chunk {
+            row = row.child(extension_point_card(name, capability, availability, colors));
         }
         outer = outer.child(row);
     }
     outer.into_view()
 }
 
-/// Builds or computes the `planned card` deterministic showcase fixture.
-fn planned_card(
+/// Builds one functional extension-point card.
+fn extension_point_card(
     name: &'static str,
-    phase: &'static str,
-    status: &'static str,
+    capability: &'static str,
+    availability: &'static str,
     colors: ShowcasePalette,
 ) -> View<()> {
-    let status_color = if status == "partial" {
+    let status_color = if availability == "preview" {
         colors.warning
     } else {
         colors.muted
@@ -6213,8 +6213,8 @@ fn planned_card(
             Column::new()
                 .gap(4.0)
                 .child(text(name, 13, colors.text))
-                .child(text(phase, 12, colors.accent))
-                .child(text(status, 11, status_color)),
+                .child(text(capability, 12, colors.accent))
+                .child(text(availability, 11, status_color)),
         )
         .into_view()
 }

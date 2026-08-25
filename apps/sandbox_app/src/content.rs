@@ -4,11 +4,18 @@
 //! documentation: every claim maps to a public framework capability and every
 //! external destination has an explicit availability state.
 
-/// Public GitHub README opened by the primary documentation link.
-pub const GITHUB_README_URL: &str = "https://github.com/AilloliAI/ailloli_ui#readme";
+/// Canonical hosted Rustdoc landing page.
+pub const DOCUMENTATION_URL: &str = "https://ailloliai.github.io/ailloli_ui/";
 
-/// Future crates.io page for the public façade package.
-pub const CRATES_IO_URL: &str = "https://crates.io/crates/ailloli_ui";
+/// Canonical public repository.
+pub const GITHUB_REPOSITORY_URL: &str = "https://github.com/AilloliAI/ailloli_ui";
+
+/// Canonical contribution guide on the public default branch.
+pub const CONTRIBUTING_URL: &str =
+    "https://github.com/AilloliAI/ailloli_ui/blob/main/CONTRIBUTING.md";
+
+/// Voluntary organization sponsorship profile.
+pub const SPONSORS_URL: &str = "https://github.com/sponsors/AilloliAI";
 
 /// Meaningful initial value shared by the reactive input and preview.
 pub const INITIAL_REACTIVE_HEADLINE: &str = "Build native Rust interfaces";
@@ -61,23 +68,33 @@ pub struct Resource {
 
 /// Resources shown in stable display order.
 ///
-/// The first two entries are live and are reused by the compact header. Future
-/// resources follow them so rendering can keep unavailable destinations
-/// visible without manufacturing placeholder URLs.
+/// The first two entries are live and reused by the compact header. All four
+/// canonical destinations precede resources that remain unavailable, so the
+/// renderer never manufactures a placeholder URL.
 pub const RESOURCES: &[Resource] = &[
     Resource {
-        title: "GitHub README",
-        description: "Start here for setup, architecture, features, and validation gates.",
-        availability: ResourceAvailability::Live(GITHUB_README_URL),
+        title: "API Documentation",
+        description: "Browse the hosted Rust API reference, linked types, and examples.",
+        availability: ResourceAvailability::Live(DOCUMENTATION_URL),
+    },
+    Resource {
+        title: "GitHub",
+        description: "Read the source, architecture, features, and validation gates.",
+        availability: ResourceAvailability::Live(GITHUB_REPOSITORY_URL),
+    },
+    Resource {
+        title: "Contributing",
+        description: "Set up Rust 1.88, follow the boundaries, and prepare a focused change.",
+        availability: ResourceAvailability::Live(CONTRIBUTING_URL),
+    },
+    Resource {
+        title: "GitHub Sponsors",
+        description: "Voluntarily support maintenance without buying access or priority.",
+        availability: ResourceAvailability::Live(SPONSORS_URL),
     },
     Resource {
         title: "crates.io",
-        description: "The public package page for the ailloli_ui façade.",
-        availability: ResourceAvailability::Live(CRATES_IO_URL),
-    },
-    Resource {
-        title: "API Documentation",
-        description: "Hosted Rust API reference with linked types and examples.",
+        description: "The future package page for the unpublished ailloli_ui façade.",
         availability: ResourceAvailability::ComingSoon,
     },
     Resource {
@@ -244,29 +261,63 @@ pub const GUIDE_ENTRIES: &[GuideEntry] = &[
 mod tests {
     //! Content-policy tests for destinations, examples, and visible copy.
 
+    use std::rc::Rc;
+
+    use ailloli_ui::runtime::app::{ExternalUrl, MemoryExternalUrlOpener, RuntimeHandle};
+
     use super::*;
 
     #[test]
-    fn live_resources_use_the_reserved_public_destinations() {
-        assert_eq!(
-            RESOURCES[0].availability,
-            ResourceAvailability::Live("https://github.com/AilloliAI/ailloli_ui#readme")
-        );
-        assert_eq!(
-            RESOURCES[1].availability,
-            ResourceAvailability::Live("https://crates.io/crates/ailloli_ui")
-        );
-        assert!(RESOURCES[..2].iter().all(|resource| matches!(
-            resource.availability,
-            ResourceAvailability::Live(url) if url.starts_with("https://")
-        )));
+    fn live_resources_use_the_canonical_public_destinations() {
+        let expected = [
+            DOCUMENTATION_URL,
+            GITHUB_REPOSITORY_URL,
+            CONTRIBUTING_URL,
+            SPONSORS_URL,
+        ];
+        let actual = RESOURCES[..4]
+            .iter()
+            .map(|resource| match resource.availability {
+                ResourceAvailability::Live(url) => url,
+                ResourceAvailability::ComingSoon => panic!("canonical resource is disabled"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn future_documentation_resources_have_no_placeholder_url() {
-        assert!(RESOURCES[2..]
+    fn unpublished_resources_have_no_placeholder_url() {
+        assert!(RESOURCES[4..]
             .iter()
             .all(|resource| { matches!(resource.availability, ResourceAvailability::ComingSoon) }));
+    }
+
+    #[test]
+    fn every_live_resource_uses_the_memory_opener_without_launching_a_browser() {
+        let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+        let opener = MemoryExternalUrlOpener::new();
+        runtime.set_external_url_opener(Rc::new(opener.clone()));
+
+        for resource in &RESOURCES[..4] {
+            let ResourceAvailability::Live(source) = resource.availability else {
+                panic!("canonical resource is disabled");
+            };
+            let url = ExternalUrl::parse(source).expect("validated canonical URL");
+            runtime
+                .open_external_url(&url)
+                .expect("memory opener accepts canonical URL");
+        }
+
+        assert_eq!(
+            opener.opened_urls(),
+            [
+                DOCUMENTATION_URL,
+                GITHUB_REPOSITORY_URL,
+                CONTRIBUTING_URL,
+                SPONSORS_URL,
+            ]
+        );
+        assert!(runtime.take_open_url_errors().is_empty());
     }
 
     #[test]
@@ -313,7 +364,7 @@ mod tests {
                 "staging",
                 "production",
                 "lorem ipsum",
-                "phase 12",
+                "component sample",
             ] {
                 assert!(
                     !normalized.contains(forbidden),

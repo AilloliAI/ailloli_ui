@@ -1,4 +1,4 @@
-//! Post-effect chain for isolated offscreen passes (Phase 31).
+//! Post-effect chain for isolated offscreen passes (isolated compositor).
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;

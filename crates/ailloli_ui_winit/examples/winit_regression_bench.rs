@@ -4,7 +4,7 @@
 //!
 //! ```sh
 //! AILLOLI_UI_BENCH=1 \
-//! AILLOLI_UI_BENCH_PATH=artifacts/bench/phase125/manual/winit.jsonl \
+//! AILLOLI_UI_BENCH_PATH=artifacts/bench/winit_host_architecture/manual/winit.jsonl \
 //! AILLOLI_UI_BENCH_BACKEND=wayland \
 //! AILLOLI_UI_BENCH_SCENARIO=wake_single \
 //! AILLOLI_UI_BENCH_DURATION_MS=10000 \
@@ -1012,7 +1012,7 @@ fn default_bench_path(scenario: &str) -> PathBuf {
         .join("../..")
         .join("artifacts")
         .join("bench")
-        .join("phase125")
+        .join("winit_host_architecture")
         .join("manual")
         .join(format!("winit-{scenario}-{}.jsonl", std::process::id()))
 }

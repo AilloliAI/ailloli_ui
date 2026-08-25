@@ -40,7 +40,7 @@ pub struct SampleSummary {
     pub max: f64,
 }
 
-/// Maximum accepted RSS growth during a Phase 127 steady-state soak.
+/// Maximum accepted RSS growth during a tree virtualization steady-state soak.
 ///
 /// Unit: binary MiB per second. The gate fails only when slope is strictly
 /// greater than this limit.
@@ -302,7 +302,7 @@ pub fn theil_sen_slope(samples: &[(f64, f64)]) -> Result<f64, StatsError> {
     Ok(median_of_sorted(&slopes))
 }
 
-/// Evaluates the locked Phase 127 RSS slope and extent limits.
+/// Evaluates the locked tree virtualization RSS slope and extent limits.
 ///
 /// Each pair is `(elapsed_seconds, rss_mib)`. Equality at either limit passes;
 /// only strictly larger values fail.

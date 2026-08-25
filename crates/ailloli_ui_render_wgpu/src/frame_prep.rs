@@ -1,4 +1,4 @@
-//! Frame resource preparation (Phase 30).
+//! Frame resource preparation (single-pass compositing).
 //!
 //! [`PreparedResources::prepare`] is the **only** step that touches the GPU /
 //! atlas / icon cache before the per-frame plan is built. It walks the frame's
@@ -7,7 +7,7 @@
 //! is then consumed by the **pure-CPU** [`crate::frame_plan::FrameRenderPlan::build_cpu`]
 //! to assemble vertex arenas and batches without any device/queue access.
 //!
-//! This split keeps the plan testable without a GPU and matches the Phase 30
+//! This split keeps the plan testable without a GPU and matches the single-pass compositing
 //! invariant "no `device.create_*` / `queue.write_*` between `begin_render_pass`
 //! and `drop(rpass)`".
 

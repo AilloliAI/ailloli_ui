@@ -46,9 +46,9 @@ pub struct Layer {
     pub clip: ClipStackSnapshot,
     /// Draw commands in painter submission order.
     pub cmds: Vec<DrawCmd>,
-    /// When true, content is rendered offscreen then composited (Phase 31).
+    /// When true, content is rendered offscreen then composited (isolated compositor).
     pub isolated: bool,
-    /// Nesting depth among isolated scopes (0 = root). Phase 33.
+    /// Nesting depth among isolated scopes (0 = root). nested isolated compositor.
     pub isolated_depth: u8,
     /// Opacity, blend, and filter parameters for an isolated layer.
     pub effects: IsolatedEffects,

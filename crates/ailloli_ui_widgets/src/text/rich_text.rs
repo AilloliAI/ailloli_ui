@@ -7,7 +7,7 @@ use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 #[derive(Debug, Clone)]
 /// Owned text fragment paired with its intended style.
 ///
-/// In the current MVP renderer, only the first span's style is applied to the
+/// In the current renderer, only the first span's style is applied to the
 /// concatenated string.
 ///
 /// # Examples
@@ -21,7 +21,7 @@ use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 pub struct TextSpan {
     /// Owned UTF-8 fragment; empty spans are allowed.
     pub text: String,
-    /// Requested span style; ignored for non-first spans by the MVP renderer.
+    /// Requested span style; currently ignored for non-first spans.
     pub style: TextStyle,
 }
 
@@ -72,9 +72,9 @@ impl RichText {
     }
 }
 
-/// MVP multi-span: concatenates spans into one string using the **first** span's style.
+/// Concatenates spans into one string using the **first** span's style.
 ///
-/// Full Parley multi-style layout in a single run is planned for a later phase.
+/// Full Parley multi-style layout in a single run is not implemented yet.
 /// Returns `None` for an empty span list. `baseline_xy` is in logical pixels and
 /// its y coordinate is the text baseline. The merged string allocates once.
 ///

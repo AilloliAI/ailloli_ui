@@ -1,4 +1,4 @@
-//! Phase 32 — budgets and downgrade policy for isolated offscreen compositing.
+//! isolated compositor hardening — budgets and downgrade policy for isolated offscreen compositing.
 
 use ailloli_ui_core::Rect;
 
@@ -28,13 +28,13 @@ pub struct IsolatedBudgetConfig {
     pub max_blur_radius_px: f32,
     /// Maximum number of isolated passes scheduled in one frame.
     pub max_isolated_passes_per_frame: u32,
-    /// Maximum isolated nesting depth (0 = root only). Phase 33.
+    /// Maximum isolated nesting depth (0 = root only). nested isolated compositor.
     pub max_isolated_nesting_depth: u8,
-    /// Max backdrop snapshots per frame (Phase 34).
+    /// Max backdrop snapshots per frame (backdrop filter).
     pub max_backdrop_captures_per_frame: u32,
     /// Largest backdrop-blur radius, in physical pixels.
     pub max_backdrop_blur_radius_px: f32,
-    /// Max dst captures for shader blend compositing per frame (Phase 35).
+    /// Max dst captures for shader blend compositing per frame (blend modes).
     pub max_blend_captures_per_frame: u32,
 }
 

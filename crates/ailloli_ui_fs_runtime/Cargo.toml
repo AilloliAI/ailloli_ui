@@ -1,13 +1,19 @@
 [package]
 name = "ailloli_ui_fs_runtime"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Bounded worker runtime for Ailloli UI filesystem sources"
+documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_fs_runtime/"
+keywords = ["filesystem", "runtime", "worker", "watch", "rust"]
+categories = ["filesystem"]
 publish.workspace = true
 
 [dependencies]
 ailloli_ui_fs = { path = "../ailloli_ui_fs" }
 ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
 thiserror = { workspace = true }
-

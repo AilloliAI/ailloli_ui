@@ -1,4 +1,4 @@
-//! Phase 34 — backdrop blur (distinct from content `run_effect_chain`).
+//! backdrop filter — backdrop blur (distinct from content `run_effect_chain`).
 
 use crate::effect_chain::EffectPipelines;
 

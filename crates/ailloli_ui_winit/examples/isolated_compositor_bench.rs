@@ -2,7 +2,7 @@
 //!
 //! ```sh
 //! AILLOLI_UI_BENCH=1 \
-//! AILLOLI_UI_BENCH_PATH=artifacts/bench/phase125/manual/isolated.jsonl \
+//! AILLOLI_UI_BENCH_PATH=artifacts/bench/winit_host_architecture/manual/isolated.jsonl \
 //! AILLOLI_UI_BENCH_SCENARIO=nested_3 AILLOLI_UI_BENCH_FRAMES=120 \
 //!   cargo run -p ailloli_ui_winit --example isolated_compositor_bench
 //! ```
@@ -32,7 +32,7 @@ fn default_bench_path() -> PathBuf {
     repo_root()
         .join("artifacts")
         .join("bench")
-        .join("phase125")
+        .join("winit_host_architecture")
         .join("manual")
         .join(format!("isolated-compositor-{}.jsonl", std::process::id()))
 }

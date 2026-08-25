@@ -57,7 +57,7 @@ fn chat_widget_paints_session_messages_in_order() {
 #[test]
 fn chat_widget_send_dispatches_current_draft_without_clearing_it() {
     let session = ChatSessionState::new(ChatSessionId::from_index(1), "Chat 1");
-    let draft = State::new("ship phase 86".to_string());
+    let draft = State::new("ship release candidate".to_string());
     let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
     app.reconcile(
@@ -80,10 +80,10 @@ fn chat_widget_send_dispatches_current_draft_without_clearing_it() {
     assert_eq!(
         runtime.take_actions(),
         vec![Action::Chat(ChatWidgetAction::Send {
-            text: "ship phase 86".into()
+            text: "ship release candidate".into()
         })]
     );
-    assert_eq!(draft.read(), "ship phase 86");
+    assert_eq!(draft.read(), "ship release candidate");
 }
 
 #[test]

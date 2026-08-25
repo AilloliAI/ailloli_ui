@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose an application-neutral Ailloli UI framework capability.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and documentation for this capability.
+          required: true
+        - label: This proposal is framework-level and does not require private product policy or credentials.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user or framework problem without prescribing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed public contract
+      description: Explain expected behavior, boundaries, and a small usage example.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and validation
+      description: Note API, performance, accessibility, platform, testing, or migration implications.

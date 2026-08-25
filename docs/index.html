@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <title>Ailloli UI documentation</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: #111318;
+        color: #f4f5f7;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 20% 20%, #2f3542 0, transparent 38%),
+          radial-gradient(circle at 80% 75%, #3a2417 0, transparent 34%),
+          #111318;
+      }
+      main {
+        width: min(42rem, calc(100% - 3rem));
+        padding: 3rem;
+        border: 1px solid #3a3f49;
+        border-radius: 1.25rem;
+        background: rgb(22 25 31 / 92%);
+        box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 35%);
+      }
+      p { color: #c5c9d2; line-height: 1.65; }
+      nav { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
+      a {
+        padding: 0.75rem 1rem;
+        border-radius: 0.7rem;
+        color: #111318;
+        background: #ff7a1a;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      a.secondary { color: #f4f5f7; background: #343943; }
+      a:focus-visible { outline: 3px solid #ffd0ad; outline-offset: 3px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>Ailloli UI / Rust documentation</p>
+      <h1>Retained-mode desktop UI for Rust</h1>
+      <p>
+        Browse the public façade first, then follow linked types into the core,
+        runtime, widgets, native host, and renderer crates.
+      </p>
+      <nav aria-label="Documentation resources">
+        <a href="ailloli_ui/">Open the API reference</a>
+        <a class="secondary" href="https://github.com/AilloliAI/ailloli_ui">GitHub</a>
+        <a class="secondary" href="https://github.com/AilloliAI/ailloli_ui/blob/main/CONTRIBUTING.md">Contribute</a>
+      </nav>
+    </main>
+  </body>
+</html>

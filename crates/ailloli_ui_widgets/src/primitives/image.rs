@@ -23,7 +23,7 @@ pub enum ImageRef {
     Image(ImageId),
 }
 
-/// MVP: the runtime IR currently supports Lucide icons via `IconId` only.
+/// The runtime IR currently supports Lucide icons via `IconId` only.
 ///
 /// `Image(ImageId)` is reserved for future use and does not emit `DrawCmd` yet.
 /// Coordinates, tint, and icon source are otherwise passed through unchanged,

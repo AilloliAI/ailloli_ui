@@ -28,9 +28,13 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0-beta.1"
 edition = "2021"
 rust-version = "1.88"
+authors = ["Rising Corporation and Ailloli UI contributors"]
 license = "Apache-2.0 OR MIT"
+repository = "https://github.com/AilloliAI/ailloli_ui"
+homepage = "https://ailloliai.github.io/ailloli_ui/"
 publish = false
 
 [workspace.dependencies]
@@ -69,7 +73,7 @@ tar = "0.4"
 toml = "0.8"
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }
 image = "0.25"
-lru = "0.18.0"
+lru = "0.18.2"
 ropey = "1.6"
 unicode-segmentation = "1.11"
 unicode-width = "0.1.14"

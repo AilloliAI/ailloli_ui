@@ -1172,7 +1172,7 @@ fn requested_platform(
         let target_platform = platform_from_target(target)?;
         if target_platform != host {
             return Err(PackagingError::message(format!(
-                "target `{target}` is not host-native; Phase 120 packages only for {}",
+                "target `{target}` is not host-native; host-native packaging packages only for {}",
                 host.name()
             )));
         }

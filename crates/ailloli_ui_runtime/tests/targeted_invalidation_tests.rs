@@ -13,7 +13,7 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_text::TextSystem;
 
 #[derive(Default)]
-/// Mutable per-phase counters shared by the targeted-invalidation fixture.
+/// Mutable per-pipeline-stage counters shared by the targeted-invalidation fixture.
 ///
 /// # Examples
 ///

@@ -1,4 +1,4 @@
-//! Reusable offscreen color / stencil textures (Phase 31).
+//! Reusable offscreen color / stencil textures (isolated compositor).
 
 use std::cell::Cell;
 

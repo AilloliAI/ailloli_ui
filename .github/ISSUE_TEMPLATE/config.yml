@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/AilloliAI/ailloli_ui/security/advisories/new
+    about: Never disclose a suspected vulnerability in a public issue.
+  - name: Support policy
+    url: https://github.com/AilloliAI/ailloli_ui/blob/main/SUPPORT.md
+    about: Read the community support scope before opening an issue.

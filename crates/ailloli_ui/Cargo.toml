@@ -1,9 +1,16 @@
 [package]
 name = "ailloli_ui"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Retained-mode desktop UI framework façade for Rust"
+documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui/"
+keywords = ["ui", "gui", "desktop", "retained-mode", "rust"]
+categories = ["gui"]
 publish.workspace = true
 
 [features]

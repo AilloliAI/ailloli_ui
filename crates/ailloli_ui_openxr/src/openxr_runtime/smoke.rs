@@ -956,7 +956,7 @@ fn smoke_affordance_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
         .padding(36.0)
         .child(
             WindowAffordanceFrame::<SmokeAction>::new("XR Window Affordances")
-                .logical_window_id("ui-xr17-smoke-window")
+                .logical_window_id("window-affordances-smoke-window")
                 .width(860.0)
                 .height(430.0)
                 .on_affordance(|event| match event.kind {
@@ -1025,7 +1025,7 @@ fn smoke_affordance_view(options: OpenXrSmokeOptions) -> View<SmokeAction> {
                         ),
                 ),
         )
-        .key("ui-xr17-window-affordances-smoke")
+        .key("window-affordances-window-affordances-smoke")
         .into_view()
 }
 

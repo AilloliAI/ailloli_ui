@@ -118,25 +118,26 @@ pub(crate) fn documentation_capture_root(state: ShowcaseState) -> View<Action> {
     Container::new()
         .fill()
         .background(palette.background)
-        .padding(24.0)
+        .padding(16.0)
         .child(
             Column::new()
                 .fill()
-                .gap(16.0)
+                .gap(10.0)
+                .child(header(theme))
                 .child(section_heading(
                     theme,
                     "PUBLIC ARCHITECTURE",
                     "Navigate the actual public architecture",
                     "A real TreeView and retained selection turn the framework itself into useful documentation.",
                 ))
-                .child(documentation_explorer_panel(theme, state, 300.0))
+                .child(documentation_explorer_panel(theme, state, 200.0, true))
                 .child(section_heading(
                     theme,
                     "LEARNING RESOURCES",
                     "Live destinations and an honest roadmap",
                     "Available resources are active; future documentation stays visibly disabled until a canonical site exists.",
                 ))
-                .child(resource_cards(theme, 164.0)),
+                .child(resource_cards(theme, 130.0)),
         )
         .into_view()
         .key("sandbox-documentation-capture-root")
@@ -357,13 +358,18 @@ fn documentation_explorer(theme: Theme, state: ShowcaseState) -> View<Action> {
             "Navigate the actual public architecture",
             "Select a subsystem to read its role. The tree contains framework-owned concepts only—no product layer or private dependency.",
         ))
-        .child(documentation_explorer_panel(theme, state, 380.0))
+        .child(documentation_explorer_panel(theme, state, 380.0, false))
         .into_view()
         .key("sandbox-documentation-explorer")
 }
 
 /// Builds the selectable architecture tree and its adjacent retained detail.
-fn documentation_explorer_panel(theme: Theme, state: ShowcaseState, height: f32) -> View<Action> {
+fn documentation_explorer_panel(
+    theme: Theme,
+    state: ShowcaseState,
+    height: f32,
+    compact: bool,
+) -> View<Action> {
     let palette = theme.palette();
     let selected_summary = state.selected_topic_summary.clone();
     let selected_title = state.selected_topic_title.clone();
@@ -383,6 +389,69 @@ fn documentation_explorer_panel(theme: Theme, state: ShowcaseState, height: f32)
         })
         .fill_width();
 
+    let details = if compact {
+        Card::new()
+            .variant(CardVariant::Accent)
+            .width(720.0)
+            .padding(18.0)
+            .child(
+                Column::new()
+                    .gap(10.0)
+                    .child(
+                        Badge::new("Selected public subsystem")
+                            .tone(BadgeTone::Accent)
+                            .variant(BadgeVariant::Outline),
+                    )
+                    .child(styled_bound_text(
+                        state.selected_topic_title,
+                        24,
+                        palette.text,
+                    ))
+                    .child(styled_bound_text(
+                        state.selected_topic_summary,
+                        14,
+                        palette.text_muted,
+                    )),
+            )
+            .into_view()
+    } else {
+        Card::new()
+            .variant(CardVariant::Accent)
+            .width(720.0)
+            .padding(28.0)
+            .child(
+                Column::new()
+                    .gap(16.0)
+                    .child(
+                        Badge::new("Selected public subsystem")
+                            .tone(BadgeTone::Accent)
+                            .variant(BadgeVariant::Outline),
+                    )
+                    .child(styled_bound_text(
+                        state.selected_topic_title,
+                        28,
+                        palette.text,
+                    ))
+                    .child(styled_bound_text(
+                        state.selected_topic_summary,
+                        16,
+                        palette.text_muted,
+                    ))
+                    .child(
+                        Divider::horizontal()
+                            .color(palette.accent.with_alpha(0.55))
+                            .length(220.0),
+                    )
+                    .child(styled_text(
+                        "The public dependency direction remains one-way: consumer → façade → framework layers.",
+                        13,
+                        palette.text,
+                    ))
+                    .child(resource_pill(theme, RESOURCES[0])),
+            )
+            .into_view()
+    };
+
     Row::new()
         .fill_width()
         .height(height)
@@ -395,42 +464,7 @@ fn documentation_explorer_panel(theme: Theme, state: ShowcaseState, height: f32)
                 .clip_children(true)
                 .child(ScrollView::vertical().child(tree).fill()),
         )
-        .child(
-            Card::new()
-                .variant(CardVariant::Accent)
-                .width(720.0)
-                .padding(28.0)
-                .child(
-                    Column::new()
-                        .gap(16.0)
-                        .child(
-                            Badge::new("Selected public subsystem")
-                                .tone(BadgeTone::Accent)
-                                .variant(BadgeVariant::Outline),
-                        )
-                        .child(styled_bound_text(
-                            state.selected_topic_title,
-                            28,
-                            palette.text,
-                        ))
-                        .child(styled_bound_text(
-                            state.selected_topic_summary,
-                            16,
-                            palette.text_muted,
-                        ))
-                        .child(
-                            Divider::horizontal()
-                                .color(palette.accent.with_alpha(0.55))
-                                .length(220.0),
-                        )
-                        .child(styled_text(
-                            "The public dependency direction remains one-way: consumer → façade → framework layers.",
-                            13,
-                            palette.text,
-                        ))
-                        .child(resource_pill(theme, RESOURCES[0])),
-                ),
-        )
+        .child(details)
         .into_view()
         .key("sandbox-documentation-explorer-panel")
 }
@@ -501,23 +535,27 @@ fn resources_section(theme: Theme) -> View<Action> {
             theme,
             "LEARNING RESOURCES",
             "Start now, then go deeper",
-            "The README and package page use their reserved public destinations. Hosted API docs and the Book remain visibly unavailable until their canonical sites exist.",
+            "Documentation, source, contribution, and voluntary sponsorship use canonical destinations. crates.io and the Book remain visibly unavailable until they exist.",
         ))
         .child(resource_cards(theme, 184.0))
         .into_view()
         .key("sandbox-resources-section")
 }
 
-/// Builds the stable four-card resource row at a caller-selected logical-pixel height.
+/// Builds two stable three-card resource rows at a caller-selected logical-pixel height.
 fn resource_cards(theme: Theme, height: f32) -> View<Action> {
-    let mut cards = Row::new()
-        .fill_width()
-        .gap(14.0)
-        .align_items(AlignItems::Stretch);
-    for resource in RESOURCES {
-        cards = cards.child(resource_card(theme, *resource, height));
+    let mut rows = Column::new().fill_width().gap(14.0);
+    for resources in RESOURCES.chunks(3) {
+        let mut row = Row::new()
+            .fill_width()
+            .gap(14.0)
+            .align_items(AlignItems::Stretch);
+        for resource in resources {
+            row = row.child(resource_card(theme, *resource, height));
+        }
+        rows = rows.child(row);
     }
-    cards.into_view()
+    rows.into_view()
 }
 
 /// Builds one resource card with the exact availability policy from content.rs.
@@ -528,12 +566,12 @@ fn resource_card(theme: Theme, resource: Resource, height: f32) -> View<Action> 
             ResourceAvailability::Live(_) => CardVariant::Surface,
             ResourceAvailability::ComingSoon => CardVariant::Outline,
         })
-        .width(268.0)
+        .width(352.0)
         .height(height)
-        .padding(18.0)
+        .padding(12.0)
         .child(
             Column::new()
-                .gap(12.0)
+                .gap(8.0)
                 .child(styled_text(resource.title, 17, palette.text))
                 .child(styled_text(resource.description, 12, palette.text_muted))
                 .child(resource_pill(theme, resource)),
