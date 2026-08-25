@@ -53,6 +53,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev
       - name: Check workspace
         run: cargo +1.88.0 check --workspace --all-targets --all-features --locked
 
@@ -65,8 +69,12 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev
       - name: Test workspace
-        run: cargo +1.88.0 test --workspace --all-features --locked
+        run: cargo +1.88.0 test --workspace --all-features --lib --bins --tests --locked
 
   doctests:
     name: doctests all features
@@ -77,6 +85,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev
       - name: Test documentation
         run: cargo +1.88.0 test --workspace --doc --all-features --locked
 
@@ -89,6 +101,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88 with Clippy
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev
       - name: Run Clippy
         run: cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
 
@@ -101,6 +117,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev
       - name: Build public Rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
@@ -115,6 +135,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev
       - name: Build private Rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
@@ -129,6 +153,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev
       - name: Check façade without defaults
         run: cargo +1.88.0 check -p ailloli_ui --no-default-features --locked
 
@@ -156,6 +184,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Fetch locked dependencies
+        run: cargo +1.88.0 fetch --locked
       - name: Run fail-closed audit fixtures
         run: |
           python3 .github/scripts/audit-metadata.py --self-test
