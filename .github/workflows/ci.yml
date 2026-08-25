@@ -58,7 +58,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Check workspace
         run: cargo +1.88.0 check --workspace --all-targets --all-features --locked
 
@@ -74,7 +74,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Test workspace
         run: cargo +1.88.0 test --workspace --all-features --lib --bins --tests --locked
 
@@ -90,7 +90,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Test documentation
         run: cargo +1.88.0 test --workspace --doc --all-features --locked
 
@@ -106,7 +106,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Run Clippy
         run: cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings
 
@@ -122,7 +122,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Build public Rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
@@ -140,7 +140,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Build private Rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
@@ -158,7 +158,7 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Check façade without defaults
         run: cargo +1.88.0 check -p ailloli_ui --no-default-features --locked
 
