@@ -29,6 +29,10 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libfontconfig1-dev libxkbcommon-dev mesa-vulkan-drivers
       - name: Configure Pages metadata
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
       - name: Build Rustdoc
