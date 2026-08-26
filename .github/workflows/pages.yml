@@ -33,8 +33,6 @@ jobs:
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
       - name: Build Rustdoc
         env:
-          CARGO_INCREMENTAL: "0"
-          CARGO_BUILD_JOBS: "4"
           RUSTDOCFLAGS: -D warnings
         run: cargo +1.88.0 doc --workspace --all-features --no-deps --locked
       - name: Install landing page
