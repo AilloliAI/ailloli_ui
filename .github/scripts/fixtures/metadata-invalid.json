@@ -8,7 +8,8 @@
   "repository": "https://github.com/AilloliAI/ailloli_ui",
   "homepage": "https://ailloliai.github.io/ailloli_ui/",
   "documentation": "https://example.invalid/ailloli_ui/",
+  "readme": "README.md",
   "keywords": ["ui", "gui", "desktop", "retained-mode", "rust"],
   "categories": ["gui"],
-  "publish": []
+  "publish": ["crates-io"]
 }

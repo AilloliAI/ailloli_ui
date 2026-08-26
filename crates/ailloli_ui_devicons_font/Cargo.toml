@@ -11,6 +11,7 @@ description = "License-audited file-icon font bytes for Ailloli UI rendering"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_devicons_font/"
 keywords = ["icons", "font", "glyphs", "assets", "gui"]
 categories = ["graphics", "rendering"]
+readme = "README.md"
 publish.workspace = true
 
 [lib]

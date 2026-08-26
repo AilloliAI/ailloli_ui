@@ -11,6 +11,7 @@ description = "Retained-mode desktop UI framework façade for Rust"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui/"
 keywords = ["ui", "gui", "desktop", "retained-mode", "rust"]
 categories = ["gui"]
+readme = "README.md"
 publish.workspace = true
 
 [features]
@@ -35,17 +36,17 @@ devtools_terminal = [
 ]
 
 [dependencies]
-ailloli_ui_app_storage = { path = "../ailloli_ui_app_storage" }
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_fs = { path = "../ailloli_ui_fs" }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
-ailloli_ui_terminal_core = { path = "../ailloli_ui_terminal_core" }
-ailloli_ui_terminal_pty = { path = "../ailloli_ui_terminal_pty", optional = true }
-ailloli_ui_text = { path = "../ailloli_ui_text" }
-ailloli_ui_widgets = { path = "../ailloli_ui_widgets" }
-ailloli_ui_icon = { path = "../ailloli_ui_icon" }
-ailloli_ui_devtools_core = { path = "../ailloli_ui_devtools_core", optional = true }
-ailloli_ui_devtools_ui = { path = "../ailloli_ui_devtools_ui", optional = true }
-ailloli_ui_winit = { path = "../ailloli_ui_winit", optional = true }
-ailloli_ui_render_wgpu = { path = "../ailloli_ui_render_wgpu", optional = true }
+ailloli_ui_app_storage.workspace = true
+ailloli_ui_core.workspace = true
+ailloli_ui_fs.workspace = true
+ailloli_ui_runtime.workspace = true
+ailloli_ui_terminal_core.workspace = true
+ailloli_ui_terminal_pty = { workspace = true, optional = true }
+ailloli_ui_text.workspace = true
+ailloli_ui_widgets.workspace = true
+ailloli_ui_icon.workspace = true
+ailloli_ui_devtools_core = { workspace = true, optional = true }
+ailloli_ui_devtools_ui = { workspace = true, optional = true }
+ailloli_ui_winit = { workspace = true, optional = true }
+ailloli_ui_render_wgpu = { workspace = true, optional = true }
 serde_json.workspace = true

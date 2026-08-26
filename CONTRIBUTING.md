@@ -19,7 +19,9 @@ preserve its application-neutral boundaries.
 
 The Cargo workspace is autonomous. Framework packages must not depend on a
 consumer application. The `sandbox_app` package is a public consumer example
-and depends directly only on the `ailloli_ui` façade.
+and depends directly only on the `ailloli_ui` façade. The non-publishable
+`xtask` package validates the repository and release artifacts without
+depending on framework crates.
 
 Keep provider selection, business policy, credentials, and product-specific
 workflows in consuming applications. Public code, documentation, fixtures, and
@@ -44,6 +46,8 @@ cargo +1.88.0-x86_64-unknown-linux-gnu test --workspace --doc --all-features --l
 cargo +1.88.0-x86_64-unknown-linux-gnu clippy --workspace --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo +1.88.0-x86_64-unknown-linux-gnu doc --workspace --all-features --no-deps --locked
 cargo +1.88.0-x86_64-unknown-linux-gnu check -p ailloli_ui --no-default-features --locked
+cargo +1.88.0-x86_64-unknown-linux-gnu xtask audit --allow-missing-funding
+cargo +1.88.0-x86_64-unknown-linux-gnu xtask package-check --allow-dirty
 ```
 
 Run the repository audit and RustSec audit described by CI as well. Visual UI

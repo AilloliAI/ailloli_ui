@@ -11,6 +11,7 @@ description = "WGPU renderer for retained Ailloli UI scenes"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_render_wgpu/"
 keywords = ["wgpu", "renderer", "graphics", "gpu", "gui"]
 categories = ["graphics", "rendering"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]
@@ -28,8 +29,8 @@ tiny-skia.workspace = true
 swash.workspace = true
 serde.workspace = true
 
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_icon = { path = "../ailloli_ui_icon" }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
-ailloli_ui_text = { path = "../ailloli_ui_text" }
-ailloli_ui_bench = { path = "../ailloli_ui_bench" }
+ailloli_ui_core.workspace = true
+ailloli_ui_icon.workspace = true
+ailloli_ui_runtime.workspace = true
+ailloli_ui_text.workspace = true
+ailloli_ui_bench.workspace = true

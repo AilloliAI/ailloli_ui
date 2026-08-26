@@ -5407,6 +5407,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
+name = "xtask"
+version = "0.1.0-beta.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "flate2",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
 name = "y4m"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

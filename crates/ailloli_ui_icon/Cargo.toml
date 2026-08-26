@@ -11,10 +11,11 @@ description = "Deterministic SVG validation and application-icon rasterization f
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_icon/"
 keywords = ["svg", "icons", "rasterization", "graphics", "gui"]
 categories = ["graphics", "rendering"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]
-ailloli_ui_core = { path = "../ailloli_ui_core" }
+ailloli_ui_core.workspace = true
 resvg.workspace = true
 roxmltree.workspace = true
 sha2.workspace = true

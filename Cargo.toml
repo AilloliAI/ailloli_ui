@@ -25,6 +25,7 @@ members = [
     "crates/ailloli_ui_widgets",
     "crates/ailloli_ui_winit",
     "apps/sandbox_app",
+    "tools/xtask",
 ]
 
 [workspace.package]
@@ -35,9 +36,32 @@ authors = ["Rising Corporation and Ailloli UI contributors"]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/AilloliAI/ailloli_ui"
 homepage = "https://ailloliai.github.io/ailloli_ui/"
-publish = false
+publish = ["crates-io"]
 
 [workspace.dependencies]
+ailloli_ui = { path = "crates/ailloli_ui", version = "=0.1.0-beta.1" }
+ailloli_ui_app_storage = { path = "crates/ailloli_ui_app_storage", version = "=0.1.0-beta.1" }
+ailloli_ui_bench = { path = "crates/ailloli_ui_bench", version = "=0.1.0-beta.1" }
+ailloli_ui_core = { path = "crates/ailloli_ui_core", version = "=0.1.0-beta.1" }
+ailloli_ui_devicons_font = { path = "crates/ailloli_ui_devicons_font", version = "=0.1.0-beta.1" }
+ailloli_ui_devtools_core = { path = "crates/ailloli_ui_devtools_core", version = "=0.1.0-beta.1" }
+ailloli_ui_devtools_ui = { path = "crates/ailloli_ui_devtools_ui", version = "=0.1.0-beta.1" }
+ailloli_ui_editor = { path = "crates/ailloli_ui_editor", version = "=0.1.0-beta.1" }
+ailloli_ui_fs = { path = "crates/ailloli_ui_fs", version = "=0.1.0-beta.1" }
+ailloli_ui_fs_local = { path = "crates/ailloli_ui_fs_local", version = "=0.1.0-beta.1" }
+ailloli_ui_fs_runtime = { path = "crates/ailloli_ui_fs_runtime", version = "=0.1.0-beta.1" }
+ailloli_ui_icon = { path = "crates/ailloli_ui_icon", version = "=0.1.0-beta.1" }
+ailloli_ui_openxr = { path = "crates/ailloli_ui_openxr", version = "=0.1.0-beta.1" }
+ailloli_ui_packaging = { path = "crates/ailloli_ui_packaging", version = "=0.1.0-beta.1" }
+ailloli_ui_render = { package = "ailloli_ui_render_wgpu", path = "crates/ailloli_ui_render_wgpu", version = "=0.1.0-beta.1" }
+ailloli_ui_render_vulkan = { path = "crates/ailloli_ui_render_vulkan", version = "=0.1.0-beta.1" }
+ailloli_ui_render_wgpu = { path = "crates/ailloli_ui_render_wgpu", version = "=0.1.0-beta.1" }
+ailloli_ui_runtime = { path = "crates/ailloli_ui_runtime", version = "=0.1.0-beta.1" }
+ailloli_ui_terminal_core = { path = "crates/ailloli_ui_terminal_core", version = "=0.1.0-beta.1" }
+ailloli_ui_terminal_pty = { path = "crates/ailloli_ui_terminal_pty", version = "=0.1.0-beta.1" }
+ailloli_ui_text = { path = "crates/ailloli_ui_text", version = "=0.1.0-beta.1" }
+ailloli_ui_widgets = { path = "crates/ailloli_ui_widgets", version = "=0.1.0-beta.1" }
+ailloli_ui_winit = { path = "crates/ailloli_ui_winit", version = "=0.1.0-beta.1" }
 winit = "0.30.13"
 wgpu = "0.20"
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
@@ -48,7 +72,6 @@ anyhow = "1.0"
 thiserror = "2.0.18"
 lucide-icons = "1.14.0"
 devicons = "0.6.12"
-ailloli_ui_devicons_font = { path = "crates/ailloli_ui_devicons_font" }
 fontdue = "0.9"
 ttf-parser = "0.25.1"
 resvg = "0.47"
@@ -63,6 +86,7 @@ serde_json = "1.0"
 semver = "1.0"
 sha2 = "0.10"
 roxmltree = "0.20"
+regex = "1.13"
 clap = { version = "4.5", features = ["derive"] }
 editpe = { version = "0.2.3", features = ["images"] }
 flate2 = "1.0"
@@ -87,3 +111,32 @@ smithay-client-toolkit = "0.19.2"
 wayland-client = "0.31.11"
 url = "2"
 windows-sys = "0.61.2"
+walkdir = "2.5"
+
+[workspace.metadata.ailloli-release]
+framework-crates = [
+    "ailloli_ui",
+    "ailloli_ui_app_storage",
+    "ailloli_ui_bench",
+    "ailloli_ui_core",
+    "ailloli_ui_devicons_font",
+    "ailloli_ui_devtools_core",
+    "ailloli_ui_devtools_ui",
+    "ailloli_ui_editor",
+    "ailloli_ui_fs",
+    "ailloli_ui_fs_local",
+    "ailloli_ui_fs_runtime",
+    "ailloli_ui_icon",
+    "ailloli_ui_openxr",
+    "ailloli_ui_packaging",
+    "ailloli_ui_render_vulkan",
+    "ailloli_ui_render_wgpu",
+    "ailloli_ui_runtime",
+    "ailloli_ui_terminal_core",
+    "ailloli_ui_terminal_pty",
+    "ailloli_ui_text",
+    "ailloli_ui_widgets",
+    "ailloli_ui_winit",
+]
+non-publishable-packages = ["sandbox_app", "xtask"]
+dev-path-only-exceptions = ["ailloli_ui_winit:ailloli_ui"]

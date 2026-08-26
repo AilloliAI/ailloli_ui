@@ -11,12 +11,13 @@ description = "Backend-neutral multi-paragraph and code editor engine for Aillol
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_editor/"
 keywords = ["editor", "text", "syntax", "selection", "ime"]
 categories = ["text-processing"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_fs = { path = "../ailloli_ui_fs" }
-ailloli_ui_text = { path = "../ailloli_ui_text" }
+ailloli_ui_core.workspace = true
+ailloli_ui_fs.workspace = true
+ailloli_ui_text.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 tree-sitter = { version = "0.26.9", optional = true }

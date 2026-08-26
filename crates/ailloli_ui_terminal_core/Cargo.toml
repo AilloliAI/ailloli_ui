@@ -11,6 +11,7 @@ description = "Process-independent terminal parser, grid, snapshots, and diagnos
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_terminal_core/"
 keywords = ["terminal", "ansi", "vt", "grid", "rust"]
 categories = ["command-line-utilities"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]

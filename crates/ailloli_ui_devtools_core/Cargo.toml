@@ -11,6 +11,7 @@ description = "Backend-neutral inspection snapshots and diagnostics for Ailloli 
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_devtools_core/"
 keywords = ["devtools", "inspection", "diagnostics", "gui", "rust"]
 categories = ["development-tools"]
+readme = "README.md"
 publish.workspace = true
 
 [features]
@@ -18,8 +19,8 @@ default = []
 terminal = ["dep:ailloli_ui_terminal_core"]
 
 [dependencies]
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime", features = ["devtools"] }
-ailloli_ui_terminal_core = { path = "../ailloli_ui_terminal_core", optional = true }
+ailloli_ui_core.workspace = true
+ailloli_ui_runtime = { workspace = true, features = ["devtools"] }
+ailloli_ui_terminal_core = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

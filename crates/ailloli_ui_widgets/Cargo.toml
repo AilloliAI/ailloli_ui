@@ -11,6 +11,7 @@ description = "Generic retained widget catalogue for Ailloli UI"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_widgets/"
 keywords = ["gui", "widgets", "controls", "layout", "desktop"]
 categories = ["gui"]
+readme = "README.md"
 publish.workspace = true
 
 [features]
@@ -19,14 +20,14 @@ files = ["dep:devicons", "dep:ailloli_ui_devicons_font", "dep:ailloli_ui_fs"]
 files_local = ["files", "dep:ailloli_ui_fs_local", "dep:ailloli_ui_fs_runtime"]
 
 [dependencies]
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_editor = { path = "../ailloli_ui_editor" }
-ailloli_ui_fs = { path = "../ailloli_ui_fs", optional = true }
-ailloli_ui_fs_local = { path = "../ailloli_ui_fs_local", optional = true }
-ailloli_ui_fs_runtime = { path = "../ailloli_ui_fs_runtime", optional = true }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
-ailloli_ui_terminal_core = { path = "../ailloli_ui_terminal_core" }
-ailloli_ui_text = { path = "../ailloli_ui_text" }
+ailloli_ui_core.workspace = true
+ailloli_ui_editor.workspace = true
+ailloli_ui_fs = { workspace = true, optional = true }
+ailloli_ui_fs_local = { workspace = true, optional = true }
+ailloli_ui_fs_runtime = { workspace = true, optional = true }
+ailloli_ui_runtime.workspace = true
+ailloli_ui_terminal_core.workspace = true
+ailloli_ui_text.workspace = true
 devicons = { workspace = true, optional = true }
 ailloli_ui_devicons_font = { workspace = true, optional = true }
 lucide-icons.workspace = true

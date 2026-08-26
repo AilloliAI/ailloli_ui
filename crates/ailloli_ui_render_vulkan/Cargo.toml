@@ -7,10 +7,11 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Vulkan and SPIR-V renderer for Ailloli UI immersive hosts"
+description = "Experimental Vulkan and SPIR-V renderer for Ailloli UI immersive hosts"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_render_vulkan/"
 keywords = ["vulkan", "spirv", "renderer", "graphics", "gui"]
 categories = ["graphics", "rendering"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]
@@ -20,9 +21,9 @@ lucide-icons.workspace = true
 swash.workspace = true
 thiserror.workspace = true
 
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
-ailloli_ui_text = { path = "../ailloli_ui_text" }
+ailloli_ui_core.workspace = true
+ailloli_ui_runtime.workspace = true
+ailloli_ui_text.workspace = true
 
 [build-dependencies]
 shaderc.workspace = true

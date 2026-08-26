@@ -39,8 +39,9 @@ this boundary by depending directly only on the `ailloli_ui` façade.
 
 ## Workspace packages
 
-The workspace contains 22 public-framework packages plus the non-publishable
-`sandbox_app` consumer application:
+The workspace contains 22 publishable framework packages plus two
+non-publishable tools: the `sandbox_app` consumer application and `xtask`
+release helper:
 
 | Package | Responsibility |
 | --- | --- |
@@ -67,6 +68,7 @@ The workspace contains 22 public-framework packages plus the non-publishable
 | `ailloli_ui_packaging` | Packaging library and `cargo-ailloli-ui` subcommand. |
 | `ailloli_ui_bench` | Opt-in structured performance measurements. |
 | `sandbox_app` | Public consumer sandbox used to exercise the façade. |
+| `xtask` | Repository, package-archive, and release-contract validation. |
 
 ## Public façade features
 

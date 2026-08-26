@@ -11,6 +11,7 @@ description = "Native winit windows, input, capture, and WGPU bootstrap for Aill
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_winit/"
 keywords = ["winit", "gui", "desktop", "window", "wgpu"]
 categories = ["gui"]
+readme = "README.md"
 publish.workspace = true
 
 [features]
@@ -30,17 +31,17 @@ devtools = [
 
 [dependencies]
 winit.workspace = true
-ailloli_ui_app_storage = { path = "../ailloli_ui_app_storage" }
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_icon = { path = "../ailloli_ui_icon" }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
-ailloli_ui_text = { path = "../ailloli_ui_text" }
-ailloli_ui_widgets = { path = "../ailloli_ui_widgets" }
-ailloli_ui_devtools_core = { path = "../ailloli_ui_devtools_core", optional = true }
-ailloli_ui_devtools_ui = { path = "../ailloli_ui_devtools_ui", optional = true }
-ailloli_ui_render_wgpu = { path = "../ailloli_ui_render_wgpu" }
+ailloli_ui_app_storage.workspace = true
+ailloli_ui_core.workspace = true
+ailloli_ui_icon.workspace = true
+ailloli_ui_runtime.workspace = true
+ailloli_ui_text.workspace = true
+ailloli_ui_widgets.workspace = true
+ailloli_ui_devtools_core = { workspace = true, optional = true }
+ailloli_ui_devtools_ui = { workspace = true, optional = true }
+ailloli_ui_render_wgpu.workspace = true
 ctrlc = { version = "3.4", features = ["termination"] }
-ailloli_ui_bench = { path = "../ailloli_ui_bench" }
+ailloli_ui_bench.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 arboard.workspace = true
@@ -56,8 +57,8 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shel
 
 [dev-dependencies]
 ailloli_ui = { path = "../ailloli_ui", features = ["files_local"] }
-ailloli_ui_editor = { path = "../ailloli_ui_editor", features = ["tree_sitter"] }
-ailloli_ui_widgets = { path = "../ailloli_ui_widgets", features = ["files_local"] }
+ailloli_ui_editor = { workspace = true, features = ["tree_sitter"] }
+ailloli_ui_widgets = { workspace = true, features = ["files_local"] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

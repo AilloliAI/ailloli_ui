@@ -11,6 +11,7 @@ description = "XDG application paths, diagnostics, and persisted documents for A
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_app_storage/"
 keywords = ["storage", "xdg", "persistence", "desktop", "rust"]
 categories = ["filesystem"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]

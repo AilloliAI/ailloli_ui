@@ -5,6 +5,12 @@ than unqualified timing claims. `ailloli_ui_bench` records versioned JSONL runs
 through a bounded writer queue, while the `ailloli-ui-bench` CLI validates and
 compares complete native sessions.
 
+The library remains a normal dependency of the renderer and native host so
+instrumentation call sites share one stable event contract. Collection is
+disabled by default and performs no filesystem write or writer-thread startup
+until explicitly enabled. The heavier command-line surface remains opt-in
+behind the `cli` feature.
+
 ## Recording application measurements
 
 Application runs opt in explicitly and must use a new destination:

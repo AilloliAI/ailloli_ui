@@ -11,6 +11,7 @@ description = "PTY process contracts and portable backends for Ailloli UI termin
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_terminal_pty/"
 keywords = ["terminal", "pty", "process", "shell", "rust"]
 categories = ["command-line-utilities"]
+readme = "README.md"
 publish.workspace = true
 
 [features]

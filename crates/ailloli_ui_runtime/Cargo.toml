@@ -11,6 +11,7 @@ description = "Retained element tree, layout, paint, input, and reactivity for A
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_runtime/"
 keywords = ["gui", "retained-mode", "layout", "reactive", "widgets"]
 categories = ["gui"]
+readme = "README.md"
 publish.workspace = true
 
 [features]
@@ -18,7 +19,7 @@ default = []
 devtools = []
 
 [dependencies]
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_text = { path = "../ailloli_ui_text" }
+ailloli_ui_core.workspace = true
+ailloli_ui_text.workspace = true
 thiserror.workspace = true
 url.workspace = true

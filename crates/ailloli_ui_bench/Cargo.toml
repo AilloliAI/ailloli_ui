@@ -11,6 +11,7 @@ description = "Versioned performance recording and regression gates for Ailloli 
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_bench/"
 keywords = ["benchmark", "performance", "jsonl", "gui", "rust"]
 categories = ["development-tools"]
+readme = "README.md"
 publish.workspace = true
 
 [features]

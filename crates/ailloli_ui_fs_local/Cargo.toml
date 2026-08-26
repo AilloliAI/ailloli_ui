@@ -11,8 +11,9 @@ description = "Local filesystem provider and native watcher for Ailloli UI"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_fs_local/"
 keywords = ["filesystem", "local", "watcher", "provider", "rust"]
 categories = ["filesystem"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]
-ailloli_ui_fs = { path = "../ailloli_ui_fs" }
+ailloli_ui_fs.workspace = true
 notify = { workspace = true }

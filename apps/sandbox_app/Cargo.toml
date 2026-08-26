@@ -11,7 +11,7 @@ description = "Native presentation and documentation showcase for Ailloli UI"
 documentation = "https://ailloliai.github.io/ailloli_ui/sandbox_app/"
 keywords = ["showcase", "example", "gui", "desktop", "rust"]
 categories = ["development-tools"]
-publish.workspace = true
+publish = false
 default-run = "sandbox_app"
 
 [[bin]]
@@ -19,4 +19,4 @@ name = "sandbox_app"
 path = "src/main.rs"
 
 [dependencies]
-ailloli_ui = { path = "../../crates/ailloli_ui" }
+ailloli_ui.workspace = true

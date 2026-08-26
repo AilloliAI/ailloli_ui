@@ -7,10 +7,11 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "OpenXR host integration for retained Ailloli UI scenes and input"
+description = "Experimental OpenXR host integration for retained Ailloli UI scenes and input"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_openxr/"
 keywords = ["openxr", "xr", "vulkan", "wgpu", "gui"]
 categories = ["graphics", "rendering"]
+readme = "README.md"
 publish.workspace = true
 
 [features]
@@ -26,12 +27,12 @@ log = "0.4"
 thiserror.workspace = true
 wgpu = { workspace = true, optional = true }
 
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_render = { path = "../ailloli_ui_render_wgpu", package = "ailloli_ui_render_wgpu", optional = true }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
-ailloli_ui_text = { path = "../ailloli_ui_text", optional = true }
-ailloli_ui_widgets = { path = "../ailloli_ui_widgets", optional = true }
-ailloli_ui_render_vulkan = { path = "../ailloli_ui_render_vulkan", optional = true }
+ailloli_ui_core.workspace = true
+ailloli_ui_render = { workspace = true, optional = true }
+ailloli_ui_runtime.workspace = true
+ailloli_ui_text = { workspace = true, optional = true }
+ailloli_ui_widgets = { workspace = true, optional = true }
+ailloli_ui_render_vulkan = { workspace = true, optional = true }
 
 [dev-dependencies]
-ailloli_ui_widgets = { path = "../ailloli_ui_widgets" }
+ailloli_ui_widgets.workspace = true

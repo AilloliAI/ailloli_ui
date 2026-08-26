@@ -11,10 +11,11 @@ description = "Text shaping, layout, wrapping, and editable buffers for Ailloli 
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_text/"
 keywords = ["text", "layout", "fonts", "shaping", "editor"]
 categories = ["text-processing"]
+readme = "README.md"
 publish.workspace = true
 
 [dependencies]
-ailloli_ui_core = { path = "../ailloli_ui_core" }
+ailloli_ui_core.workspace = true
 fontdue.workspace = true
 parley.workspace = true
 fontique.workspace = true

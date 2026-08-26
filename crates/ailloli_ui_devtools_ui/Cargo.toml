@@ -11,6 +11,7 @@ description = "Retained inspection panels and overlays for Ailloli UI DevTools"
 documentation = "https://ailloliai.github.io/ailloli_ui/ailloli_ui_devtools_ui/"
 keywords = ["devtools", "inspection", "overlay", "gui", "rust"]
 categories = ["development-tools"]
+readme = "README.md"
 publish.workspace = true
 
 [features]
@@ -18,10 +19,10 @@ default = []
 terminal = ["ailloli_ui_devtools_core/terminal"]
 
 [dependencies]
-ailloli_ui_core = { path = "../ailloli_ui_core" }
-ailloli_ui_devtools_core = { path = "../ailloli_ui_devtools_core" }
-ailloli_ui_runtime = { path = "../ailloli_ui_runtime" }
-ailloli_ui_widgets = { path = "../ailloli_ui_widgets" }
+ailloli_ui_core.workspace = true
+ailloli_ui_devtools_core.workspace = true
+ailloli_ui_runtime.workspace = true
+ailloli_ui_widgets.workspace = true
 
 [dev-dependencies]
-ailloli_ui_text = { path = "../ailloli_ui_text" }
+ailloli_ui_text.workspace = true
