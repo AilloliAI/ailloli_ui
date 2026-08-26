@@ -38,7 +38,7 @@ jobs:
       - name: Build Rustdoc
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo +1.88.0 doc --workspace --all-features --no-deps --locked
+        run: cargo +1.88.0 doc --workspace --lib --all-features --no-deps --locked
       - name: Install landing page
         run: |
           cp docs/index.html target/doc/index.html
