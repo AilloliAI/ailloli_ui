@@ -226,6 +226,8 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Fetch locked dependencies
+        run: cargo +1.88.0 fetch --locked
       - name: Inspect all publishable crate archives
         run: cargo +1.88.0 xtask package-check
 
@@ -239,5 +241,7 @@ jobs:
           persist-credentials: false
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Fetch locked dependencies
+        run: cargo +1.88.0 fetch --locked
       - name: Validate candidate state
         run: cargo +1.88.0 xtask release-check --state candidate --skip-package-check --allow-missing-funding

@@ -316,10 +316,7 @@ fn validate_vcs_provenance(root: &Path, name: &str, bytes: &[u8], allow_dirty: b
     if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("package {name} has an invalid source SHA");
     }
-    let dirty = git
-        .get("dirty")
-        .and_then(serde_json::Value::as_bool)
-        .context("package VCS provenance omits dirty state")?;
+    let dirty = vcs_dirty(git)?;
     if dirty && !allow_dirty {
         bail!("package {name} was built from a dirty source tree");
     }
@@ -347,6 +344,15 @@ fn validate_vcs_provenance(root: &Path, name: &str, bytes: &[u8], allow_dirty: b
         bail!("package {name} has VCS path {actual:?}; expected {expected:?} for this checkout");
     }
     Ok(())
+}
+
+fn vcs_dirty(git: &serde_json::Map<String, serde_json::Value>) -> Result<bool> {
+    match git.get("dirty") {
+        None => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .context("package VCS provenance dirty state is not a boolean"),
+    }
 }
 
 fn validate_normalized_manifest(owner: &str, text: &str) -> Result<()> {
@@ -399,4 +405,40 @@ fn validate_dependency_tables(owner: &str, value: &toml::Value, label: &str) -> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Map, Value};
+
+    use super::vcs_dirty;
+
+    fn git(value: Value) -> Map<String, Value> {
+        value
+            .as_object()
+            .expect("test fixture must be an object")
+            .clone()
+    }
+
+    #[test]
+    fn absent_dirty_state_means_clean() {
+        assert!(!vcs_dirty(&git(json!({ "sha1": "0" }))).expect("state should parse"));
+    }
+
+    #[test]
+    fn explicit_clean_state_is_clean() {
+        assert!(!vcs_dirty(&git(json!({ "dirty": false }))).expect("state should parse"));
+    }
+
+    #[test]
+    fn explicit_dirty_state_is_dirty() {
+        assert!(vcs_dirty(&git(json!({ "dirty": true }))).expect("state should parse"));
+    }
+
+    #[test]
+    fn non_boolean_dirty_state_is_rejected() {
+        let error = vcs_dirty(&git(json!({ "dirty": "false" })))
+            .expect_err("non-boolean dirty state must fail closed");
+        assert!(error.to_string().contains("is not a boolean"));
+    }
 }
