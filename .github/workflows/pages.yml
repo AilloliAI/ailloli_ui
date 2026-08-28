@@ -7,7 +7,6 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/**"
-      - "apps/sandbox_app/**"
       - "docs/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -21,8 +20,9 @@ concurrency:
 
 jobs:
   build:
-    name: Build Rustdoc site
+    name: Pages / build Rustdoc site
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -53,9 +53,10 @@ jobs:
           path: target/doc
 
   deploy:
-    name: Deploy Rustdoc site
+    name: Pages / deploy Rustdoc site
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
