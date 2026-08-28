@@ -2853,6 +2853,12 @@ impl<A: 'static> UiApp<A> {
 
         #[cfg(feature = "test_support")]
         self.service_presentation_test_faults(event_loop);
+        #[cfg(target_os = "windows")]
+        for state in self.windows.values() {
+            if state.reveal_after_first_frame {
+                state.window.set_visible(true);
+            }
+        }
         Self::trace_startup("requesting initial redraw");
         self.request_redraw_all();
     }
