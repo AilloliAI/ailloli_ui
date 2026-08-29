@@ -11,7 +11,10 @@ use crate::layout::layout_ext::{apply_layout_size, finish_view_sized, LayoutExt}
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
-use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
+use ailloli_ui_core::scroll::{
+    ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState, ScrollbarAxis, ScrollbarGeometry,
+    ScrollbarGeometrySpec,
+};
 use ailloli_ui_core::style::{
     Border, BoxShadow, FlexItemStyle, LayoutSizeHint, LayoutStyle, Length, Radius,
 };
@@ -23,11 +26,12 @@ use ailloli_ui_runtime::input::{EventCtx, FocusPolicy};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{
-    DrawBorder, DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText,
+    DrawBorder, DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText, Invalidation,
 };
 use ailloli_ui_text::{PreparedTextLayout, TextLayoutParams, TextSystem, WrapMode};
 
 use super::badge::BadgeTone;
+use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Density preset used to derive [`TableViewStyle`].
@@ -654,6 +658,9 @@ type TableSelectHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
 /// by non-context callbacks. [`Self::bind_selected`] installs writable selection,
 /// while [`Self::selected`] is read-only. Activating an enabled row writes and/or
 /// invokes configured handlers even when its ID already equals the selection.
+/// Overflowing body axes paint overlay scrollbars above the clipped rows while
+/// the header remains fixed. Thumb dragging and one-viewport track paging do not
+/// activate rows; a disabled table accepts neither interaction.
 ///
 /// # Examples
 ///
@@ -1241,6 +1248,8 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TableViewC
             active_index: context.signal(None),
             metrics: context.signal(TableMetrics::default()),
             behavior: ScrollBehavior::new(ScrollAxes::BOTH),
+            scrollbar_interaction: context
+                .signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint),
         })
     }
 }
@@ -1322,6 +1331,8 @@ struct TableViewWidget<T, A> {
     metrics: Signal<TableMetrics>,
     /// Wheel/reveal policy, constrained to both axes.
     behavior: ScrollBehavior,
+    /// Retained hover and captured overlay-scrollbar gesture.
+    scrollbar_interaction: Signal<ScrollbarInteraction>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T, A> {
@@ -1367,12 +1378,25 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
         }
 
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
+        let geometries = self.scrollbar_geometries(paint_bounds, metrics);
+        let interactive_geometries = if self.disabled.read() {
+            Vec::new()
+        } else {
+            geometries
+        };
+        let mut interaction = self.scrollbar_interaction.read();
+        if interaction.reconcile(&interactive_geometries) {
+            self.scrollbar_interaction.set(interaction);
+        }
         LayoutResult {
             size,
             children: Vec::new(),
             paint_bounds,
             visual_bounds: self.visual_bounds(paint_bounds),
-            overlay_hit_bounds: Vec::new(),
+            overlay_hit_bounds: interactive_geometries
+                .iter()
+                .map(|geometry| geometry.hit_track)
+                .collect(),
             clip: None,
             is_window_root_clip: false,
             artifact: None,
@@ -1403,6 +1427,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
 
         self.paint_header(ctx, &geometry, scroll.x, disabled);
         self.paint_body(ctx, &geometry, scroll, disabled);
+        self.paint_scrollbars(ctx, bounds, disabled);
 
         ctx.push(DrawCmd::Border(DrawBorder {
             rect: bounds,
@@ -1424,15 +1449,51 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
         if self.disabled.read() {
             return;
         }
+        if matches!(event, Event::Pointer(_)) {
+            let metrics = self.metrics.read();
+            let geometries = self.scrollbar_geometries(bounds, metrics);
+            let current = self.scroll.read();
+            let mut interaction = self.scrollbar_interaction.read();
+            let response = interaction.handle_event(event, &geometries, current.offset);
+            if response.state_changed {
+                self.scrollbar_interaction.set(interaction);
+            }
+            if let Some((axis, target)) = response.scroll_to {
+                let target = match axis {
+                    ScrollbarAxis::Horizontal => Offset::new(target, current.offset.y),
+                    ScrollbarAxis::Vertical => Offset::new(current.offset.x, target),
+                };
+                let outcome = current.scroll_to(
+                    target,
+                    ScrollMetrics::new(metrics.viewport, metrics.content),
+                    ScrollAxes::BOTH,
+                );
+                if outcome.changed {
+                    self.scroll.set(outcome.state());
+                }
+            }
+            if response.repaint {
+                ctx.request_repaint();
+            }
+            if response.consumed {
+                ctx.stop_propagation();
+                return;
+            }
+        }
         match event {
-            Event::Pointer(PointerEvent::Wheel { pos, delta, .. }) => {
+            Event::Pointer(PointerEvent::Wheel {
+                pos,
+                delta,
+                modifiers,
+                ..
+            }) => {
                 let body = self.body_rect(bounds);
                 if !body.contains(pos.x, pos.y) {
                     return;
                 }
                 let metrics = self.metrics.read();
                 let out = self.scroll.read().scroll_by(
-                    self.behavior.wheel_delta(*delta),
+                    self.behavior.wheel_delta_with_modifiers(*delta, *modifiers),
                     ScrollMetrics::new(metrics.viewport, metrics.content),
                     ScrollAxes::BOTH,
                 );
@@ -1475,6 +1536,65 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> TableViewWidget<T, A> {
+    /// Resolves body-overlay bars for each overflowing axis.
+    fn scrollbar_geometries(&self, bounds: Rect, table: TableMetrics) -> Vec<ScrollbarGeometry> {
+        let body = self.body_rect(bounds);
+        let metrics = ScrollMetrics::new(table.viewport, table.content);
+        let max = metrics.max_offset();
+        let show_horizontal = max.x > 0.5;
+        let show_vertical = max.y > 0.5;
+        let mut geometries = Vec::with_capacity(2);
+        if show_vertical {
+            let reserve = if show_horizontal { 9.0 } else { 0.0 };
+            if let Some(geometry) = ScrollbarGeometrySpec::new(
+                ScrollbarAxis::Vertical,
+                body,
+                metrics,
+                self.scroll.read(),
+            )
+            .with_paint_metrics(6.0, 24.0, 3.0)
+            .with_end_reserve(reserve)
+            .resolve()
+            {
+                geometries.push(geometry);
+            }
+        }
+        if show_horizontal {
+            let reserve = if show_vertical { 9.0 } else { 0.0 };
+            if let Some(geometry) = ScrollbarGeometrySpec::new(
+                ScrollbarAxis::Horizontal,
+                body,
+                metrics,
+                self.scroll.read(),
+            )
+            .with_paint_metrics(6.0, 24.0, 3.0)
+            .with_end_reserve(reserve)
+            .resolve()
+            {
+                geometries.push(geometry);
+            }
+        }
+        geometries
+    }
+
+    /// Paints derived-color table scrollbars above body contents.
+    fn paint_scrollbars(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, disabled: bool) {
+        let interaction = self.scrollbar_interaction.read();
+        for geometry in self.scrollbar_geometries(bounds, self.metrics.read()) {
+            let visual = interaction.visual_state(geometry.axis, ctx.is_hovered() && !disabled);
+            ctx.push(DrawCmd::RRect(DrawRRect {
+                rect: geometry.track,
+                radius: 3.0,
+                color: self.style.grid_color.with_alpha(0.22),
+            }));
+            ctx.push(DrawCmd::RRect(DrawRRect {
+                rect: geometry.thumb,
+                radius: 3.0,
+                color: thumb_color_for_state(self.style.muted_text.color.with_alpha(0.58), visual),
+            }));
+        }
+    }
+
     /// Resolves column widths using the layout context's optional text system.
     fn resolve_columns_layout(
         &self,

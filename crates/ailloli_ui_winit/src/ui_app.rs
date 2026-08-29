@@ -4361,12 +4361,12 @@ fn translate_window_event<A>(
         WindowEvent::MouseWheel { delta, .. } => {
             let pos = state.cursor_pos?;
             Some((
-                Event::Pointer(PointerEvent::Wheel {
+                Event::Pointer(convert_wheel_event(
                     pos,
-                    delta: convert_wheel_delta(delta, state.scale),
-                    modifiers: state.modifiers,
-                    precise: matches!(delta, MouseScrollDelta::PixelDelta(_)),
-                }),
+                    delta,
+                    state.scale,
+                    state.modifiers,
+                )),
                 mouse_pointer_sample(pos),
             ))
         }
@@ -4581,6 +4581,21 @@ fn convert_wheel_delta(
     }
 }
 
+/// Builds a logical wheel event without discarding provider precision or modifiers.
+fn convert_wheel_event(
+    pos: Point,
+    delta: &MouseScrollDelta,
+    scale: Scale,
+    modifiers: Modifiers,
+) -> PointerEvent {
+    PointerEvent::Wheel {
+        pos,
+        delta: convert_wheel_delta(delta, scale),
+        modifiers,
+        precise: matches!(delta, MouseScrollDelta::PixelDelta(_)),
+    }
+}
+
 /// Synchronizes native IME permission and quantized cursor area with focused input.
 ///
 /// Popup focus takes precedence over owner focus. Permission changes reset blink
@@ -4700,6 +4715,60 @@ mod tests {
             physical_position_to_logical(PhysicalPosition::new(200.0, 100.0), Scale::new(2.0));
 
         assert_eq!(pos, Point::new(100.0, 50.0));
+    }
+
+    #[test]
+    fn wheel_conversion_preserves_axes_and_logical_pixel_scale() {
+        assert_eq!(
+            convert_wheel_delta(&MouseScrollDelta::LineDelta(-1.5, 2.0), Scale::new(3.0)),
+            ailloli_ui_core::event::WheelDelta::LineDelta { x: -1.5, y: 2.0 }
+        );
+        assert_eq!(
+            convert_wheel_delta(
+                &MouseScrollDelta::PixelDelta(PhysicalPosition::new(18.0, -9.0)),
+                Scale::new(1.5),
+            ),
+            ailloli_ui_core::event::WheelDelta::PixelDelta { x: 12.0, y: -6.0 }
+        );
+    }
+
+    #[test]
+    fn wheel_event_preserves_modifiers_and_marks_only_pixel_input_precise() {
+        let modifiers = Modifiers {
+            shift: true,
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let pos = Point::new(12.0, 34.0);
+
+        assert!(matches!(
+            convert_wheel_event(
+                pos,
+                &MouseScrollDelta::LineDelta(1.0, -2.0),
+                Scale::new(2.0),
+                modifiers,
+            ),
+            PointerEvent::Wheel {
+                pos: event_pos,
+                delta: ailloli_ui_core::event::WheelDelta::LineDelta { x: 1.0, y: -2.0 },
+                modifiers: event_modifiers,
+                precise: false,
+            } if event_pos == pos && event_modifiers == modifiers
+        ));
+        assert!(matches!(
+            convert_wheel_event(
+                pos,
+                &MouseScrollDelta::PixelDelta(PhysicalPosition::new(8.0, -4.0)),
+                Scale::new(2.0),
+                modifiers,
+            ),
+            PointerEvent::Wheel {
+                delta: ailloli_ui_core::event::WheelDelta::PixelDelta { x: 4.0, y: -2.0 },
+                modifiers: event_modifiers,
+                precise: true,
+                ..
+            } if event_modifiers == modifiers
+        ));
     }
 
     #[test]

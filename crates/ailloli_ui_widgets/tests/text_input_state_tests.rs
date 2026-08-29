@@ -255,6 +255,39 @@ fn text_input_horizontal_wheel_scrolls_clipped_text() {
 }
 
 #[test]
+fn text_input_shift_wheel_scrolls_single_line_horizontally() {
+    let value = State::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(TextInput::new().bind(value).into_view());
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(80.0, 40.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Pointer(PointerEvent::Wheel {
+            pos: Point::new(40.0, 10.0),
+            delta: WheelDelta::PixelDelta { x: 0.0, y: -40.0 },
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+            precise: true,
+        }),
+    );
+
+    let scene = app.paint(&mut text_system);
+    let (text_x, _) = text_draw_x_and_clip(&scene).expect("text draw");
+    assert!(text_x < 0.0, "text_x={text_x}");
+}
+
+#[test]
 fn text_input_end_key_reveals_caret_with_horizontal_scroll() {
     let value = State::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
@@ -609,6 +642,89 @@ fn text_input_multiline_reveal_insert_after_overflow_keeps_caret_visible() {
         "caret should remain vertically visible: caret={:?}, content={content:?}",
         caret.rect
     );
+}
+
+#[test]
+fn text_input_multiline_scrollbar_drag_has_no_change_callback() {
+    let original = (0..18)
+        .map(|idx| format!("line {idx:02} with enough text to remain visible"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let value = State::new(original.clone());
+    let style = TextInputStyle::default();
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        TextInput::new()
+            .bind(value.clone())
+            .multiline()
+            .input_style(style)
+            .on_change(Action::Changed)
+            .width(220.0)
+            .height(70.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(220.0, 70.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let input_layout = app
+        .tree
+        .iter_elements()
+        .find_map(|(_, element)| match &element.kind {
+            ElementKind::Widget(widget) if widget.debug_name() == "TextInput" => {
+                element.layout.as_ref()
+            }
+            _ => None,
+        })
+        .expect("text input layout");
+    assert_eq!(input_layout.overlay_hit_bounds.len(), 1);
+
+    let initial = app.paint(&mut text_system);
+    let initial_y = text_draw_pos_and_clip(&initial).expect("initial text").1;
+    let thumb = first_rect_with_color(&initial, style.border.with_alpha(0.62))
+        .expect("multiline scrollbar thumb");
+    let press = Point::new(
+        thumb.rect.x + thumb.rect.w * 0.5,
+        thumb.rect.y + thumb.rect.h * 0.5,
+    );
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Button {
+            pos: press,
+            button: MouseButton::Left,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(press.x, 1_000.0),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Button {
+            pos: Point::new(press.x, 1_000.0),
+            button: MouseButton::Left,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        }),
+    );
+
+    let after = app.paint(&mut text_system);
+    let after_y = text_draw_pos_and_clip(&after).expect("scrolled text").1;
+    assert!(after_y < initial_y, "initial={initial_y}, after={after_y}");
+    assert_eq!(value.read(), original);
+    assert!(runtime.take_actions().is_empty());
 }
 
 fn focus_input(router: &mut InputRouter, app: &Runtime<()>, runtime: RuntimeHandle<()>) {

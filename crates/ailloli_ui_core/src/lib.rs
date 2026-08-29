@@ -167,7 +167,10 @@ pub use geometry::{ClipShape, Constraints, EdgeInsets, Offset, Point, Rect, Size
 pub use ids::{ElementId, FontId, IconId, ImageId, LogicalWindowId, SvgSource, WidgetId};
 pub use math::{PhysicalRectI32, Scale};
 pub use progress::ProgressSpec;
-pub use scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollOutcome, ScrollState};
+pub use scroll::{
+    ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollOutcome, ScrollState, ScrollbarAxis,
+    ScrollbarDrag, ScrollbarGeometry, ScrollbarGeometrySpec, ScrollbarPart,
+};
 pub use slider::{SliderRangeValue, SliderSpec, SliderThumb};
 #[allow(deprecated)]
 pub use style::Rgba;

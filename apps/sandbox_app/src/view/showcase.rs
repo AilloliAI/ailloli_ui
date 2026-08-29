@@ -143,6 +143,259 @@ pub(crate) fn documentation_capture_root(state: ShowcaseState) -> View<Action> {
         .key("sandbox-documentation-capture-root")
 }
 
+/// Retained values used by the interactive scrolling review surface.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct InteractiveScrollingState {
+    /// Long no-wrap Rust document shown at a non-zero two-axis offset.
+    code: State<Document>,
+    /// Multiline input value large enough to expose its overlay scrollbar.
+    notes: State<String>,
+}
+
+#[cfg(test)]
+impl InteractiveScrollingState {
+    /// Creates deterministic overflowing content for every reviewed surface.
+    pub(crate) fn new() -> Self {
+        let code = (0..28)
+            .map(|index| {
+                format!(
+                    "let retained_result_{index} = compute_layout_for_a_long_native_interface(component_{index}, viewport_metrics, renderer_state);"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let notes = (0..18)
+            .map(|index| {
+                format!(
+                    "Review item {:02}: wheel, track paging, and captured thumb dragging stay aligned.",
+                    index + 1
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            code: State::new(
+                Document::new(DocumentId(1), TextBuffer::from_string(code))
+                    .with_language(EditorLanguage::Rust)
+                    .with_path("src/scrolling_showcase.rs"),
+            ),
+            notes: State::new(notes),
+        }
+    }
+}
+
+/// Builds the deterministic interaction-review surface used by native capture.
+#[cfg(test)]
+pub(crate) fn interactive_scrolling_capture_root(state: InteractiveScrollingState) -> View<Action> {
+    let theme = Theme::default();
+    let palette = theme.palette();
+
+    Container::new()
+        .fill()
+        .background(palette.background)
+        .padding(18.0)
+        .child(
+            Column::new()
+                .fill()
+                .gap(12.0)
+                .child(
+                    Row::new()
+                        .height(52.0)
+                        .align_items(AlignItems::Center)
+                        .child(
+                            Column::new()
+                                .gap(2.0)
+                                .child(styled_text("Interactive scrolling", 24, palette.text))
+                                .child(styled_text(
+                                    "One geometry contract across retained desktop surfaces",
+                                    12,
+                                    palette.text_muted,
+                                )),
+                        )
+                        .child(Container::new().flex_grow())
+                        .child(
+                            Badge::new("InputRouter verified")
+                                .tone(BadgeTone::Success)
+                                .variant(BadgeVariant::Outline),
+                        ),
+                )
+                .child(
+                    Row::new()
+                        .height(294.0)
+                        .gap(12.0)
+                        .align_items(AlignItems::Stretch)
+                        .child(scrolling_scroll_view_panel(theme))
+                        .child(scrolling_code_editor_panel(theme, state.code))
+                        .child(scrolling_text_input_panel(theme, state.notes)),
+                )
+                .child(
+                    Row::new()
+                        .height(350.0)
+                        .gap(12.0)
+                        .align_items(AlignItems::Stretch)
+                        .child(scrolling_terminal_panel(theme))
+                        .child(scrolling_table_panel(theme)),
+                ),
+        )
+        .into_view()
+        .key("sandbox-interactive-scrolling-capture-root")
+}
+
+/// Builds a two-axis viewport whose initial offset exposes both thumbs mid-track.
+#[cfg(test)]
+fn scrolling_scroll_view_panel(theme: Theme) -> View<Action> {
+    let palette = theme.palette();
+    let mut content = Column::new().width(640.0).gap(10.0);
+    for index in 0..12 {
+        content = content.child(
+            Container::new()
+                .width(600.0)
+                .height(28.0)
+                .background(if index % 2 == 0 {
+                    palette.accent.with_alpha(0.12)
+                } else {
+                    palette.surface_elevated
+                })
+                .radius(theme.radius().sm)
+                .padding(6.0)
+                .child(styled_text(
+                    format!(
+                        "Retained row {:02} · horizontally extended content",
+                        index + 1
+                    ),
+                    12,
+                    palette.text,
+                )),
+        );
+    }
+
+    showcase_capture_panel(
+        theme,
+        380.0,
+        "SCROLLVIEW X / Y",
+        ScrollView::both()
+            .initial_offset(Offset::new(110.0, 74.0))
+            .child(
+                Container::new()
+                    .width(680.0)
+                    .height(440.0)
+                    .background(palette.surface)
+                    .padding(18.0)
+                    .child(content),
+            )
+            .fill()
+            .into_view(),
+    )
+}
+
+/// Builds a no-wrap code editor with both axes already away from the origin.
+#[cfg(test)]
+fn scrolling_code_editor_panel(theme: Theme, document: State<Document>) -> View<Action> {
+    showcase_capture_panel(
+        theme,
+        420.0,
+        "CODEEDITOR · NOWRAP",
+        CodeEditor::new(document)
+            .language(EditorLanguage::Rust)
+            .line_numbers(true)
+            .initial_scroll(190.0, 96.0)
+            .fill()
+            .into_view(),
+    )
+}
+
+/// Builds a multiline input whose content overflows its fixed review viewport.
+#[cfg(test)]
+fn scrolling_text_input_panel(theme: Theme, notes: State<String>) -> View<Action> {
+    showcase_capture_panel(
+        theme,
+        420.0,
+        "TEXTINPUT · MULTILINE",
+        TextInput::<Action>::new()
+            .bind(notes)
+            .multiline()
+            .fill()
+            .into_view(),
+    )
+}
+
+/// Builds a scrollback log with its thumb visibly separated from the origin.
+#[cfg(test)]
+fn scrolling_terminal_panel(theme: Theme) -> View<Action> {
+    let mut terminal = TerminalView::new().initial_scroll_y(126.0).fill();
+    terminal = terminal
+        .line(TerminalLine::prompt("$ cargo test --workspace"))
+        .line(TerminalLine::system("Compiling retained runtime graph"));
+    for index in 0..24 {
+        terminal = terminal.line(if index % 7 == 0 {
+            TerminalLine::warning(format!("check {:02} · reviewing bounded input", index + 1))
+        } else {
+            TerminalLine::success(format!(
+                "check {:02} · interaction contract passed",
+                index + 1
+            ))
+        });
+    }
+
+    showcase_capture_panel(theme, 590.0, "TERMINAL · SCROLLBACK", terminal.into_view())
+}
+
+/// Builds an overflowing fixed-header table with two overlay axes.
+#[cfg(test)]
+fn scrolling_table_panel(theme: Theme) -> View<Action> {
+    let mut table = TableView::<usize, Action>::new()
+        .column(TableColumn::new("Surface").width(190.0))
+        .column(TableColumn::new("Input contract").width(240.0))
+        .column(TableColumn::new("Axis").width(110.0))
+        .column(TableColumn::new("State").width(130.0))
+        .column(TableColumn::new("Evidence").width(190.0))
+        .fill();
+    for index in 0..16 {
+        table = table.row(
+            TableRow::new(index)
+                .cell(TableCell::text(format!("Surface {:02}", index + 1)))
+                .cell(TableCell::muted("wheel · track · drag"))
+                .cell(TableCell::text(if index % 3 == 0 { "X / Y" } else { "Y" }))
+                .cell(TableCell::badge(
+                    if index % 5 == 0 { "Review" } else { "Ready" },
+                    if index % 5 == 0 {
+                        BadgeTone::Info
+                    } else {
+                        BadgeTone::Success
+                    },
+                ))
+                .cell(TableCell::muted("InputRouter")),
+        );
+    }
+
+    showcase_capture_panel(theme, 642.0, "TABLEVIEW · FIXED HEADER", table.into_view())
+}
+
+/// Wraps one review widget in a consistently labelled capture panel.
+#[cfg(test)]
+fn showcase_capture_panel(
+    theme: Theme,
+    width: f32,
+    label: &'static str,
+    content: View<Action>,
+) -> View<Action> {
+    let palette = theme.palette();
+    Container::panel(theme)
+        .width(width)
+        .fill_height()
+        .padding(12.0)
+        .clip_children(true)
+        .child(
+            Column::new()
+                .fill()
+                .gap(8.0)
+                .child(styled_text(label, 11, palette.accent))
+                .child(Container::new().fill().clip_children(true).child(content)),
+        )
+        .into_view()
+}
+
 /// Builds the compact brand row and immediately useful live resources.
 fn header(theme: Theme) -> View<Action> {
     let palette = theme.palette();
@@ -244,7 +497,6 @@ fn hero(theme: Theme, quick_start: State<Document>) -> View<Action> {
                             CodeEditor::new(quick_start)
                                 .language(EditorLanguage::Rust)
                                 .line_numbers(true)
-                                .wrap_mode(EditorWrapMode::SoftWrap)
                                 .fill(),
                         ),
                 ),

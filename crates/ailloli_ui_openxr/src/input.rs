@@ -498,6 +498,39 @@ mod tests {
     }
 
     #[test]
+    fn scroll_sample_emits_precise_pixel_axes_and_modifiers() {
+        let mut mapper = OpenXrInputMapper::new();
+        let sample = OpenXrPointerSample::new(
+            17,
+            OpenXrPointerHit::Hit(PointHit::new(Point::new(3.0, 4.0), None)),
+            false,
+        )
+        .with_scroll(-2.5, 7.0);
+        let modifiers = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let events = map_samples_to_openxr_input_events(
+            &mut mapper,
+            &OpenXrPointerFrame::new(vec![sample]),
+            modifiers,
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::Pointer(PointerEvent::Moved { .. }),
+                Event::Pointer(PointerEvent::Wheel {
+                    delta: WheelDelta::PixelDelta { x, y },
+                    modifiers: event_modifiers,
+                    precise: true,
+                    ..
+                })
+            ] if *x == -2.5 && *y == 7.0 && *event_modifiers == modifiers
+        ));
+    }
+
+    #[test]
     fn keeps_hover_when_out_of_ui() {
         let mut mapper = OpenXrInputMapper::new();
         let frame1 = OpenXrPointerFrame::new(vec![OpenXrPointerSample::new(

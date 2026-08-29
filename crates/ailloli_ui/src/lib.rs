@@ -97,9 +97,11 @@ pub use ailloli_ui_core::{
     BoxShadow, ChartPoint, ChartRange, ChartSeries, ChatEvent, ChatItemId, ChatMessage,
     ChatMessageKind, ChatMessageStatus, ChatRequestId, ChatRole, ChatSessionId, ChatSessionState,
     ChatSessionStatus, ChatSessionSummary, Color, Constraints, DateValue, FontId, HsvColor, IconId,
-    MonthValue, Offset, Rect, Size, SvgSource, TextDecoration, TextStyle, Theme, ThemePalette,
-    ThemeRadius, ThemeShadows, ThemeSpacing, ThemeState, ThemeTypography, TimeFormat, TimeValue,
-    UploadAccept, UploadFile, WeekStart, APP_IDENTITY_METADATA_VERSION, CONVENTIONAL_APP_ICON_PATH,
+    MonthValue, Offset, Rect, ScrollbarAxis, ScrollbarDrag, ScrollbarGeometry,
+    ScrollbarGeometrySpec, ScrollbarPart, Size, SvgSource, TextDecoration, TextStyle, Theme,
+    ThemePalette, ThemeRadius, ThemeShadows, ThemeSpacing, ThemeState, ThemeTypography, TimeFormat,
+    TimeValue, UploadAccept, UploadFile, WeekStart, APP_IDENTITY_METADATA_VERSION,
+    CONVENTIONAL_APP_ICON_PATH,
 };
 #[cfg(feature = "devtools")]
 pub use ailloli_ui_devtools_core::{

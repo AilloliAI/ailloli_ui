@@ -11,7 +11,7 @@ use crate::layout::layout_ext::{apply_layout_size, finish_view_sized, LayoutExt}
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey, WheelDelta};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
-use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
+use ailloli_ui_core::scroll::{ScrollAxes, ScrollMetrics, ScrollState};
 use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint, LayoutStyle, Length, Radius};
 use ailloli_ui_core::{FontId, IconId, TextStyle, Theme};
 use ailloli_ui_runtime::component::{
@@ -29,7 +29,8 @@ use lucide_icons::Icon;
 
 use super::popup::{
     apply_opacity, listbox_popup_semantics, measure_text, paint_overlay_text_in_rect,
-    paint_popup_border, paint_popup_row, paint_popup_shell, PopupPortalBridge, PopupRowState,
+    paint_popup_border, paint_popup_row, paint_popup_shell, scroll_popup, PopupPortalBridge,
+    PopupRowState,
 };
 use super::select::{SelectSize, SelectStyle};
 use super::text_field_core::{
@@ -2166,11 +2167,14 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedComboBoxP
                 }
                 ctx.stop_propagation();
             }
-            Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+            Event::Pointer(PointerEvent::Wheel {
+                delta, modifiers, ..
+            }) => {
                 scroll_retained_popup(
                     ctx,
                     &self.scroll,
                     *delta,
+                    *modifiers,
                     Size::new(bounds.w, bounds.h),
                     self.filtered_indices().len().max(1),
                     &self.style.popup,
@@ -2439,11 +2443,14 @@ impl<A: 'static> Widget<A> for RetainedAutocompletePopup<A> {
                 }
                 ctx.stop_propagation();
             }
-            Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+            Event::Pointer(PointerEvent::Wheel {
+                delta, modifiers, ..
+            }) => {
                 scroll_retained_popup(
                     ctx,
                     &self.scroll,
                     *delta,
+                    *modifiers,
                     Size::new(bounds.w, bounds.h),
                     self.filtered_indices().len().max(1),
                     &self.style.popup,
@@ -2653,29 +2660,33 @@ fn clamp_retained_popup_scroll(
     }
 }
 
-/// Applies wheel scrolling in row-height line units and consumes the event.
+/// Applies wheel scrolling in row-height line units.
+///
+/// The event is consumed only when the retained offset actually changes, so a
+/// popup already at its limit can bubble the wheel gesture to an ancestor.
 fn scroll_retained_popup<A: 'static>(
     ctx: &mut EventCtx<A>,
     scroll: &Signal<ScrollState>,
     delta: WheelDelta,
+    modifiers: ailloli_ui_core::event::Modifiers,
     viewport: Size,
     rows: usize,
     style: &SelectStyle,
 ) {
-    let metrics = ScrollMetrics::new(
+    let outcome = scroll_popup(
+        &scroll.read(),
+        delta,
+        modifiers,
         viewport,
         Size::new(viewport.w, rows as f32 * style.option_height),
+        style.option_height,
+        ScrollAxes::VERTICAL,
     );
-    let behavior = ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(style.option_height);
-    let outcome =
-        scroll
-            .read()
-            .scroll_by(behavior.wheel_delta(delta), metrics, ScrollAxes::VERTICAL);
     if outcome.changed {
         scroll.set(outcome.state());
         ctx.request_repaint();
+        ctx.stop_propagation();
     }
-    ctx.stop_propagation();
 }
 
 #[derive(Debug, Clone, Copy)]

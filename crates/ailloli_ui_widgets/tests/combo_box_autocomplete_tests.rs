@@ -332,7 +332,10 @@ fn retained_combobox_popup_tracks_hover_and_scrolls_before_selection() {
         point,
         PointerEvent::wheel(
             point,
-            WheelDelta::PixelDelta { x: 0.0, y: -64.0 },
+            WheelDelta::PixelDelta {
+                x: 0.0,
+                y: -10_000.0,
+            },
             Modifiers::default(),
             true,
         ),
@@ -374,7 +377,10 @@ fn retained_autocomplete_popup_scrolls_before_selecting_a_suggestion() {
         point,
         PointerEvent::wheel(
             point,
-            WheelDelta::PixelDelta { x: 0.0, y: -64.0 },
+            WheelDelta::PixelDelta {
+                x: 0.0,
+                y: -10_000.0,
+            },
             Modifiers::default(),
             true,
         ),

@@ -63,9 +63,10 @@ pub use crate::core::{
     ChatMessageKind, ChatMessageStatus, ChatRequestId, ChatRole, ChatSessionId, ChatSessionState,
     ChatSessionStatus, ChatSessionSummary, Color, Constraints, DateValue, FontId, HsvColor, IconId,
     LineCap, LineJoin, MonthValue, Offset, ProgressSpec, Rect, ScrollAxes, ScrollBehavior,
-    ScrollMetrics, ScrollState, Size, SliderRangeValue, SliderSpec, SliderThumb, StrokeStyle,
-    SvgSource, TextDecoration, TextStyle, Theme, TimeFormat, TimeValue, UploadAccept, UploadFile,
-    WeekStart,
+    ScrollMetrics, ScrollState, ScrollbarAxis, ScrollbarDrag, ScrollbarGeometry,
+    ScrollbarGeometrySpec, ScrollbarPart, Size, SliderRangeValue, SliderSpec, SliderThumb,
+    StrokeStyle, SvgSource, TextDecoration, TextStyle, Theme, TimeFormat, TimeValue, UploadAccept,
+    UploadFile, WeekStart,
 };
 pub use crate::fs::{
     FileCapabilities, FileEntry, FileError, FileKind, FileMetadata, FileOperation,

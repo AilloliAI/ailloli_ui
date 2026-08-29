@@ -7,14 +7,22 @@ use ailloli_ui_text::TextBuffer;
 
 use crate::layout::layout_ext::finish_view_sized;
 
-use super::widget::EditorComponent;
+use super::widget::{sanitize_caret_follow_margin_lines, EditorComponent};
 
 /// Multi-paragraph editor backed by a shared [`TextBuffer`] signal.
 ///
 /// Edits update the supplied signal synchronously. The default uses
 /// [`EditorConfig::default`], automatic layout, and no initial selection. The
 /// retained widget is focusable, supports multiline keyboard/IME input, and
-/// has a 320×180 logical-pixel intrinsic cap/height before constraints.
+/// has a 320×180 logical-pixel intrinsic cap/height before constraints. Wheel
+/// input preserves native horizontal and vertical axes, while `Shift` maps a
+/// vertical wheel delta to horizontal scrolling when wrapping is disabled.
+/// Editing and keyboard navigation keep the caret inside a safe visible region
+/// on both axes and preserve three visible lines below it by default. A caret
+/// already in that region never moves the viewport. Pointer clicks never move
+/// the viewport; pointer selection auto-scrolls only after leaving the visible
+/// text area.
+/// This generic editor intentionally does not paint a visual scrollbar.
 ///
 /// # Examples
 ///
@@ -36,6 +44,8 @@ pub struct Editor {
     pub(crate) config: EditorConfig,
     /// Optional initial UTF-8 byte anchor/caret pair.
     pub(crate) initial_selection: Option<(usize, usize)>,
+    /// Visible-line safety margin maintained below the revealed caret.
+    pub(crate) caret_follow_margin_lines: f32,
 }
 
 crate::impl_layout_builders_unit!(Editor);
@@ -62,6 +72,7 @@ impl Editor {
             buffer: buffer.into(),
             config: EditorConfig::default(),
             initial_selection: None,
+            caret_follow_margin_lines: 3.0,
         }
     }
 
@@ -118,6 +129,29 @@ impl Editor {
         self.initial_selection = Some((anchor, caret));
         self
     }
+
+    /// Sets the visible-line safety margin kept below the revealed caret.
+    ///
+    /// The default is three lines. The margin applies to edits, paste, undo,
+    /// redo, IME changes, and keyboard navigation. Reveal always adds only the
+    /// distance by which the caret crosses the safe boundary; pointer clicks
+    /// never request caret following. Negative values become zero and
+    /// non-finite values restore the default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_text::TextBuffer;
+    /// use ailloli_ui_widgets::editor::Editor;
+    /// let editor = Editor::new(State::new(TextBuffer::new()))
+    ///     .caret_follow_margin_lines(5.0);
+    /// let _ = editor;
+    /// ```
+    pub fn caret_follow_margin_lines(mut self, lines: f32) -> Self {
+        self.caret_follow_margin_lines = sanitize_caret_follow_margin_lines(lines);
+        self
+    }
 }
 
 /// Converts the builder into a retained editor component with flex/size hints.
@@ -129,6 +163,7 @@ impl<A: 'static> IntoView<A> for Editor {
                 buffer: self.buffer,
                 config: self.config,
                 initial_selection: self.initial_selection,
+                caret_follow_margin_lines: self.caret_follow_margin_lines,
             }),
             self.flex_item,
             LayoutSizeHint::from_layout(self.layout),

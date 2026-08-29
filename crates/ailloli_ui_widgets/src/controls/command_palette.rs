@@ -884,10 +884,13 @@ impl<A: 'static> Widget<A> for CommandPaletteWidget<A> {
                 ctx.request_repaint();
                 ctx.stop_propagation();
             }
-            Event::Pointer(PointerEvent::Wheel { pos, delta, .. })
-                if self.list_rect(bounds).contains(pos.x, pos.y) =>
-            {
-                self.scroll_list(ctx, bounds, *delta);
+            Event::Pointer(PointerEvent::Wheel {
+                pos,
+                delta,
+                modifiers,
+                ..
+            }) if self.list_rect(bounds).contains(pos.x, pos.y) => {
+                self.scroll_list(ctx, bounds, *delta, *modifiers);
             }
             Event::Keyboard(key) if key.state == KeyState::Pressed => {
                 self.handle_keyboard(ctx, &key.key, event, bounds, layout);
@@ -1102,7 +1105,13 @@ impl<A: 'static> CommandPaletteWidget<A> {
     }
 
     /// Applies a wheel delta to the result list and requests repaint on change.
-    fn scroll_list(&self, ctx: &mut EventCtx<A>, bounds: Rect, delta: WheelDelta) {
+    fn scroll_list(
+        &self,
+        ctx: &mut EventCtx<A>,
+        bounds: Rect,
+        delta: WheelDelta,
+        modifiers: ailloli_ui_core::event::Modifiers,
+    ) {
         let list = self.list_rect(bounds);
         let rows = self.filtered_indices().len().max(1);
         let metrics = ScrollMetrics::new(
@@ -1112,7 +1121,7 @@ impl<A: 'static> CommandPaletteWidget<A> {
         let behavior =
             ScrollBehavior::new(ScrollAxes::VERTICAL).with_line_px(self.style.row_height);
         let out = self.scroll.read().scroll_by(
-            behavior.wheel_delta(delta),
+            behavior.wheel_delta_with_modifiers(delta, modifiers),
             metrics,
             ScrollAxes::VERTICAL,
         );

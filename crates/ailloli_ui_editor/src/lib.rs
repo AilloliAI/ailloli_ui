@@ -38,7 +38,7 @@ pub use code::{
     SymbolKind, SymbolSource,
 };
 pub use config::{EditorConfig, EditorWrapMode};
-pub use engine::EditorEngine;
+pub use engine::{code_scrollbar_geometries, EditorEngine};
 pub use frame::{EditorFrame, EditorFrameDebugMetrics};
 pub use input::{
     EditorHitTest, EditorHitZone, EditorInputOutcome, EditorZoneHitTest, SelectionGranularity,

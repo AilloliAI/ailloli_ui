@@ -6,14 +6,14 @@ use ailloli_ui_core::event::{Event, ImePreedit};
 use ailloli_ui_core::geometry::Size;
 use ailloli_ui_core::geometry::{Constraints, Rect};
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
-use ailloli_ui_core::{Color, FontId, TextStyle, Theme};
+use ailloli_ui_core::{Color, FontId, Offset, ScrollbarAxis, TextStyle, Theme};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Signal, View, Widget,
 };
 use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, InputRole, Selection};
 use ailloli_ui_runtime::layout::{LayoutArtifact, LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
-use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect};
+use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, Invalidation};
 use ailloli_ui_text::{TextBuffer, TextEditState, TextInputMode, TextSystem};
 #[cfg(test)]
 use ailloli_ui_text::{TextEditAction, TextLayoutParams, WrapMode};
@@ -25,9 +25,10 @@ use super::text_field_core::{apply_edit_action, display_text_for_edit};
 use super::text_field_core::{
     handle_multi_line_text_event, handle_single_line_text_event, ime_cursor_rect,
     ime_cursor_rect_multi_line, layout_multi_line_text, layout_single_line_text,
-    paint_multi_line_text, paint_single_line_text, reveal_caret_multi_line_from_current_layout,
-    TextFieldEventOptions,
+    multi_line_scrollbar_geometry, paint_multi_line_text, paint_single_line_text,
+    reveal_caret_multi_line_from_current_layout, TextFieldEventOptions,
 };
+use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction, ScrollbarVisualState};
 
 /// Shared callback receiving a complete owned value after an edit changes text.
 ///
@@ -228,6 +229,10 @@ pub fn draw_text_input(
 /// be attached to a writable [`Signal<String>`] with [`Self::bind`]. External
 /// signal changes take precedence and are synchronized into the edit buffer on
 /// the next edit. Placeholder bindings never become the editable value.
+/// Single-line inputs accept native horizontal wheel deltas and `Shift` plus a
+/// vertical wheel delta. Multiline inputs expose an interactive overlay thumb
+/// that supports track paging and captured dragging without moving the caret or
+/// invoking the change callback.
 ///
 /// # Panics
 ///
@@ -468,6 +473,8 @@ pub struct TextInputWidget<A = ()> {
     edit: Signal<TextEditState>,
     /// Requests a post-layout multi-line caret reveal when no artifact existed.
     pending_reveal: Signal<bool>,
+    /// Retained hover and captured multiline scrollbar gesture.
+    scrollbar_interaction: Signal<ScrollbarInteraction>,
     /// Optional reactive placeholder.
     placeholder: Option<Binding<String>>,
     /// Paint, spacing, and text metrics.
@@ -514,7 +521,7 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
             )
         };
 
-        LayoutResult {
+        let mut result = LayoutResult {
             size,
             children: Vec::new(),
             paint_bounds: Rect::new(0.0, 0.0, size.w, size.h),
@@ -523,7 +530,30 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
             clip: None,
             is_window_root_clip: false,
             artifact: text_layout.map(LayoutArtifact::Text),
+        };
+        let geometries = if self.mode == TextInputMode::MultiLine {
+            multi_line_scrollbar_geometry(
+                Rect::new(0.0, 0.0, size.w, size.h),
+                &result,
+                &self.value,
+                &self.buffer,
+                &self.edit,
+                self.style,
+            )
+            .into_iter()
+            .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let mut interaction = self.scrollbar_interaction.read();
+        if interaction.reconcile(&geometries) {
+            self.scrollbar_interaction.set(interaction);
         }
+        result.overlay_hit_bounds = geometries
+            .iter()
+            .map(|geometry| geometry.hit_track)
+            .collect();
+        result
     }
 
     fn layout_committed(&self, _ctx: &mut LayoutCtx<'_>, bounds: Rect, layout: &LayoutResult) {
@@ -563,6 +593,21 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
             ),
         }));
         if self.mode == TextInputMode::MultiLine {
+            let geometry = multi_line_scrollbar_geometry(
+                bounds,
+                layout,
+                &self.value,
+                &self.buffer,
+                &self.edit,
+                style,
+            );
+            let visual = geometry
+                .map(|geometry| {
+                    self.scrollbar_interaction
+                        .read()
+                        .visual_state(geometry.axis, ctx.is_hovered())
+                })
+                .unwrap_or(ScrollbarVisualState::Normal);
             paint_multi_line_text(
                 ctx,
                 bounds,
@@ -573,6 +618,7 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
                 self.placeholder.as_ref().map(|p| p.read()),
                 style,
                 focused,
+                thumb_color_for_state(style.border.with_alpha(0.62), visual),
             );
         } else {
             paint_single_line_text(
@@ -590,6 +636,38 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
+        if self.mode == TextInputMode::MultiLine && matches!(event, Event::Pointer(_)) {
+            let geometry = multi_line_scrollbar_geometry(
+                bounds,
+                layout,
+                &self.value,
+                &self.buffer,
+                &self.edit,
+                self.style,
+            );
+            let geometries = geometry.into_iter().collect::<Vec<_>>();
+            let edit_state = self.edit.read();
+            let current = Offset::new(edit_state.scroll_x, edit_state.scroll_y);
+            let mut interaction = self.scrollbar_interaction.read();
+            let response = interaction.handle_event(event, &geometries, current);
+            if response.state_changed {
+                self.scrollbar_interaction.set(interaction);
+            }
+            if let Some((axis, target)) = response.scroll_to {
+                if axis == ScrollbarAxis::Vertical && target != edit_state.scroll_y {
+                    let mut next = edit_state;
+                    next.scroll_y = target;
+                    self.edit.set(next);
+                }
+            }
+            if response.repaint {
+                ctx.request_repaint();
+            }
+            if response.consumed {
+                ctx.stop_propagation();
+                return;
+            }
+        }
         let before = self.value.read();
         if self.mode == TextInputMode::MultiLine {
             handle_multi_line_text_event(
@@ -685,6 +763,8 @@ impl<A: 'static> ComponentNode<A> for TextInputComponent<A> {
         let edit = context.signal(TextEditState::new());
         let buffer = context.signal(TextBuffer::from_string(self.value.read()));
         let pending_reveal = context.signal(false);
+        let scrollbar_interaction =
+            context.signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint);
 
         View::leaf(TextInputWidget {
             layout: self.layout,
@@ -692,6 +772,7 @@ impl<A: 'static> ComponentNode<A> for TextInputComponent<A> {
             buffer,
             edit,
             pending_reveal,
+            scrollbar_interaction,
             placeholder: self.placeholder.clone(),
             style: self.style,
             mode: self.mode,
@@ -745,6 +826,7 @@ mod tests {
             buffer: signal(TextBuffer::from_string(value.to_string())),
             edit: signal(TextEditState::new()),
             pending_reveal: signal(false),
+            scrollbar_interaction: signal(ScrollbarInteraction::default()),
             placeholder: None,
             style: TextInputStyle {
                 text: TextStyle::new(FontId::Mono, 14, Color::new(1.0, 1.0, 1.0, 1.0)),

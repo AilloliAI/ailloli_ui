@@ -10,20 +10,26 @@ use ailloli_ui_core::event::{Event, ImeEvent};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::scroll::ScrollBehavior;
 use ailloli_ui_core::style::LayoutStyle;
-use ailloli_ui_core::Offset;
+use ailloli_ui_core::{Offset, ScrollbarAxis};
 use ailloli_ui_editor::{
-    resolve_document_language, CodeEditorConfig, CodeEditorSession, CodeFileSummary, Diagnostic,
-    Document, EditorClickZone, EditorEngine, EditorHitZone, EditorLanguage, FoldRegion,
-    SearchQuery,
+    code_scrollbar_geometries, resolve_document_language, CodeEditorConfig, CodeEditorSession,
+    CodeFileSummary, Diagnostic, Document, EditorClickZone, EditorEngine, EditorHitZone,
+    EditorLanguage, EditorPaintItem, EditorViewport, FoldRegion, SearchQuery,
 };
 use ailloli_ui_runtime::component::{ComponentNode, Context, Signal, View, Widget};
 use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, InputRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
+use ailloli_ui_runtime::Invalidation;
 use ailloli_ui_text::{TextEditAction, TextInputMode, TextKeymap, TextSelection};
 
 use super::adapter::paint_editor_frame;
 use super::code_builder::DocumentChangeHandler;
+use super::widget::{
+    apply_caret_scroll_intent, caret_reveal_frame_is_usable, caret_scroll_intent_for_action,
+    pointer_selection_scroll_delta, CaretScrollIntent,
+};
+use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
 
 /// Builder snapshot that creates initial code-editor session and engine state.
 ///
@@ -62,6 +68,8 @@ pub(crate) struct CodeEditorComponent<A> {
     pub(crate) symbol_summary: Option<CodeFileSummary>,
     /// Optional initial UTF-8 byte anchor/caret pair, clamped to document length.
     pub(crate) initial_selection: Option<(usize, usize)>,
+    /// Visible-line safety margin maintained below the revealed caret.
+    pub(crate) caret_follow_margin_lines: f32,
     /// Optional callback invoked after edits synchronize the document.
     pub(crate) on_document_change: Option<DocumentChangeHandler<A>>,
 }
@@ -99,6 +107,13 @@ impl<A: 'static> ComponentNode<A> for CodeEditorComponent<A> {
             apply_fold_regions_prop(&mut initial_session, self.fold_regions.clone());
         }
         let session = context.signal(initial_session);
+        let caret_scroll_intent = context.signal_with_invalidation(
+            (self.initial_selection.is_some() && self.initial_scroll.is_none())
+                .then_some(CaretScrollIntent::RevealNavigation),
+            Invalidation::Paint,
+        );
+        let scrollbar_interaction =
+            context.signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint);
         View::leaf(CodeEditorWidget {
             layout: self.layout,
             document: self.document.clone(),
@@ -114,6 +129,9 @@ impl<A: 'static> ComponentNode<A> for CodeEditorComponent<A> {
             fold_regions: self.fold_regions.clone(),
             symbol_summary: self.symbol_summary.clone(),
             on_document_change: self.on_document_change.clone(),
+            caret_follow_margin_lines: self.caret_follow_margin_lines,
+            caret_scroll_intent,
+            scrollbar_interaction,
         })
     }
 }
@@ -159,6 +177,12 @@ pub(crate) struct CodeEditorWidget<A> {
     symbol_summary: Option<CodeFileSummary>,
     /// Optional callback invoked after a document-changing edit.
     on_document_change: Option<DocumentChangeHandler<A>>,
+    /// Visible-line safety margin maintained below the revealed caret.
+    caret_follow_margin_lines: f32,
+    /// Explicit reason, if any, for moving the viewport during the next layout.
+    caret_scroll_intent: Signal<Option<CaretScrollIntent>>,
+    /// Retained hover and captured scrollbar gesture.
+    scrollbar_interaction: Signal<ScrollbarInteraction>,
 }
 
 /// Implements editor layout, paint, keyboard/IME, wheel, selection, and fold input.
@@ -170,20 +194,62 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
-        _ctx: &mut LayoutCtx<'_>,
+        ctx: &mut LayoutCtx<'_>,
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
         let intrinsic = Size::new(constraints.max_w.clamp(0.0, 420.0), 220.0);
         let size = apply_layout_size(intrinsic, self.layout, constraints);
-        self.sync_session_from_props();
+        let bounds = Rect::new(0.0, 0.0, size.w, size.h);
+        let mut session = self.sync_session_from_props();
+        let mut geometries = Vec::new();
+        if let Some(text_system) = ctx.text_system.as_deref_mut() {
+            let mut frame =
+                self.engine
+                    .borrow_mut()
+                    .code_frame(&session, bounds, true, text_system);
+            if let Some(intent) = self.caret_scroll_intent.read() {
+                if caret_reveal_frame_is_usable(&session.editor, &frame) {
+                    for _ in 0..2 {
+                        if !apply_caret_scroll_intent(
+                            &mut session.editor,
+                            &frame,
+                            intent,
+                            self.caret_follow_margin_lines,
+                        ) {
+                            break;
+                        }
+                        self.session.set(session.clone());
+                        frame = self.engine.borrow_mut().code_frame(
+                            &session,
+                            bounds,
+                            true,
+                            text_system,
+                        );
+                    }
+                    self.caret_scroll_intent.set(None);
+                }
+            }
+            geometries = code_scrollbar_geometries(
+                frame.viewport,
+                frame.content_size,
+                self.config.scrollbars,
+            );
+        }
+        let mut interaction = self.scrollbar_interaction.read();
+        if interaction.reconcile(&geometries) {
+            self.scrollbar_interaction.set(interaction);
+        }
 
         LayoutResult {
             size,
             children: Vec::new(),
             paint_bounds: Rect::new(0.0, 0.0, size.w, size.h),
             visual_bounds: Rect::new(0.0, 0.0, size.w, size.h),
-            overlay_hit_bounds: Vec::new(),
+            overlay_hit_bounds: geometries
+                .iter()
+                .map(|geometry| geometry.hit_track)
+                .collect(),
             clip: None,
             is_window_root_clip: false,
             artifact: None,
@@ -197,17 +263,77 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
             return;
         };
         let session = self.sync_session_from_props();
-        let frame = self.engine.borrow_mut().code_frame_at(
+        let mut frame = self.engine.borrow_mut().code_frame_at(
             &session,
             bounds,
             focused,
             frame_time_ms,
             text_system,
         );
+        let geometries =
+            code_scrollbar_geometries(frame.viewport, frame.content_size, self.config.scrollbars);
+        let interaction = self.scrollbar_interaction.read();
+        for geometry in geometries {
+            let visual = interaction.visual_state(geometry.axis, ctx.is_hovered());
+            for item in &mut frame.paint_items {
+                if let EditorPaintItem::Scrollbar {
+                    track_rect,
+                    thumb_color,
+                    ..
+                } = item
+                {
+                    if *track_rect == geometry.track {
+                        *thumb_color = thumb_color_for_state(*thumb_color, visual);
+                    }
+                }
+            }
+        }
         paint_editor_frame(ctx, &frame);
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
+        if matches!(event, Event::Pointer(_)) {
+            let mut session = self.sync_session_from_props();
+            let metrics = self
+                .engine
+                .borrow()
+                .code_scroll_metrics_cached(&session, bounds);
+            let viewport = EditorViewport::with_gutter(
+                bounds,
+                session.editor.config,
+                &session.editor.edit,
+                Some(session.config.gutter),
+            );
+            let geometries =
+                code_scrollbar_geometries(viewport, metrics.content, session.config.scrollbars);
+            let current = Offset::new(session.editor.edit.scroll_x, session.editor.edit.scroll_y);
+            let mut interaction = self.scrollbar_interaction.read();
+            let response = interaction.handle_event(event, &geometries, current);
+            if response.state_changed {
+                self.scrollbar_interaction.set(interaction);
+            }
+            if let Some((axis, target)) = response.scroll_to {
+                let delta = match axis {
+                    ScrollbarAxis::Horizontal => {
+                        Offset::new(target - session.editor.edit.scroll_x, 0.0)
+                    }
+                    ScrollbarAxis::Vertical => {
+                        Offset::new(0.0, target - session.editor.edit.scroll_y)
+                    }
+                };
+                if session.editor.scroll_by(delta, metrics) {
+                    self.session.set(session);
+                }
+            }
+            if response.repaint {
+                ctx.request_repaint();
+            }
+            if response.consumed {
+                ctx.stop_propagation();
+                return;
+            }
+        }
+
         match event {
             Event::Keyboard(key) => {
                 if let Some(action) = TextKeymap::new(TextInputMode::MultiLine).action_for_key(key)
@@ -229,7 +355,9 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
             Event::Ime(ImeEvent::End | ImeEvent::Disabled) => {
                 self.apply_edit_action(ctx, TextEditAction::ImeEnd);
             }
-            Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+            Event::Pointer(PointerEvent::Wheel {
+                delta, modifiers, ..
+            }) => {
                 let style = self.config.editor.style;
                 let mut session = self.sync_session_from_props();
                 let axes = ailloli_ui_editor::input::scroll::axes_for_wrap_mode(
@@ -243,7 +371,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                     .code_scroll_metrics_cached(&session, bounds);
                 let scroll_delta = match delta {
                     WheelDelta::LineDelta { .. } | WheelDelta::PixelDelta { .. } => {
-                        behavior.wheel_delta(*delta)
+                        behavior.wheel_delta_with_modifiers(*delta, *modifiers)
                     }
                 };
                 if session
@@ -260,9 +388,12 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                 button: MouseButton::Left,
                 pressed,
                 modifiers,
-            }) if bounds.contains(pos.x, pos.y) => {
+            }) => {
                 let mut session = self.sync_session_from_props();
                 if *pressed {
+                    if !bounds.contains(pos.x, pos.y) {
+                        return;
+                    }
                     if let Some(region_index) = self
                         .engine
                         .borrow()
@@ -270,17 +401,17 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                     {
                         if session.toggle_fold_region(region_index) {
                             self.session.set(session);
-                            ctx.request_repaint();
+                            self.caret_scroll_intent
+                                .set(Some(CaretScrollIntent::RevealNavigation));
+                            ctx.request_layout();
                             ctx.stop_propagation();
                             return;
                         }
                     }
-                }
-                let hit = self
-                    .engine
-                    .borrow()
-                    .hit_test_zone_cached(&session.editor, bounds, *pos);
-                if *pressed {
+                    let hit =
+                        self.engine
+                            .borrow()
+                            .hit_test_zone_cached(&session.editor, bounds, *pos);
                     match hit.zone {
                         EditorHitZone::Text => {
                             let click_count = if let Some(meta) = ctx.event_meta() {
@@ -338,23 +469,48 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                         }
                         EditorHitZone::Outside => {}
                     }
-                } else {
+                    self.session.set(session);
+                    ctx.request_repaint();
+                    ctx.stop_propagation();
+                } else if session.editor.edit.drag_anchor.is_some() {
                     session.editor.end_pointer_selection();
+                    self.session.set(session);
+                    ctx.request_repaint();
+                    ctx.stop_propagation();
                 }
-                self.session.set(session);
-                ctx.request_repaint();
             }
             Event::Pointer(PointerEvent::Moved { pos, .. }) => {
                 let mut session = self.sync_session_from_props();
                 if let Some(anchor) = session.editor.edit.drag_anchor {
+                    let viewport = EditorViewport::with_gutter(
+                        bounds,
+                        session.editor.config,
+                        &session.editor.edit,
+                        Some(session.config.gutter),
+                    );
                     let byte = self
                         .engine
                         .borrow()
                         .hit_test_cached(&session.editor, bounds, *pos)
                         .byte;
                     session.editor.update_pointer_selection(anchor, byte);
+                    let axes = ailloli_ui_editor::input::scroll::axes_for_wrap_mode(
+                        session.editor.config.wrap_mode,
+                    );
+                    let delta = pointer_selection_scroll_delta(
+                        *pos,
+                        viewport.text_rect,
+                        axes,
+                        session.editor.config.style.line_height,
+                    );
+                    let metrics = self
+                        .engine
+                        .borrow()
+                        .code_scroll_metrics_cached(&session, bounds);
+                    session.editor.scroll_by(delta, metrics);
                     self.session.set(session);
                     ctx.request_repaint();
+                    ctx.stop_propagation();
                 }
             }
             Event::Pointer(PointerEvent::Cancelled { .. }) => {
@@ -399,6 +555,7 @@ impl<A: 'static> CodeEditorWidget<A> {
         let mut session = self.session.read();
         let document = document_with_language(self.document.read(), self.language);
         let mut changed = false;
+        let mut reveal_navigation = false;
         if self.config.features.symbols {
             let _ = self
                 .symbol_summary
@@ -408,7 +565,9 @@ impl<A: 'static> CodeEditorWidget<A> {
 
         if session.config != self.config {
             session.config = self.config;
-            changed |= session.editor.set_config(self.config.editor);
+            let editor_changed = session.editor.set_config(self.config.editor);
+            changed |= editor_changed;
+            reveal_navigation |= editor_changed;
         }
         if session.replace_document_if_changed(document) {
             changed = true;
@@ -418,6 +577,7 @@ impl<A: 'static> CodeEditorWidget<A> {
             }
             session.refresh_syntax_tokens();
             apply_fold_regions_prop(&mut session, self.fold_regions.clone());
+            reveal_navigation = self.initial_scroll.is_none();
         }
         let before_search = session.search.clone();
         if session.config.features.search {
@@ -453,6 +613,10 @@ impl<A: 'static> CodeEditorWidget<A> {
 
         if changed {
             self.session.set(session.clone());
+            if reveal_navigation {
+                self.caret_scroll_intent
+                    .set(Some(CaretScrollIntent::RevealNavigation));
+            }
         }
         session
     }
@@ -466,6 +630,7 @@ impl<A: 'static> CodeEditorWidget<A> {
                 action = TextEditAction::Paste { text };
             }
         }
+        let intent = caret_scroll_intent_for_action(&action);
         let outcome = session.editor.apply_edit_action(action);
         if let Some(text) = outcome.clipboard_write {
             let _ = ctx.write_clipboard_text(&text);
@@ -482,7 +647,12 @@ impl<A: 'static> CodeEditorWidget<A> {
         }
         if outcome.state_changed || outcome.text_changed {
             self.session.set(session);
-            ctx.request_repaint();
+            if let Some(intent) = intent {
+                self.caret_scroll_intent.set(Some(intent));
+                ctx.request_layout();
+            } else {
+                ctx.request_repaint();
+            }
         }
     }
 }

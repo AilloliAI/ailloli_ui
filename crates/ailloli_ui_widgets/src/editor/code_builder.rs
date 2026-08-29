@@ -12,6 +12,7 @@ use std::rc::Rc;
 use crate::layout::layout_ext::finish_view_sized;
 
 use super::code_widget::CodeEditorComponent;
+use super::widget::sanitize_caret_follow_margin_lines;
 
 /// Shared retained callback invoked after a text edit updates the document.
 ///
@@ -33,7 +34,14 @@ pub(crate) type DocumentChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Document)
 /// Edits synchronize the document version/dirty flag, update the supplied
 /// signal, refresh syntax/search/folds, and then invoke the optional change
 /// handler. Defaults come from [`CodeEditorConfig`]; optional prop vectors
-/// replace their corresponding session models when enabled.
+/// replace their corresponding session models when enabled. The default wrap
+/// mode is no-wrap, so long lines scroll horizontally. Overflowing axes paint
+/// interactive overlay scrollbars whose thumbs can be dragged and whose tracks
+/// page by one viewport; those interactions never move the caret. Editing
+/// and keyboard navigation follow the caret on both axes and preserve three
+/// visible lines below it by default. A caret already in the safe region never
+/// moves the viewport. Clicks never move the viewport, and pointer selection
+/// auto-scrolls only outside the text viewport.
 ///
 /// # Examples
 ///
@@ -72,6 +80,8 @@ pub struct CodeEditor<A = ()> {
     pub(crate) symbol_summary: Option<CodeFileSummary>,
     /// Optional initial UTF-8 byte anchor/caret pair.
     pub(crate) initial_selection: Option<(usize, usize)>,
+    /// Visible-line safety margin maintained below the revealed caret.
+    pub(crate) caret_follow_margin_lines: f32,
     /// Optional callback invoked after document-changing edits.
     pub(crate) on_document_change: Option<DocumentChangeHandler<A>>,
 }
@@ -106,6 +116,7 @@ impl<A: 'static> CodeEditor<A> {
             fold_regions: None,
             symbol_summary: None,
             initial_selection: None,
+            caret_follow_margin_lines: 3.0,
             on_document_change: None,
         }
     }
@@ -413,6 +424,33 @@ impl<A: 'static> CodeEditor<A> {
         self
     }
 
+    /// Sets the visible-line safety margin kept below the revealed caret.
+    ///
+    /// The default is three lines. The margin applies to edits, paste, undo,
+    /// redo, IME changes, and keyboard navigation. Reveal always adds only the
+    /// distance by which the caret crosses the safe boundary; pointer clicks
+    /// never request caret following. Negative values become zero and
+    /// non-finite values restore the default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_editor::{Document, DocumentId};
+    /// use ailloli_ui_runtime::component::State;
+    /// use ailloli_ui_text::TextBuffer;
+    /// use ailloli_ui_widgets::editor::CodeEditor;
+    /// let editor: CodeEditor<()> = CodeEditor::new(State::new(Document::new(
+    ///     DocumentId(1),
+    ///     TextBuffer::new(),
+    /// )))
+    /// .caret_follow_margin_lines(5.0);
+    /// let _ = editor;
+    /// ```
+    pub fn caret_follow_margin_lines(mut self, lines: f32) -> Self {
+        self.caret_follow_margin_lines = sanitize_caret_follow_margin_lines(lines);
+        self
+    }
+
     /// Maps each edited document into an application action.
     ///
     /// The handler runs only after a text-changing edit has synchronized the
@@ -472,6 +510,7 @@ impl<A: 'static> IntoView<A> for CodeEditor<A> {
                 fold_regions: self.fold_regions,
                 symbol_summary: self.symbol_summary,
                 initial_selection: self.initial_selection,
+                caret_follow_margin_lines: self.caret_follow_margin_lines,
                 on_document_change: self.on_document_change,
             }),
             self.flex_item,

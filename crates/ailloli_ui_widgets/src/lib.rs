@@ -31,5 +31,6 @@ pub mod layout;
 pub mod overlay;
 /// Low-level draw helpers (icon, rect, spacer).
 pub mod primitives;
+mod scrollbar;
 /// Static and rich text widgets.
 pub mod text;

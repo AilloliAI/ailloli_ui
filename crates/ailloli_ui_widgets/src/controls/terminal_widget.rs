@@ -8,14 +8,17 @@ use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, NamedKey};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
-use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
+use ailloli_ui_core::scroll::{
+    ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState, ScrollbarAxis, ScrollbarGeometry,
+    ScrollbarGeometrySpec,
+};
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
 use ailloli_ui_core::{ClipShape, Color, FontId, Offset, TextStyle, Theme};
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, View, Widget};
 use ailloli_ui_runtime::input::{EventCtx, FocusPolicy, InputRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
-use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawRect, DrawText};
+use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawRect, DrawText, Invalidation};
 use ailloli_ui_terminal_core::{
     terminal_visual_line_global_indices, ActiveScreen, CellWidth, TerminalColor,
     TerminalCursorShape, TerminalDiagnostic, TerminalDiagnosticSeverity,
@@ -27,6 +30,7 @@ use ailloli_ui_text::{
 };
 
 use super::terminal::{TerminalPosition, TerminalSelection};
+use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
 
 /// Shared callback receiving bytes encoded for the terminal peer.
 type InputHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Vec<u8>)>;
@@ -357,7 +361,10 @@ impl TerminalWidgetStyle {
 /// Without an input callback the widget is read-only and unhandled navigation
 /// keys scroll it. With a callback, keyboard, paste, and enabled terminal mouse
 /// tracking produce protocol bytes. Ctrl+Shift+C/V are reserved for clipboard;
-/// Shift+Page/Home/End always scrolls locally.
+/// Shift+Page/Home/End always scrolls locally. Scrollbar track and thumb
+/// interactions are handled locally before terminal mouse reporting and never
+/// emit protocol bytes. With mouse tracking enabled, an unmodified wheel remains
+/// terminal input, while `Shift` keeps its existing local-history bypass.
 ///
 /// # Examples
 ///
@@ -579,7 +586,7 @@ impl<A: 'static> Terminal<A> {
         self
     }
 
-    /// Shows/reserves or hides/releases the vertical scrollbar.
+    /// Shows/reserves or hides/releases the interactive vertical scrollbar.
     ///
     /// Scrolling remains available when hidden. The default is `true`.
     ///
@@ -756,6 +763,8 @@ impl<A: 'static> ComponentNode<A> for TerminalComponent<A> {
             mouse_button: context.signal(None),
             last_click: context.signal(None),
             click_count: context.signal(0),
+            scrollbar_interaction: context
+                .signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint),
             style: self.style.clone(),
             behavior: ScrollBehavior::new(ScrollAxes::VERTICAL)
                 .with_line_px(self.style.line_height),
@@ -821,6 +830,8 @@ struct TerminalWidget<A> {
     last_click: Signal<Option<TerminalPosition>>,
     /// Saturating consecutive click count at the same cell.
     click_count: Signal<u8>,
+    /// Retained hover and captured scrollbar gesture.
+    scrollbar_interaction: Signal<ScrollbarInteraction>,
     /// Font, color, padding, cursor, selection, and scrollbar styling.
     style: TerminalWidgetStyle,
     /// Wheel scaling and vertical axis-filtering policy.
@@ -858,12 +869,23 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
         self.update_viewport_for_lines(Size::new(size.w, size.h), line_count);
 
         let viewport = Rect::new(0.0, 0.0, size.w, size.h);
+        let geometries = self
+            .scrollbar_geometry(viewport, self.committed_metrics(), line_count)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut interaction = self.scrollbar_interaction.read();
+        if interaction.reconcile(&geometries) {
+            self.scrollbar_interaction.set(interaction);
+        }
         LayoutResult {
             size,
             children: Vec::new(),
             paint_bounds: viewport,
             visual_bounds: viewport,
-            overlay_hit_bounds: Vec::new(),
+            overlay_hit_bounds: geometries
+                .iter()
+                .map(|geometry| geometry.hit_track)
+                .collect(),
             clip: Some(ClipShape::Rect(viewport)),
             is_window_root_clip: false,
             artifact: None,
@@ -933,16 +955,12 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
             );
         });
 
-        if self.scrollbars {
-            paint_terminal_scrollbar(
-                ctx,
-                bounds,
-                content,
-                &self.style,
-                geometry.metrics,
-                scroll,
-                lines.len(),
-            );
+        if let Some(scrollbar) = self.scrollbar_geometry(bounds, geometry.metrics, lines.len()) {
+            let visual = self
+                .scrollbar_interaction
+                .read()
+                .visual_state(scrollbar.axis, ctx.is_hovered());
+            paint_terminal_scrollbar(ctx, scrollbar, &self.style, visual);
         }
     }
 
@@ -958,6 +976,41 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
             metrics,
             line_count,
         );
+
+        if matches!(event, Event::Pointer(_)) {
+            let geometries = self
+                .scrollbar_geometry(bounds, metrics, line_count)
+                .into_iter()
+                .collect::<Vec<_>>();
+            let current = self.scroll.read();
+            let mut interaction = self.scrollbar_interaction.read();
+            let response = interaction.handle_event(event, &geometries, current.offset);
+            if response.state_changed {
+                self.scrollbar_interaction.set(interaction);
+            }
+            if let Some((ScrollbarAxis::Vertical, target)) = response.scroll_to {
+                let content = self.content_rect(bounds);
+                let scroll_metrics =
+                    self.scroll_metrics_with_cell_metrics(content, metrics, line_count);
+                let outcome = current.scroll_to(
+                    Offset::new(0.0, target),
+                    scroll_metrics,
+                    ScrollAxes::VERTICAL,
+                );
+                if outcome.changed {
+                    let next = outcome.state();
+                    self.scroll.set(next);
+                    self.sync_follow_from_scroll(next, scroll_metrics);
+                }
+            }
+            if response.repaint {
+                ctx.request_repaint();
+            }
+            if response.consumed {
+                ctx.stop_propagation();
+                return;
+            }
+        }
 
         match event {
             Event::Pointer(PointerEvent::Wheel {
@@ -977,7 +1030,7 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
                 let content = self.content_rect(bounds);
                 let metrics = self.scroll_metrics(content, line_count);
                 let out = self.scroll.read().scroll_by(
-                    self.behavior.wheel_delta(*delta),
+                    self.behavior.wheel_delta_with_modifiers(*delta, *modifiers),
                     metrics,
                     ScrollAxes::VERTICAL,
                 );
@@ -1216,6 +1269,28 @@ impl<A: 'static> TerminalWidget<A> {
     /// Builds vertical scroll metrics using the committed cell height.
     fn scroll_metrics(&self, content: Rect, line_count: usize) -> ScrollMetrics {
         self.scroll_metrics_with_cell_metrics(content, self.committed_metrics(), line_count)
+    }
+
+    /// Resolves the styled vertical bar through the shared Core geometry.
+    fn scrollbar_geometry(
+        &self,
+        bounds: Rect,
+        cell_metrics: TerminalCellMetrics,
+        line_count: usize,
+    ) -> Option<ScrollbarGeometry> {
+        if !self.scrollbars {
+            return None;
+        }
+        let content = self.content_rect(bounds);
+        ScrollbarGeometrySpec::new(
+            ScrollbarAxis::Vertical,
+            bounds,
+            self.scroll_metrics_with_cell_metrics(content, cell_metrics, line_count),
+            self.scroll.read(),
+        )
+        .with_paint_metrics(self.style.scrollbar_width, 24.0, self.style.scrollbar_inset)
+        .with_hit_thickness(16.0)
+        .resolve()
     }
 
     /// Synchronizes follow/clamp behavior using committed cell metrics.
@@ -2153,46 +2228,19 @@ fn selection_columns_for_line(
 /// Paints a proportional vertical scrollbar with a 24-pixel minimum thumb.
 fn paint_terminal_scrollbar(
     ctx: &mut PaintCtx<'_>,
-    bounds: Rect,
-    content: Rect,
+    geometry: ScrollbarGeometry,
     style: &TerminalWidgetStyle,
-    cell_metrics: TerminalCellMetrics,
-    scroll: ScrollState,
-    line_count: usize,
+    visual: crate::scrollbar::ScrollbarVisualState,
 ) {
-    let metrics = ScrollMetrics::new(
-        Size::new(content.w, content.h),
-        Size::new(content.w, line_count as f32 * cell_metrics.cell_height),
-    );
-    let max_y = metrics.max_offset().y;
-    if max_y <= 0.5 || metrics.content.h <= 0.0 {
-        return;
-    }
-    let track_h = (bounds.h - style.scrollbar_inset * 2.0).max(0.0);
-    if track_h <= style.scrollbar_width {
-        return;
-    }
-    let track = Rect::new(
-        bounds.right() - style.scrollbar_inset - style.scrollbar_width,
-        bounds.y + style.scrollbar_inset,
-        style.scrollbar_width,
-        track_h,
-    );
-    let ratio = (metrics.viewport.h / metrics.content.h).clamp(0.0, 1.0);
-    let thumb_h = (track.h * ratio).max(24.0_f32.min(track.h)).min(track.h);
-    let travel = (track.h - thumb_h).max(0.0);
-    let progress = (scroll.offset.y / max_y).clamp(0.0, 1.0);
-    let thumb = Rect::new(track.x, track.y + travel * progress, track.w, thumb_h);
-
     ctx.push(DrawCmd::RRect(DrawRRect {
-        rect: track,
+        rect: geometry.track,
         radius: style.scrollbar_width * 0.5,
         color: style.scrollbar_track,
     }));
     ctx.push(DrawCmd::RRect(DrawRRect {
-        rect: thumb,
+        rect: geometry.thumb,
         radius: style.scrollbar_width * 0.5,
-        color: style.scrollbar_thumb,
+        color: thumb_color_for_state(style.scrollbar_thumb, visual),
     }));
 }
 
@@ -2409,6 +2457,7 @@ mod tests {
     use ailloli_ui_core::math::Scale;
     use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
     use ailloli_ui_runtime::component::{IntoView, State, View, ViewKind};
+    use ailloli_ui_runtime::input::InputRouter;
     use ailloli_ui_text::TextSystem;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -2579,6 +2628,113 @@ mod tests {
             None,
         );
         assert_eq!(wheel, Some(b"\x1b[<64;2;2M".to_vec()));
+    }
+
+    #[test]
+    fn terminal_scrollbar_drag_precedes_mouse_protocol_reporting() {
+        let mut terminal_state =
+            TerminalState::with_config(ailloli_ui_terminal_core::TerminalConfig {
+                size: TerminalSize::new(3, 20),
+                scrollback_limit: 32,
+                security: ailloli_ui_terminal_core::TerminalSecurityPolicy::default(),
+            });
+        for line in 0..16 {
+            terminal_state.write_str(&format!("line {line:02}\r\n"));
+        }
+        terminal_state.modes.mouse_tracking = TerminalMouseTrackingMode::Normal;
+        terminal_state.modes.sgr_mouse = true;
+        let state = State::new(terminal_state);
+        let emitted = Rc::new(RefCell::new(Vec::<Vec<u8>>::new()));
+        let emitted_for_input = emitted.clone();
+        let style = TerminalWidgetStyle::default();
+        let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+        let mut app = Runtime::new(runtime.clone());
+        app.reconcile(
+            Terminal::new(state)
+                .terminal_style(style.clone())
+                .auto_resize(false)
+                .width(200.0)
+                .height(80.0)
+                .on_input_ctx(move |_ctx, bytes| emitted_for_input.borrow_mut().push(bytes))
+                .into_view(),
+        );
+        let mut text_system = TextSystem::new();
+        app.layout(
+            Constraints::tight(200.0, 80.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        let scene = app.paint(&mut text_system);
+        let thumb = scene
+            .layers
+            .iter()
+            .flat_map(|layer| layer.cmds.iter())
+            .find_map(|cmd| match cmd {
+                DrawCmd::RRect(rrect)
+                    if rrect.color == style.scrollbar_thumb && rrect.rect.h > rrect.rect.w =>
+                {
+                    Some(*rrect)
+                }
+                _ => None,
+            })
+            .expect("terminal scrollbar thumb");
+        let press = ailloli_ui_core::Point::new(
+            thumb.rect.x + thumb.rect.w * 0.5,
+            thumb.rect.y + thumb.rect.h * 0.5,
+        );
+        let initial_thumb_y = thumb.rect.y;
+        let mut router = InputRouter::default();
+        router.route_event(
+            &app.tree,
+            runtime.clone(),
+            &Event::Pointer(PointerEvent::Button {
+                pos: press,
+                button: MouseButton::Left,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }),
+        );
+        router.route_event(
+            &app.tree,
+            runtime.clone(),
+            &Event::Pointer(PointerEvent::Moved {
+                pos: ailloli_ui_core::Point::new(press.x, 0.0),
+                modifiers: Modifiers::default(),
+            }),
+        );
+        router.route_event(
+            &app.tree,
+            runtime,
+            &Event::Pointer(PointerEvent::Button {
+                pos: ailloli_ui_core::Point::new(press.x, 0.0),
+                button: MouseButton::Left,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }),
+        );
+
+        assert!(
+            emitted.borrow().is_empty(),
+            "local scrollbar gestures must not emit terminal protocol bytes"
+        );
+        let after = app.paint(&mut text_system);
+        let after_thumb_y = after
+            .layers
+            .iter()
+            .flat_map(|layer| layer.cmds.iter())
+            .find_map(|cmd| match cmd {
+                DrawCmd::RRect(rrect)
+                    if rrect.color == style.scrollbar_thumb && rrect.rect.h > rrect.rect.w =>
+                {
+                    Some(rrect.rect.y)
+                }
+                _ => None,
+            })
+            .expect("terminal scrollbar thumb after drag");
+        assert!(
+            after_thumb_y < initial_thumb_y,
+            "dragging upward must move the retained scrollback thumb"
+        );
     }
 
     #[test]

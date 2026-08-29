@@ -6,7 +6,10 @@
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, ImeEvent, ImePreedit};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
-use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
+use ailloli_ui_core::scroll::{
+    ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState, ScrollbarAxis, ScrollbarGeometry,
+    ScrollbarGeometrySpec,
+};
 use ailloli_ui_core::style::LayoutStyle;
 use ailloli_ui_core::{Offset, TextStyle};
 use ailloli_ui_runtime::component::Signal;
@@ -370,8 +373,9 @@ pub(crate) fn layout_multi_line_text(
 /// Paints clipped wrapped text, per-line selection, caret, and scrollbar.
 ///
 /// Both scroll axes offset the text. A vertical scrollbar is emitted only when
-/// content exceeds the viewport by more than one logical pixel; its thumb ratio
-/// is clamped to `0.08..=1.0` and its height has an 18-pixel floor.
+/// content exceeds the viewport by more than half a logical pixel. Its painted
+/// thumb remains two pixels wide with an 18-pixel minimum, while the shared
+/// pointer target expands to 16 logical pixels inside the content viewport.
 ///
 /// # Examples
 ///
@@ -393,6 +397,7 @@ pub(crate) fn paint_multi_line_text(
     placeholder: Option<String>,
     style: TextInputStyle,
     focused: bool,
+    scrollbar_thumb_color: ailloli_ui_core::Color,
 ) {
     let buffer = read_display_buffer(value, buffer);
     let value = buffer.as_str();
@@ -486,13 +491,19 @@ pub(crate) fn paint_multi_line_text(
             }
         }
 
-        paint_multi_line_scrollbar(
-            ctx,
+        if let Some(geometry) = multi_line_scrollbar_geometry_from_metrics(
             content_rect,
-            layout_handle.height(),
-            edit_state.scroll_y,
-            style,
-        );
+            ScrollMetrics::new(
+                Size::new(content_rect.w, content_rect.h),
+                Size::new(
+                    layout_handle.width().max(content_rect.w),
+                    layout_handle.height().max(content_rect.h),
+                ),
+            ),
+            edit_state,
+        ) {
+            paint_multi_line_scrollbar(ctx, geometry, scrollbar_thumb_color);
+        }
     });
 }
 
@@ -550,23 +561,55 @@ fn paint_multi_line_selection(
 /// Paints the two-pixel vertical scrollbar thumb when content overflows.
 fn paint_multi_line_scrollbar(
     ctx: &mut PaintCtx<'_>,
-    content_rect: Rect,
-    content_height: f32,
-    scroll_y: f32,
-    style: TextInputStyle,
+    geometry: ScrollbarGeometry,
+    thumb_color: ailloli_ui_core::Color,
 ) {
-    if content_height <= content_rect.h + 1.0 || content_rect.h <= 1.0 {
-        return;
-    }
-    let track_h = content_rect.h;
-    let ratio = (content_rect.h / content_height).clamp(0.08, 1.0);
-    let thumb_h = (track_h * ratio).max(18.0).min(track_h);
-    let max_scroll = (content_height - content_rect.h).max(1.0);
-    let y = content_rect.y + ((scroll_y / max_scroll).clamp(0.0, 1.0) * (track_h - thumb_h));
     ctx.push(DrawCmd::Rect(DrawRect {
-        rect: Rect::new(content_rect.right() - 3.0, y, 2.0, thumb_h),
-        color: style.border.with_alpha(0.62),
+        rect: geometry.thumb,
+        color: thumb_color,
     }));
+}
+
+/// Resolves the multiline text-input scrollbar from current retained state.
+pub(crate) fn multi_line_scrollbar_geometry(
+    bounds: Rect,
+    layout: &LayoutResult,
+    value: &Signal<String>,
+    buffer: &Signal<TextBuffer>,
+    edit: &Signal<TextEditState>,
+    style: TextInputStyle,
+) -> Option<ScrollbarGeometry> {
+    let buffer_value = read_display_buffer(value, buffer);
+    let value_text = buffer_value.as_str();
+    let edit_state = edit.read();
+    let (display, _) = display_text_for_edit(
+        &value_text,
+        edit_state.caret_byte.min(value_text.len()),
+        edit_state.preedit.as_ref(),
+    );
+    let metrics = multi_line_scroll_metrics(bounds, layout, &display, style);
+    multi_line_scrollbar_geometry_from_metrics(
+        text_input_content_rect(bounds, style),
+        metrics,
+        edit_state,
+    )
+}
+
+/// Applies the retained two-pixel paint style to shared Core geometry.
+fn multi_line_scrollbar_geometry_from_metrics(
+    content_rect: Rect,
+    metrics: ScrollMetrics,
+    edit: TextEditState,
+) -> Option<ScrollbarGeometry> {
+    ScrollbarGeometrySpec::new(
+        ScrollbarAxis::Vertical,
+        content_rect,
+        metrics,
+        ScrollState::with_offset(Offset::new(edit.scroll_x, edit.scroll_y)),
+    )
+    .with_paint_metrics(2.0, 18.0, 1.0)
+    .with_hit_thickness(16.0)
+    .resolve()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -648,7 +691,9 @@ pub(crate) fn handle_single_line_text_event<A>(
             );
             true
         }
-        Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+        Event::Pointer(PointerEvent::Wheel {
+            delta, modifiers, ..
+        }) => {
             let buffer_value = read_display_buffer(value, buffer);
             let value_text = buffer_value.as_str();
             let edit_state = edit.read();
@@ -661,7 +706,7 @@ pub(crate) fn handle_single_line_text_event<A>(
             let state = ScrollState::with_offset(Offset::new(edit_state.scroll_x, 0.0));
             let behavior = ScrollBehavior::new(ScrollAxes::HORIZONTAL);
             let outcome = state.scroll_by(
-                behavior.wheel_delta(*delta),
+                behavior.wheel_delta_with_modifiers(*delta, *modifiers),
                 metrics,
                 ScrollAxes::HORIZONTAL,
             );
@@ -819,7 +864,9 @@ pub(crate) fn handle_multi_line_text_event<A>(
             );
             true
         }
-        Event::Pointer(PointerEvent::Wheel { delta, .. }) => {
+        Event::Pointer(PointerEvent::Wheel {
+            delta, modifiers, ..
+        }) => {
             let buffer_value = read_display_buffer(value, buffer);
             let value_text = buffer_value.as_str();
             let edit_state = edit.read();
@@ -833,7 +880,11 @@ pub(crate) fn handle_multi_line_text_event<A>(
                 ScrollState::with_offset(Offset::new(edit_state.scroll_x, edit_state.scroll_y));
             let behavior = ScrollBehavior::new(ScrollAxes::BOTH)
                 .with_line_px((style.text.px_size as f32 * 1.4).max(1.0));
-            let outcome = state.scroll_by(behavior.wheel_delta(*delta), metrics, ScrollAxes::BOTH);
+            let outcome = state.scroll_by(
+                behavior.wheel_delta_with_modifiers(*delta, *modifiers),
+                metrics,
+                ScrollAxes::BOTH,
+            );
             if outcome.changed {
                 let mut next = edit_state;
                 next.scroll_x = outcome.after.x;

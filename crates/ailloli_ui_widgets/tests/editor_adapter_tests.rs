@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use ailloli_ui_core::event::{
-    Event, ImeEvent, ImePreedit, Key, KeyEvent, KeyState, Modifiers, MouseButton, PointerEvent,
-    WheelDelta,
+    Event, ImeEvent, ImePreedit, Key, KeyEvent, KeyState, Modifiers, MouseButton, NamedKey,
+    PointerEvent, WheelDelta,
 };
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
@@ -1433,6 +1433,521 @@ fn code_editor_scrollbar_thumb_moves_on_wheel_without_moving_gutter() {
 }
 
 #[test]
+fn code_editor_scrollbar_drag_uses_capture_without_editing_document() {
+    let source = (0..24)
+        .map(|index| format!("let value_{index} = some_really_long_function_name(value_{index});"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let document = State::new(Document::new(
+        DocumentId(62),
+        TextBuffer::from_string(source.clone()),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document.clone())
+            .width(210.0)
+            .height(100.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(210.0, 100.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+
+    let initial = app.paint(&mut text_system);
+    let horizontal_thumb = rrects_in_text_layer(&initial)
+        .into_iter()
+        .filter(|rrect| rrect.rect.w > rrect.rect.h && rrect.rect.h <= 8.0)
+        .min_by(|a, b| a.rect.w.total_cmp(&b.rect.w))
+        .expect("horizontal scrollbar thumb");
+    let initial_x = horizontal_thumb.rect.x;
+    let press = Point::new(
+        horizontal_thumb.rect.x + horizontal_thumb.rect.w * 0.5,
+        horizontal_thumb.rect.y + horizontal_thumb.rect.h * 0.5,
+    );
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Button {
+            pos: press,
+            button: MouseButton::Left,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(2_000.0, press.y),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Pointer(PointerEvent::Button {
+            pos: Point::new(2_000.0, press.y),
+            button: MouseButton::Left,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        }),
+    );
+
+    let dragged = app.paint(&mut text_system);
+    let dragged_x = rrects_in_text_layer(&dragged)
+        .into_iter()
+        .filter(|rrect| rrect.rect.w > rrect.rect.h && rrect.rect.h <= 8.0)
+        .min_by(|a, b| a.rect.w.total_cmp(&b.rect.w))
+        .expect("dragged horizontal scrollbar thumb")
+        .rect
+        .x;
+    assert!(
+        dragged_x > initial_x,
+        "initial={initial_x}, dragged={dragged_x}"
+    );
+    assert_eq!(document.read().buffer.as_str(), source);
+}
+
+#[test]
+fn code_editor_initial_caret_reveals_long_nowrap_line() {
+    let source =
+        "let generated_value = call_with_a_very_long_argument_name_and_another_argument();";
+    let document = State::new(Document::new(
+        DocumentId(63),
+        TextBuffer::from_string(source),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime);
+    app.reconcile(
+        CodeEditor::new(document)
+            .initial_selection(source.len(), source.len())
+            .width(190.0)
+            .height(90.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(190.0, 90.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+
+    let scene = app.paint(&mut text_system);
+    let source_x = first_text_x(&scene, source);
+    assert!(
+        source_x < 58.0,
+        "the no-wrap caret at line end must reveal by scrolling horizontally: x={source_x}"
+    );
+}
+
+#[test]
+fn code_editor_pointer_clicks_do_not_move_a_scrolled_viewport() {
+    let source = scrolling_editor_source();
+    let document = State::new(Document::new(
+        DocumentId(64),
+        TextBuffer::from_string(source),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document)
+            .initial_scroll(180.0, 180.0)
+            .width(260.0)
+            .height(130.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+
+    let before = code_editor_thumb_origins(&app.paint(&mut text_system));
+    let mut router = InputRouter::default();
+    let pos = Point::new(180.0, 100.0);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let after_single = code_editor_thumb_origins(&app.paint(&mut text_system));
+
+    click_left_at(&mut router, &app, runtime, pos, 300);
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let after_double = code_editor_thumb_origins(&app.paint(&mut text_system));
+
+    assert_eq!(after_single, before, "simple click moved the viewport");
+    assert_eq!(after_double, before, "double click moved the viewport");
+}
+
+#[test]
+fn code_editor_arrow_down_keeps_a_visible_caret_inside_the_safe_region() {
+    let source = numbered_editor_source(40);
+    let document = State::new(Document::new(
+        DocumentId(69),
+        TextBuffer::from_string(source),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document)
+            .width(260.0)
+            .height(326.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 326.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let mut router = InputRouter::default();
+    click_left_at(
+        &mut router,
+        &app,
+        runtime.clone(),
+        Point::new(100.0, 163.0),
+        100,
+    );
+    let initial_thumb = code_editor_vertical_thumb_y(&app.paint(&mut text_system));
+
+    // Lines 9 -> 10 -> 11 -> 12 -> 13 -> 14 remain above the three-line
+    // bottom safety margin and must not move the viewport at all.
+    for _ in 0..5 {
+        route_named_key(&mut router, &app, runtime.clone(), NamedKey::ArrowDown);
+        app.layout(
+            Constraints::tight(260.0, 326.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        assert_eq!(
+            code_editor_vertical_thumb_y(&app.paint(&mut text_system)),
+            initial_thumb,
+            "a visible ArrowDown caret moved the viewport"
+        );
+    }
+
+    route_named_key(&mut router, &app, runtime.clone(), NamedKey::ArrowDown);
+    app.layout(
+        Constraints::tight(260.0, 326.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let first_crossing_scene = app.paint(&mut text_system);
+    let first_crossing_thumb = code_editor_vertical_thumb_y(&first_crossing_scene);
+    assert!(first_crossing_thumb > initial_thumb);
+    assert!(
+        first_text_y(&first_crossing_scene, "line 15") > 200.0,
+        "crossing the margin aligned the caret line near the viewport top"
+    );
+
+    route_named_key(&mut router, &app, runtime, NamedKey::ArrowDown);
+    app.layout(
+        Constraints::tight(260.0, 326.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let second_crossing_scene = app.paint(&mut text_system);
+    assert!(code_editor_vertical_thumb_y(&second_crossing_scene) > first_crossing_thumb);
+    assert!(
+        first_text_y(&second_crossing_scene, "line 16") > 200.0,
+        "continuous navigation repositioned the caret line near the top"
+    );
+}
+
+#[test]
+fn code_editor_upward_navigation_is_idle_until_the_caret_crosses_the_top() {
+    let document = State::new(Document::new(
+        DocumentId(70),
+        TextBuffer::from_string(numbered_editor_source(40)),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document)
+            .initial_scroll(0.0, 180.0)
+            .width(260.0)
+            .height(180.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 180.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let mut router = InputRouter::default();
+    click_left_at(
+        &mut router,
+        &app,
+        runtime.clone(),
+        Point::new(100.0, 90.0),
+        100,
+    );
+    let initial_thumb = code_editor_vertical_thumb_y(&app.paint(&mut text_system));
+    for _ in 0..3 {
+        route_named_key(&mut router, &app, runtime.clone(), NamedKey::ArrowUp);
+        app.layout(
+            Constraints::tight(260.0, 180.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        assert_eq!(
+            code_editor_vertical_thumb_y(&app.paint(&mut text_system)),
+            initial_thumb
+        );
+    }
+
+    route_named_key(&mut router, &app, runtime, NamedKey::PageUp);
+    app.layout(
+        Constraints::tight(260.0, 180.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    assert!(code_editor_vertical_thumb_y(&app.paint(&mut text_system)) < initial_thumb);
+}
+
+#[test]
+fn code_editor_horizontal_navigation_scrolls_only_after_crossing_an_edge() {
+    let source = "abcdefghijklmnopqrstuvwxyz".repeat(20);
+    let document = State::new(Document::new(
+        DocumentId(71),
+        TextBuffer::from_string(source),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document)
+            .initial_scroll(120.0, 0.0)
+            .width(260.0)
+            .height(90.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 90.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let mut router = InputRouter::default();
+    click_left_at(
+        &mut router,
+        &app,
+        runtime.clone(),
+        Point::new(140.0, 25.0),
+        100,
+    );
+    let initial_thumb = code_editor_horizontal_thumb_x(&app.paint(&mut text_system));
+    for _ in 0..5 {
+        route_named_key(&mut router, &app, runtime.clone(), NamedKey::ArrowRight);
+        app.layout(
+            Constraints::tight(260.0, 90.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        assert_eq!(
+            code_editor_horizontal_thumb_x(&app.paint(&mut text_system)),
+            initial_thumb
+        );
+    }
+
+    route_named_key(&mut router, &app, runtime, NamedKey::End);
+    app.layout(
+        Constraints::tight(260.0, 90.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    assert!(code_editor_horizontal_thumb_x(&app.paint(&mut text_system)) > initial_thumb);
+}
+
+#[test]
+fn editor_pointer_click_does_not_move_a_scrolled_viewport() {
+    let source = scrolling_editor_source();
+    let buffer = State::new(TextBuffer::from_string(source));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        Editor::new(buffer)
+            .wrap_mode(EditorWrapMode::NoWrap)
+            .width(220.0)
+            .height(120.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(220.0, 120.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Wheel {
+            pos: Point::new(100.0, 60.0),
+            delta: WheelDelta::PixelDelta {
+                x: -120.0,
+                y: -120.0,
+            },
+            modifiers: Modifiers::default(),
+            precise: true,
+        }),
+    );
+    let before = text_draw_positions(&app.paint(&mut text_system));
+
+    click_left_at(&mut router, &app, runtime, Point::new(170.0, 95.0), 100);
+    app.layout(
+        Constraints::tight(220.0, 120.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let after = text_draw_positions(&app.paint(&mut text_system));
+
+    assert_eq!(after, before, "pointer caret placement moved the viewport");
+}
+
+#[test]
+fn code_editor_editing_margin_is_configurable_and_defaults_to_three_lines() {
+    let (default_before, default_after) = vertical_thumb_around_edit(65, None);
+    let (zero_before, zero_after) = vertical_thumb_around_edit(66, Some(0.0));
+
+    assert_eq!(default_before, zero_before);
+    assert!(
+        default_after > zero_after,
+        "the default edit margin must preserve more space than a zero-line margin"
+    );
+    assert!(
+        zero_after >= zero_before,
+        "newline insertion may reveal the caret but cannot scroll backward"
+    );
+}
+
+#[test]
+fn code_editor_editing_follows_the_caret_horizontally() {
+    let document = State::new(Document::new(
+        DocumentId(68),
+        TextBuffer::from_string(scrolling_editor_source()),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document)
+            .width(260.0)
+            .height(130.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let mut router = InputRouter::default();
+    let pos = Point::new(180.0, 45.0);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    let before = code_editor_thumb_origins(&app.paint(&mut text_system)).x;
+    let inserted = "x".repeat(120);
+    type_char(&mut router, &app, runtime, pos, &inserted);
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let after = code_editor_thumb_origins(&app.paint(&mut text_system)).x;
+
+    assert!(
+        after > before,
+        "editing did not reveal the caret on the x axis"
+    );
+}
+
+#[test]
+fn code_editor_pointer_selection_scrolls_only_after_leaving_the_viewport() {
+    let source = scrolling_editor_source();
+    let document = State::new(Document::new(
+        DocumentId(67),
+        TextBuffer::from_string(source),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CodeEditor::new(document)
+            .initial_scroll(120.0, 120.0)
+            .width(260.0)
+            .height(130.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let before = code_editor_thumb_origins(&app.paint(&mut text_system));
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Button {
+            pos: Point::new(140.0, 65.0),
+            button: MouseButton::Left,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(180.0, 90.0),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    let inside = code_editor_thumb_origins(&app.paint(&mut text_system));
+    assert_eq!(inside, before, "in-viewport selection moved the viewport");
+
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(400.0, 260.0),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    let outside = code_editor_thumb_origins(&app.paint(&mut text_system));
+    assert!(
+        outside.x > inside.x,
+        "horizontal selection did not auto-scroll"
+    );
+    assert!(
+        outside.y > inside.y,
+        "vertical selection did not auto-scroll"
+    );
+
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Pointer(PointerEvent::Button {
+            pos: Point::new(400.0, 260.0),
+            button: MouseButton::Left,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        }),
+    );
+}
+
+#[test]
 fn code_editor_ime_cursor_rect_is_inside_text_rect_not_content_rect() {
     let document = State::new(Document::new(
         DocumentId(5),
@@ -1544,6 +2059,133 @@ fn first_text_x(scene: &ailloli_ui_runtime::Scene, needle: &str) -> f32 {
             _ => None,
         })
         .unwrap_or_else(|| panic!("missing text item {needle:?}"))
+}
+
+fn first_text_y(scene: &ailloli_ui_runtime::Scene, needle: &str) -> f32 {
+    scene
+        .layers
+        .iter()
+        .flat_map(|layer| layer.cmds.iter())
+        .find_map(|cmd| match cmd {
+            DrawCmd::Text(text) if text.layout.text() == needle => Some(text.pos[1]),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing text item {needle:?}"))
+}
+
+fn numbered_editor_source(line_count: usize) -> String {
+    (1..=line_count)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn scrolling_editor_source() -> String {
+    (0..80)
+        .map(|index| {
+            format!(
+                "line_{index:02}: {}",
+                "a long code-editor payload ".repeat(8)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn text_draw_positions(scene: &ailloli_ui_runtime::Scene) -> Vec<(String, [f32; 2])> {
+    scene
+        .layers
+        .iter()
+        .flat_map(|layer| layer.cmds.iter())
+        .filter_map(|cmd| match cmd {
+            DrawCmd::Text(text) => Some((text.layout.text().to_string(), text.pos)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn code_editor_thumb_origins(scene: &ailloli_ui_runtime::Scene) -> Point {
+    let thumb_color = EditorScrollbarStyle::default().thumb_color;
+    let thumbs = rrects_in_text_layer(scene)
+        .into_iter()
+        .filter(|rrect| rrect.color == thumb_color)
+        .collect::<Vec<_>>();
+    let horizontal = thumbs
+        .iter()
+        .find(|rrect| rrect.rect.w > rrect.rect.h)
+        .expect("horizontal scrollbar thumb");
+    let vertical = thumbs
+        .iter()
+        .find(|rrect| rrect.rect.h > rrect.rect.w)
+        .expect("vertical scrollbar thumb");
+    Point::new(horizontal.rect.x, vertical.rect.y)
+}
+
+fn code_editor_horizontal_thumb_x(scene: &ailloli_ui_runtime::Scene) -> f32 {
+    let thumb_color = EditorScrollbarStyle::default().thumb_color;
+    rrects_in_text_layer(scene)
+        .into_iter()
+        .find(|rrect| rrect.color == thumb_color && rrect.rect.w > rrect.rect.h)
+        .expect("horizontal scrollbar thumb")
+        .rect
+        .x
+}
+
+fn code_editor_vertical_thumb_y(scene: &ailloli_ui_runtime::Scene) -> f32 {
+    let thumb_color = EditorScrollbarStyle::default().thumb_color;
+    rrects_in_text_layer(scene)
+        .into_iter()
+        .find(|rrect| rrect.color == thumb_color && rrect.rect.h > rrect.rect.w)
+        .expect("vertical scrollbar thumb")
+        .rect
+        .y
+}
+
+fn vertical_thumb_around_edit(document_id: u64, margin_lines: Option<f32>) -> (f32, f32) {
+    let document = State::new(Document::new(
+        DocumentId(document_id),
+        TextBuffer::from_string(scrolling_editor_source()),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let editor = CodeEditor::new(document)
+        .initial_scroll(0.0, 180.0)
+        .width(260.0)
+        .height(130.0);
+    let editor = match margin_lines {
+        Some(lines) => editor.caret_follow_margin_lines(lines),
+        None => editor,
+    };
+    app.reconcile(editor.into_view());
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let mut router = InputRouter::default();
+    let pos = Point::new(160.0, 100.0);
+    click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    let before = code_editor_thumb_origins(&app.paint(&mut text_system)).y;
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Keyboard(KeyEvent {
+            state: KeyState::Pressed,
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+            pointer_pos: Some(pos),
+            text: Some("\n".into()),
+        }),
+    );
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let after = code_editor_thumb_origins(&app.paint(&mut text_system)).y;
+    (before, after)
 }
 
 fn rrects_in_text_layer(scene: &ailloli_ui_runtime::Scene) -> Vec<ailloli_ui_runtime::DrawRRect> {
@@ -2015,6 +2657,26 @@ fn type_char(
             repeat: false,
             pointer_pos: Some(pos),
             text: Some(ch.into()),
+        }),
+    );
+}
+
+fn route_named_key(
+    router: &mut InputRouter,
+    app: &Runtime<()>,
+    runtime: RuntimeHandle<()>,
+    key: NamedKey,
+) {
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Keyboard(KeyEvent {
+            state: KeyState::Pressed,
+            key: Key::Named(key),
+            modifiers: Modifiers::default(),
+            repeat: false,
+            pointer_pos: None,
+            text: None,
         }),
     );
 }

@@ -226,6 +226,124 @@ fn table_view_wheel_scrolls_body_with_core_scroll_state() {
     );
 }
 
+#[test]
+fn table_view_overlay_scrollbar_drag_does_not_select_rows() {
+    let selected = State::new(RowId::Missing);
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let root = app.reconcile(
+        sample_table::<Action>()
+            .bind_selected(selected.clone())
+            .on_select(Action::Open)
+            .width(360.0)
+            .max_body_height(72.0)
+            .into_view(),
+    );
+    layout_app(&mut app, 800.0, 400.0);
+    let table = first_child(&app, root);
+    let layout = app.tree.get(table).unwrap().layout.as_ref().unwrap();
+    assert_eq!(layout.overlay_hit_bounds.len(), 2);
+
+    let style = TableViewStyle::default();
+    let thumb_color = style.muted_text.color.with_alpha(0.58);
+    let initial = paint_cmds_action(&app);
+    let thumb = initial
+        .iter()
+        .find_map(|cmd| match cmd {
+            DrawCmd::RRect(rrect) if rrect.color == thumb_color && rrect.rect.h > rrect.rect.w => {
+                Some(*rrect)
+            }
+            _ => None,
+        })
+        .expect("vertical table scrollbar thumb");
+    let press = Point::new(
+        thumb.rect.x + thumb.rect.w * 0.5,
+        thumb.rect.y + thumb.rect.h * 0.5,
+    );
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &pointer_button(press.x, press.y, true),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(press.x, 1_000.0),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(&app.tree, runtime, &pointer_button(press.x, 1_000.0, false));
+
+    let after = paint_cmds_action(&app);
+    assert!(
+        !after
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "Alex Rivera")),
+        "dragging to the end should move the first row out of the body viewport"
+    );
+    assert_eq!(selected.read(), RowId::Missing);
+}
+
+#[test]
+fn disabled_table_paints_stable_bars_without_scrollbar_hit_regions() {
+    let selected = State::new(RowId::Missing);
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let root = app.reconcile(
+        sample_table::<Action>()
+            .bind_selected(selected.clone())
+            .on_select(Action::Open)
+            .disabled(true)
+            .width(360.0)
+            .max_body_height(72.0)
+            .into_view(),
+    );
+    layout_app(&mut app, 800.0, 400.0);
+    let table = first_child(&app, root);
+    let layout = app.tree.get(table).unwrap().layout.as_ref().unwrap();
+    assert!(layout.overlay_hit_bounds.is_empty());
+
+    let before = paint_cmds_action(&app);
+    assert!(before.iter().any(|cmd| matches!(cmd, DrawCmd::RRect(_))));
+    let before_alex_y = before.iter().find_map(|cmd| match cmd {
+        DrawCmd::Text(text) if text.layout.text() == "Alex Rivera" => Some(text.pos[1]),
+        _ => None,
+    });
+    dispatch_event_to_target(
+        &app.tree,
+        runtime.clone(),
+        table,
+        &wheel_event(120.0, 52.0, -10.0),
+    );
+    dispatch_event_to_target(
+        &app.tree,
+        runtime.clone(),
+        table,
+        &pointer_button(355.0, 70.0, false),
+    );
+
+    let after = paint_cmds_action(&app);
+    let after_alex_y = after.iter().find_map(|cmd| match cmd {
+        DrawCmd::Text(text) if text.layout.text() == "Alex Rivera" => Some(text.pos[1]),
+        _ => None,
+    });
+    assert_eq!(after_alex_y, before_alex_y);
+    assert_eq!(
+        after
+            .iter()
+            .filter(|cmd| matches!(cmd, DrawCmd::RRect(_)))
+            .count(),
+        before
+            .iter()
+            .filter(|cmd| matches!(cmd, DrawCmd::RRect(_)))
+            .count()
+    );
+    assert_eq!(selected.read(), RowId::Missing);
+    assert!(runtime.take_actions().is_empty());
+}
+
 fn sample_table<A: 'static>() -> TableView<RowId, A> {
     TableView::new()
         .column(TableColumn::new("Name").width(150.0))

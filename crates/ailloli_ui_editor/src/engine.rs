@@ -1,6 +1,8 @@
 //! Cached frame construction, hit testing, caret geometry, and scroll metrics.
 
-use ailloli_ui_core::scroll::ScrollMetrics;
+use ailloli_ui_core::scroll::{
+    ScrollMetrics, ScrollState, ScrollbarAxis, ScrollbarGeometry, ScrollbarGeometrySpec,
+};
 use ailloli_ui_core::{Offset, Point, Rect, Size};
 use ailloli_ui_text::TextSystem;
 use std::time::Instant;
@@ -796,12 +798,37 @@ fn same_rect(a: Rect, b: Rect) -> bool {
         && (a.h - b.h).abs() < 0.5
 }
 
-/// Builds vertical then horizontal scrollbar items for overflowing axes.
-fn scrollbar_items_for_viewport(
+/// Resolves the code editor's visible scrollbar geometry.
+///
+/// The returned rectangles are the single source of truth used by adapters for
+/// paint and pointer interaction. Horizontal geometry is omitted while wrapping
+/// is enabled, and either axis is omitted when it has no usable overflow.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::{Rect, Size, ScrollbarAxis};
+/// use ailloli_ui_editor::{code_scrollbar_geometries, CodeEditorConfig, EditorViewport};
+/// use ailloli_ui_text::TextEditState;
+/// let config = CodeEditorConfig::default();
+/// let viewport = EditorViewport::with_gutter(
+///     Rect::new(0.0, 0.0, 240.0, 120.0),
+///     config.editor,
+///     &TextEditState::new(),
+///     Some(config.gutter),
+/// );
+/// let bars = code_scrollbar_geometries(viewport, Size::new(600.0, 400.0), config.scrollbars);
+/// assert!(bars.iter().any(|bar| bar.axis == ScrollbarAxis::Horizontal));
+/// assert!(bars.iter().any(|bar| bar.axis == ScrollbarAxis::Vertical));
+/// ```
+pub fn code_scrollbar_geometries(
     viewport: EditorViewport,
     content_size: Size,
     config: EditorScrollbarConfig,
-) -> Vec<EditorPaintItem> {
+) -> Vec<ScrollbarGeometry> {
+    if !config.enabled {
+        return Vec::new();
+    }
     let metrics = ScrollMetrics::new(
         Size::new(viewport.text_rect.w, viewport.text_rect.h),
         content_size,
@@ -809,45 +836,59 @@ fn scrollbar_items_for_viewport(
     let max_offset = metrics.max_offset();
     let show_vertical = max_offset.y > 0.5;
     let show_horizontal = viewport.wrap_mode == EditorWrapMode::NoWrap && max_offset.x > 0.5;
-    let mut items = Vec::new();
+    let state = ScrollState::with_offset(Offset::new(viewport.scroll_x, viewport.scroll_y));
+    let style = config.style;
+    let mut geometries = Vec::with_capacity(2);
 
     if show_vertical {
         let bottom_reserve = if show_horizontal {
-            config.style.thickness + config.style.inset
+            style.thickness + style.inset
         } else {
             0.0
         };
-        if let Some((track_rect, thumb_rect)) = vertical_scrollbar_rects(
-            viewport.text_rect,
-            metrics,
-            Offset::new(viewport.scroll_x, viewport.scroll_y),
-            config.style,
-            max_offset.y,
-            bottom_reserve,
-        ) {
-            items.push(scrollbar_item(track_rect, thumb_rect, config.style));
+        if let Some(geometry) =
+            ScrollbarGeometrySpec::new(ScrollbarAxis::Vertical, viewport.text_rect, metrics, state)
+                .with_paint_metrics(style.thickness, style.min_thumb_len, style.inset)
+                .with_end_reserve(bottom_reserve)
+                .resolve()
+        {
+            geometries.push(geometry);
         }
     }
 
     if show_horizontal {
         let right_reserve = if show_vertical {
-            config.style.thickness + config.style.inset
+            style.thickness + style.inset
         } else {
             0.0
         };
-        if let Some((track_rect, thumb_rect)) = horizontal_scrollbar_rects(
+        if let Some(geometry) = ScrollbarGeometrySpec::new(
+            ScrollbarAxis::Horizontal,
             viewport.text_rect,
             metrics,
-            Offset::new(viewport.scroll_x, viewport.scroll_y),
-            config.style,
-            max_offset.x,
-            right_reserve,
-        ) {
-            items.push(scrollbar_item(track_rect, thumb_rect, config.style));
+            state,
+        )
+        .with_paint_metrics(style.thickness, style.min_thumb_len, style.inset)
+        .with_end_reserve(right_reserve)
+        .resolve()
+        {
+            geometries.push(geometry);
         }
     }
 
-    items
+    geometries
+}
+
+/// Builds vertical then horizontal scrollbar items for overflowing axes.
+fn scrollbar_items_for_viewport(
+    viewport: EditorViewport,
+    content_size: Size,
+    config: EditorScrollbarConfig,
+) -> Vec<EditorPaintItem> {
+    code_scrollbar_geometries(viewport, content_size, config)
+        .into_iter()
+        .map(|geometry| scrollbar_item(geometry.track, geometry.thumb, config.style))
+        .collect()
 }
 
 /// Converts resolved scrollbar geometry into a neutral paint item.
@@ -863,70 +904,4 @@ fn scrollbar_item(
         thumb_color: style.thumb_color,
         radius: style.radius,
     }
-}
-
-/// Resolves a vertical track/thumb or returns `None` for unusable geometry.
-fn vertical_scrollbar_rects(
-    bounds: Rect,
-    metrics: ScrollMetrics,
-    offset: Offset,
-    style: EditorScrollbarStyle,
-    max_offset_y: f32,
-    bottom_reserve: f32,
-) -> Option<(Rect, Rect)> {
-    let track_h = bounds.h - style.inset * 2.0 - bottom_reserve;
-    if track_h <= style.thickness || metrics.content.h <= 0.0 {
-        return None;
-    }
-    let track = Rect::new(
-        bounds.right() - style.inset - style.thickness,
-        bounds.y + style.inset,
-        style.thickness,
-        track_h,
-    );
-    let ratio = (metrics.viewport.h / metrics.content.h).clamp(0.0, 1.0);
-    let thumb_h = (track.h * ratio)
-        .max(style.min_thumb_len.min(track.h))
-        .min(track.h);
-    let travel = (track.h - thumb_h).max(0.0);
-    let progress = if max_offset_y > 0.0 {
-        (offset.y / max_offset_y).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let thumb = Rect::new(track.x, track.y + travel * progress, track.w, thumb_h);
-    Some((track, thumb))
-}
-
-/// Resolves a horizontal track/thumb or returns `None` for unusable geometry.
-fn horizontal_scrollbar_rects(
-    bounds: Rect,
-    metrics: ScrollMetrics,
-    offset: Offset,
-    style: EditorScrollbarStyle,
-    max_offset_x: f32,
-    right_reserve: f32,
-) -> Option<(Rect, Rect)> {
-    let track_w = bounds.w - style.inset * 2.0 - right_reserve;
-    if track_w <= style.thickness || metrics.content.w <= 0.0 {
-        return None;
-    }
-    let track = Rect::new(
-        bounds.x + style.inset,
-        bounds.bottom() - style.inset - style.thickness,
-        track_w,
-        style.thickness,
-    );
-    let ratio = (metrics.viewport.w / metrics.content.w).clamp(0.0, 1.0);
-    let thumb_w = (track.w * ratio)
-        .max(style.min_thumb_len.min(track.w))
-        .min(track.w);
-    let travel = (track.w - thumb_w).max(0.0);
-    let progress = if max_offset_x > 0.0 {
-        (offset.x / max_offset_x).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let thumb = Rect::new(track.x + travel * progress, track.y, thumb_w, track.h);
-    Some((track, thumb))
 }

@@ -5,7 +5,7 @@
 //! geometry to runtime primitives, and centralizes select-style popup painting.
 
 use super::select::SelectStyle;
-use ailloli_ui_core::event::WheelDelta;
+use ailloli_ui_core::event::{Modifiers, WheelDelta};
 use ailloli_ui_core::geometry::{Rect, Size};
 use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
 use ailloli_ui_core::style::{AlignItems, Border, JustifyContent};
@@ -552,7 +552,6 @@ pub(crate) fn window_viewport(ctx: &PaintCtx<'_>) -> Option<Rect> {
         .map(|entry| entry.shape.bounding_rect())
 }
 
-#[allow(dead_code)]
 /// Applies wheel delta using caller-selected axes and line-pixel conversion.
 ///
 /// The returned outcome reports both the resulting state and whether it changed;
@@ -569,6 +568,7 @@ pub(crate) fn window_viewport(ctx: &PaintCtx<'_>) -> Option<Rect> {
 pub(crate) fn scroll_popup(
     state: &ScrollState,
     delta: WheelDelta,
+    modifiers: Modifiers,
     viewport: Size,
     content: Size,
     line_px: f32,
@@ -576,7 +576,11 @@ pub(crate) fn scroll_popup(
 ) -> ailloli_ui_core::scroll::ScrollOutcome {
     let metrics = ScrollMetrics::new(viewport, content);
     let behavior = ScrollBehavior::new(axes).with_line_px(line_px);
-    state.scroll_by(behavior.wheel_delta(delta), metrics, axes)
+    state.scroll_by(
+        behavior.wheel_delta_with_modifiers(delta, modifiers),
+        metrics,
+        axes,
+    )
 }
 
 /// Paints visible non-inset shadows followed by the popup surface.
@@ -1051,6 +1055,25 @@ mod tests {
             ),
             Rect::new(5.0, 7.0, 0.0, 0.0)
         );
+    }
+
+    #[test]
+    fn popup_scroll_reports_no_change_beyond_a_reached_limit() {
+        let viewport = Size::new(200.0, 64.0);
+        let content = Size::new(200.0, 144.0);
+        let state = ScrollState::with_offset(ailloli_ui_core::Offset::new(0.0, 80.0));
+        let outcome = scroll_popup(
+            &state,
+            WheelDelta::PixelDelta { x: 0.0, y: -1.0 },
+            Modifiers::default(),
+            viewport,
+            content,
+            36.0,
+            ScrollAxes::VERTICAL,
+        );
+
+        assert!(!outcome.changed);
+        assert_eq!(outcome.after.y, 80.0);
     }
 
     #[test]

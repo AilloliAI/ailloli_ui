@@ -603,6 +603,85 @@ fn scroll_view_scrollbar_thumb_tracks_scroll_offset() {
 }
 
 #[test]
+fn scroll_view_scrollbar_thumb_drag_uses_pointer_capture() {
+    let root_view: View<()> = ScrollView::vertical()
+        .child(leaf(Size::new(10.0, 120.0)))
+        .into_view();
+    let runtime = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let root_id = app.reconcile(root_view);
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+
+    let thumb = scrollbar_rrects(&app)[1];
+    let press = Point::new(thumb.x + thumb.w * 0.5, thumb.y + thumb.h * 0.5);
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Button {
+            pos: press,
+            button: MouseButton::Left,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(press.x, 1_000.0),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Pointer(PointerEvent::Button {
+            pos: Point::new(press.x, 1_000.0),
+            button: MouseButton::Left,
+            pressed: false,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+
+    assert_eq!(
+        scroll_child_offset(&app, root_id),
+        ailloli_ui_core::Offset::new(0.0, -80.0)
+    );
+}
+
+#[test]
+fn scroll_view_track_click_pages_exactly_one_viewport() {
+    let root_view: View<()> = ScrollView::vertical()
+        .child(leaf(Size::new(10.0, 160.0)))
+        .into_view();
+    let runtime = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let root_id = app.reconcile(root_view);
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+
+    let track = scrollbar_rrects(&app)[0];
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Pointer(PointerEvent::Button {
+            pos: Point::new(track.x + track.w * 0.5, track.bottom() - 1.0),
+            button: MouseButton::Left,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }),
+    );
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+
+    assert_eq!(
+        scroll_child_offset(&app, root_id),
+        ailloli_ui_core::Offset::new(0.0, -40.0)
+    );
+}
+
+#[test]
 fn scroll_view_follow_end_scrolls_to_bottom_on_initial_layout() {
     let root_view: View<()> = ScrollView::vertical()
         .follow_end(true)

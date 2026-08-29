@@ -2,7 +2,10 @@
 
 use ailloli_ui_core::event::{Event, PointerEvent};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
-use ailloli_ui_core::scroll::{ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState};
+use ailloli_ui_core::scroll::{
+    ScrollAxes, ScrollBehavior, ScrollMetrics, ScrollState, ScrollbarAxis, ScrollbarGeometry,
+    ScrollbarGeometrySpec,
+};
 use ailloli_ui_core::style::FlexItemStyle;
 use ailloli_ui_core::{Color, Offset};
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, View, Widget};
@@ -13,6 +16,8 @@ use ailloli_ui_runtime::layout::{
 };
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawCmd, DrawRRect, Invalidation};
+
+use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
 
 /// Visual style for [`ScrollView`] scrollbars.
 ///
@@ -63,7 +68,8 @@ impl Default for ScrollbarStyle {
 /// The default scrolls vertically, begins at zero, shows scrollbars, maps one
 /// wheel line to 48 logical pixels, and does not follow the content end. The
 /// content is clipped and receives a virtual viewport hint containing the
-/// current offset. Only wheel input is handled by this widget.
+/// current offset. Visible bars support thumb drag and one-page track clicks;
+/// wheel events bubble when the viewport is already at its requested limit.
 ///
 /// # Examples
 ///
@@ -262,9 +268,10 @@ impl<A: 'static> ScrollView<A> {
         self
     }
 
-    /// Shows or hides non-interactive overflow indicators.
+    /// Shows or hides interactive overflow scrollbars.
     ///
-    /// Wheel scrolling and clipping remain active when hidden.
+    /// Hidden bars expose no pointer hit regions; wheel scrolling and clipping
+    /// remain active.
     ///
     /// # Examples
     ///
@@ -335,6 +342,8 @@ impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
         );
         let follow_end_active =
             context.signal_with_invalidation(self.follow_end, Invalidation::Layout);
+        let scrollbar_interaction =
+            context.signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint);
         let mut children = Vec::new();
         if let Some(child) = self.child.clone() {
             children.push(child);
@@ -349,6 +358,7 @@ impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
                 follow_end_active,
                 scrollbars: self.scrollbars,
                 scrollbar_style: self.scrollbar_style,
+                scrollbar_interaction,
             },
             children,
         )
@@ -371,6 +381,8 @@ struct ScrollViewWidget {
     scrollbars: bool,
     /// Scrollbar colors and logical-pixel geometry.
     scrollbar_style: ScrollbarStyle,
+    /// Retained hover and captured scrollbar gesture.
+    scrollbar_interaction: Signal<ScrollbarInteraction>,
 }
 
 /// Implements bounded/unbounded layout passes, clipping, bars, and wheel input.
@@ -438,12 +450,38 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
         }
         let viewport = Rect::new(0.0, 0.0, size.w, size.h);
 
+        let scrollbar_geometries = if self.scrollbars {
+            let metrics = child_layouts
+                .first()
+                .map(|child| ScrollMetrics::new(size, child.size));
+            metrics
+                .map(|metrics| {
+                    scrollbars_for(
+                        viewport,
+                        metrics,
+                        self.state.read(),
+                        self.axes,
+                        self.scrollbar_style,
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut interaction = self.scrollbar_interaction.read();
+        if interaction.reconcile(&scrollbar_geometries) {
+            self.scrollbar_interaction.set(interaction);
+        }
+
         LayoutResult {
             size,
             children: child_layouts,
             paint_bounds: viewport,
             visual_bounds: viewport,
-            overlay_hit_bounds: Vec::new(),
+            overlay_hit_bounds: scrollbar_geometries
+                .iter()
+                .map(|geometry| geometry.hit_track)
+                .collect(),
             clip: Some(ailloli_ui_core::ClipShape::Rect(viewport)),
             is_window_root_clip: false,
             artifact: None,
@@ -462,25 +500,73 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
 
         let metrics = ScrollMetrics::new(layout.size, child.size);
         let state = self.state.read();
-        paint_scrollbars(ctx, bounds, metrics, state, self.axes, self.scrollbar_style);
+        let geometries = scrollbars_for(bounds, metrics, state, self.axes, self.scrollbar_style);
+        paint_scrollbars(
+            ctx,
+            &geometries,
+            self.scrollbar_style,
+            self.scrollbar_interaction.read(),
+        );
     }
 
-    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, _bounds: Rect, layout: &LayoutResult) {
-        let Event::Pointer(PointerEvent::Wheel { delta, .. }) = event else {
-            return;
-        };
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
         let Some(child) = layout.children.first() else {
             return;
         };
 
         let metrics = ScrollMetrics::new(layout.size, child.size);
-        let state = self.state.read();
-        let outcome = state.scroll_by(self.behavior.wheel_delta(*delta), metrics, self.axes);
-        if outcome.changed {
-            self.state.set(outcome.state());
-            self.sync_follow_end_after_manual_scroll(outcome.after, outcome.max_offset);
-            ctx.request_repaint();
-            ctx.stop_propagation();
+        if self.scrollbars {
+            let geometries = scrollbars_for(
+                bounds,
+                metrics,
+                self.state.read(),
+                self.axes,
+                self.scrollbar_style,
+            );
+            let mut interaction = self.scrollbar_interaction.read();
+            let response = interaction.handle_event(event, &geometries, self.state.read().offset);
+            if response.state_changed {
+                self.scrollbar_interaction.set(interaction);
+            }
+            let mut scrolled = false;
+            if let Some((axis, target)) = response.scroll_to {
+                let state = self.state.read();
+                let target = match axis {
+                    ScrollbarAxis::Horizontal => Offset::new(target, state.offset.y),
+                    ScrollbarAxis::Vertical => Offset::new(state.offset.x, target),
+                };
+                let outcome = state.scroll_to(target, metrics, self.axes);
+                if outcome.changed {
+                    self.state.set(outcome.state());
+                    self.sync_follow_end_after_manual_scroll(outcome.after, outcome.max_offset);
+                    scrolled = true;
+                }
+            }
+            if response.repaint || scrolled {
+                ctx.request_repaint();
+            }
+            if response.consumed {
+                ctx.stop_propagation();
+                return;
+            }
+        }
+
+        if let Event::Pointer(PointerEvent::Wheel {
+            delta, modifiers, ..
+        }) = event
+        {
+            let state = self.state.read();
+            let outcome = state.scroll_by(
+                self.behavior.wheel_delta_with_modifiers(*delta, *modifiers),
+                metrics,
+                self.axes,
+            );
+            if outcome.changed {
+                self.state.set(outcome.state());
+                self.sync_follow_end_after_manual_scroll(outcome.after, outcome.max_offset);
+                ctx.request_repaint();
+                ctx.stop_propagation();
+            }
         }
     }
 }
@@ -619,119 +705,65 @@ fn finite_or_content(max: f32, content: f32) -> f32 {
 /// Paints bars only for enabled axes with more than 0.5 pixels of overflow.
 fn paint_scrollbars(
     ctx: &mut PaintCtx<'_>,
+    geometries: &[ScrollbarGeometry],
+    style: ScrollbarStyle,
+    interaction: ScrollbarInteraction,
+) {
+    for geometry in geometries.iter().copied() {
+        push_scrollbar(ctx, geometry, style, interaction);
+    }
+}
+
+/// Appends track then thumb rounded-rectangle commands.
+fn push_scrollbar(
+    ctx: &mut PaintCtx<'_>,
+    geometry: ScrollbarGeometry,
+    style: ScrollbarStyle,
+    interaction: ScrollbarInteraction,
+) {
+    ctx.push(DrawCmd::RRect(DrawRRect {
+        rect: geometry.track,
+        radius: style.radius,
+        color: style.track_color,
+    }));
+    ctx.push(DrawCmd::RRect(DrawRRect {
+        rect: geometry.thumb,
+        radius: style.radius,
+        color: thumb_color_for_state(
+            style.thumb_color,
+            interaction.visual_state(geometry.axis, ctx.is_hovered()),
+        ),
+    }));
+}
+
+/// Resolves every enabled overflowing axis with shared Core geometry.
+fn scrollbars_for(
     bounds: Rect,
     metrics: ScrollMetrics,
     state: ScrollState,
     axes: ScrollAxes,
     style: ScrollbarStyle,
-) {
-    let max_offset = metrics.max_offset();
-    let show_vertical = axes.vertical && max_offset.y > 0.5;
-    let show_horizontal = axes.horizontal && max_offset.x > 0.5;
-
+) -> Vec<ScrollbarGeometry> {
+    let max = metrics.max_offset();
+    let show_horizontal = axes.horizontal && max.x > 0.5;
+    let show_vertical = axes.vertical && max.y > 0.5;
+    let reserve = style.thickness + style.inset;
+    let mut geometries = Vec::with_capacity(2);
     if show_vertical {
-        let reserve = if show_horizontal {
-            style.thickness + style.inset
-        } else {
-            0.0
-        };
-        if let Some((track, thumb)) =
-            vertical_scrollbar_rects(bounds, metrics, state, style, max_offset.y, reserve)
-        {
-            push_scrollbar(ctx, track, thumb, style);
+        let spec = ScrollbarGeometrySpec::new(ScrollbarAxis::Vertical, bounds, metrics, state)
+            .with_paint_metrics(style.thickness, style.min_thumb_len, style.inset)
+            .with_end_reserve(if show_horizontal { reserve } else { 0.0 });
+        if let Some(geometry) = spec.resolve() {
+            geometries.push(geometry);
         }
     }
-
     if show_horizontal {
-        let reserve = if show_vertical {
-            style.thickness + style.inset
-        } else {
-            0.0
-        };
-        if let Some((track, thumb)) =
-            horizontal_scrollbar_rects(bounds, metrics, state, style, max_offset.x, reserve)
-        {
-            push_scrollbar(ctx, track, thumb, style);
+        let spec = ScrollbarGeometrySpec::new(ScrollbarAxis::Horizontal, bounds, metrics, state)
+            .with_paint_metrics(style.thickness, style.min_thumb_len, style.inset)
+            .with_end_reserve(if show_vertical { reserve } else { 0.0 });
+        if let Some(geometry) = spec.resolve() {
+            geometries.push(geometry);
         }
     }
-}
-
-/// Appends track then thumb rounded-rectangle commands.
-fn push_scrollbar(ctx: &mut PaintCtx<'_>, track: Rect, thumb: Rect, style: ScrollbarStyle) {
-    ctx.push(DrawCmd::RRect(DrawRRect {
-        rect: track,
-        radius: style.radius,
-        color: style.track_color,
-    }));
-    ctx.push(DrawCmd::RRect(DrawRRect {
-        rect: thumb,
-        radius: style.radius,
-        color: style.thumb_color,
-    }));
-}
-
-/// Resolves vertical track/thumb geometry or rejects an unusable track/content.
-fn vertical_scrollbar_rects(
-    bounds: Rect,
-    metrics: ScrollMetrics,
-    state: ScrollState,
-    style: ScrollbarStyle,
-    max_offset_y: f32,
-    bottom_reserve: f32,
-) -> Option<(Rect, Rect)> {
-    let track_h = bounds.h - style.inset * 2.0 - bottom_reserve;
-    if track_h <= style.thickness || metrics.content.h <= 0.0 {
-        return None;
-    }
-    let track = Rect::new(
-        bounds.right() - style.inset - style.thickness,
-        bounds.y + style.inset,
-        style.thickness,
-        track_h,
-    );
-    let ratio = (metrics.viewport.h / metrics.content.h).clamp(0.0, 1.0);
-    let thumb_h = (track.h * ratio)
-        .max(style.min_thumb_len.min(track.h))
-        .min(track.h);
-    let travel = (track.h - thumb_h).max(0.0);
-    let progress = if max_offset_y > 0.0 {
-        (state.offset.y / max_offset_y).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let thumb = Rect::new(track.x, track.y + travel * progress, track.w, thumb_h);
-    Some((track, thumb))
-}
-
-/// Resolves horizontal track/thumb geometry or rejects an unusable track/content.
-fn horizontal_scrollbar_rects(
-    bounds: Rect,
-    metrics: ScrollMetrics,
-    state: ScrollState,
-    style: ScrollbarStyle,
-    max_offset_x: f32,
-    right_reserve: f32,
-) -> Option<(Rect, Rect)> {
-    let track_w = bounds.w - style.inset * 2.0 - right_reserve;
-    if track_w <= style.thickness || metrics.content.w <= 0.0 {
-        return None;
-    }
-    let track = Rect::new(
-        bounds.x + style.inset,
-        bounds.bottom() - style.inset - style.thickness,
-        track_w,
-        style.thickness,
-    );
-    let ratio = (metrics.viewport.w / metrics.content.w).clamp(0.0, 1.0);
-    let thumb_w = (track.w * ratio)
-        .max(style.min_thumb_len.min(track.w))
-        .min(track.w);
-    let travel = (track.w - thumb_w).max(0.0);
-    let progress = if max_offset_x > 0.0 {
-        (state.offset.x / max_offset_x).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let thumb = Rect::new(track.x + travel * progress, track.y, thumb_w, track.h);
-    Some((track, thumb))
+    geometries
 }

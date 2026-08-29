@@ -54,8 +54,16 @@ const EXPECTED_FIRST_PARTY_EDGES: usize = 72;
 
 const EXPECTED_CODEOWNERS: &str = "* @MrRise-RiCorp\n";
 const EXPECTED_FUNDING: &str = "github: AilloliAI\n";
-const CAPTURE_PATH: &str = "artifacts/captures/public_sandbox_showcase.png";
-const CAPTURE_SHA256: &str = "88920411aafcb8cbc6e9a9e71a5041a627b677cec62da820fd4f8d9be1ba1136";
+const REVIEWED_CAPTURES: [(&str, &str); 2] = [
+    (
+        "artifacts/captures/public_sandbox_showcase.png",
+        "88920411aafcb8cbc6e9a9e71a5041a627b677cec62da820fd4f8d9be1ba1136",
+    ),
+    (
+        "artifacts/captures/interactive_scrolling_showcase.png",
+        "8e258bfe9fb1f2ca26f5409bec4696a7e98541ff533d3be9591783aa141c346a",
+    ),
+];
 const ICON_PATH: &str = "apps/sandbox_app/src/assets/icons/icon.svg";
 const ICON_V3_SHA256: &str = "e8056e11a3e16a21da5e12726c283cea4d43bab2b479a9c8b31401cd2118de43";
 
@@ -334,7 +342,7 @@ pub(crate) fn run_audit(
         workflows,
         scanned_text_files,
         relative_links,
-        capture: "1280x756",
+        capture: "2x1280x756",
         icon: "v3",
         commit_subjects,
     })
@@ -1361,47 +1369,68 @@ fn validate_reviewed_assets(root: &Path) -> Result<()> {
         .get("capture")
         .and_then(toml::Value::as_array)
         .context("capture manifest must declare capture entries")?;
-    if captures.len() != 1 {
-        bail!("capture manifest must declare exactly one final public capture");
-    }
-    let capture = captures[0]
-        .as_table()
-        .context("capture manifest entry must be a table")?;
     let expected_keys: BTreeSet<&str> =
         BTreeSet::from(["path", "sha256", "width", "height", "license", "provenance"]);
-    let actual_keys: BTreeSet<&str> = capture.keys().map(String::as_str).collect();
-    if actual_keys != expected_keys {
-        bail!("capture manifest entry has an unexpected schema");
+    if captures.len() != REVIEWED_CAPTURES.len() {
+        bail!("capture manifest must declare exactly two reviewed public captures");
     }
-    require_toml_string(capture, "path", CAPTURE_PATH)?;
-    require_toml_string(capture, "sha256", CAPTURE_SHA256)?;
-    require_toml_string(capture, "license", LICENSE)?;
-    if capture.get("width").and_then(toml::Value::as_integer) != Some(1280)
-        || capture.get("height").and_then(toml::Value::as_integer) != Some(756)
-    {
-        bail!("capture manifest dimensions must remain 1280x756");
-    }
-    let provenance = capture
-        .get("provenance")
-        .and_then(toml::Value::as_str)
-        .context("capture provenance must be a string")?;
-    for phrase in ["public Ailloli UI façade", "settle", "timeout"] {
-        if !provenance.contains(phrase) {
-            bail!("capture provenance is missing {phrase:?}");
+    for (capture, (expected_path, expected_sha256)) in captures.iter().zip(REVIEWED_CAPTURES) {
+        let capture = capture
+            .as_table()
+            .context("capture manifest entry must be a table")?;
+        let actual_keys: BTreeSet<&str> = capture.keys().map(String::as_str).collect();
+        if actual_keys != expected_keys {
+            bail!("capture manifest entry has an unexpected schema");
+        }
+        require_toml_string(capture, "path", expected_path)?;
+        require_toml_string(capture, "sha256", expected_sha256)?;
+        require_toml_string(capture, "license", LICENSE)?;
+        if capture.get("width").and_then(toml::Value::as_integer) != Some(1280)
+            || capture.get("height").and_then(toml::Value::as_integer) != Some(756)
+        {
+            bail!("capture manifest dimensions must remain 1280x756");
+        }
+        let provenance = capture
+            .get("provenance")
+            .and_then(toml::Value::as_str)
+            .context("capture provenance must be a string")?;
+        for phrase in ["public Ailloli UI façade", "settle", "timeout"] {
+            if !provenance.contains(phrase) {
+                bail!("capture provenance is missing {phrase:?}");
+            }
+        }
+
+        let png = fs::read(root.join(expected_path))
+            .with_context(|| format!("cannot read reviewed public capture {expected_path}"))?;
+        if sha256(&png) != expected_sha256 {
+            bail!("reviewed public capture SHA-256 does not match: {expected_path}");
+        }
+        if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
+            bail!("reviewed public capture is not an encoded PNG: {expected_path}");
+        }
+        let width = u32::from_be_bytes(png[16..20].try_into().expect("PNG width"));
+        let height = u32::from_be_bytes(png[20..24].try_into().expect("PNG height"));
+        if (width, height) != (1280, 756) {
+            bail!("reviewed public capture dimensions changed: {expected_path} {width}x{height}");
         }
     }
 
-    let png = fs::read(root.join(CAPTURE_PATH)).context("cannot read final public capture")?;
-    if sha256(&png) != CAPTURE_SHA256 {
-        bail!("public sandbox capture SHA-256 does not match its manifest");
-    }
-    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
-        bail!("public sandbox capture is not an encoded PNG");
-    }
-    let width = u32::from_be_bytes(png[16..20].try_into().expect("PNG width"));
-    let height = u32::from_be_bytes(png[20..24].try_into().expect("PNG height"));
-    if (width, height) != (1280, 756) {
-        bail!("public sandbox capture dimensions changed: {width}x{height}");
+    let capture_dir = root.join("artifacts/captures");
+    let actual_pngs: BTreeSet<String> = fs::read_dir(&capture_dir)
+        .context("cannot list reviewed capture directory")?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|extension| extension.to_str()) == Some("png"))
+                .then(|| format!("artifacts/captures/{}", entry.file_name().to_string_lossy()))
+        })
+        .collect();
+    let expected_pngs: BTreeSet<String> = REVIEWED_CAPTURES
+        .iter()
+        .map(|(path, _)| (*path).to_owned())
+        .collect();
+    if actual_pngs != expected_pngs {
+        bail!("reviewed capture directory is not closed: {actual_pngs:?}");
     }
 
     let icon = fs::read(root.join(ICON_PATH)).context("cannot read sandbox icon")?;
