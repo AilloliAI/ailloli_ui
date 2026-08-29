@@ -766,16 +766,18 @@ fn validate_runner_contract(text: &str, label: &str, surface: WorkflowSurface) -
         if text.contains("self-hosted") {
             bail!("public workflow {label} must not use a self-hosted runner");
         }
-        let github_hosted = Regex::new(r"(?m)^    runs-on:\s*ubuntu-latest\s*$")?
+        let github_hosted = Regex::new(r"(?m)^    runs-on:\s*(?:ubuntu|windows)-latest\s*$")?
             .find_iter(text)
             .count();
         if declarations != github_hosted {
-            bail!("public workflow {label} must use ubuntu-latest for every runner declaration");
+            bail!(
+                "public workflow {label} must use an approved GitHub-hosted runner for every runner declaration"
+            );
         }
         return Ok(());
     }
 
-    if text.contains("ubuntu-latest") {
+    if Regex::new(r"(?m)^    runs-on:\s*(?:ubuntu|windows|macos)-latest\s*$")?.is_match(text) {
         bail!("Internal workflow {label} must not use a GitHub-hosted runner");
     }
     let self_hosted = Regex::new(
@@ -855,7 +857,7 @@ fn validate_local_workflow_calls(
     Ok(())
 }
 
-fn validate_validation_workflow(text: &str, label: &str) -> Result<()> {
+fn validate_validation_workflow(text: &str, label: &str, surface: WorkflowSurface) -> Result<()> {
     for required in [
         "cargo +1.88.0 metadata --locked --format-version 1",
         "cargo +1.88.0 fmt --all -- --check",
@@ -878,6 +880,21 @@ fn validate_validation_workflow(text: &str, label: &str) -> Result<()> {
     if text.contains("CARGO_BUILD_JOBS") || text.contains("--test-threads") {
         bail!("validation workflow {label} must use runner-selected parallelism");
     }
+    if surface == WorkflowSurface::Public {
+        if text.matches("runs-on: windows-latest").count() != 1 {
+            bail!("public validation workflow {label} must define exactly one Windows runner");
+        }
+        for required in [
+            "name: Validation / Windows winit",
+            "cargo +1.88.0 check -p ailloli_ui_winit --all-targets --all-features --locked",
+            "cargo +1.88.0 test -p ailloli_ui_winit --all-features --lib --tests --locked",
+            "WINDOWS_WINIT_RESULT",
+        ] {
+            if !text.contains(required) {
+                bail!("public validation workflow {label} lost Windows gate {required:?}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -888,6 +905,12 @@ fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) 
         .and_then(|value| value.to_str())
         .context("workflow filename is not UTF-8")?;
     validate_runner_contract(text, &label, surface)?;
+    if surface == WorkflowSurface::Public
+        && file_name != "validation.yml"
+        && text.contains("runs-on: windows-latest")
+    {
+        bail!("public Windows runner is permitted only in validation.yml");
+    }
     let write_permission = Regex::new(r"(?m)^\s+([a-z-]+):\s*write\s*$")?;
     let write_permissions: Vec<&str> = write_permission
         .captures_iter(text)
@@ -943,7 +966,7 @@ fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) 
             }
         }
         "validation.yml" | "validation-candidate.yml" => {
-            validate_validation_workflow(text, &label)?;
+            validate_validation_workflow(text, &label, surface)?;
         }
         "codeql.yml" => {
             if surface != WorkflowSurface::Public {
@@ -1698,6 +1721,27 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     {
         bail!("Internal GitHub-hosted runner fixture was unexpectedly accepted");
     }
+    let public_windows_workflow =
+        valid_workflow.replace("    runs-on: ubuntu-latest", "    runs-on: windows-latest");
+    validate_runner_contract(
+        &public_windows_workflow,
+        "positive Public Windows runner fixture",
+        WorkflowSurface::Public,
+    )?;
+    let public_windows_outside_validation = validate_surface_workflow(
+        &fixtures.join("ci.yml"),
+        &public_windows_workflow,
+        WorkflowSurface::Public,
+    )
+    .expect_err("Public Windows runner outside validation.yml must be rejected");
+    if !public_windows_outside_validation
+        .to_string()
+        .contains("permitted only in validation.yml")
+    {
+        bail!(
+            "Public Windows placement fixture failed for the wrong reason: {public_windows_outside_validation}"
+        );
+    }
 
     let unexpected_internal = expected_workflow_set(&["ci.yml", "unexpected.yml"]);
     if internal_workflow_surface(&unexpected_internal).is_ok() {
@@ -1726,7 +1770,13 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     {
         bail!("required CI path filter fixture was unexpectedly accepted");
     }
-    if validate_validation_workflow(&valid_workflow, "incomplete validation fixture").is_ok() {
+    if validate_validation_workflow(
+        &valid_workflow,
+        "incomplete validation fixture",
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
         bail!("incomplete reusable validation fixture was unexpectedly accepted");
     }
 

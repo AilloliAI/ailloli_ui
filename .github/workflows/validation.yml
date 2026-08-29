@@ -129,6 +129,22 @@ jobs:
               ;;
           esac
 
+  windows-winit:
+    name: Validation / Windows winit
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install Rust 1.88
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Check and test the native Windows host
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          cargo +1.88.0 check -p ailloli_ui_winit --all-targets --all-features --locked
+          cargo +1.88.0 test -p ailloli_ui_winit --all-features --lib --tests --locked
+
   cargo-audit:
     name: Validation / cargo-audit
     if: inputs.run-cargo-audit
@@ -149,7 +165,7 @@ jobs:
 
   complete:
     name: Validation / complete
-    needs: [rust-gates, cargo-audit]
+    needs: [rust-gates, windows-winit, cargo-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -157,11 +173,13 @@ jobs:
       AUDIT_REQUESTED: ${{ inputs.run-cargo-audit }}
       AUDIT_RESULT: ${{ needs.cargo-audit.result }}
       RUST_GATES_RESULT: ${{ needs.rust-gates.result }}
+      WINDOWS_WINIT_RESULT: ${{ needs.windows-winit.result }}
     steps:
       - name: Enforce complete validation
         run: |
           set -euo pipefail
           [[ "${RUST_GATES_RESULT}" == "success" ]]
+          [[ "${WINDOWS_WINIT_RESULT}" == "success" ]]
           if [[ "${AUDIT_REQUESTED}" == "true" ]]; then
             [[ "${AUDIT_RESULT}" == "success" ]]
           else
