@@ -2853,6 +2853,10 @@ impl<A: 'static> UiApp<A> {
 
         #[cfg(feature = "test_support")]
         self.service_presentation_test_faults(event_loop);
+        // Win32 only: winit routes `request_redraw()` through `WM_PAINT`, which
+        // hidden windows do not receive. Reveal windows waiting for their first
+        // frame before the initial redraw request to break that visibility/redraw cycle.
+        // See: https://github.com/rust-windowing/winit/blob/v0.30.13/src/platform_impl/windows/event_loop.rs#L957-L960
         #[cfg(target_os = "windows")]
         for state in self.windows.values() {
             if state.reveal_after_first_frame {
