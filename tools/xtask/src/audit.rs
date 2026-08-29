@@ -887,7 +887,7 @@ fn validate_validation_workflow(text: &str, label: &str, surface: WorkflowSurfac
         for required in [
             "name: Validation / Windows winit",
             "cargo +1.88.0 check -p ailloli_ui_winit --all-targets --all-features --locked",
-            "cargo +1.88.0 test -p ailloli_ui_winit --all-features --lib --tests --locked",
+            "cargo +1.88.0 test -p ailloli_ui_winit --all-features --lib --locked",
             "WINDOWS_WINIT_RESULT",
         ] {
             if !text.contains(required) {

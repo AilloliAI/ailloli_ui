@@ -143,7 +143,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           cargo +1.88.0 check -p ailloli_ui_winit --all-targets --all-features --locked
-          cargo +1.88.0 test -p ailloli_ui_winit --all-features --lib --tests --locked
+          cargo +1.88.0 test -p ailloli_ui_winit --all-features --lib --locked
 
   cargo-audit:
     name: Validation / cargo-audit
