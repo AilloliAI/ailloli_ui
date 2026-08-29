@@ -9,7 +9,7 @@ use super::{DirtyFlags, Key};
 use crate::component::{ComponentNode, Widget};
 #[cfg(feature = "devtools")]
 use crate::layout::LayoutDebugInfo;
-use crate::layout::LayoutResult;
+use crate::layout::{LayoutPass, LayoutResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Exact cache identity for one retained layout result.
@@ -36,6 +36,8 @@ pub(crate) struct LayoutCacheKey {
     pub constraints: [u32; 4],
     /// Raw device-pixel-ratio bits.
     pub scale: u32,
+    /// Speculative or authoritative authority of the cached traversal.
+    pub layout_pass: LayoutPass,
     /// Text-system metrics revision, or zero without a text system.
     pub text_metrics_revision: u64,
     /// Element-local nonzero wrapping layout revision.
@@ -100,10 +102,14 @@ pub struct Element<A> {
     pub parent: Option<ElementId>,
     /// Direct children in layout, paint, hit-test, and reconciliation order.
     pub children: Vec<ElementId>,
-    /// Most recently cached layout, or `None` before successful layout.
+    /// Most recent authoritative layout, or `None` before a committed pass.
     pub layout: Option<LayoutResult>,
     /// Cache inputs associated with `layout`, or `None` when invalidated.
     pub(crate) layout_cache_key: Option<LayoutCacheKey>,
+    /// Most recent speculative layout, kept separate from committed geometry.
+    pub(crate) measurement_layout: Option<LayoutResult>,
+    /// Cache inputs associated with `measurement_layout`.
+    pub(crate) measurement_layout_cache_key: Option<LayoutCacheKey>,
     /// Nonzero wrapping revision of element-owned layout inputs.
     pub(crate) layout_revision: u64,
     /// Nonzero wrapping revision of direct-child ordering.
@@ -149,6 +155,8 @@ impl<A> Clone for Element<A> {
             children: self.children.clone(),
             layout: self.layout.clone(),
             layout_cache_key: self.layout_cache_key,
+            measurement_layout: self.measurement_layout.clone(),
+            measurement_layout_cache_key: self.measurement_layout_cache_key,
             layout_revision: self.layout_revision,
             topology_revision: self.topology_revision,
             layout_changed: self.layout_changed,

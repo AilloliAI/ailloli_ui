@@ -120,7 +120,7 @@ pub use ailloli_ui_runtime::component::{IntoView, IntoViewKeyExt, Memo, State, V
 pub use ailloli_ui_runtime::input::{ClickAction, DeferredAction, IntoClickAction};
 pub use ailloli_ui_runtime::{
     DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText, Invalidation, Layer,
-    LayoutCtx, PaintCtx, Painter, Scene,
+    LayoutCtx, LayoutPass, PaintCtx, Painter, Scene,
 };
 #[cfg(feature = "terminal_pty_portable")]
 pub use ailloli_ui_terminal_pty::PortablePtyBackend;

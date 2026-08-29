@@ -10,7 +10,7 @@ use ailloli_ui_runtime::component::Widget;
 use ailloli_ui_runtime::input::EventCtx;
 use ailloli_ui_runtime::layout::LayoutEngine;
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutResult};
-use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx};
+use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutPass};
 use ailloli_ui_runtime::scene::PaintCtx;
 
 /// Resolves a non-negative cross-axis offset for one alignment mode.
@@ -204,7 +204,9 @@ impl<A: 'static> Widget<A> for FlexWidget {
             grow_weights.push(grow);
 
             let child_c = Self::probe_constraints(loose, direction, item, hint, main_available);
-            let result = child.layout(engine, ctx, child_c);
+            let result = ctx.with_layout_pass(LayoutPass::Measure, |ctx| {
+                child.layout(engine, ctx, child_c)
+            });
             let (main, _) = Self::main_cross(result.size, direction);
             base_mains.push(Self::compute_base_main(
                 item,
@@ -325,7 +327,8 @@ impl<A: 'static> Widget<A> for FlexWidget {
         for (idx, child) in children.iter_mut().enumerate() {
             let slot = &child_layouts[idx];
             let tight = Constraints::tight(slot.size.w, slot.size.h);
-            let _ = child.layout(engine, ctx, tight);
+            let _ =
+                ctx.with_layout_pass(LayoutPass::Commit, |ctx| child.layout(engine, ctx, tight));
         }
 
         LayoutResult {

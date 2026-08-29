@@ -1,5 +1,8 @@
 //! Row/column fill, grow, shrink, basis, alignment, and nesting scenarios.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ailloli_ui_core::event::Event;
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::math::Scale;
@@ -8,14 +11,20 @@ use ailloli_ui_core::Color;
 
 use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, View, Widget};
-use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutEngine, LayoutResult};
+use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutEngine, LayoutPass, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_text::TextSystem;
 
-use ailloli_ui_widgets::layout::{Column, Container, FlexItemExt, Row};
+use ailloli_ui_widgets::editor::EditorPane;
+use ailloli_ui_widgets::layout::{Column, Container, FlexItemExt, Row, SplitPane};
 
 struct Leaf {
     size: Size,
+}
+
+/// Captures descendant pass authority and whether local constraints are tight.
+struct PassProbe {
+    observations: Rc<RefCell<Vec<(LayoutPass, bool)>>>,
 }
 
 impl Widget<()> for Leaf {
@@ -55,6 +64,39 @@ impl Widget<()> for Leaf {
     }
 }
 
+impl Widget<()> for PassProbe {
+    fn debug_name(&self) -> &'static str {
+        "PassProbe"
+    }
+
+    fn layout(
+        &self,
+        _engine: &mut LayoutEngine<'_, ()>,
+        ctx: &mut LayoutCtx<'_>,
+        _children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let tight =
+            constraints.min_w == constraints.max_w && constraints.min_h == constraints.max_h;
+        self.observations
+            .borrow_mut()
+            .push((ctx.layout_pass(), tight));
+        let size = constraints.constrain(Size::new(20.0, 10.0));
+        LayoutResult {
+            size,
+            children: Vec::new(),
+            paint_bounds: Rect::new(0.0, 0.0, size.w, size.h),
+            visual_bounds: Rect::new(0.0, 0.0, size.w, size.h),
+            overlay_hit_bounds: Vec::new(),
+            clip: None,
+            is_window_root_clip: false,
+            artifact: None,
+        }
+    }
+
+    fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
+}
+
 fn layout_root(
     root_view: View<()>,
     constraints: Constraints,
@@ -69,6 +111,85 @@ fn layout_root(
 
 fn leaf(size: Size) -> View<()> {
     View::leaf(Leaf { size })
+}
+
+#[test]
+fn nested_flex_measurement_is_sticky_even_for_tight_descendants() {
+    let observations = Rc::new(RefCell::new(Vec::new()));
+    let root_view: View<()> = Row::new()
+        .fill()
+        .child(Column::new().fill().child(View::leaf(PassProbe {
+            observations: observations.clone(),
+        })))
+        .into_view();
+    let mut app = Runtime::new(RuntimeHandle::new());
+    let root = app.reconcile(root_view);
+    let mut text = TextSystem::new();
+    let mut ctx = LayoutCtx::with_text_system(Scale::new(1.0), &mut text);
+    let mut engine = LayoutEngine::new(&mut app.tree);
+    let constraints = Constraints::tight(400.0, 300.0);
+
+    ctx.with_layout_pass(LayoutPass::Measure, |ctx| {
+        let _ = engine.layout_element(ctx, root, constraints);
+    });
+    {
+        let measured = observations.borrow();
+        assert!(!measured.is_empty());
+        assert!(measured.iter().all(|(pass, _)| pass.is_measure()));
+        assert!(
+            measured.iter().any(|(_, tight)| *tight),
+            "a tight descendant was not exercised during ancestor measurement"
+        );
+    }
+
+    observations.borrow_mut().clear();
+    let _ = engine.layout_element(&mut ctx, root, constraints);
+    let committed = observations.borrow();
+    assert!(committed.iter().any(|(pass, _)| pass.is_measure()));
+    assert!(committed.iter().any(|(pass, _)| pass.is_committed()));
+    assert_eq!(
+        committed.last().map(|(pass, _)| *pass),
+        Some(LayoutPass::Commit)
+    );
+}
+
+#[test]
+fn editor_pane_chain_preserves_ancestor_measure_authority() {
+    let observations = Rc::new(RefCell::new(Vec::new()));
+    let root_view: View<()> = Row::new()
+        .fill()
+        .child(
+            Column::new().fill().child(
+                SplitPane::columns(
+                    Container::new().fill(),
+                    EditorPane::new(View::leaf(PassProbe {
+                        observations: observations.clone(),
+                    }))
+                    .fill(),
+                )
+                .initial_position(96.0)
+                .fill(),
+            ),
+        )
+        .into_view();
+    let mut app = Runtime::new(RuntimeHandle::new());
+    let root = app.reconcile(root_view);
+    let mut text = TextSystem::new();
+    let mut ctx = LayoutCtx::with_text_system(Scale::new(1.0), &mut text);
+    let mut engine = LayoutEngine::new(&mut app.tree);
+    let constraints = Constraints::tight(640.0, 420.0);
+
+    ctx.with_layout_pass(LayoutPass::Measure, |ctx| {
+        let _ = engine.layout_element(ctx, root, constraints);
+    });
+
+    let measured = observations.borrow();
+    assert!(!measured.is_empty());
+    assert!(measured.iter().all(|(pass, _)| pass.is_measure()));
+    assert!(
+        measured.iter().any(|(_, tight)| *tight),
+        "SplitPane or EditorPane converted ancestor measurement into commit"
+    );
 }
 
 #[test]

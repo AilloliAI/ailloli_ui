@@ -21,10 +21,10 @@ use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::{TextBuffer, TextSystem};
 use ailloli_ui_widgets::editor::{
     CodeEditor, CodeEditorFeatureFlags, CodeFileSummary, CodeTheme, Diagnostic, DiagnosticSeverity,
-    DiagnosticSource, Document, DocumentId, DocumentVersion, Editor, EditorLanguage,
+    DiagnosticSource, Document, DocumentId, DocumentVersion, Editor, EditorLanguage, EditorPane,
     EditorScrollbarStyle, EditorWrapMode, FoldRegion, SearchQuery,
 };
-use ailloli_ui_widgets::layout::{Column, Container, ScrollView};
+use ailloli_ui_widgets::layout::{Column, Container, Row, ScrollView, SplitPane};
 use ailloli_ui_widgets::text::Text;
 
 #[test]
@@ -1667,6 +1667,57 @@ fn code_editor_arrow_down_keeps_a_visible_caret_inside_the_safe_region() {
 }
 
 #[test]
+fn nested_flex_editor_pane_keeps_visible_arrow_navigation_stable() {
+    let document = State::new(Document::new(
+        DocumentId(73),
+        TextBuffer::from_string(numbered_editor_source(40)),
+    ));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        Row::new()
+            .fill()
+            .child(
+                Column::new().fill().child(
+                    SplitPane::columns(
+                        Container::new().fill(),
+                        EditorPane::new(CodeEditor::new(document).fill()).fill(),
+                    )
+                    .initial_position(96.0)
+                    .fill(),
+                ),
+            )
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    let constraints = Constraints::tight(640.0, 420.0);
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
+
+    let scene = app.paint(&mut text_system);
+    let line_nine = Point::new(
+        first_text_x(&scene, "line 9") + 16.0,
+        first_text_y(&scene, "line 9") + 6.0,
+    );
+    let mut router = InputRouter::default();
+    click_left_at(&mut router, &app, runtime.clone(), line_nine, 100);
+    let before = code_editor_vertical_thumb_y(&app.paint(&mut text_system));
+
+    route_named_key(&mut router, &app, runtime, NamedKey::ArrowDown);
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
+    let after_scene = app.paint(&mut text_system);
+
+    assert_eq!(
+        code_editor_vertical_thumb_y(&after_scene),
+        before,
+        "an intermediate nested-Flex measurement moved the committed viewport"
+    );
+    assert!(
+        first_text_y(&after_scene, "line 10") > first_text_y(&after_scene, "line 1"),
+        "ArrowDown aligned the already-visible caret line to the viewport top"
+    );
+}
+
+#[test]
 fn code_editor_upward_navigation_is_idle_until_the_caret_crosses_the_top() {
     let document = State::new(Document::new(
         DocumentId(70),
@@ -2133,12 +2184,17 @@ fn code_editor_horizontal_thumb_x(scene: &ailloli_ui_runtime::Scene) -> f32 {
 
 fn code_editor_vertical_thumb_y(scene: &ailloli_ui_runtime::Scene) -> f32 {
     let thumb_color = EditorScrollbarStyle::default().thumb_color;
-    rrects_in_text_layer(scene)
-        .into_iter()
-        .find(|rrect| rrect.color == thumb_color && rrect.rect.h > rrect.rect.w)
+    scene
+        .layers
+        .iter()
+        .flat_map(|layer| layer.cmds.iter())
+        .find_map(|cmd| match cmd {
+            DrawCmd::RRect(rrect) if rrect.color == thumb_color && rrect.rect.h > rrect.rect.w => {
+                Some(rrect.rect.y)
+            }
+            _ => None,
+        })
         .expect("vertical scrollbar thumb")
-        .rect
-        .y
 }
 
 fn vertical_thumb_around_edit(document_id: u64, margin_lines: Option<f32>) -> (f32, f32) {

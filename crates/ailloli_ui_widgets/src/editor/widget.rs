@@ -17,7 +17,7 @@ use ailloli_ui_editor::{
 };
 use ailloli_ui_runtime::component::{ComponentNode, Context, Signal, View, Widget};
 use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, InputRole};
-use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
+use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutPass, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::Invalidation;
 use ailloli_ui_text::TextSelection;
@@ -32,6 +32,18 @@ pub(super) enum CaretScrollIntent {
     FollowEditing,
     /// Keyboard or programmatic navigation reveals only the caret itself.
     RevealNavigation,
+}
+
+/// Result of attempting to process one pending caret-scroll intention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaretScrollEvaluation {
+    /// Geometry is speculative or unusable, so the intention must survive.
+    Deferred,
+    /// Authoritative geometry evaluated the intention, whether or not it moved.
+    Evaluated {
+        /// Whether the minimal reveal changed either retained scroll offset.
+        scroll_changed: bool,
+    },
 }
 
 /// Builder snapshot that creates the initial generic editor session.
@@ -133,6 +145,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
         let intrinsic = Size::new(constraints.max_w.clamp(0.0, 320.0), 180.0);
         let size = apply_layout_size(intrinsic, self.layout, constraints);
         let mut session = self.sync_session_from_props();
+        let layout_pass = ctx.layout_pass();
         if let Some(intent) = self.caret_scroll_intent.read() {
             if let Some(text_system) = ctx.text_system.as_deref_mut() {
                 let bounds = Rect::new(0.0, 0.0, size.w, size.h);
@@ -140,13 +153,17 @@ impl<A: 'static> Widget<A> for EditorWidget {
                     .engine
                     .borrow_mut()
                     .frame(&session, bounds, true, text_system);
-                if caret_reveal_frame_is_usable(&session, &frame) {
-                    if apply_caret_scroll_intent(
-                        &mut session,
-                        &frame,
-                        intent,
-                        self.caret_follow_margin_lines,
-                    ) {
+                match evaluate_caret_scroll_intent(
+                    layout_pass,
+                    &mut session,
+                    &frame,
+                    intent,
+                    self.caret_follow_margin_lines,
+                ) {
+                    CaretScrollEvaluation::Deferred => {}
+                    CaretScrollEvaluation::Evaluated {
+                        scroll_changed: true,
+                    } => {
                         self.session.set(session.clone());
                         frame = self
                             .engine
@@ -160,8 +177,11 @@ impl<A: 'static> Widget<A> for EditorWidget {
                         ) {
                             self.session.set(session);
                         }
+                        self.caret_scroll_intent.set(None);
                     }
-                    self.caret_scroll_intent.set(None);
+                    CaretScrollEvaluation::Evaluated {
+                        scroll_changed: false,
+                    } => self.caret_scroll_intent.set(None),
                 }
             }
         }
@@ -438,16 +458,41 @@ pub(super) fn apply_caret_scroll_intent(
     true
 }
 
-/// Returns whether a layout pass can evaluate caret visibility meaningfully.
+/// Evaluates one intention only against authoritative, usable geometry.
+pub(super) fn evaluate_caret_scroll_intent(
+    layout_pass: LayoutPass,
+    session: &mut EditorSession,
+    frame: &EditorFrame,
+    intent: CaretScrollIntent,
+    caret_follow_margin_lines: f32,
+) -> CaretScrollEvaluation {
+    if layout_pass.is_measure() || !caret_reveal_frame_is_usable(session, frame) {
+        return CaretScrollEvaluation::Deferred;
+    }
+    CaretScrollEvaluation::Evaluated {
+        scroll_changed: apply_caret_scroll_intent(
+            session,
+            frame,
+            intent,
+            caret_follow_margin_lines,
+        ),
+    }
+}
+
+/// Returns whether committed geometry can evaluate caret visibility safely.
 ///
-/// Flex layout may first measure a fill editor with a zero-height viewport and
-/// then lay it out again with its allocated height. A reveal request must stay
-/// pending through that measurement pass; otherwise the zero viewport would
-/// turn the caret's content position into a scroll offset before the real
-/// viewport exists.
+/// This validates only numeric and geometric inputs. Layout authority is
+/// carried independently by [`LayoutPass`].
 pub(super) fn caret_reveal_frame_is_usable(session: &EditorSession, frame: &EditorFrame) -> bool {
     let viewport = frame.viewport.text_rect;
-    if !rect_is_finite(viewport) {
+    if !rect_is_finite(viewport)
+        || !frame.content_size.w.is_finite()
+        || !frame.content_size.h.is_finite()
+        || frame.content_size.w < 0.0
+        || frame.content_size.h < 0.0
+        || !session.config.style.line_height.is_finite()
+        || session.config.style.line_height <= 0.0
+    {
         return false;
     }
     let caret = frame
@@ -458,9 +503,11 @@ pub(super) fn caret_reveal_frame_is_usable(session: &EditorSession, frame: &Edit
             _ => None,
         })
         .unwrap_or_else(|| approximate_caret_screen_rect(session, frame));
+    if !rect_is_finite(caret) || caret.w < 0.0 || caret.h < 0.0 {
+        return false;
+    }
     let axes = ailloli_ui_editor::input::scroll::axes_for_wrap_mode(session.config.wrap_mode);
-    (!axes.horizontal || viewport.w + 0.5 >= caret.w.max(1.0))
-        && (!axes.vertical || viewport.h + 0.5 >= caret.h.max(1.0))
+    (!axes.horizontal || viewport.w > 0.0) && (!axes.vertical || viewport.h > 0.0)
 }
 
 /// Maps edit commands to an explicit viewport-following policy.
@@ -715,25 +762,100 @@ mod tests {
     }
 
     #[test]
-    fn caret_reveal_waits_for_the_allocated_viewport_after_flex_measurement() {
-        let session = EditorSession::new(TextBuffer::from_string("first\nsecond"));
+    fn caret_reveal_evaluation_waits_for_committed_usable_geometry() {
+        let source = (1..=40)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        let mut session = EditorSession::new(TextBuffer::from_string(source));
+        session.edit.caret_byte = session.buffer.len_bytes();
         let mut engine = EditorEngine::new();
         let mut text_system = ailloli_ui_text::TextSystem::new();
-        let measured = engine.frame(
+
+        for height in [0.0, 18.0, 36.0, 334.0] {
+            let frame = engine.frame(
+                &session,
+                Rect::new(0.0, 0.0, 200.0, height),
+                true,
+                &mut text_system,
+            );
+            let before = (session.edit.scroll_x, session.edit.scroll_y);
+            assert_eq!(
+                evaluate_caret_scroll_intent(
+                    LayoutPass::Measure,
+                    &mut session,
+                    &frame,
+                    CaretScrollIntent::RevealNavigation,
+                    3.0,
+                ),
+                CaretScrollEvaluation::Deferred,
+                "measurement height {height} evaluated the caret intention"
+            );
+            assert_eq!((session.edit.scroll_x, session.edit.scroll_y), before);
+        }
+
+        let zero = engine.frame(
             &session,
             Rect::new(0.0, 0.0, 200.0, 0.0),
             true,
             &mut text_system,
         );
-        let allocated = engine.frame(
+        assert_eq!(
+            evaluate_caret_scroll_intent(
+                LayoutPass::Commit,
+                &mut session,
+                &zero,
+                CaretScrollIntent::RevealNavigation,
+                3.0,
+            ),
+            CaretScrollEvaluation::Deferred
+        );
+        assert_eq!(session.edit.scroll_y, 0.0);
+
+        let committed = engine.frame(
             &session,
-            Rect::new(0.0, 0.0, 200.0, 180.0),
+            Rect::new(0.0, 0.0, 200.0, 334.0),
             true,
             &mut text_system,
         );
+        assert_eq!(
+            evaluate_caret_scroll_intent(
+                LayoutPass::Commit,
+                &mut session,
+                &committed,
+                CaretScrollIntent::RevealNavigation,
+                3.0,
+            ),
+            CaretScrollEvaluation::Evaluated {
+                scroll_changed: true,
+            }
+        );
+        assert!(session.edit.scroll_y > 0.0);
+    }
 
-        assert!(!caret_reveal_frame_is_usable(&session, &measured));
-        assert!(caret_reveal_frame_is_usable(&session, &allocated));
+    #[test]
+    fn small_committed_viewport_is_valid_without_a_height_heuristic() {
+        let mut session = EditorSession::new(TextBuffer::from_string("visible"));
+        let mut engine = EditorEngine::new();
+        let mut text_system = ailloli_ui_text::TextSystem::new();
+        let frame = engine.frame(
+            &session,
+            Rect::new(0.0, 0.0, 200.0, 21.0),
+            true,
+            &mut text_system,
+        );
+        assert!(frame.viewport.text_rect.h > 0.0);
+        assert!(frame.viewport.text_rect.h < session.config.style.line_height);
+
+        assert!(matches!(
+            evaluate_caret_scroll_intent(
+                LayoutPass::Commit,
+                &mut session,
+                &frame,
+                CaretScrollIntent::RevealNavigation,
+                3.0,
+            ),
+            CaretScrollEvaluation::Evaluated { .. }
+        ));
     }
 
     #[test]

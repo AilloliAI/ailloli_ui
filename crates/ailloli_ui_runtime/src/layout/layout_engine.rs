@@ -12,9 +12,9 @@ use crate::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 ///
 /// The engine exclusively borrows an [`ElementTree`] for the traversal. Cache
 /// identity includes exact floating-point bit patterns for constraints, DPR,
-/// and virtual viewport, plus text, element, widget-dependency, and topology
-/// revisions. Consequently `0.0` and `-0.0` are distinct cache inputs and NaN
-/// payloads are compared by their bits.
+/// and virtual viewport, the layout pass authority, plus text, element,
+/// widget-dependency, and topology revisions. Consequently `0.0` and `-0.0`
+/// are distinct cache inputs and NaN payloads are compared by their bits.
 ///
 /// # Examples
 ///
@@ -113,14 +113,28 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
                 constraints.max_h.to_bits(),
             ],
             scale: ctx.scale.dpr.to_bits(),
+            layout_pass: ctx.layout_pass(),
             text_metrics_revision,
             layout_revision: element.layout_revision,
             layout_dependency_revision,
             topology_revision: element.topology_revision,
             virtual_viewport,
         };
-        if !element.dirty.layout && element.layout_cache_key == Some(cache_key) {
-            if let Some(layout) = &element.layout {
+        let (cached_key, cached_layout, cache_is_eligible) = if ctx.layout_pass().is_measure() {
+            (
+                element.measurement_layout_cache_key,
+                element.measurement_layout.as_ref(),
+                true,
+            )
+        } else {
+            (
+                element.layout_cache_key,
+                element.layout.as_ref(),
+                !element.dirty.layout,
+            )
+        };
+        if cache_is_eligible && cached_key == Some(cache_key) {
+            if let Some(layout) = cached_layout {
                 self.tree.record_layout_cache_hit(element_id);
                 return layout.clone();
             }
@@ -183,7 +197,7 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
         };
 
         #[cfg(feature = "devtools")]
-        {
+        if ctx.layout_pass().is_committed() {
             let debug = ctx.record_debug_layout(element_id, constraints, result.size);
             self.tree.set_layout_debug(element_id, debug);
         }

@@ -44,7 +44,7 @@ pub use app::{
 
 #[cfg(feature = "devtools")]
 pub use layout::LayoutDebugInfo;
-pub use layout::{LayoutCtx, Widget};
+pub use layout::{LayoutCtx, LayoutPass, Widget};
 pub use scene::{
     BlendMode, DrawBorder, DrawBoxShadow, DrawCmd, DrawImage, DrawPolyline, DrawRRect, DrawRect,
     DrawRingProgress, DrawText, IsolatedEffects, Layer, PaintCtx, Painter, Scene,

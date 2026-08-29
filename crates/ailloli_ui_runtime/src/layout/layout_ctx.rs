@@ -15,6 +15,52 @@ use super::layout_result::LayoutResult;
 #[cfg(feature = "devtools")]
 use std::collections::HashMap;
 
+/// Authority of the geometry produced by the current layout traversal.
+///
+/// Measurement is speculative and must not commit persistent state derived
+/// from the temporary geometry. Commit passes use the allocation retained by
+/// the parent and may evaluate geometry-dependent effects. A measurement pass
+/// is sticky: descendants cannot regain commit authority locally.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_runtime::layout::LayoutPass;
+///
+/// assert!(LayoutPass::Measure.is_measure());
+/// assert!(LayoutPass::Commit.is_committed());
+/// ```
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LayoutPass {
+    /// Speculative intrinsic-size or allocation probe.
+    Measure,
+    /// Authoritative retained allocation.
+    #[default]
+    Commit,
+}
+
+/// Provides phase predicates and sticky descendant composition.
+impl LayoutPass {
+    /// Returns `true` for speculative measurement geometry.
+    pub const fn is_measure(self) -> bool {
+        matches!(self, Self::Measure)
+    }
+
+    /// Returns `true` for authoritative committed geometry.
+    pub const fn is_committed(self) -> bool {
+        matches!(self, Self::Commit)
+    }
+
+    /// Combines an ancestor pass with a locally requested child pass.
+    const fn descend(self, requested: Self) -> Self {
+        if self.is_measure() || requested.is_measure() {
+            Self::Measure
+        } else {
+            Self::Commit
+        }
+    }
+}
+
 /// Mutable services and scoped hints available during one layout traversal.
 ///
 /// Geometry is expressed in logical pixels. The context borrows its optional
@@ -38,6 +84,8 @@ pub struct LayoutContext<'a> {
     pub text_system: Option<&'a mut TextSystem>,
     /// Optional content-local viewport propagated by a virtualizing ancestor.
     virtual_viewport: Option<VirtualViewport>,
+    /// Current geometry authority, inherited monotonically by descendants.
+    layout_pass: LayoutPass,
     #[cfg(feature = "devtools")]
     /// Latest developer-tooling layout record for each element in this context.
     pub debug_layouts: HashMap<ElementId, LayoutDebugInfo>,
@@ -118,6 +166,7 @@ impl<'a> LayoutContext<'a> {
             scale,
             text_system: None,
             virtual_viewport: None,
+            layout_pass: LayoutPass::Commit,
             #[cfg(feature = "devtools")]
             debug_layouts: HashMap::new(),
         }
@@ -144,6 +193,7 @@ impl<'a> LayoutContext<'a> {
             scale,
             text_system: Some(text_system),
             virtual_viewport: None,
+            layout_pass: LayoutPass::Commit,
             #[cfg(feature = "devtools")]
             debug_layouts: HashMap::new(),
         }
@@ -167,6 +217,47 @@ impl<'a> LayoutContext<'a> {
     /// ```
     pub const fn virtual_viewport(&self) -> Option<VirtualViewport> {
         self.virtual_viewport
+    }
+
+    /// Returns the authority of geometry produced by the current traversal.
+    ///
+    /// Widgets may always compute geometry, but must not persist effects based
+    /// on it while this returns [`LayoutPass::Measure`].
+    pub const fn layout_pass(&self) -> LayoutPass {
+        self.layout_pass
+    }
+
+    /// Runs a descendant traversal under a sticky requested layout pass.
+    ///
+    /// Requesting [`LayoutPass::Commit`] beneath an existing measurement keeps
+    /// the descendant in [`LayoutPass::Measure`]. The previous pass is restored
+    /// after `layout` returns.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::Scale;
+    /// use ailloli_ui_runtime::layout::{LayoutCtx, LayoutPass};
+    ///
+    /// let mut ctx = LayoutCtx::new(Scale::new(1.0));
+    /// ctx.with_layout_pass(LayoutPass::Measure, |ctx| {
+    ///     assert!(ctx.layout_pass().is_measure());
+    ///     ctx.with_layout_pass(LayoutPass::Commit, |ctx| {
+    ///         assert!(ctx.layout_pass().is_measure());
+    ///     });
+    /// });
+    /// assert!(ctx.layout_pass().is_committed());
+    /// ```
+    pub fn with_layout_pass<R>(
+        &mut self,
+        requested: LayoutPass,
+        layout: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.layout_pass;
+        self.layout_pass = previous.descend(requested);
+        let result = layout(self);
+        self.layout_pass = previous;
+        result
     }
 
     /// Replaces the current content viewport and returns the previous value.

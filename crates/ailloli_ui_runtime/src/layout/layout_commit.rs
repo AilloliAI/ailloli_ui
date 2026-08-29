@@ -6,7 +6,7 @@ use ailloli_ui_core::ids::ElementId;
 use crate::element::{ElementKind, ElementTree};
 use crate::layout::LayoutCtx;
 
-/// Commits cached layout bounds and notifies retained widgets recursively.
+/// Commits authoritative layout bounds and notifies retained widgets recursively.
 ///
 /// `origin` is an absolute logical-pixel translation for the root result's
 /// `paint_bounds`. Unknown elements and elements without a cached layout are
@@ -44,6 +44,12 @@ pub fn commit_layout_element<A: 'static>(
     let Some(el) = tree.get(element_id) else {
         return;
     };
+    if el
+        .layout_cache_key
+        .is_some_and(|key| key.layout_pass.is_measure())
+    {
+        return;
+    }
     let Some(layout) = el.layout.as_ref() else {
         return;
     };

@@ -195,6 +195,8 @@ impl<A> ElementTree<A> {
             children: Vec::new(),
             layout: None,
             layout_cache_key: None,
+            measurement_layout: None,
+            measurement_layout_cache_key: None,
             layout_revision: 1,
             topology_revision: 1,
             layout_changed: true,
@@ -237,6 +239,8 @@ impl<A> ElementTree<A> {
                 p.topology_revision = p.topology_revision.wrapping_add(1).max(1);
                 p.layout_revision = p.layout_revision.wrapping_add(1).max(1);
                 p.layout_cache_key = None;
+                p.measurement_layout = None;
+                p.measurement_layout_cache_key = None;
                 p.dirty = DirtyFlags::layout();
                 p.commit_dirty = true;
             }
@@ -329,16 +333,20 @@ impl<A> ElementTree<A> {
     pub fn set_layout(&mut self, id: ElementId, layout: LayoutResult) {
         if let Some(e) = self.elements.get_mut(&id) {
             e.layout = Some(layout);
+            e.measurement_layout = None;
+            e.measurement_layout_cache_key = None;
             e.dirty.layout = false;
             e.dirty.paint = false;
         }
     }
 
-    /// Stores a layout with cache identity and updates commit-change state.
+    /// Stores a pass-specific layout with its cache identity.
     ///
-    /// Geometry is compared to the previous result without considering its
-    /// artifact. The method clears layout/paint dirtiness and preserves input
-    /// dirtiness. Unknown IDs are ignored.
+    /// Measurement results use a separate speculative cache and never replace
+    /// authoritative geometry or change dirty/commit state. Committed geometry
+    /// is compared to the previous result without considering its artifact;
+    /// that path clears layout/paint dirtiness and preserves input dirtiness.
+    /// Unknown IDs are ignored.
     ///
     /// # Examples
     ///
@@ -359,12 +367,19 @@ impl<A> ElementTree<A> {
         cache_key: LayoutCacheKey,
     ) {
         if let Some(element) = self.elements.get_mut(&id) {
+            if cache_key.layout_pass.is_measure() {
+                element.measurement_layout = Some(layout);
+                element.measurement_layout_cache_key = Some(cache_key);
+                return;
+            }
             element.layout_changed = element
                 .layout
                 .as_ref()
                 .is_none_or(|previous| !previous.geometry_eq(&layout));
             element.layout = Some(layout);
             element.layout_cache_key = Some(cache_key);
+            element.measurement_layout = None;
+            element.measurement_layout_cache_key = None;
             element.dirty.layout = false;
             element.dirty.paint = false;
             element.commit_dirty |= element.layout_changed;

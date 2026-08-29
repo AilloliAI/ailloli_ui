@@ -16,7 +16,7 @@ use ailloli_ui_runtime::component::{
 };
 use ailloli_ui_runtime::input::{ClickAction, EventCtx, FocusPolicy, InputRole, IntoClickAction};
 use ailloli_ui_runtime::layout::{
-    ChildLayout, LayoutArtifact, LayoutChild, LayoutCtx, LayoutResult,
+    ChildLayout, LayoutArtifact, LayoutChild, LayoutCtx, LayoutPass, LayoutResult,
 };
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{
@@ -759,7 +759,9 @@ impl<A: 'static> Widget<A> for CommandPaletteWidget<A> {
         let size = host_slot_size(engine, ctx, children, constraints, self.layout);
         let mut child_layouts = Vec::new();
         if let Some(child) = children.first_mut() {
-            let r = child.layout(engine, ctx, Constraints::tight(size.w, size.h));
+            let r = ctx.with_layout_pass(LayoutPass::Commit, |ctx| {
+                child.layout(engine, ctx, Constraints::tight(size.w, size.h))
+            });
             child_layouts.push(ChildLayout {
                 offset: Offset::default(),
                 size: r.size,
@@ -1459,7 +1461,9 @@ fn host_slot_size<A: 'static>(
     layout: LayoutStyle,
 ) -> Size {
     let intrinsic = if let Some(child) = children.first_mut() {
-        child.layout(engine, ctx, constraints.loosen()).size
+        ctx.with_layout_pass(LayoutPass::Measure, |ctx| {
+            child.layout(engine, ctx, constraints.loosen()).size
+        })
     } else {
         Size::new(
             finite_or(constraints.max_w, 0.0),

@@ -26,8 +26,8 @@ use ailloli_ui_text::{TextEditAction, TextInputMode, TextKeymap, TextSelection};
 use super::adapter::paint_editor_frame;
 use super::code_builder::DocumentChangeHandler;
 use super::widget::{
-    apply_caret_scroll_intent, caret_reveal_frame_is_usable, caret_scroll_intent_for_action,
-    pointer_selection_scroll_delta, CaretScrollIntent,
+    apply_caret_scroll_intent, caret_scroll_intent_for_action, evaluate_caret_scroll_intent,
+    pointer_selection_scroll_delta, CaretScrollEvaluation, CaretScrollIntent,
 };
 use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
 
@@ -203,22 +203,24 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
         let bounds = Rect::new(0.0, 0.0, size.w, size.h);
         let mut session = self.sync_session_from_props();
         let mut geometries = Vec::new();
+        let layout_pass = ctx.layout_pass();
         if let Some(text_system) = ctx.text_system.as_deref_mut() {
             let mut frame =
                 self.engine
                     .borrow_mut()
                     .code_frame(&session, bounds, true, text_system);
             if let Some(intent) = self.caret_scroll_intent.read() {
-                if caret_reveal_frame_is_usable(&session.editor, &frame) {
-                    for _ in 0..2 {
-                        if !apply_caret_scroll_intent(
-                            &mut session.editor,
-                            &frame,
-                            intent,
-                            self.caret_follow_margin_lines,
-                        ) {
-                            break;
-                        }
+                match evaluate_caret_scroll_intent(
+                    layout_pass,
+                    &mut session.editor,
+                    &frame,
+                    intent,
+                    self.caret_follow_margin_lines,
+                ) {
+                    CaretScrollEvaluation::Deferred => {}
+                    CaretScrollEvaluation::Evaluated {
+                        scroll_changed: true,
+                    } => {
                         self.session.set(session.clone());
                         frame = self.engine.borrow_mut().code_frame(
                             &session,
@@ -226,8 +228,25 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                             true,
                             text_system,
                         );
+                        if apply_caret_scroll_intent(
+                            &mut session.editor,
+                            &frame,
+                            intent,
+                            self.caret_follow_margin_lines,
+                        ) {
+                            self.session.set(session.clone());
+                            frame = self.engine.borrow_mut().code_frame(
+                                &session,
+                                bounds,
+                                true,
+                                text_system,
+                            );
+                        }
+                        self.caret_scroll_intent.set(None);
                     }
-                    self.caret_scroll_intent.set(None);
+                    CaretScrollEvaluation::Evaluated {
+                        scroll_changed: false,
+                    } => self.caret_scroll_intent.set(None),
                 }
             }
             geometries = code_scrollbar_geometries(
@@ -236,9 +255,11 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                 self.config.scrollbars,
             );
         }
-        let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(&geometries) {
-            self.scrollbar_interaction.set(interaction);
+        if layout_pass.is_committed() {
+            let mut interaction = self.scrollbar_interaction.read();
+            if interaction.reconcile(&geometries) {
+                self.scrollbar_interaction.set(interaction);
+            }
         }
 
         LayoutResult {

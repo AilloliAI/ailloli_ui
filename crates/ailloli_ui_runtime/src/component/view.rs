@@ -407,6 +407,9 @@ pub trait Widget<A>: 'static {
     /// The returned child vector must correspond by index to `children` for
     /// commit, paint, and hit testing. Implementations define constraint and
     /// non-finite handling and may recursively call [`LayoutChild::layout`].
+    /// [`LayoutCtx::layout_pass`] distinguishes speculative measurement from
+    /// authoritative allocation. Implementations must not persist effects
+    /// derived from geometry during a measurement pass.
     ///
     /// # Examples
     ///

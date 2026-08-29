@@ -249,6 +249,8 @@ pub fn reconcile_element<A: 'static>(
         el.dirty = super::DirtyFlags::layout();
         el.layout_revision = el.layout_revision.wrapping_add(1).max(1);
         el.layout_cache_key = None;
+        el.measurement_layout = None;
+        el.measurement_layout_cache_key = None;
         el.commit_dirty = true;
     }
     tree.set_view_metadata(element_id, flex_item, size_hint);
@@ -346,6 +348,8 @@ pub fn reconcile_existing_component<A: 'static>(
         el.dirty = super::DirtyFlags::layout();
         el.layout_revision = el.layout_revision.wrapping_add(1).max(1);
         el.layout_cache_key = None;
+        el.measurement_layout = None;
+        el.measurement_layout_cache_key = None;
         el.commit_dirty = true;
     }
 
