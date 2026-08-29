@@ -59,7 +59,7 @@ const CAPTURE_SHA256: &str = "88920411aafcb8cbc6e9a9e71a5041a627b677cec62da820fd
 const ICON_PATH: &str = "apps/sandbox_app/src/assets/icons/icon.svg";
 const ICON_V3_SHA256: &str = "e8056e11a3e16a21da5e12726c283cea4d43bab2b479a9c8b31401cd2118de43";
 
-const REQUIRED_ROOT_FILES: [&str; 31] = [
+const REQUIRED_ROOT_FILES: [&str; 34] = [
     ".cargo/audit.toml",
     ".cargo/config.toml",
     ".github/CODEOWNERS",
@@ -68,10 +68,13 @@ const REQUIRED_ROOT_FILES: [&str; 31] = [
     ".github/ISSUE_TEMPLATE/feature_request.yml",
     ".github/dependabot.yml",
     ".github/pull_request_template.md",
+    ".github/scripts/classify-ci-changes.sh",
     ".github/scripts/run-actionlint.sh",
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/pages.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/validation.yml",
     "ARCHITECTURE.md",
     "BENCHMARKING.md",
     "CHANGELOG.md",
@@ -93,7 +96,17 @@ const REQUIRED_ROOT_FILES: [&str; 31] = [
     "tools/xtask/Cargo.toml",
 ];
 
-const EXPECTED_WORKFLOWS: [&str; 3] = ["ci.yml", "codeql.yml", "pages.yml"];
+const EXPECTED_WORKFLOWS: [&str; 5] = [
+    "ci.yml",
+    "codeql.yml",
+    "pages.yml",
+    "release.yml",
+    "validation.yml",
+];
+const INTERNAL_BASELINE_WORKFLOWS: [&str; 1] = ["ci.yml"];
+const INTERNAL_CANARY_WORKFLOWS: [&str; 3] =
+    ["ci-candidate.yml", "ci.yml", "validation-candidate.yml"];
+const INTERNAL_PRODUCTION_WORKFLOWS: [&str; 2] = ["ci.yml", "validation.yml"];
 const EXCLUDED_DIRECTORIES: [&str; 5] = [".git", ".cache", "generated", "target", "vendor"];
 
 #[derive(Debug, Deserialize)]
@@ -696,13 +709,18 @@ fn allowed_actions() -> BTreeMap<&'static str, &'static str> {
 }
 
 fn validate_workflow_text(text: &str, label: &str) -> Result<()> {
-    for forbidden in [
-        "pull_request_target:",
-        "self-hosted",
-        "permissions: write-all",
-        "secrets.",
-    ] {
-        if text.contains(forbidden) {
+    let forbidden = [
+        "pull_request_target:".to_owned(),
+        "permissions: write-all".to_owned(),
+        "secrets.".to_owned(),
+        "secrets[".to_owned(),
+        "secrets:".to_owned(),
+        ["../", "internal/"].concat(),
+        ["ailloli", "_ui_internal"].concat(),
+        ["ailloli", "_suite"].concat(),
+    ];
+    for forbidden in forbidden {
+        if text.contains(&forbidden) {
             bail!("workflow {label} contains forbidden token {forbidden:?}");
         }
     }
@@ -734,28 +752,279 @@ fn validate_workflow_text(text: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_workflows(root: &Path, extra_workflow_roots: &[PathBuf]) -> Result<usize> {
-    let public_root = root.join(".github/workflows");
-    let actual: BTreeSet<String> = fs::read_dir(&public_root)
-        .with_context(|| format!("cannot read {}", public_root.display()))?
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkflowSurface {
+    Public,
+    InternalBaseline,
+    InternalCanary,
+    InternalProduction,
+}
+
+fn validate_runner_contract(text: &str, label: &str, surface: WorkflowSurface) -> Result<()> {
+    let declarations = Regex::new(r"(?m)^    runs-on:")?.find_iter(text).count();
+    if surface == WorkflowSurface::Public {
+        if text.contains("self-hosted") {
+            bail!("public workflow {label} must not use a self-hosted runner");
+        }
+        let github_hosted = Regex::new(r"(?m)^    runs-on:\s*(?:ubuntu|windows)-latest\s*$")?
+            .find_iter(text)
+            .count();
+        if declarations != github_hosted {
+            bail!(
+                "public workflow {label} must use an approved GitHub-hosted runner for every runner declaration"
+            );
+        }
+        return Ok(());
+    }
+
+    if Regex::new(r"(?m)^    runs-on:\s*(?:ubuntu|windows|macos)-latest\s*$")?.is_match(text) {
+        bail!("Internal workflow {label} must not use a GitHub-hosted runner");
+    }
+    let self_hosted = Regex::new(
+        r"(?m)^    runs-on:\s*\n      group:\s*[A-Za-z0-9][A-Za-z0-9._-]*\s*\n      labels:\s*\[self-hosted,\s*Linux,\s*X64\]\s*$",
+    )?
+    .find_iter(text)
+    .count();
+    if declarations == 0 || declarations != self_hosted {
+        bail!(
+            "Internal workflow {label} must route every runner declaration through an explicit Linux X64 self-hosted group"
+        );
+    }
+    Ok(())
+}
+
+fn workflow_name_set(root: &Path) -> Result<BTreeSet<String>> {
+    Ok(fs::read_dir(root)
+        .with_context(|| format!("cannot read {}", root.display()))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("yml"))
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
         .filter_map(|path| {
             path.file_name()
                 .and_then(|value| value.to_str())
                 .map(ToOwned::to_owned)
         })
+        .collect())
+}
+
+fn expected_workflow_set(values: &[&str]) -> BTreeSet<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn internal_workflow_surface(actual: &BTreeSet<String>) -> Result<WorkflowSurface> {
+    if *actual == expected_workflow_set(&INTERNAL_BASELINE_WORKFLOWS) {
+        Ok(WorkflowSurface::InternalBaseline)
+    } else if *actual == expected_workflow_set(&INTERNAL_CANARY_WORKFLOWS) {
+        Ok(WorkflowSurface::InternalCanary)
+    } else if *actual == expected_workflow_set(&INTERNAL_PRODUCTION_WORKFLOWS) {
+        Ok(WorkflowSurface::InternalProduction)
+    } else {
+        bail!("internal workflow set is not baseline, canary, or production: {actual:?}")
+    }
+}
+
+fn validate_local_workflow_calls(
+    text: &str,
+    label: &str,
+    file_name: &str,
+    surface: WorkflowSurface,
+) -> Result<()> {
+    let local_uses = Regex::new(r"(?m)^\s*uses:\s*(\./[^\s#]+)\s*$")?;
+    let actual: Vec<String> = local_uses
+        .captures_iter(text)
+        .map(|capture| capture[1].to_owned())
         .collect();
-    let expected: BTreeSet<String> = EXPECTED_WORKFLOWS
-        .into_iter()
-        .map(ToOwned::to_owned)
+    let expected: &[&str] = match (surface, file_name) {
+        (WorkflowSurface::Public, "ci.yml" | "release.yml")
+        | (WorkflowSurface::InternalProduction, "ci.yml") => {
+            &["./.github/workflows/validation.yml"]
+        }
+        (WorkflowSurface::InternalCanary, "ci-candidate.yml") => {
+            &["./.github/workflows/validation-candidate.yml"]
+        }
+        _ => &[],
+    };
+    if actual != expected {
+        bail!(
+            "workflow {label} has unexpected local reusable calls: got {actual:?}; expected {expected:?}"
+        );
+    }
+    Ok(())
+}
+
+fn validate_validation_workflow(text: &str, label: &str, surface: WorkflowSurface) -> Result<()> {
+    for required in [
+        "cargo +1.88.0 metadata --locked --format-version 1",
+        "cargo +1.88.0 fmt --all -- --check",
+        "cargo +1.88.0 check --workspace --all-targets --all-features --locked",
+        "cargo +1.88.0 test --workspace --all-features --lib --bins --tests --locked",
+        "cargo +1.88.0 test --workspace --doc --all-features --locked",
+        "cargo +1.88.0 clippy --workspace --all-targets --all-features --locked -- -D warnings",
+        "--workspace --all-features --no-deps --locked",
+        "--document-private-items --locked",
+        "cargo +1.88.0 check -p ailloli_ui --no-default-features --locked",
+        "cargo +1.88.0 audit",
+    ] {
+        if !text.contains(required) {
+            bail!("validation workflow {label} lost required gate {required:?}");
+        }
+    }
+    if text.contains("\nconcurrency:") {
+        bail!("reusable validation workflow {label} must not own concurrency");
+    }
+    if text.contains("CARGO_BUILD_JOBS") || text.contains("--test-threads") {
+        bail!("validation workflow {label} must use runner-selected parallelism");
+    }
+    if surface == WorkflowSurface::Public {
+        if text.matches("runs-on: windows-latest").count() != 1 {
+            bail!("public validation workflow {label} must define exactly one Windows runner");
+        }
+        for required in [
+            "name: Validation / Windows winit",
+            "cargo +1.88.0 check -p ailloli_ui_winit --all-targets --all-features --locked",
+            "cargo +1.88.0 test -p ailloli_ui_winit --all-features --lib --tests --locked",
+            "WINDOWS_WINIT_RESULT",
+        ] {
+            if !text.contains(required) {
+                bail!("public validation workflow {label} lost Windows gate {required:?}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) -> Result<()> {
+    let label = path.display().to_string();
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("workflow filename is not UTF-8")?;
+    validate_runner_contract(text, &label, surface)?;
+    if surface == WorkflowSurface::Public
+        && file_name != "validation.yml"
+        && text.contains("runs-on: windows-latest")
+    {
+        bail!("public Windows runner is permitted only in validation.yml");
+    }
+    let write_permission = Regex::new(r"(?m)^\s+([a-z-]+):\s*write\s*$")?;
+    let write_permissions: Vec<&str> = write_permission
+        .captures_iter(text)
+        .map(|capture| capture.get(1).expect("permission key").as_str())
         .collect();
+    validate_local_workflow_calls(text, &label, file_name, surface)?;
+
+    let allowed_write_permissions: &[&str] = match file_name {
+        "codeql.yml" => &["security-events"],
+        "pages.yml" => &["pages", "id-token"],
+        _ => &[],
+    };
+    if let Some(permission) = write_permissions
+        .iter()
+        .find(|permission| !allowed_write_permissions.contains(permission))
+    {
+        bail!("workflow {label} requests forbidden {permission}: write permission");
+    }
+
+    match file_name {
+        "ci.yml" => {
+            if text.contains("python3 ") {
+                bail!("CI workflow {label} must use first-party Rust or shell audits");
+            }
+            if matches!(
+                surface,
+                WorkflowSurface::Public | WorkflowSurface::InternalProduction
+            ) {
+                for required in [
+                    "classify-ci-changes.sh",
+                    "name: CI / docs-only",
+                    "name: CI / required",
+                ] {
+                    if !text.contains(required) {
+                        bail!("contextual CI workflow {label} lacks {required:?}");
+                    }
+                }
+                if text.contains("paths:") {
+                    bail!("required CI workflow {label} must not use path filters");
+                }
+            }
+        }
+        "ci-candidate.yml" => {
+            if surface != WorkflowSurface::InternalCanary {
+                bail!("CI candidate is permitted only on the Internal canary surface");
+            }
+            if !text.contains("name: CI candidate / complete")
+                || !text.contains("workflow_dispatch:")
+                || text.contains("\n  push:")
+                || text.contains("\n  pull_request:")
+            {
+                bail!("Internal CI candidate must be manual-only with a stable aggregator");
+            }
+        }
+        "validation.yml" | "validation-candidate.yml" => {
+            validate_validation_workflow(text, &label, surface)?;
+        }
+        "codeql.yml" => {
+            if surface != WorkflowSurface::Public {
+                bail!("CodeQL is permitted only on the Public workflow surface");
+            }
+            if text.matches("security-events: write").count() != 2
+                || !text.contains("languages: rust")
+                || !text.contains("languages: actions")
+                || text.matches("build-mode: none").count() != 2
+                || !text.contains("name: CodeQL / required")
+            {
+                bail!("CodeQL must route rust/actions with a stable required aggregator");
+            }
+        }
+        "pages.yml" => {
+            if surface != WorkflowSurface::Public {
+                bail!("Pages is permitted only on the Public workflow surface");
+            }
+            if text.matches("pages: write").count() != 1
+                || text.matches("id-token: write").count() != 1
+                || !text.contains("needs: build")
+                || !text.contains("group: pages")
+                || !text.contains("cancel-in-progress: false")
+                || text.contains("CARGO_INCREMENTAL")
+                || !text.contains("cargo +1.88.0 doc --workspace --lib")
+            {
+                bail!("Pages workflow violates the non-cancellable split deployment contract");
+            }
+        }
+        "release.yml" => {
+            if surface != WorkflowSurface::Public {
+                bail!("release validation is permitted only on the Public workflow surface");
+            }
+            if !text.contains("cancel-in-progress: false")
+                || !text.contains("cargo +1.88.0 xtask release-check")
+                || text.contains("cargo publish")
+                || text.contains("cargo login")
+            {
+                bail!("release workflow must validate without publishing and without cancellation");
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_workflows(root: &Path, extra_workflow_roots: &[PathBuf]) -> Result<usize> {
+    let public_root = root.join(".github/workflows");
+    let actual = workflow_name_set(&public_root)?;
+    let expected = expected_workflow_set(&EXPECTED_WORKFLOWS);
     if actual != expected {
         bail!("public workflow set changed: got {actual:?}; expected {expected:?}");
     }
 
-    let mut paths = workflow_paths(&public_root)?;
+    let mut paths: Vec<(PathBuf, WorkflowSurface)> = workflow_paths(&public_root)?
+        .into_iter()
+        .map(|path| (path, WorkflowSurface::Public))
+        .collect();
     for extra in extra_workflow_roots {
         let extra = if extra.is_absolute() {
             extra.clone()
@@ -765,49 +1034,18 @@ fn validate_workflows(root: &Path, extra_workflow_roots: &[PathBuf]) -> Result<u
         if !extra.is_dir() {
             bail!("extra workflow root is missing: {}", extra.display());
         }
-        paths.extend(workflow_paths(&extra)?);
+        let surface = internal_workflow_surface(&workflow_name_set(&extra)?)?;
+        paths.extend(
+            workflow_paths(&extra)?
+                .into_iter()
+                .map(|path| (path, surface)),
+        );
     }
 
-    let write_permission = Regex::new(r"(?m)^\s+[a-z-]+:\s*write\s*$")?;
-    for path in &paths {
+    for (path, surface) in &paths {
         let text = read_utf8(path)?;
         validate_workflow_text(&text, &path.display().to_string())?;
-        match path.file_name().and_then(|value| value.to_str()) {
-            Some("ci.yml") => {
-                if write_permission.is_match(&text) {
-                    bail!(
-                        "CI workflow {} must not request write permissions",
-                        path.display()
-                    );
-                }
-                if text.contains("python3 ") {
-                    bail!(
-                        "CI workflow {} must use xtask instead of Python audits",
-                        path.display()
-                    );
-                }
-            }
-            Some("codeql.yml") => {
-                if text.matches("security-events: write").count() != 1 {
-                    bail!("CodeQL must grant security-events: write exactly once");
-                }
-                if !text.contains("language: [rust, actions]") || !text.contains("build-mode: none")
-                {
-                    bail!("CodeQL must analyze rust and actions in build mode none");
-                }
-            }
-            Some("pages.yml") => {
-                if text.matches("pages: write").count() != 1
-                    || text.matches("id-token: write").count() != 1
-                {
-                    bail!("Pages must grant pages and id-token write exactly once");
-                }
-                if !text.contains("needs: build") {
-                    bail!("Pages deployment must be separated from its build job");
-                }
-            }
-            _ => {}
-        }
+        validate_surface_workflow(path, &text, *surface)?;
     }
     Ok(paths.len())
 }
@@ -818,7 +1056,12 @@ fn workflow_paths(root: &Path) -> Result<Vec<PathBuf>> {
         .collect::<std::result::Result<Vec<_>, _>>()?
         .into_iter()
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("yml"))
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("yml" | "yaml")
+            )
+        })
         .collect();
     paths.sort();
     Ok(paths)
@@ -1408,10 +1651,8 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
         bail!("negative funding fixture was unexpectedly accepted");
     }
 
-    validate_workflow_text(
-        &read_utf8(&fixtures.join("workflow-valid.yml"))?,
-        "positive workflow fixture",
-    )?;
+    let valid_workflow = read_utf8(&fixtures.join("workflow-valid.yml"))?;
+    validate_workflow_text(&valid_workflow, "positive workflow fixture")?;
     if validate_workflow_text(
         &read_utf8(&fixtures.join("workflow-invalid.yml"))?,
         "negative workflow fixture",
@@ -1419,6 +1660,140 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     .is_ok()
     {
         bail!("negative workflow fixture was unexpectedly accepted");
+    }
+
+    let invalid_workflows = [
+        (
+            "global write fixture",
+            valid_workflow.replace("permissions:\n  contents: read", "permissions: write-all"),
+        ),
+        (
+            "secret fixture",
+            format!("{valid_workflow}\n# {}", ["secrets", ".TOKEN"].concat()),
+        ),
+        (
+            "bracket secret fixture",
+            format!("{valid_workflow}\n# {}", ["secrets", "['TOKEN']"].concat()),
+        ),
+        (
+            "secret mapping fixture",
+            format!("{valid_workflow}\n# {}", ["secrets", ":"].concat()),
+        ),
+        (
+            "privileged pull request fixture",
+            valid_workflow.replace("on: workflow_dispatch", "on: pull_request_target:"),
+        ),
+        (
+            "private path fixture",
+            format!("{valid_workflow}\n# {}", ["../", "internal/"].concat()),
+        ),
+    ];
+    for (label, text) in invalid_workflows {
+        if validate_workflow_text(&text, label).is_ok() {
+            bail!("{label} was unexpectedly accepted");
+        }
+    }
+
+    let internal_runner_workflow = valid_workflow.replace(
+        "    runs-on: ubuntu-latest",
+        "    runs-on:\n      group: internal-ci\n      labels: [self-hosted, Linux, X64]",
+    );
+    validate_runner_contract(
+        &internal_runner_workflow,
+        "positive Internal runner fixture",
+        WorkflowSurface::InternalBaseline,
+    )?;
+    if validate_runner_contract(
+        &internal_runner_workflow,
+        "public self-hosted runner fixture",
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
+        bail!("public self-hosted runner fixture was unexpectedly accepted");
+    }
+    if validate_runner_contract(
+        &valid_workflow,
+        "Internal GitHub-hosted runner fixture",
+        WorkflowSurface::InternalBaseline,
+    )
+    .is_ok()
+    {
+        bail!("Internal GitHub-hosted runner fixture was unexpectedly accepted");
+    }
+    let public_windows_workflow =
+        valid_workflow.replace("    runs-on: ubuntu-latest", "    runs-on: windows-latest");
+    validate_runner_contract(
+        &public_windows_workflow,
+        "positive Public Windows runner fixture",
+        WorkflowSurface::Public,
+    )?;
+    let public_windows_outside_validation = validate_surface_workflow(
+        &fixtures.join("ci.yml"),
+        &public_windows_workflow,
+        WorkflowSurface::Public,
+    )
+    .expect_err("Public Windows runner outside validation.yml must be rejected");
+    if !public_windows_outside_validation
+        .to_string()
+        .contains("permitted only in validation.yml")
+    {
+        bail!(
+            "Public Windows placement fixture failed for the wrong reason: {public_windows_outside_validation}"
+        );
+    }
+
+    let unexpected_internal = expected_workflow_set(&["ci.yml", "unexpected.yml"]);
+    if internal_workflow_surface(&unexpected_internal).is_ok() {
+        bail!("unexpected Internal workflow set was accepted");
+    }
+    if validate_local_workflow_calls(
+        &valid_workflow,
+        "missing local call fixture",
+        "ci.yml",
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
+        bail!("public CI without its reusable validation call was accepted");
+    }
+
+    let filtered_ci = format!(
+        "{valid_workflow}\n# classify-ci-changes.sh\n# name: CI / docs-only\n# name: CI / required\n# paths:\n  uses: ./.github/workflows/validation.yml\n"
+    );
+    if validate_surface_workflow(
+        &fixtures.join("ci.yml"),
+        &filtered_ci,
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
+        bail!("required CI path filter fixture was unexpectedly accepted");
+    }
+    if validate_validation_workflow(
+        &valid_workflow,
+        "incomplete validation fixture",
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
+        bail!("incomplete reusable validation fixture was unexpectedly accepted");
+    }
+
+    let codeql_with_excess_write = format!(
+        "{valid_workflow}\n# languages: rust\n# languages: actions\n# build-mode: none\n# build-mode: none\n# name: CodeQL / required\n  contents: write\n  security-events: write\n  security-events: write\n"
+    );
+    let excess_write = validate_surface_workflow(
+        &fixtures.join("codeql.yml"),
+        &codeql_with_excess_write,
+        WorkflowSurface::Public,
+    )
+    .expect_err("CodeQL excess write permission must be rejected");
+    if !excess_write
+        .to_string()
+        .contains("forbidden contents: write")
+    {
+        bail!("CodeQL excess write fixture failed for the wrong reason: {excess_write}");
     }
 
     validate_metadata_fixture(&fixtures.join("metadata-valid.json"))?;
@@ -1436,7 +1811,7 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
             bail!("negative context fixture was unexpectedly accepted");
         }
     }
-    Ok(json!({"status": "ok", "positive": 4, "negative": 5}))
+    Ok(json!({"status": "ok", "positive": 5, "negative": 18}))
 }
 
 fn validate_metadata_fixture(path: &Path) -> Result<()> {
