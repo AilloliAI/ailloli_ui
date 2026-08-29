@@ -711,7 +711,6 @@ fn allowed_actions() -> BTreeMap<&'static str, &'static str> {
 fn validate_workflow_text(text: &str, label: &str) -> Result<()> {
     let forbidden = [
         "pull_request_target:".to_owned(),
-        "self-hosted".to_owned(),
         "permissions: write-all".to_owned(),
         "secrets.".to_owned(),
         "secrets[".to_owned(),
@@ -759,6 +758,37 @@ enum WorkflowSurface {
     InternalBaseline,
     InternalCanary,
     InternalProduction,
+}
+
+fn validate_runner_contract(text: &str, label: &str, surface: WorkflowSurface) -> Result<()> {
+    let declarations = Regex::new(r"(?m)^    runs-on:")?.find_iter(text).count();
+    if surface == WorkflowSurface::Public {
+        if text.contains("self-hosted") {
+            bail!("public workflow {label} must not use a self-hosted runner");
+        }
+        let github_hosted = Regex::new(r"(?m)^    runs-on:\s*ubuntu-latest\s*$")?
+            .find_iter(text)
+            .count();
+        if declarations != github_hosted {
+            bail!("public workflow {label} must use ubuntu-latest for every runner declaration");
+        }
+        return Ok(());
+    }
+
+    if text.contains("ubuntu-latest") {
+        bail!("Internal workflow {label} must not use a GitHub-hosted runner");
+    }
+    let self_hosted = Regex::new(
+        r"(?m)^    runs-on:\s*\n      group:\s*[A-Za-z0-9][A-Za-z0-9._-]*\s*\n      labels:\s*\[self-hosted,\s*Linux,\s*X64\]\s*$",
+    )?
+    .find_iter(text)
+    .count();
+    if declarations == 0 || declarations != self_hosted {
+        bail!(
+            "Internal workflow {label} must route every runner declaration through an explicit Linux X64 self-hosted group"
+        );
+    }
+    Ok(())
 }
 
 fn workflow_name_set(root: &Path) -> Result<BTreeSet<String>> {
@@ -857,6 +887,7 @@ fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) 
         .file_name()
         .and_then(|value| value.to_str())
         .context("workflow filename is not UTF-8")?;
+    validate_runner_contract(text, &label, surface)?;
     let write_permission = Regex::new(r"(?m)^\s+([a-z-]+):\s*write\s*$")?;
     let write_permissions: Vec<&str> = write_permission
         .captures_iter(text)
@@ -1640,6 +1671,34 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
         }
     }
 
+    let internal_runner_workflow = valid_workflow.replace(
+        "    runs-on: ubuntu-latest",
+        "    runs-on:\n      group: internal-ci\n      labels: [self-hosted, Linux, X64]",
+    );
+    validate_runner_contract(
+        &internal_runner_workflow,
+        "positive Internal runner fixture",
+        WorkflowSurface::InternalBaseline,
+    )?;
+    if validate_runner_contract(
+        &internal_runner_workflow,
+        "public self-hosted runner fixture",
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
+        bail!("public self-hosted runner fixture was unexpectedly accepted");
+    }
+    if validate_runner_contract(
+        &valid_workflow,
+        "Internal GitHub-hosted runner fixture",
+        WorkflowSurface::InternalBaseline,
+    )
+    .is_ok()
+    {
+        bail!("Internal GitHub-hosted runner fixture was unexpectedly accepted");
+    }
+
     let unexpected_internal = expected_workflow_set(&["ci.yml", "unexpected.yml"]);
     if internal_workflow_surface(&unexpected_internal).is_ok() {
         bail!("unexpected Internal workflow set was accepted");
@@ -1702,7 +1761,7 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
             bail!("negative context fixture was unexpectedly accepted");
         }
     }
-    Ok(json!({"status": "ok", "positive": 4, "negative": 16}))
+    Ok(json!({"status": "ok", "positive": 5, "negative": 18}))
 }
 
 fn validate_metadata_fixture(path: &Path) -> Result<()> {
