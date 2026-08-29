@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
@@ -12,27 +13,105 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  analyze:
-    name: CodeQL (${{ matrix.language }})
+  changes:
+    name: CodeQL / classify changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.scope.outputs.full }}
+      workflow_policy: ${{ steps.scope.outputs.workflow_policy }}
+      unknown_full: ${{ steps.scope.outputs.unknown_full }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Classify the Git change range
+        id: scope
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_BEFORE_SHA: ${{ github.event.before }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          CI_HEAD_SHA: ${{ github.sha }}
+          CI_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          CI_REF_TYPE: ${{ github.ref_type }}
+        run: .github/scripts/classify-ci-changes.sh --public-prefix ""
+
+  rust:
+    name: CodeQL / Rust
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [rust, actions]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - name: Initialize CodeQL
+      - name: Initialize Rust analysis
         uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         with:
-          languages: ${{ matrix.language }}
+          languages: rust
           build-mode: none
-      - name: Analyze
+      - name: Analyze Rust
         uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
         with:
-          category: /language:${{ matrix.language }}
+          category: /language:rust
+
+  actions:
+    name: CodeQL / Actions
+    needs: changes
+    if: needs.changes.outputs.workflow_policy == 'true' || needs.changes.outputs.unknown_full == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Initialize Actions analysis
+        uses: github/codeql-action/init@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
+        with:
+          languages: actions
+          build-mode: none
+      - name: Analyze Actions
+        uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
+        with:
+          category: /language:actions
+
+  required:
+    name: CodeQL / required
+    needs: [changes, rust, actions]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACTIONS_EXPECTED: ${{ needs.changes.outputs.workflow_policy == 'true' || needs.changes.outputs.unknown_full == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      ACTIONS_RESULT: ${{ needs.actions.result }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      RUST_EXPECTED: ${{ needs.changes.outputs.full }}
+      RUST_RESULT: ${{ needs.rust.result }}
+    steps:
+      - name: Enforce the routed CodeQL contract
+        run: |
+          set -euo pipefail
+          [[ "${CHANGES_RESULT}" == "success" ]]
+          if [[ "${RUST_EXPECTED}" == "true" ]]; then
+            [[ "${RUST_RESULT}" == "success" ]]
+          else
+            [[ "${RUST_RESULT}" == "skipped" ]]
+          fi
+          if [[ "${ACTIONS_EXPECTED}" == "true" ]]; then
+            [[ "${ACTIONS_RESULT}" == "success" ]]
+          else
+            [[ "${ACTIONS_RESULT}" == "skipped" ]]
+          fi

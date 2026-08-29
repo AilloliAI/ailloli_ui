@@ -1,4 +1,10 @@
+![Ailloli UI — Retained-mode desktop UI for Rust](assets/ailloli_ui_banner.png)
+
 # Ailloli UI
+
+[![CI](https://github.com/AilloliAI/ailloli_ui/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AilloliAI/ailloli_ui/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ailloli_ui.svg)](https://crates.io/crates/ailloli_ui)
+[![docs.rs](https://docs.rs/ailloli_ui/badge.svg)](https://docs.rs/ailloli_ui)
 
 Ailloli UI is a retained-mode desktop UI framework for Rust, built for native
 applications that need predictable state, targeted updates, and GPU-accelerated
@@ -10,8 +16,7 @@ applications.
 
 > **Status:** Ailloli UI is pre-1.0 and under active development.\
 > **MSRV:** Rust 1.88\
-> Packages are not published on crates.io yet and currently use path or pinned
-> Git dependencies.
+> The current beta is available on crates.io as `ailloli_ui = "0.1.0-beta.1"`.
 
 [API Documentation](https://ailloliai.github.io/ailloli_ui/) ·
 [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md) ·
@@ -31,11 +36,11 @@ applications.
 
 ## Quick start
 
-Add the façade crate from a local checkout:
+Add the façade crate from crates.io:
 
 ```toml
 [dependencies]
-ailloli_ui = { path = "crates/ailloli_ui" }
+ailloli_ui = "0.1.0-beta.1"
 ```
 
 Then build an application through the public prelude:
