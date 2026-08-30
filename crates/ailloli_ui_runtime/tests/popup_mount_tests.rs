@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ailloli_ui_core::event::{
     Event, FileEvent, Key, KeyEvent, KeyState, Modifiers, NamedKey, PointerButton, PointerEvent,
-    PointerId, PointerSample, PointerSource, WheelDelta,
+    PointerId, PointerSample, PointerSource, WheelDelta, WindowEvent,
 };
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::{
@@ -32,6 +32,7 @@ use ailloli_ui_text::TextSystem;
 struct CounterProps {
     paints: Rc<RefCell<Vec<u32>>>,
     routed_pointer: Rc<RefCell<Vec<(u64, Point)>>>,
+    routed_cancelled: Rc<RefCell<Vec<(u64, Point)>>>,
     routed_file: Rc<RefCell<Vec<Option<Point>>>>,
 }
 
@@ -42,6 +43,7 @@ fn counter_popup(context: &mut Context<()>, props: CounterProps) -> View<()> {
         count,
         paints: props.paints,
         routed_pointer: props.routed_pointer,
+        routed_cancelled: props.routed_cancelled,
         routed_file: props.routed_file,
     })
 }
@@ -51,6 +53,7 @@ struct CounterWidget {
     count: Signal<u32>,
     paints: Rc<RefCell<Vec<u32>>>,
     routed_pointer: Rc<RefCell<Vec<(u64, Point)>>>,
+    routed_cancelled: Rc<RefCell<Vec<(u64, Point)>>>,
     routed_file: Rc<RefCell<Vec<Option<Point>>>>,
 }
 
@@ -115,6 +118,13 @@ impl Widget<()> for CounterWidget {
                 self.routed_pointer
                     .borrow_mut()
                     .push((pointer.id().get(), pointer.position()));
+            }
+        }
+        if let Event::Pointer(PointerEvent::Cancelled { pos, .. }) = event {
+            if let Some(pointer) = context.event_meta().and_then(EventMeta::pointer) {
+                self.routed_cancelled
+                    .borrow_mut()
+                    .push((pointer.id().get(), *pos));
             }
         }
         if let Event::File(file) = event {
@@ -243,11 +253,13 @@ fn retained_mount_paints_routes_and_preserves_component_state_across_reopen() {
     let bounds = Rect::new(100.0, 60.0, 80.0, 40.0);
     let paints = Rc::new(RefCell::new(Vec::new()));
     let routed_pointer = Rc::new(RefCell::new(Vec::new()));
+    let routed_cancelled = Rc::new(RefCell::new(Vec::new()));
     let routed_file = Rc::new(RefCell::new(Vec::new()));
     let builds = Rc::new(Cell::new(0_u32));
     let props = CounterProps {
         paints: Rc::clone(&paints),
         routed_pointer: Rc::clone(&routed_pointer),
+        routed_cancelled: Rc::clone(&routed_cancelled),
         routed_file: Rc::clone(&routed_file),
     };
     let content = PopupContent::new({
@@ -347,6 +359,22 @@ fn retained_mount_paints_routes_and_preserves_component_state_across_reopen() {
         PointerEvent::cancelled(Point::new(250.0, 250.0), Modifiers::default()),
     ));
     assert!(cancelled.consumed(), "captured cancel stays in the popup");
+
+    mounts.route_envelope(&pointer_envelope(20, true, Point::new(106.0, 68.0)));
+    mounts.route_envelope(&EventEnvelope::new(
+        EventMeta::new(
+            EventId::new(21),
+            EventTimestamp::new(Duration::from_millis(21)),
+            "main",
+            PresentationGeneration::new(1),
+        ),
+        Event::Window(WindowEvent::Focused { focused: false }),
+    ));
+    assert_eq!(
+        routed_cancelled.borrow().last(),
+        Some(&(20, Point::new(6.0, 8.0))),
+        "window focus loss must cancel the captured popup pointer in local coordinates"
+    );
 
     mounts.sync(&window, generation);
     mounts.layout(Scale::new(1.0), &mut text_system);

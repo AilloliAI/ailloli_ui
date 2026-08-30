@@ -2725,11 +2725,14 @@ fn record_renderer_bench_metadata(renderer: &Renderer) {
     let _ = ailloli_ui_bench::try_update_metadata(bench_metadata);
 }
 
-/// Flushes metrics, retains current size/cursor/redraw intents, and clears native input state.
+/// Flushes metrics, retains current intents, and cancels native pointer state.
 ///
 /// Logical size components clamp to one; lifecycle suspension rejection is
 /// ignored because callers already own a live attachment.
-fn prepare_retained_for_detach<A>(retained: &mut RetainedWindowState<A>, logical_size: Size) {
+fn prepare_retained_for_detach<A: 'static>(
+    retained: &mut RetainedWindowState<A>,
+    logical_size: Size,
+) {
     retained.input_bench.flush();
     retained.options.inner_size = Some(LogicalSize::new(
         logical_size.w.max(1.0) as f64,
@@ -2744,7 +2747,9 @@ fn prepare_retained_for_detach<A>(retained: &mut RetainedWindowState<A>, logical
     retained
         .presentation_intents
         .push(PresentationIntent::Redraw);
-    retained.input.clear_pointer_state();
+    retained
+        .input
+        .cancel_pointer_state(&retained.runtime.tree, retained.runtime.runtime.clone());
     retained.cursor_pos = None;
     retained.touch_primary.clear();
     retained.ime_allowed = false;
@@ -2755,7 +2760,7 @@ fn prepare_retained_for_detach<A>(retained: &mut RetainedWindowState<A>, logical
 }
 
 /// Detaches a winit surface before dropping its raw-handle owner and retains GPU context.
-fn detach_native_window<A>(state: WindowState<A>) -> RetainedWindowState<A> {
+fn detach_native_window<A: 'static>(state: WindowState<A>) -> RetainedWindowState<A> {
     let physical_size = state.window.inner_size();
     let logical_size = Size::new(
         to_logical_f32(physical_size.width as f32, state.scale),
@@ -2780,7 +2785,7 @@ fn detach_native_window<A>(state: WindowState<A>) -> RetainedWindowState<A> {
 
 #[cfg(all(target_os = "linux", feature = "native_overlay"))]
 /// Detaches a direct Wayland surface before dropping its raw-handle owner.
-fn detach_wayland_overlay<A>(state: WaylandOverlayState<A>) -> RetainedWindowState<A> {
+fn detach_wayland_overlay<A: 'static>(state: WaylandOverlayState<A>) -> RetainedWindowState<A> {
     let logical_size = Size::new(
         state.configured.logical_width as f32,
         state.configured.logical_height as f32,

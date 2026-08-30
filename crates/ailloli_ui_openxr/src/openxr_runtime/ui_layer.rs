@@ -383,7 +383,7 @@ impl<A: 'static> OpenXrUiLayer<A> {
         Ok(renderer.stats())
     }
 
-    /// Clears pointer mapper/router state and keyboard focus without events.
+    /// Cancels captured pointer gestures, then clears mapper and keyboard focus.
     ///
     /// # Examples
     ///
@@ -392,7 +392,8 @@ impl<A: 'static> OpenXrUiLayer<A> {
     /// fn clear<A: 'static>(layer: &mut OpenXrUiLayer<A>) { layer.clear_input(); }
     /// ```
     pub fn clear_input(&mut self) {
-        self.input_router.clear_pointer_state();
+        self.input_router
+            .cancel_pointer_state(&self.runtime.tree, self.runtime.runtime.clone());
         self.input_router.clear_focus();
         self.input_mapper.clear();
     }

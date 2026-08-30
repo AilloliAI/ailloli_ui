@@ -68,7 +68,7 @@ impl Default for ScrollbarStyle {
 /// The default scrolls vertically, begins at zero, shows scrollbars, maps one
 /// wheel line to 48 logical pixels, and does not follow the content end. The
 /// content is clipped and receives a virtual viewport hint containing the
-/// current offset. Visible bars support thumb drag and one-page track clicks;
+/// current offset. Visible bars support thumb drag and centered track clicks;
 /// wheel events bubble when the viewport is already at its requested limit.
 ///
 /// # Examples
@@ -469,7 +469,7 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
             Vec::new()
         };
         let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(&scrollbar_geometries) {
+        if interaction.reconcile(ctx.layout_pass(), &scrollbar_geometries) {
             self.scrollbar_interaction.set(interaction);
         }
 
@@ -524,7 +524,7 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
                 self.scrollbar_style,
             );
             let mut interaction = self.scrollbar_interaction.read();
-            let response = interaction.handle_event(event, &geometries, self.state.read().offset);
+            let response = interaction.handle_event(ctx, event, &geometries);
             if response.state_changed {
                 self.scrollbar_interaction.set(interaction);
             }

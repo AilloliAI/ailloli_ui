@@ -61,7 +61,7 @@ const REVIEWED_CAPTURES: [(&str, &str); 2] = [
     ),
     (
         "artifacts/captures/interactive_scrolling_showcase.png",
-        "8e258bfe9fb1f2ca26f5409bec4696a7e98541ff533d3be9591783aa141c346a",
+        "1b8e16a36bb5674ec3dc8432e23baf6dec5b0a61fe5da1b2d4a42ce7f28b0282",
     ),
 ];
 const ICON_PATH: &str = "apps/sandbox_app/src/assets/icons/icon.svg";

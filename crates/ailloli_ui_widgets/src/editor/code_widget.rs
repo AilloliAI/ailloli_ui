@@ -255,11 +255,9 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                 self.config.scrollbars,
             );
         }
-        if layout_pass.is_committed() {
-            let mut interaction = self.scrollbar_interaction.read();
-            if interaction.reconcile(&geometries) {
-                self.scrollbar_interaction.set(interaction);
-            }
+        let mut interaction = self.scrollbar_interaction.read();
+        if interaction.reconcile(layout_pass, &geometries) {
+            self.scrollbar_interaction.set(interaction);
         }
 
         LayoutResult {
@@ -327,9 +325,8 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
             );
             let geometries =
                 code_scrollbar_geometries(viewport, metrics.content, session.config.scrollbars);
-            let current = Offset::new(session.editor.edit.scroll_x, session.editor.edit.scroll_y);
             let mut interaction = self.scrollbar_interaction.read();
-            let response = interaction.handle_event(event, &geometries, current);
+            let response = interaction.handle_event(ctx, event, &geometries);
             if response.state_changed {
                 self.scrollbar_interaction.set(interaction);
             }

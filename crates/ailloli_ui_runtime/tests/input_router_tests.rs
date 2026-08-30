@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ailloli_ui_core::event::{
     Event, FileEvent, Key, KeyEvent, KeyState, Modifiers, MouseButton, PointerEvent, PointerId,
-    PointerSample, PointerSource,
+    PointerSample, PointerSource, WindowEvent,
 };
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::math::Scale;
@@ -585,6 +585,52 @@ fn pointer_drag_uses_capture_until_release() {
 }
 
 #[test]
+/// Verifies that window focus loss cancels captures before clearing pointer state.
+fn window_focus_loss_cancels_active_pointer_capture() {
+    let (app, _root_id, left_log, right_log) = app_with_two_children(
+        TestLeaf::focusable("left", InputRole::None),
+        TestLeaf::focusable("right", InputRole::None),
+    );
+    let runtime = RuntimeHandle::new();
+    let mut router = InputRouter::default();
+    let pointer_id = 7;
+
+    router.route_envelope(
+        &app.tree,
+        runtime.clone(),
+        &pointer_envelope(
+            pointer_id,
+            Point::new(2.0, 2.0),
+            pointer_button(Point::new(2.0, 2.0), true),
+        ),
+    );
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Window(WindowEvent::Focused { focused: false }),
+    );
+
+    let left = left_log.borrow();
+    let cancelled_index = left
+        .iter()
+        .position(|entry| entry == "left:cancelled")
+        .expect("captured widget should receive pointer cancellation");
+    assert_eq!(
+        left.get(cancelled_index + 1).map(String::as_str),
+        Some("left:meta:7:main:1:7"),
+        "synthetic cancellation must preserve the captured pointer identity"
+    );
+    drop(left);
+    assert_eq!(router.active_pointer_ids().count(), 0);
+
+    router.route_event(&app.tree, runtime, &pointer_move(Point::new(2.0, 14.0)));
+    assert!(right_log
+        .borrow()
+        .iter()
+        .any(|entry| entry == "right:moved"));
+}
+
+#[test]
 /// Verifies that click on non focusable element clears existing focus.
 fn click_on_non_focusable_element_clears_existing_focus() {
     let (app, _root_id, _left_log, _right_log) = app_with_two_children(
@@ -1073,6 +1119,7 @@ impl Widget<()> for TestLeaf {
         let kind = match event {
             Event::Pointer(PointerEvent::Button { .. }) => "button",
             Event::Pointer(PointerEvent::Moved { .. }) => "moved",
+            Event::Pointer(PointerEvent::Cancelled { .. }) => "cancelled",
             Event::Keyboard(_) => "keyboard",
             Event::File(_) => "file",
             Event::Focus(focus) if focus.focused => "focus",

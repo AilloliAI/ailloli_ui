@@ -1451,11 +1451,8 @@ fn code_editor_scrollbar_drag_uses_capture_without_editing_document() {
             .into_view(),
     );
     let mut text_system = TextSystem::new();
-    app.layout(
-        Constraints::tight(210.0, 100.0),
-        Scale::new(1.0),
-        &mut text_system,
-    );
+    let constraints = Constraints::tight(210.0, 100.0);
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
 
     let initial = app.paint(&mut text_system);
     let horizontal_thumb = rrects_in_text_layer(&initial)
@@ -1483,10 +1480,20 @@ fn code_editor_scrollbar_drag_uses_capture_without_editing_document() {
         &app.tree,
         runtime.clone(),
         &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(press.x + 4.0, press.y),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
             pos: Point::new(2_000.0, press.y),
             modifiers: Modifiers::default(),
         }),
     );
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
     router.route_event(
         &app.tree,
         runtime,

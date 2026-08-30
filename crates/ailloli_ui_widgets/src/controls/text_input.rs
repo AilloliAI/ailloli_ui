@@ -6,7 +6,7 @@ use ailloli_ui_core::event::{Event, ImePreedit};
 use ailloli_ui_core::geometry::Size;
 use ailloli_ui_core::geometry::{Constraints, Rect};
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
-use ailloli_ui_core::{Color, FontId, Offset, ScrollbarAxis, TextStyle, Theme};
+use ailloli_ui_core::{Color, FontId, ScrollbarAxis, TextStyle, Theme};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Signal, View, Widget,
 };
@@ -231,7 +231,7 @@ pub fn draw_text_input(
 /// the next edit. Placeholder bindings never become the editable value.
 /// Single-line inputs accept native horizontal wheel deltas and `Shift` plus a
 /// vertical wheel delta. Multiline inputs expose an interactive overlay thumb
-/// that supports track paging and captured dragging without moving the caret or
+/// that supports centered track clicks and captured dragging without moving the caret or
 /// invoking the change callback.
 ///
 /// # Panics
@@ -546,7 +546,7 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
             Vec::new()
         };
         let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(&geometries) {
+        if interaction.reconcile(ctx.layout_pass(), &geometries) {
             self.scrollbar_interaction.set(interaction);
         }
         result.overlay_hit_bounds = geometries
@@ -647,9 +647,8 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
             );
             let geometries = geometry.into_iter().collect::<Vec<_>>();
             let edit_state = self.edit.read();
-            let current = Offset::new(edit_state.scroll_x, edit_state.scroll_y);
             let mut interaction = self.scrollbar_interaction.read();
-            let response = interaction.handle_event(event, &geometries, current);
+            let response = interaction.handle_event(ctx, event, &geometries);
             if response.state_changed {
                 self.scrollbar_interaction.set(interaction);
             }

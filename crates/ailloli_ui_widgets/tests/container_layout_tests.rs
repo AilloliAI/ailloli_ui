@@ -7,6 +7,7 @@ use ailloli_ui_core::{BoxShadow, Color, Point};
 
 use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, View, Widget};
+use ailloli_ui_runtime::element::ElementKind;
 use ailloli_ui_runtime::input::InputRouter;
 use ailloli_ui_runtime::layout::{LayoutCtx, LayoutEngine, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
@@ -104,6 +105,30 @@ fn scroll_child_offset(
     let scroll_id = app.tree.children_of(root_id)[0];
     let scroll_layout = app.tree.get(scroll_id).unwrap().layout.as_ref().unwrap();
     scroll_layout.children[0].offset
+}
+
+fn widget_id_by_name(app: &Runtime<()>, name: &str) -> ailloli_ui_core::ids::ElementId {
+    app.tree
+        .iter_elements()
+        .find_map(|(id, element)| match &element.kind {
+            ElementKind::Widget(widget) if widget.debug_name() == name => Some(id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing widget {name}"))
+}
+
+fn widget_child_offset(
+    app: &Runtime<()>,
+    widget_id: ailloli_ui_core::ids::ElementId,
+) -> ailloli_ui_core::Offset {
+    app.tree
+        .get(widget_id)
+        .unwrap()
+        .layout
+        .as_ref()
+        .unwrap()
+        .children[0]
+        .offset
 }
 
 fn wheel(app: &Runtime<()>, runtime: RuntimeHandle<()>, y: f32) {
@@ -604,13 +629,18 @@ fn scroll_view_scrollbar_thumb_tracks_scroll_offset() {
 
 #[test]
 fn scroll_view_scrollbar_thumb_drag_uses_pointer_capture() {
-    let root_view: View<()> = ScrollView::vertical()
-        .child(leaf(Size::new(10.0, 120.0)))
+    let root_view: View<()> = Column::new()
+        .child(
+            ScrollView::vertical()
+                .child(leaf(Size::new(10.0, 120.0)))
+                .into_view(),
+        )
         .into_view();
     let runtime = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
-    let root_id = app.reconcile(root_view);
+    app.reconcile(root_view);
     layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+    let scroll_id = widget_id_by_name(&app, "ScrollView");
 
     let thumb = scrollbar_rrects(&app)[1];
     let press = Point::new(thumb.x + thumb.w * 0.5, thumb.y + thumb.h * 0.5);
@@ -629,10 +659,23 @@ fn scroll_view_scrollbar_thumb_drag_uses_pointer_capture() {
         &app.tree,
         runtime.clone(),
         &Event::Pointer(PointerEvent::Moved {
+            pos: Point::new(press.x, press.y + 2.0),
+            modifiers: Modifiers::default(),
+        }),
+    );
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+    let first_offset = widget_child_offset(&app, scroll_id).y;
+    assert!(first_offset < 0.0 && first_offset > -80.0);
+
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Pointer(PointerEvent::Moved {
             pos: Point::new(press.x, 1_000.0),
             modifiers: Modifiers::default(),
         }),
     );
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
     router.route_event(
         &app.tree,
         runtime,
@@ -643,42 +686,41 @@ fn scroll_view_scrollbar_thumb_drag_uses_pointer_capture() {
             modifiers: Modifiers::default(),
         }),
     );
-    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
-
     assert_eq!(
-        scroll_child_offset(&app, root_id),
+        widget_child_offset(&app, scroll_id),
         ailloli_ui_core::Offset::new(0.0, -80.0)
     );
 }
 
 #[test]
-fn scroll_view_track_click_pages_exactly_one_viewport() {
+fn scroll_view_track_click_centers_the_thumb_at_the_pointer() {
     let root_view: View<()> = ScrollView::vertical()
-        .child(leaf(Size::new(10.0, 160.0)))
+        .child(leaf(Size::new(10.0, 400.0)))
         .into_view();
     let runtime = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
     let root_id = app.reconcile(root_view);
-    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 100.0));
 
     let track = scrollbar_rrects(&app)[0];
+    let click = Point::new(track.x + track.w * 0.5, track.y + track.h * 0.75);
     let mut router = InputRouter::default();
     router.route_event(
         &app.tree,
         runtime,
         &Event::Pointer(PointerEvent::Button {
-            pos: Point::new(track.x + track.w * 0.5, track.bottom() - 1.0),
+            pos: click,
             button: MouseButton::Left,
             pressed: true,
             modifiers: Modifiers::default(),
         }),
     );
-    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 40.0));
+    layout_app_with_constraints(&mut app, Constraints::loose(80.0, 100.0));
 
-    assert_eq!(
-        scroll_child_offset(&app, root_id),
-        ailloli_ui_core::Offset::new(0.0, -40.0)
-    );
+    let thumb = scrollbar_rrects(&app)[1];
+    assert!((thumb.y + thumb.h * 0.5 - click.y).abs() < 0.001);
+    let offset = scroll_child_offset(&app, root_id);
+    assert!(offset.y < -100.0 && offset.y > -300.0);
 }
 
 #[test]

@@ -858,7 +858,7 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
-        _ctx: &mut LayoutCtx<'_>,
+        ctx: &mut LayoutCtx<'_>,
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
@@ -874,7 +874,7 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
             .into_iter()
             .collect::<Vec<_>>();
         let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(&geometries) {
+        if interaction.reconcile(ctx.layout_pass(), &geometries) {
             self.scrollbar_interaction.set(interaction);
         }
         LayoutResult {
@@ -984,7 +984,7 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
                 .collect::<Vec<_>>();
             let current = self.scroll.read();
             let mut interaction = self.scrollbar_interaction.read();
-            let response = interaction.handle_event(event, &geometries, current.offset);
+            let response = interaction.handle_event(ctx, event, &geometries);
             if response.state_changed {
                 self.scrollbar_interaction.set(interaction);
             }

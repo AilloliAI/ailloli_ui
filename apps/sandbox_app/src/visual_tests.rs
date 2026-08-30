@@ -226,7 +226,23 @@ fn scrollbar_rects(app: &Runtime<()>, text_system: &mut TextSystem) -> Vec<Rect>
         .collect()
 }
 
-/// Routes real wheel input through each capture surface before native rendering.
+/// Returns the shortest scrollbar-like rectangle along the widget's right edge.
+fn vertical_thumb_in_bounds(app: &Runtime<()>, text_system: &mut TextSystem, bounds: Rect) -> Rect {
+    scrollbar_rects(app, text_system)
+        .into_iter()
+        .filter(|rect| {
+            rect.w <= 16.0
+                && rect.h >= 18.0
+                && rect.x >= bounds.right() - 20.0
+                && rect.x <= bounds.right()
+                && rect.y >= bounds.y
+                && rect.bottom() <= bounds.bottom()
+        })
+        .min_by(|a, b| a.h.total_cmp(&b.h))
+        .unwrap_or_else(|| panic!("missing vertical scrollbar thumb in {bounds:?}"))
+}
+
+/// Routes wheel and captured multi-frame thumb drags through every review surface.
 fn assert_interactive_scrolling_input_contract(state: InteractiveScrollingState) {
     let runtime = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
@@ -238,6 +254,7 @@ fn assert_interactive_scrolling_input_contract(state: InteractiveScrollingState)
         &mut text_system,
     );
     let mut router = InputRouter::default();
+    let constraints = Constraints::tight(1280.0, 756.0);
 
     for debug_name in [
         "ScrollView",
@@ -265,11 +282,68 @@ fn assert_interactive_scrolling_input_contract(state: InteractiveScrollingState)
             before, after,
             "{debug_name}: wheel did not move a thumb; bounds={bounds:?}"
         );
+
+        let thumb_before = vertical_thumb_in_bounds(&app, &mut text_system, bounds);
+        let press = Point::new(
+            thumb_before.x + thumb_before.w * 0.5,
+            thumb_before.y + thumb_before.h * 0.75,
+        );
+        router.route_event(
+            &app.tree,
+            runtime.clone(),
+            &Event::Pointer(PointerEvent::Button {
+                pos: press,
+                button: ailloli_ui::core::event::MouseButton::Left,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }),
+        );
+        router.route_event(
+            &app.tree,
+            runtime.clone(),
+            &Event::Pointer(PointerEvent::Moved {
+                pos: Point::new(press.x, press.y - 4.0),
+                modifiers: Modifiers::default(),
+            }),
+        );
+        app.layout(
+            constraints,
+            ailloli_ui::core::Scale::new(1.0),
+            &mut text_system,
+        );
+        router.route_event(
+            &app.tree,
+            runtime.clone(),
+            &Event::Pointer(PointerEvent::Moved {
+                pos: Point::new(press.x, bounds.y - 200.0),
+                modifiers: Modifiers::default(),
+            }),
+        );
+        app.layout(
+            constraints,
+            ailloli_ui::core::Scale::new(1.0),
+            &mut text_system,
+        );
+        router.route_event(
+            &app.tree,
+            runtime.clone(),
+            &Event::Pointer(PointerEvent::Button {
+                pos: Point::new(press.x, bounds.y - 200.0),
+                button: ailloli_ui::core::event::MouseButton::Left,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }),
+        );
+        let thumb_after = vertical_thumb_in_bounds(&app, &mut text_system, bounds);
+        assert!(
+            thumb_after.y < thumb_before.y,
+            "{debug_name}: captured drag did not move continuously; before={thumb_before:?}, after={thumb_after:?}"
+        );
     }
 }
 
 #[test]
-fn sandbox_scrolling_surface_routes_each_wheel_interaction() {
+fn sandbox_scrolling_surface_routes_wheel_and_captured_thumb_drag() {
     assert_interactive_scrolling_input_contract(InteractiveScrollingState::new());
 }
 

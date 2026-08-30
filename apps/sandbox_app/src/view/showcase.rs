@@ -168,7 +168,7 @@ impl InteractiveScrollingState {
         let notes = (0..18)
             .map(|index| {
                 format!(
-                    "Review item {:02}: wheel, track paging, and captured thumb dragging stay aligned.",
+                    "Review item {:02}: wheel, centered track clicks, and captured thumb dragging stay aligned.",
                     index + 1
                 )
             })

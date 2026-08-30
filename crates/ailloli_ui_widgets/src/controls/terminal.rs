@@ -767,7 +767,7 @@ impl TerminalViewStyle {
 /// This is a log viewer, not a PTY or ANSI parser. It is always keyboard
 /// focusable; selection controls only pointer selection. The default history cap
 /// is 2,000 complete lines and matching is ASCII-case-insensitive. Its overlay
-/// scrollbar supports captured thumb dragging and one-viewport track paging;
+/// scrollbar supports captured thumb dragging and centered track clicks;
 /// wheel, track, and drag all use the same bounded history offset.
 ///
 /// # Examples
@@ -1374,7 +1374,7 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
-        _ctx: &mut LayoutCtx<'_>,
+        ctx: &mut LayoutCtx<'_>,
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
@@ -1390,7 +1390,7 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
             .into_iter()
             .collect::<Vec<_>>();
         let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(&geometries) {
+        if interaction.reconcile(ctx.layout_pass(), &geometries) {
             self.scrollbar_interaction.set(interaction);
         }
         LayoutResult {
@@ -1475,7 +1475,7 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
                 .collect::<Vec<_>>();
             let current = self.scroll.read();
             let mut interaction = self.scrollbar_interaction.read();
-            let response = interaction.handle_event(event, &geometries, current.offset);
+            let response = interaction.handle_event(ctx, event, &geometries);
             if response.state_changed {
                 self.scrollbar_interaction.set(interaction);
             }

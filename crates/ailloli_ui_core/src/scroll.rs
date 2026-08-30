@@ -588,10 +588,38 @@ impl ScrollbarGeometry {
         finite_or_zero(target).clamp(0.0, self.max_offset)
     }
 
+    /// Maps a track position to an offset with the thumb centered on the point.
+    ///
+    /// The result is clamped at both track ends. Callers normally use this for
+    /// a press outside the thumb; thumb presses should retain their exact grab
+    /// offset through [`Self::begin_drag`] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_core::{Point, Rect, ScrollMetrics, ScrollState, ScrollbarAxis, ScrollbarGeometrySpec, Size};
+    /// let geometry = ScrollbarGeometrySpec::new(
+    ///     ScrollbarAxis::Vertical,
+    ///     Rect::new(0.0, 0.0, 80.0, 100.0),
+    ///     ScrollMetrics::new(Size::new(80.0, 100.0), Size::new(80.0, 400.0)),
+    ///     ScrollState::new(),
+    /// ).resolve().unwrap();
+    /// let point = Point::new(geometry.track.x, geometry.track.y + geometry.track.h * 0.5);
+    /// assert!(geometry.track_target(point) > 0.0);
+    /// ```
+    pub fn track_target(self, point: Point) -> f32 {
+        let thumb_len = axis_rect_extent(self.axis, self.thumb);
+        ScrollbarDrag {
+            axis: self.axis,
+            grab_offset: thumb_len * 0.5,
+        }
+        .target_offset(point, self)
+    }
+
     /// Begins a drag only when `point` hits the thumb.
     ///
-    /// The retained grab fraction keeps the pointer at the same relative place
-    /// inside the thumb if the viewport or content changes during the drag.
+    /// The retained logical grab offset keeps the exact pressed point attached
+    /// to the pointer instead of recentering the thumb at drag start.
     ///
     /// # Examples
     ///
@@ -612,14 +640,14 @@ impl ScrollbarGeometry {
         }
         let thumb_start = axis_rect_start(self.axis, self.thumb);
         let thumb_len = axis_rect_extent(self.axis, self.thumb);
-        if !positive_finite(thumb_len) {
+        let travel = axis_rect_extent(self.axis, self.track) - thumb_len;
+        if !positive_finite(thumb_len) || !positive_finite(travel) {
             return None;
         }
-        let grab_fraction =
-            ((self.axis.coordinate(point) - thumb_start) / thumb_len).clamp(0.0, 1.0);
+        let grab_offset = (self.axis.coordinate(point) - thumb_start).clamp(0.0, thumb_len);
         Some(ScrollbarDrag {
             axis: self.axis,
-            grab_fraction,
+            grab_offset,
         })
     }
 }
@@ -636,8 +664,8 @@ impl ScrollbarGeometry {
 pub struct ScrollbarDrag {
     /// Axis captured when the drag began.
     pub axis: ScrollbarAxis,
-    /// Relative pointer position within the thumb, clamped to `0.0..=1.0`.
-    pub grab_fraction: f32,
+    /// Logical-pixel distance from the thumb start to the pressed point.
+    pub grab_offset: f32,
 }
 
 impl ScrollbarDrag {
@@ -670,8 +698,8 @@ impl ScrollbarDrag {
         if !positive_finite(travel) || !positive_finite(geometry.max_offset) {
             return 0.0;
         }
-        let grab_fraction = finite_or_zero(self.grab_fraction).clamp(0.0, 1.0);
-        let thumb_start = self.axis.coordinate(point) - thumb_len * grab_fraction;
+        let grab_offset = finite_or_zero(self.grab_offset).clamp(0.0, thumb_len);
+        let thumb_start = self.axis.coordinate(point) - grab_offset;
         let progress = ((thumb_start - track_start) / travel).clamp(0.0, 1.0);
         finite_or_zero(progress * geometry.max_offset).clamp(0.0, geometry.max_offset)
     }
@@ -1269,11 +1297,11 @@ mod tests {
     }
 
     #[test]
-    fn scrollbar_drag_reuses_relative_grab_with_resized_geometry() {
-        let original_metrics = ScrollMetrics::new(Size::new(100.0, 80.0), Size::new(300.0, 240.0));
+    fn scrollbar_drag_retains_the_exact_grab_and_clamps_it_after_resize() {
+        let original_metrics = ScrollMetrics::new(Size::new(180.0, 80.0), Size::new(360.0, 240.0));
         let original = ScrollbarGeometrySpec::new(
             ScrollbarAxis::Horizontal,
-            Rect::new(0.0, 0.0, 100.0, 80.0),
+            Rect::new(0.0, 0.0, 180.0, 80.0),
             original_metrics,
             ScrollState::new(),
         )
@@ -1284,20 +1312,63 @@ mod tests {
             original.thumb.y + original.thumb.h * 0.5,
         );
         let drag = original.begin_drag(press).unwrap();
-        assert!((drag.grab_fraction - 0.75).abs() < 0.001);
+        assert!((drag.grab_offset - original.thumb.w * 0.75).abs() < 0.001);
 
         let resized = ScrollbarGeometrySpec::new(
             ScrollbarAxis::Horizontal,
             Rect::new(0.0, 0.0, 180.0, 80.0),
-            ScrollMetrics::new(Size::new(180.0, 80.0), Size::new(420.0, 240.0)),
+            ScrollMetrics::new(Size::new(180.0, 80.0), Size::new(1_800.0, 240.0)),
             ScrollState::new(),
         )
         .resolve()
         .unwrap();
-        assert_eq!(
-            drag.target_offset(Point::new(10_000.0, press.y), resized),
-            resized.max_offset
-        );
+        assert!(drag.grab_offset > resized.thumb.w);
+        let travel = resized.track.w - resized.thumb.w;
+        let pointer = Point::new(resized.track.x + travel * 0.4 + resized.thumb.w, press.y);
+        let target = drag.target_offset(pointer, resized);
+        assert!((target - resized.max_offset * 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn scrollbar_track_target_centers_the_thumb_when_not_clamped() {
+        let bounds = Rect::new(0.0, 0.0, 80.0, 100.0);
+        let metrics = ScrollMetrics::new(Size::new(80.0, 100.0), Size::new(80.0, 400.0));
+        let origin = ScrollbarGeometrySpec::new(
+            ScrollbarAxis::Vertical,
+            bounds,
+            metrics,
+            ScrollState::new(),
+        )
+        .resolve()
+        .unwrap();
+        let point = Point::new(origin.track.x, origin.track.y + origin.track.h * 0.5);
+        let target = origin.track_target(point);
+        let moved = ScrollbarGeometrySpec::new(
+            ScrollbarAxis::Vertical,
+            bounds,
+            metrics,
+            ScrollState::with_offset(Offset::new(0.0, target)),
+        )
+        .resolve()
+        .unwrap();
+
+        assert!((moved.thumb.y + moved.thumb.h * 0.5 - point.y).abs() < 0.001);
+    }
+
+    #[test]
+    fn scrollbar_geometry_keeps_a_full_track_thumb_but_disables_drag() {
+        let geometry = ScrollbarGeometrySpec::new(
+            ScrollbarAxis::Vertical,
+            Rect::new(0.0, 0.0, 30.0, 30.0),
+            ScrollMetrics::new(Size::new(30.0, 30.0), Size::new(30.0, 31.0)),
+            ScrollState::new(),
+        )
+        .resolve()
+        .unwrap();
+        assert_eq!(geometry.thumb, geometry.track);
+        assert!(geometry
+            .begin_drag(Point::new(geometry.thumb.x, geometry.thumb.y))
+            .is_none());
     }
 
     #[test]

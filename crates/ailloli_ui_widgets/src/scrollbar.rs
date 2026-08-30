@@ -4,10 +4,12 @@
 //! state and returns offset targets to the owning widget; it never owns the
 //! scroll state, styling, painting, or runtime pointer capture.
 
-use ailloli_ui_core::event::{Event, PointerButton, PointerEvent};
+use ailloli_ui_core::event::{Event, PointerButton, PointerEvent, PointerId};
 use ailloli_ui_core::{
-    Color, Offset, Point, ScrollbarAxis, ScrollbarDrag, ScrollbarGeometry, ScrollbarPart,
+    Color, Point, ScrollbarAxis, ScrollbarDrag, ScrollbarGeometry, ScrollbarPart,
 };
+use ailloli_ui_runtime::input::EventCtx;
+use ailloli_ui_runtime::layout::LayoutPass;
 
 /// Hovered axis/part resolved during the most recent pointer move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,18 +23,35 @@ pub(crate) struct ScrollbarHit {
 /// Gesture retained while the runtime routes a captured pointer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ScrollbarGesture {
-    /// Thumb drag with its stable relative grab position.
-    Drag(ScrollbarDrag),
+    /// Thumb drag with its stable logical-pixel grab position.
+    Drag {
+        /// Pointer whose runtime capture owns the drag.
+        pointer_id: PointerId,
+        /// Pure geometry mapping retained from the initial thumb press.
+        drag: ScrollbarDrag,
+    },
     /// One-shot track click retained until release/cancellation.
-    Track(ScrollbarAxis),
+    Track {
+        /// Pointer whose runtime capture owns the track gesture.
+        pointer_id: PointerId,
+        /// Scrollbar axis pressed on the track.
+        axis: ScrollbarAxis,
+    },
 }
 
 impl ScrollbarGesture {
     /// Returns the axis owned by this gesture.
     fn axis(self) -> ScrollbarAxis {
         match self {
-            Self::Drag(drag) => drag.axis,
-            Self::Track(axis) => axis,
+            Self::Drag { drag, .. } => drag.axis,
+            Self::Track { axis, .. } => axis,
+        }
+    }
+
+    /// Returns the pointer whose runtime capture owns this gesture.
+    fn pointer_id(self) -> PointerId {
+        match self {
+            Self::Drag { pointer_id, .. } | Self::Track { pointer_id, .. } => pointer_id,
         }
     }
 }
@@ -73,18 +92,34 @@ pub(crate) enum ScrollbarVisualState {
 impl ScrollbarInteraction {
     /// Routes a pointer event through current geometry and returns owner actions.
     ///
-    /// `current` is the owning widget's current two-axis offset. Track clicks
-    /// use it as the origin for exactly one viewport page. Pointer capture is
-    /// supplied by `InputRouter`; this state merely remembers which captured
-    /// gesture is active.
-    pub(crate) fn handle_event(
+    /// Pointer capture is supplied by `InputRouter`; this state remembers the
+    /// matching pointer so another pointer cannot move or end the active
+    /// gesture.
+    pub(crate) fn handle_event<A>(
+        &mut self,
+        ctx: &EventCtx<A>,
+        event: &Event,
+        geometries: &[ScrollbarGeometry],
+    ) -> ScrollbarResponse {
+        let pointer_id = ctx
+            .event_meta()
+            .and_then(|meta| meta.pointer())
+            .map(|pointer| pointer.id())
+            .unwrap_or(PointerId::MOUSE);
+        self.handle_event_for_pointer(event, geometries, pointer_id)
+    }
+
+    /// Routes an event for one already-resolved pointer identity.
+    fn handle_event_for_pointer(
         &mut self,
         event: &Event,
         geometries: &[ScrollbarGeometry],
-        current: Offset,
+        pointer_id: PointerId,
     ) -> ScrollbarResponse {
         match event {
-            Event::Pointer(PointerEvent::Moved { pos, .. }) => self.handle_move(*pos, geometries),
+            Event::Pointer(PointerEvent::Moved { pos, .. }) => {
+                self.handle_move(pointer_id, *pos, geometries)
+            }
             Event::Pointer(PointerEvent::Button {
                 pos,
                 button: PointerButton::Left,
@@ -92,18 +127,25 @@ impl ScrollbarInteraction {
                 ..
             }) => {
                 if *pressed {
-                    self.handle_press(*pos, geometries, current)
+                    self.handle_press(pointer_id, *pos, geometries)
                 } else {
-                    self.handle_release(*pos, geometries)
+                    self.handle_release(pointer_id, *pos, geometries)
                 }
             }
-            Event::Pointer(PointerEvent::Cancelled { .. }) => self.handle_cancel(),
+            Event::Pointer(PointerEvent::Cancelled { .. }) => self.handle_cancel(pointer_id),
             _ => ScrollbarResponse::default(),
         }
     }
 
-    /// Drops hover/gesture state whose axis no longer has usable geometry.
-    pub(crate) fn reconcile(&mut self, geometries: &[ScrollbarGeometry]) -> bool {
+    /// Drops state only against authoritative committed geometry.
+    ///
+    /// Flex measurement can temporarily hide overflow. Treating that
+    /// speculative absence as authoritative would cancel a captured drag
+    /// between two native pointer-move events.
+    pub(crate) fn reconcile(&mut self, pass: LayoutPass, geometries: &[ScrollbarGeometry]) -> bool {
+        if pass.is_measure() {
+            return false;
+        }
         let before = *self;
         if self
             .hovered
@@ -136,12 +178,23 @@ impl ScrollbarInteraction {
     }
 
     /// Updates hover or maps a captured thumb movement to a target offset.
-    fn handle_move(&mut self, point: Point, geometries: &[ScrollbarGeometry]) -> ScrollbarResponse {
+    fn handle_move(
+        &mut self,
+        pointer_id: PointerId,
+        point: Point,
+        geometries: &[ScrollbarGeometry],
+    ) -> ScrollbarResponse {
+        if self
+            .gesture
+            .is_some_and(|gesture| gesture.pointer_id() != pointer_id)
+        {
+            return ScrollbarResponse::default();
+        }
         let before = *self;
         self.hovered = resolve_hit(geometries, point);
         let mut response = ScrollbarResponse::default();
         match self.gesture {
-            Some(ScrollbarGesture::Drag(drag)) => {
+            Some(ScrollbarGesture::Drag { drag, .. }) => {
                 if let Some(geometry) = geometry_for_axis(geometries, drag.axis) {
                     response.scroll_to = Some((drag.axis, drag.target_offset(point, geometry)));
                 } else {
@@ -150,7 +203,7 @@ impl ScrollbarInteraction {
                 response.consumed = true;
                 response.repaint = true;
             }
-            Some(ScrollbarGesture::Track(_)) => {
+            Some(ScrollbarGesture::Track { .. }) => {
                 response.consumed = true;
             }
             None => {}
@@ -160,13 +213,19 @@ impl ScrollbarInteraction {
         response
     }
 
-    /// Starts a thumb drag or performs one page step on the track.
+    /// Starts a thumb drag or centers the thumb at a track press.
     fn handle_press(
         &mut self,
+        pointer_id: PointerId,
         point: Point,
         geometries: &[ScrollbarGeometry],
-        current: Offset,
     ) -> ScrollbarResponse {
+        if self
+            .gesture
+            .is_some_and(|gesture| gesture.pointer_id() != pointer_id)
+        {
+            return ScrollbarResponse::default();
+        }
         let before = *self;
         let Some(hit) = resolve_hit(geometries, point) else {
             return ScrollbarResponse::default();
@@ -183,15 +242,15 @@ impl ScrollbarInteraction {
         match hit.part {
             ScrollbarPart::Thumb => {
                 if let Some(drag) = geometry.begin_drag(point) {
-                    self.gesture = Some(ScrollbarGesture::Drag(drag));
+                    self.gesture = Some(ScrollbarGesture::Drag { pointer_id, drag });
                 }
             }
             ScrollbarPart::TrackBefore | ScrollbarPart::TrackAfter => {
-                self.gesture = Some(ScrollbarGesture::Track(hit.axis));
-                response.scroll_to = Some((
-                    hit.axis,
-                    geometry.page_target(axis_offset(hit.axis, current), hit.part),
-                ));
+                self.gesture = Some(ScrollbarGesture::Track {
+                    pointer_id,
+                    axis: hit.axis,
+                });
+                response.scroll_to = Some((hit.axis, geometry.track_target(point)));
             }
         }
         response.state_changed = *self != before;
@@ -201,9 +260,16 @@ impl ScrollbarInteraction {
     /// Ends an owned gesture and refreshes hover at the release point.
     fn handle_release(
         &mut self,
+        pointer_id: PointerId,
         point: Point,
         geometries: &[ScrollbarGeometry],
     ) -> ScrollbarResponse {
+        if self
+            .gesture
+            .is_some_and(|gesture| gesture.pointer_id() != pointer_id)
+        {
+            return ScrollbarResponse::default();
+        }
         let before = *self;
         let consumed = self.gesture.take().is_some();
         self.hovered = resolve_hit(geometries, point);
@@ -217,7 +283,13 @@ impl ScrollbarInteraction {
     }
 
     /// Clears hover and an active gesture after provider cancellation.
-    fn handle_cancel(&mut self) -> ScrollbarResponse {
+    fn handle_cancel(&mut self, pointer_id: PointerId) -> ScrollbarResponse {
+        if self
+            .gesture
+            .is_some_and(|gesture| gesture.pointer_id() != pointer_id)
+        {
+            return ScrollbarResponse::default();
+        }
         let before = *self;
         let consumed = self.gesture.is_some();
         self.hovered = None;
@@ -298,14 +370,6 @@ fn cross_axis_distance(geometry: ScrollbarGeometry, point: Point) -> f32 {
     }
 }
 
-/// Selects one component from a two-dimensional scroll offset.
-fn axis_offset(axis: ScrollbarAxis, offset: Offset) -> f32 {
-    match axis {
-        ScrollbarAxis::Horizontal => offset.x,
-        ScrollbarAxis::Vertical => offset.y,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     //! Covers gesture lifecycle and deterministic two-axis hit resolution.
@@ -325,6 +389,14 @@ mod tests {
         .unwrap()
     }
 
+    fn route(
+        interaction: &mut ScrollbarInteraction,
+        event: &Event,
+        geometries: &[ScrollbarGeometry],
+    ) -> ScrollbarResponse {
+        interaction.handle_event_for_pointer(event, geometries, PointerId::MOUSE)
+    }
+
     #[test]
     fn thumb_drag_tracks_outside_and_cancels() {
         let vertical = geometry(ScrollbarAxis::Vertical);
@@ -339,35 +411,27 @@ mod tests {
             true,
             Modifiers::default(),
         ));
-        assert!(
-            interaction
-                .handle_event(&press, &[vertical], Offset::default())
-                .consumed
-        );
+        assert!(route(&mut interaction, &press, &[vertical]).consumed);
 
         let moved = Event::Pointer(PointerEvent::moved(
             Point::new(center.x, 10_000.0),
             Modifiers::default(),
         ));
-        let response = interaction.handle_event(&moved, &[vertical], Offset::default());
+        let response = route(&mut interaction, &moved, &[vertical]);
         assert_eq!(
             response.scroll_to,
             Some((ScrollbarAxis::Vertical, vertical.max_offset))
         );
 
         let cancel = Event::Pointer(PointerEvent::cancelled(center, Modifiers::default()));
-        assert!(
-            interaction
-                .handle_event(&cancel, &[vertical], Offset::default())
-                .consumed
-        );
+        assert!(route(&mut interaction, &cancel, &[vertical]).consumed);
         assert_eq!(interaction.gesture, None);
     }
 
     #[test]
-    fn track_press_pages_once_and_release_ends_capture() {
+    fn track_press_centers_the_thumb_once_and_release_ends_capture() {
         let vertical = geometry(ScrollbarAxis::Vertical);
-        let point = Point::new(vertical.track.x, vertical.track.bottom());
+        let point = Point::new(vertical.track.x, vertical.track.y + vertical.track.h * 0.75);
         let mut interaction = ScrollbarInteraction::default();
         let press = Event::Pointer(PointerEvent::button(
             point,
@@ -375,8 +439,13 @@ mod tests {
             true,
             Modifiers::default(),
         ));
-        let response = interaction.handle_event(&press, &[vertical], Offset::default());
-        assert_eq!(response.scroll_to, Some((ScrollbarAxis::Vertical, 80.0)));
+        let response = route(&mut interaction, &press, &[vertical]);
+        let expected = vertical.track_target(point);
+        assert_eq!(
+            response.scroll_to,
+            Some((ScrollbarAxis::Vertical, expected))
+        );
+        assert_ne!(expected, vertical.viewport_extent);
 
         let release = Event::Pointer(PointerEvent::button(
             point,
@@ -384,15 +453,11 @@ mod tests {
             false,
             Modifiers::default(),
         ));
-        assert!(
-            interaction
-                .handle_event(&release, &[vertical], Offset::default())
-                .consumed
-        );
+        assert!(route(&mut interaction, &release, &[vertical]).consumed);
     }
 
     #[test]
-    fn horizontal_drag_preserves_relative_grab_and_clamps() {
+    fn horizontal_drag_preserves_the_exact_grab_offset_and_clamps() {
         let horizontal = geometry(ScrollbarAxis::Horizontal);
         let press_point = Point::new(
             horizontal.thumb.x + horizontal.thumb.w * 0.75,
@@ -405,20 +470,14 @@ mod tests {
             true,
             Modifiers::default(),
         ));
-        assert!(
-            interaction
-                .handle_event(&press, &[horizontal], Offset::default())
-                .consumed
-        );
+        assert!(route(&mut interaction, &press, &[horizontal]).consumed);
 
         let moved = Event::Pointer(PointerEvent::moved(
             Point::new(-10_000.0, press_point.y),
             Modifiers::default(),
         ));
         assert_eq!(
-            interaction
-                .handle_event(&moved, &[horizontal], Offset::default())
-                .scroll_to,
+            route(&mut interaction, &moved, &[horizontal]).scroll_to,
             Some((ScrollbarAxis::Horizontal, 0.0))
         );
     }
@@ -437,15 +496,65 @@ mod tests {
             true,
             Modifiers::default(),
         ));
+        assert!(route(&mut interaction, &press, &[vertical]).consumed);
+
+        assert!(!interaction.reconcile(LayoutPass::Measure, &[]));
+        assert!(interaction.gesture.is_some());
+        assert!(interaction.reconcile(LayoutPass::Commit, &[]));
+        assert_eq!(interaction.gesture, None);
+        assert_eq!(interaction.hovered, None);
+    }
+
+    #[test]
+    fn another_pointer_cannot_move_or_release_the_active_drag() {
+        let vertical = geometry(ScrollbarAxis::Vertical);
+        let center = Point::new(
+            vertical.thumb.x + vertical.thumb.w * 0.5,
+            vertical.thumb.y + vertical.thumb.h * 0.5,
+        );
+        let owner = PointerId::new(7);
+        let other = PointerId::new(8);
+        let mut interaction = ScrollbarInteraction::default();
+        let press = Event::Pointer(PointerEvent::button(
+            center,
+            PointerButton::Left,
+            true,
+            Modifiers::default(),
+        ));
         assert!(
             interaction
-                .handle_event(&press, &[vertical], Offset::default())
+                .handle_event_for_pointer(&press, &[vertical], owner)
                 .consumed
         );
 
-        assert!(interaction.reconcile(&[]));
-        assert_eq!(interaction.gesture, None);
-        assert_eq!(interaction.hovered, None);
+        let moved = Event::Pointer(PointerEvent::moved(
+            Point::new(center.x, 10_000.0),
+            Modifiers::default(),
+        ));
+        assert_eq!(
+            interaction
+                .handle_event_for_pointer(&moved, &[vertical], other)
+                .scroll_to,
+            None
+        );
+        let release = Event::Pointer(PointerEvent::button(
+            center,
+            PointerButton::Left,
+            false,
+            Modifiers::default(),
+        ));
+        assert!(
+            !interaction
+                .handle_event_for_pointer(&release, &[vertical], other)
+                .consumed
+        );
+        assert!(interaction.gesture.is_some());
+        assert_eq!(
+            interaction
+                .handle_event_for_pointer(&moved, &[vertical], owner)
+                .scroll_to,
+            Some((ScrollbarAxis::Vertical, vertical.max_offset))
+        );
     }
 
     #[test]

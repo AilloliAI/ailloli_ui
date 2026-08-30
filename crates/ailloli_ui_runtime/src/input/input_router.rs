@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use ailloli_ui_core::event::pointer::{
     ActivationKind, PointerButton, PointerEvent, PointerId, PointerSource,
 };
-use ailloli_ui_core::event::{FocusEvent, Key as KeyboardKey, KeyState, NamedKey};
+use ailloli_ui_core::event::{FocusEvent, Key as KeyboardKey, KeyState, Modifiers, NamedKey};
 use ailloli_ui_core::{ElementId, Event, LogicalWindowId, Point, Rect};
 
 use super::{
@@ -296,6 +296,12 @@ struct PointerRouteState {
     /// An outside-dismiss press is consumed through its matching release so
     /// a control behind the popup cannot activate on release alone.
     popup_consumed_gesture: bool,
+    /// Last finite logical position received for cancellation synthesis.
+    last_position: Point,
+    /// Last modifier snapshot received for cancellation synthesis.
+    last_modifiers: Modifiers,
+    /// Last host envelope metadata, preserving pointer identity when present.
+    last_event_meta: Option<EventMeta>,
 }
 
 /// Compact arguments for a pointer button transition.
@@ -451,7 +457,8 @@ impl InputRouter {
     /// Clears every pointer's hover/press/capture/consumed-gesture state.
     ///
     /// Returns whether any retained pointer state was nonempty. Focus is not
-    /// changed and no widget events are dispatched.
+    /// changed and no widget events are dispatched. Use
+    /// [`Self::cancel_pointer_state`] when capture owners must end gestures.
     ///
     /// # Examples
     ///
@@ -727,7 +734,9 @@ impl InputRouter {
     /// Pointer events use the mouse ID, popup work uses the headless presentation
     /// sentinel, and widget [`super::EventCtx::event_meta`] returns `None`.
     /// Routing also prunes stale targets and popup owners, applies focus-key and
-    /// popup intents, and may synchronously invoke arbitrary widget code.
+    /// popup intents, and may synchronously invoke arbitrary widget code. Window
+    /// focus loss dispatches pointer cancellation to every capture owner before
+    /// clearing pointer state.
     ///
     /// # Examples
     ///
@@ -755,7 +764,8 @@ impl InputRouter {
     ///
     /// Presentation metadata scopes popup pruning/dismissal and pointer metadata
     /// selects the independent pointer state. Metadata is not validated against
-    /// the enclosed event variant.
+    /// the enclosed event variant. Window focus loss cancels each captured
+    /// pointer with its last envelope metadata before clearing pointer state.
     ///
     /// # Examples
     ///
@@ -831,6 +841,12 @@ impl InputRouter {
             .and_then(EventMeta::pointer)
             .map(|pointer| pointer.id())
             .unwrap_or(PointerId::MOUSE);
+        if let Event::Pointer(pointer_event) = event {
+            let state = self.pointers.entry(pointer_id).or_default();
+            state.last_position = pointer_event.position();
+            state.last_modifiers = pointer_event.modifiers();
+            state.last_event_meta = event_meta.cloned();
+        }
         let mut popup_target_override = None;
         let mut popup_consumed_without_target = false;
 
@@ -1001,12 +1017,12 @@ impl InputRouter {
                     }
                 },
                 Event::Window(ailloli_ui_core::event::WindowEvent::Focused { focused: false }) => {
-                    let pointer_changed = self.clear_pointer_state();
+                    let cancelled = self.cancel_pointer_state(tree, runtime.clone());
                     let focus_changed = self.set_focus(tree, runtime.clone(), None);
-                    let interaction_changed = pointer_changed | focus_changed;
+                    let interaction_changed = cancelled.interaction_changed | focus_changed;
                     RouteOutcome {
                         interaction_changed,
-                        event_dispatched: focus_changed,
+                        event_dispatched: cancelled.event_dispatched | focus_changed,
                     }
                 }
                 Event::Focus(_) => RouteOutcome::default(),
@@ -1391,6 +1407,57 @@ impl InputRouter {
         self.pointers
             .get(&pointer_id)
             .and_then(|state| state.capture)
+    }
+
+    /// Cancels every pressed/captured pointer before clearing pointer state.
+    ///
+    /// Capture owners synchronously receive [`PointerEvent::Cancelled`] with
+    /// the last known position, modifiers, and pointer metadata when available.
+    /// Hosts should use this before detaching or suspending a presentation; the
+    /// lower-level [`Self::clear_pointer_state`] intentionally dispatches no
+    /// widget events.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_runtime::{
+    ///     app::RuntimeHandle,
+    ///     element::ElementTree,
+    ///     input::{InputRouter, RouteOutcome},
+    /// };
+    /// let mut router = InputRouter::default();
+    /// let outcome = router.cancel_pointer_state(
+    ///     &ElementTree::<()>::new(),
+    ///     RuntimeHandle::new(),
+    /// );
+    /// assert_eq!(outcome, RouteOutcome::default());
+    /// ```
+    pub fn cancel_pointer_state<A: 'static>(
+        &mut self,
+        tree: &ElementTree<A>,
+        runtime: RuntimeHandle<A>,
+    ) -> RouteOutcome {
+        let pointer_ids = self.pointers.keys().copied().collect::<Vec<_>>();
+        let mut combined = RouteOutcome::default();
+        for pointer_id in pointer_ids {
+            let Some(state) = self.pointers.get(&pointer_id) else {
+                continue;
+            };
+            if state.capture.is_none() && state.pressed.is_none() {
+                continue;
+            }
+            let event = Event::Pointer(PointerEvent::cancelled(
+                state.last_position,
+                state.last_modifiers,
+            ));
+            let meta = state.last_event_meta.clone();
+            let outcome =
+                self.route_pointer_cancel(tree, runtime.clone(), &event, meta.as_ref(), pointer_id);
+            combined.interaction_changed |= outcome.interaction_changed;
+            combined.event_dispatched |= outcome.event_dispatched;
+        }
+        combined.interaction_changed |= self.clear_pointer_state();
+        combined
     }
 
     /// Transitions strict focus, dispatching blur before focus synchronously.

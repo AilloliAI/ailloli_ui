@@ -659,7 +659,7 @@ type TableSelectHandler<T, A> = Rc<dyn Fn(&mut EventCtx<A>, T)>;
 /// while [`Self::selected`] is read-only. Activating an enabled row writes and/or
 /// invokes configured handlers even when its ID already equals the selection.
 /// Overflowing body axes paint overlay scrollbars above the clipped rows while
-/// the header remains fixed. Thumb dragging and one-viewport track paging do not
+/// the header remains fixed. Thumb dragging and centered track clicks do not
 /// activate rows; a disabled table accepts neither interaction.
 ///
 /// # Examples
@@ -1385,7 +1385,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
             geometries
         };
         let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(&interactive_geometries) {
+        if interaction.reconcile(ctx.layout_pass(), &interactive_geometries) {
             self.scrollbar_interaction.set(interaction);
         }
         LayoutResult {
@@ -1454,7 +1454,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
             let geometries = self.scrollbar_geometries(bounds, metrics);
             let current = self.scroll.read();
             let mut interaction = self.scrollbar_interaction.read();
-            let response = interaction.handle_event(event, &geometries, current.offset);
+            let response = interaction.handle_event(ctx, event, &geometries);
             if response.state_changed {
                 self.scrollbar_interaction.set(interaction);
             }

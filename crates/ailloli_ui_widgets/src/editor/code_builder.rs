@@ -36,8 +36,9 @@ pub(crate) type DocumentChangeHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Document)
 /// handler. Defaults come from [`CodeEditorConfig`]; optional prop vectors
 /// replace their corresponding session models when enabled. The default wrap
 /// mode is no-wrap, so long lines scroll horizontally. Overflowing axes paint
-/// interactive overlay scrollbars whose thumbs can be dragged and whose tracks
-/// page by one viewport; those interactions never move the caret. Editing
+/// interactive overlay scrollbars whose thumbs can be dragged from the exact
+/// pressed point and whose track clicks center the thumb; those interactions
+/// never move the caret. Editing
 /// and keyboard navigation follow the caret on both axes and preserve three
 /// visible lines below it by default. A caret already in the safe region never
 /// moves the viewport. Clicks never move the viewport, and pointer selection

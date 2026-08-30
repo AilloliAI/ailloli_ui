@@ -761,7 +761,9 @@ impl<A: 'static> PopupOverlayMounts<A> {
                 mount.open = false;
                 mount.bounds = None;
                 mount.focus_on_next_layout = false;
-                mount.input.clear_pointer_state();
+                mount
+                    .input
+                    .cancel_pointer_state(&mount.runtime.tree, mount.runtime.runtime.clone());
                 mount
                     .input
                     .blur_subtree(&mount.runtime.tree, mount.runtime.runtime.clone());
@@ -1028,8 +1030,8 @@ impl<A: 'static> PopupOverlayMounts<A> {
     /// Envelopes outside the last synchronized logical window/generation are
     /// ignored. Pointer gesture consumption persists through matching release;
     /// Escape/outside press invoke portal authority before local dispatch;
-    /// keyboard/IME route to the focused popup; window focus loss clears all
-    /// popup interaction state.
+    /// keyboard/IME route to the focused popup; window focus loss cancels every
+    /// captured popup pointer before clearing interaction state.
     ///
     /// # Examples
     ///
@@ -1332,7 +1334,9 @@ impl<A: 'static> PopupOverlayMounts<A> {
     /// Clears pointer state and focus from every mount and ownership map.
     fn clear_interaction(&mut self) {
         for mount in self.mounts.values_mut() {
-            mount.input.clear_pointer_state();
+            mount
+                .input
+                .cancel_pointer_state(&mount.runtime.tree, mount.runtime.runtime.clone());
             mount
                 .input
                 .blur_subtree(&mount.runtime.tree, mount.runtime.runtime.clone());
