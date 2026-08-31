@@ -33,7 +33,10 @@ fn resize_bar_idle_transparent_hover_visible_and_drag_active() {
     app.reconcile(ResizeBar::<()>::vertical().height(80.0).into_view());
     layout_app(&mut app);
     let mut router = InputRouter::default();
-    router.route_event(&app.tree, runtime, &pointer_button(4.0, 10.0, true));
+    router.route_event(&app.tree, runtime.clone(), &pointer_button(4.0, 10.0, true));
+    let plan = runtime.frame_work_plan();
+    assert!(plan.needs_paint());
+    assert!(!plan.needs_build() && !plan.needs_layout());
     let active = paint_cmds(&app, router.snapshot());
     assert!(active.iter().any(|cmd| {
         matches!(cmd, DrawCmd::RRect(r) if r.color == ailloli_ui_core::Theme::default().palette().accent)

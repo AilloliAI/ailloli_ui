@@ -1,6 +1,7 @@
 //! Integration scenarios for incremental layout and dirty-subtree recomputation.
 
 use std::cell::RefCell;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 
 use ailloli_ui_core::{Constraints, Offset, Rect, Scale, Size};
@@ -90,6 +91,20 @@ fn layout_cache_separates_measurement_from_committed_geometry() {
 }
 
 #[test]
+fn layout_pass_is_restored_when_a_measurement_panics() {
+    let mut ctx = LayoutCtx::new(Scale::new(1.0));
+
+    let panic = catch_unwind(AssertUnwindSafe(|| {
+        ctx.with_layout_pass(LayoutPass::Measure, |_ctx| {
+            panic!("intentional measurement failure");
+        });
+    }));
+
+    assert!(panic.is_err());
+    assert_eq!(ctx.layout_pass(), LayoutPass::Commit);
+}
+
+#[test]
 fn measurement_never_replaces_or_commits_authoritative_geometry() {
     let passes = Rc::new(RefCell::new(Vec::new()));
     let committed_sizes = Rc::new(RefCell::new(Vec::new()));
@@ -132,8 +147,8 @@ fn measurement_never_replaces_or_commits_authoritative_geometry() {
 }
 
 #[test]
-/// Verifies that clean layout is reused and unchanged bounds are not recommitted.
-fn clean_layout_is_reused_and_unchanged_bounds_are_not_recommitted() {
+/// Verifies cache hits stay silent while a real equal-geometry callback commits.
+fn clean_layout_is_reused_and_equal_geometry_callback_is_committed_once() {
     let mut fixture = support::fixture();
     let before = (
         fixture.file.layouts.get(),
@@ -178,8 +193,8 @@ fn clean_layout_is_reused_and_unchanged_bounds_are_not_recommitted() {
     assert_eq!(fixture.chat.layouts.get(), before.2 + 1);
     assert_eq!(
         fixture.chat.commits.get(),
-        before.3,
-        "an unchanged layout result and absolute bounds are not recommitted",
+        before.3 + 1,
+        "a real authoritative callback publishes post-layout state even with equal geometry",
     );
 }
 

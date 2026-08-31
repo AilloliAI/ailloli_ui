@@ -3,13 +3,13 @@
 use ailloli_ui_core::event::{Event, Modifiers, MouseButton, PointerEvent, WheelDelta};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::math::Scale;
-use ailloli_ui_core::{BoxShadow, Color, Point};
+use ailloli_ui_core::{BoxShadow, Color, Offset, Point};
 
 use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, View, Widget};
 use ailloli_ui_runtime::element::ElementKind;
 use ailloli_ui_runtime::input::InputRouter;
-use ailloli_ui_runtime::layout::{LayoutCtx, LayoutEngine, LayoutResult};
+use ailloli_ui_runtime::layout::{ChildLayout, LayoutCtx, LayoutEngine, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawCmd, DrawRect};
 use ailloli_ui_text::TextSystem;
@@ -21,6 +21,44 @@ use ailloli_ui_widgets::layout::{
 struct Leaf {
     size: Size,
     color: Option<Color>,
+}
+
+/// Exercises two committed allocations before returning the authoritative one.
+struct CommitProbeThenAllocate;
+
+impl Widget<()> for CommitProbeThenAllocate {
+    fn debug_name(&self) -> &'static str {
+        "CommitProbeThenAllocate"
+    }
+
+    fn layout(
+        &self,
+        engine: &mut LayoutEngine<'_, ()>,
+        ctx: &mut LayoutCtx<'_>,
+        children: &mut [ailloli_ui_runtime::layout::LayoutChild],
+        _constraints: Constraints,
+    ) -> LayoutResult {
+        let child = children.first_mut().expect("scroll child");
+        let _intermediate = child.layout(engine, ctx, Constraints::tight(80.0, 200.0));
+        let authoritative = child.layout(engine, ctx, Constraints::tight(80.0, 40.0));
+        LayoutResult {
+            size: authoritative.size,
+            children: vec![ChildLayout {
+                offset: Offset::default(),
+                size: authoritative.size,
+                paint_bounds: authoritative.paint_bounds,
+                visual_bounds: authoritative.visual_bounds,
+            }],
+            paint_bounds: authoritative.paint_bounds,
+            visual_bounds: authoritative.visual_bounds,
+            overlay_hit_bounds: Vec::new(),
+            clip: None,
+            is_window_root_clip: false,
+            artifact: None,
+        }
+    }
+
+    fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 }
 
 impl Widget<()> for Leaf {
@@ -501,6 +539,36 @@ fn scroll_view_keeps_viewport_clips_and_offsets_child() {
         ailloli_ui_core::Offset::new(0.0, -12.0)
     );
     assert_eq!(scroll_layout.children[0].size, Size::new(10.0, 120.0));
+}
+
+#[test]
+fn scroll_view_publishes_only_the_final_committed_clamp() {
+    let root_view = View::node(
+        CommitProbeThenAllocate,
+        vec![ScrollView::vertical()
+            .initial_scroll_y(60.0)
+            .child(leaf(Size::new(10.0, 120.0)))
+            .into_view()],
+    );
+    let runtime = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(root_view);
+
+    layout_app_with_constraints(&mut app, Constraints::tight(80.0, 40.0));
+
+    let scroll_id = widget_id_by_name(&app, "ScrollView");
+    assert_eq!(
+        widget_child_offset(&app, scroll_id),
+        Offset::new(0.0, -60.0),
+        "the non-authoritative roomy allocation must not clamp retained scroll state"
+    );
+    assert_eq!(
+        runtime
+            .reactive_runtime_diagnostics()
+            .abandoned_layout_transactions(),
+        0,
+        "staged widget synchronization must not supersede the layout overlay"
+    );
 }
 
 #[test]

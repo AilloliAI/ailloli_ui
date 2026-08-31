@@ -5,7 +5,7 @@ use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::style::{AlignItems, Background, Border, BoxStyle, JustifyContent, Radius};
 use ailloli_ui_core::{BoxShadow, Color, Size};
 use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
-use ailloli_ui_runtime::component::IntoView;
+use ailloli_ui_runtime::component::{IntoView, State};
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::button::ButtonStyle;
@@ -215,4 +215,39 @@ fn button_shadow_builder_does_not_change_layout_and_emits_shadow() {
         .iter()
         .flat_map(|layer| layer.cmds.iter())
         .any(|cmd| matches!(cmd, DrawCmd::BoxShadow(_))));
+}
+
+#[test]
+fn button_disabled_state_is_a_paint_only_dependency() {
+    let disabled = State::new(false);
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    let root = app.reconcile(
+        Button::with_label("Run")
+            .disabled(disabled.clone())
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::loose(200.0, 80.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let _ = app.paint(&mut text_system);
+    assert!(runtime.frame_work_plan().is_empty());
+    let committed_size = app.tree.get(root).unwrap().layout.as_ref().unwrap().size;
+
+    disabled.set(true);
+
+    let plan = runtime.frame_work_plan();
+    assert!(plan.needs_paint());
+    assert!(!plan.needs_layout());
+    assert!(!plan.needs_build());
+    let scene = app.paint(&mut text_system);
+    assert!(!scene.layers.is_empty());
+    assert_eq!(
+        app.tree.get(root).unwrap().layout.as_ref().unwrap().size,
+        committed_size,
+        "paint-only disabled styling must not replace button geometry"
+    );
 }

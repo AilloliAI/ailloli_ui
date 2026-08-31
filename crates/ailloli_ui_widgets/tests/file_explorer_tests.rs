@@ -702,7 +702,17 @@ fn file_explorer_context_menu_rename_accepts_first_typed_character_without_secon
         &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
         PresentationGeneration::INITIAL,
     ));
+    let abandoned_before = runtime
+        .reactive_runtime_diagnostics()
+        .abandoned_layout_transactions();
     layout_app(&mut app);
+    assert_eq!(
+        runtime
+            .reactive_runtime_diagnostics()
+            .abandoned_layout_transactions(),
+        abandoned_before,
+        "the command must be staged instead of mutating during layout"
+    );
     runtime.take_actions();
 
     let key = router.route_event(&app.tree, runtime.clone(), &character_event("Z"));
@@ -769,6 +779,11 @@ fn file_explorer_context_menu_new_file_starts_inline_create() {
         PresentationGeneration::INITIAL,
     ));
     layout_app(&mut app);
+    assert!(
+        !painted_text_contains(&app, "New_File"),
+        "the committed pre-command geometry must fail closed"
+    );
+    layout_app(&mut app);
     assert!(painted_text_contains(&app, "New_File"));
     assert!(runtime.take_actions().iter().any(|action| matches!(
         action,
@@ -831,6 +846,11 @@ fn file_explorer_context_menu_new_folder_starts_inline_create() {
         &LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID),
         PresentationGeneration::INITIAL,
     ));
+    layout_app(&mut app);
+    assert!(
+        !painted_text_contains(&app, "New_Folder"),
+        "the committed pre-command geometry must fail closed"
+    );
     layout_app(&mut app);
     assert!(painted_text_contains(&app, "New_Folder"));
     assert!(runtime.take_actions().iter().any(|action| matches!(
@@ -1168,17 +1188,32 @@ fn file_explorer_context_menu_paints_file_actions_on_right_click() {
     )];
     let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime.clone());
-    app.reconcile(
+    let explorer = app.reconcile(
         FileExplorer::new(nodes)
             .expanded(vec![root_uri, src_uri])
             .on_action(Action::Any)
             .into_view(),
     );
     layout_app_size(&mut app, 360.0, 260.0);
+    let explorer_builds = app
+        .work_diagnostics()
+        .elements
+        .get(&explorer)
+        .expect("explorer diagnostics")
+        .builds;
 
     let mut router = InputRouter::default();
     router.route_event(&app.tree, runtime, &right_pointer_button(32.0, 76.0));
     layout_app_size(&mut app, 360.0, 260.0);
+    assert_eq!(
+        app.work_diagnostics()
+            .elements
+            .get(&explorer)
+            .expect("explorer diagnostics")
+            .builds,
+        explorer_builds,
+        "opening the nested menu must not rebuild the explorer/tree snapshot"
+    );
 
     let (mounts, mut popup_text, _) = mount_open_popup(&app);
     let popup_scene = mounts.paint(&mut popup_text, 0);

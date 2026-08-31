@@ -54,14 +54,18 @@ const EXPECTED_FIRST_PARTY_EDGES: usize = 72;
 
 const EXPECTED_CODEOWNERS: &str = "* @MrRise-RiCorp\n";
 const EXPECTED_FUNDING: &str = "github: AilloliAI\n";
-const REVIEWED_CAPTURES: [(&str, &str); 2] = [
+const REVIEWED_CAPTURES: [(&str, &str); 3] = [
     (
         "artifacts/captures/public_sandbox_showcase.png",
         "88920411aafcb8cbc6e9a9e71a5041a627b677cec62da820fd4f8d9be1ba1136",
     ),
     (
+        "artifacts/captures/reactive_layout_consistency.png",
+        "682299693f5ab6eb0fd9628b17331b7394bb51e9e267a3b751a0873128737ed5",
+    ),
+    (
         "artifacts/captures/interactive_scrolling_showcase.png",
-        "1b8e16a36bb5674ec3dc8432e23baf6dec5b0a61fe5da1b2d4a42ce7f28b0282",
+        "dada214d355eaa7d45be1b99f66b535c635642ec89831add7761f6ed7a4c4a0a",
     ),
 ];
 const ICON_PATH: &str = "apps/sandbox_app/src/assets/icons/icon.svg";
@@ -1372,7 +1376,7 @@ fn validate_reviewed_assets(root: &Path) -> Result<()> {
     let expected_keys: BTreeSet<&str> =
         BTreeSet::from(["path", "sha256", "width", "height", "license", "provenance"]);
     if captures.len() != REVIEWED_CAPTURES.len() {
-        bail!("capture manifest must declare exactly two reviewed public captures");
+        bail!("capture manifest must declare exactly three reviewed public captures");
     }
     for (capture, (expected_path, expected_sha256)) in captures.iter().zip(REVIEWED_CAPTURES) {
         let capture = capture

@@ -1099,6 +1099,11 @@ fn code_editor_fold_marker_toggles_collapsed_region_without_widget_folding_logic
             modifiers: Modifiers::default(),
         }),
     );
+    app.layout(
+        Constraints::tight(320.0, 160.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let scene = app.paint(&mut text_system);
     let texts: Vec<_> = scene
         .layers
@@ -1263,6 +1268,11 @@ fn code_editor_wheel_updates_nowrap_scroll_x_without_moving_gutter() {
             precise: true,
         }),
     );
+    app.layout(
+        Constraints::tight(180.0, 90.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let scrolled_scene = app.paint(&mut text_system);
     let scrolled_line_number_x = first_text_x(&scrolled_scene, "1");
     let code_text_x = first_text_x(&scrolled_scene, long_line);
@@ -1419,6 +1429,11 @@ fn code_editor_scrollbar_thumb_moves_on_wheel_without_moving_gutter() {
             precise: true,
         }),
     );
+    app.layout(
+        Constraints::tight(190.0, 90.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let scrolled_scene = app.paint(&mut text_system);
     let scrolled_line_number_x = first_text_x(&scrolled_scene, "1");
     let scrolled_thumb_x = rrects_in_text_layer(&scrolled_scene)
@@ -1543,6 +1558,13 @@ fn code_editor_initial_caret_reveals_long_nowrap_line() {
         Scale::new(1.0),
         &mut text_system,
     );
+    assert_eq!(
+        app.runtime
+            .reactive_runtime_diagnostics()
+            .abandoned_layout_transactions(),
+        0,
+        "caret reveal must publish through the authoritative layout attempt"
+    );
 
     let scene = app.paint(&mut text_system);
     let source_x = first_text_x(&scene, source);
@@ -1627,6 +1649,11 @@ fn code_editor_arrow_down_keeps_a_visible_caret_inside_the_safe_region() {
         Point::new(100.0, 163.0),
         100,
     );
+    app.layout(
+        Constraints::tight(260.0, 326.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let initial_thumb = code_editor_vertical_thumb_y(&app.paint(&mut text_system));
 
     // Lines 9 -> 10 -> 11 -> 12 -> 13 -> 14 remain above the three-line
@@ -1707,6 +1734,7 @@ fn nested_flex_editor_pane_keeps_visible_arrow_navigation_stable() {
     );
     let mut router = InputRouter::default();
     click_left_at(&mut router, &app, runtime.clone(), line_nine, 100);
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
     let before = code_editor_vertical_thumb_y(&app.paint(&mut text_system));
 
     route_named_key(&mut router, &app, runtime, NamedKey::ArrowDown);
@@ -1752,6 +1780,11 @@ fn code_editor_upward_navigation_is_idle_until_the_caret_crosses_the_top() {
         runtime.clone(),
         Point::new(100.0, 90.0),
         100,
+    );
+    app.layout(
+        Constraints::tight(260.0, 180.0),
+        Scale::new(1.0),
+        &mut text_system,
     );
     let initial_thumb = code_editor_vertical_thumb_y(&app.paint(&mut text_system));
     for _ in 0..3 {
@@ -1805,6 +1838,11 @@ fn code_editor_horizontal_navigation_scrolls_only_after_crossing_an_edge() {
         runtime.clone(),
         Point::new(140.0, 25.0),
         100,
+    );
+    app.layout(
+        Constraints::tight(260.0, 90.0),
+        Scale::new(1.0),
+        &mut text_system,
     );
     let initial_thumb = code_editor_horizontal_thumb_x(&app.paint(&mut text_system));
     for _ in 0..5 {
@@ -1862,6 +1900,11 @@ fn editor_pointer_click_does_not_move_a_scrolled_viewport() {
             precise: true,
         }),
     );
+    app.layout(
+        Constraints::tight(220.0, 120.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let before = text_draw_positions(&app.paint(&mut text_system));
 
     click_left_at(&mut router, &app, runtime, Point::new(170.0, 95.0), 100);
@@ -1914,6 +1957,11 @@ fn code_editor_editing_follows_the_caret_horizontally() {
     let mut router = InputRouter::default();
     let pos = Point::new(180.0, 45.0);
     click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let before = code_editor_thumb_origins(&app.paint(&mut text_system)).x;
     let inserted = "x".repeat(120);
     type_char(&mut router, &app, runtime, pos, &inserted);
@@ -1972,6 +2020,11 @@ fn code_editor_pointer_selection_scrolls_only_after_leaving_the_viewport() {
             modifiers: Modifiers::default(),
         }),
     );
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let inside = code_editor_thumb_origins(&app.paint(&mut text_system));
     assert_eq!(inside, before, "in-viewport selection moved the viewport");
 
@@ -1982,6 +2035,11 @@ fn code_editor_pointer_selection_scrolls_only_after_leaving_the_viewport() {
             pos: Point::new(400.0, 260.0),
             modifiers: Modifiers::default(),
         }),
+    );
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
     );
     let outside = code_editor_thumb_origins(&app.paint(&mut text_system));
     assert!(
@@ -2037,6 +2095,11 @@ fn code_editor_ime_cursor_rect_is_inside_text_rect_not_content_rect() {
             pressed: true,
             modifiers: Modifiers::default(),
         }),
+    );
+    app.layout(
+        Constraints::tight(240.0, 120.0),
+        Scale::new(1.0),
+        &mut text_system,
     );
 
     let rect = router
@@ -2229,6 +2292,11 @@ fn vertical_thumb_around_edit(document_id: u64, margin_lines: Option<f32>) -> (f
     let mut router = InputRouter::default();
     let pos = Point::new(160.0, 100.0);
     click_left_at(&mut router, &app, runtime.clone(), pos, 100);
+    app.layout(
+        Constraints::tight(260.0, 130.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let before = code_editor_thumb_origins(&app.paint(&mut text_system)).y;
     router.route_event(
         &app.tree,
@@ -2381,6 +2449,11 @@ fn editor_wheel_updates_nowrap_horizontal_scroll() {
             precise: true,
         }),
     );
+    app.layout(
+        Constraints::tight(100.0, 80.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
     let scene = app.paint(&mut text_system);
     let text_x = scene
         .layers
@@ -2393,6 +2466,48 @@ fn editor_wheel_updates_nowrap_horizontal_scroll() {
         .expect("draw text");
 
     assert_eq!(text_x, -30.0);
+}
+
+#[test]
+fn editor_paint_waits_for_authoritative_layout_after_scroll() {
+    let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let buffer = State::new(TextBuffer::from_string(text));
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        Editor::new(buffer)
+            .wrap_mode(EditorWrapMode::NoWrap)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    let constraints = Constraints::tight(100.0, 80.0);
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
+    let committed_x = first_text_x(&app.paint(&mut text_system), text);
+
+    let mut router = InputRouter::default();
+    router.route_event(
+        &app.tree,
+        runtime,
+        &Event::Pointer(PointerEvent::Wheel {
+            pos: Point::new(5.0, 5.0),
+            delta: WheelDelta::PixelDelta { x: -40.0, y: 0.0 },
+            modifiers: Modifiers::default(),
+            precise: true,
+        }),
+    );
+
+    let stale_scene = app.paint(&mut text_system);
+    let stale_x = text_draw_positions(&stale_scene)
+        .into_iter()
+        .find_map(|(drawn, pos)| (drawn == text).then_some(pos[0]));
+    assert!(
+        stale_x.is_none_or(|x| x == committed_x),
+        "fresh scroll state must not paint against the previous layout stamp: {stale_x:?}"
+    );
+
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
+    let committed_scene = app.paint(&mut text_system);
+    assert_eq!(first_text_x(&committed_scene, text), -30.0);
 }
 
 #[test]

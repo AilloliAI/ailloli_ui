@@ -15,12 +15,13 @@ use std::time::{Duration, Instant};
 use ailloli_ui::core::event::{
     Event, Key, KeyEvent, KeyState, Modifiers, NamedKey, PointerEvent, WheelDelta,
 };
-use ailloli_ui::core::Point;
+use ailloli_ui::core::{Constraints, Point, Scale};
 use ailloli_ui::prelude::*;
 use ailloli_ui::runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui::runtime::component::{ComponentNode, Context, Signal};
 use ailloli_ui::runtime::element::ElementKind;
 use ailloli_ui::runtime::input::{absolute_paint_bounds, InputRouter};
+use ailloli_ui::runtime::layout::LayoutArtifact;
 use ailloli_ui::text::TextSystem;
 use ailloli_ui::{CaptureRequestId, Command};
 use ailloli_ui::{DrawCmd, IntoView};
@@ -32,6 +33,8 @@ use crate::view::showcase::{
 
 /// Final reviewed presentation capture name.
 const PRESENTATION_CAPTURE_NAME: &str = "public_sandbox_showcase.png";
+/// Reviewed capture proving reactive geometry is coherent before resize.
+const REACTIVE_LAYOUT_CAPTURE_NAME: &str = "reactive_layout_consistency.png";
 /// Final reviewed interaction capture name.
 const SCROLLING_CAPTURE_NAME: &str = "interactive_scrolling_showcase.png";
 /// Single logical window captured by the native test.
@@ -58,13 +61,15 @@ struct CaptureServices {
     completed: Arc<AtomicUsize>,
     /// Retained component signal that chooses the second root in the same window.
     interactive: Rc<RefCell<Option<Signal<bool>>>>,
+    /// Documentation state mutated between the first and second captures.
+    presentation: ShowcaseState,
     /// Monotonic start used by every polling stage as the timeout authority.
     started_at: Instant,
     /// Records whether the bounded timeout forced event-loop exit.
     timed_out: Arc<AtomicBool>,
 }
 
-/// Captures two settled roots through one public handle, window, and event loop.
+/// Captures three settled states through one public handle, window, and event loop.
 fn update_capture(
     state: &mut CaptureState,
     services: &mut CaptureServices,
@@ -98,12 +103,7 @@ fn update_capture(
         }
         2 => {
             state.stage = 3;
-            services
-                .interactive
-                .borrow()
-                .as_ref()
-                .expect("capture root signal")
-                .set(true);
+            services.presentation.select_openxr_for_capture();
             Commands::redraw().push(Command::DispatchAfter {
                 action: (),
                 delay: CAPTURE_SETTLE,
@@ -116,13 +116,42 @@ fn update_capture(
                 .request_ids
                 .lock()
                 .expect("capture request lock")
-                .push((SCROLLING_CAPTURE_NAME, request));
+                .push((REACTIVE_LAYOUT_CAPTURE_NAME, request));
             Commands::redraw().push(Command::DispatchAfter {
                 action: (),
                 delay: Duration::from_millis(50),
             })
         }
         4 if services.completed.load(Ordering::SeqCst) < 2 => {
+            Commands::dispatch_after((), Duration::from_millis(50))
+        }
+        4 => {
+            state.stage = 5;
+            services
+                .interactive
+                .borrow()
+                .as_ref()
+                .expect("capture root signal")
+                .set(true);
+            Commands::redraw().push(Command::DispatchAfter {
+                action: (),
+                delay: CAPTURE_SETTLE,
+            })
+        }
+        5 => {
+            state.stage = 6;
+            let request = services.capture.request_window(WINDOW_ID);
+            services
+                .request_ids
+                .lock()
+                .expect("capture request lock")
+                .push((SCROLLING_CAPTURE_NAME, request));
+            Commands::redraw().push(Command::DispatchAfter {
+                action: (),
+                delay: Duration::from_millis(50),
+            })
+        }
+        6 if services.completed.load(Ordering::SeqCst) < 3 => {
             Commands::dispatch_after((), Duration::from_millis(50))
         }
         _ => Commands::quit(),
@@ -191,7 +220,8 @@ fn assert_visual_frame(name: &str, width: u32, height: u32, rgba: &[u8], png: &[
 
 /// Returns the first absolute widget bounds for a diagnostic widget name.
 fn widget_bounds(app: &Runtime<()>, debug_name: &str) -> Rect {
-    app.tree
+    if let Some(bounds) = app
+        .tree
         .iter_elements()
         .find_map(|(id, element)| match &element.kind {
             ElementKind::Widget(widget) if widget.debug_name() == debug_name => {
@@ -199,7 +229,23 @@ fn widget_bounds(app: &Runtime<()>, debug_name: &str) -> Rect {
             }
             _ => None,
         })
-        .unwrap_or_else(|| panic!("missing {debug_name} in scrolling showcase"))
+    {
+        return bounds;
+    }
+    let available = app
+        .tree
+        .iter_elements()
+        .filter_map(|(id, element)| match &element.kind {
+            ElementKind::Widget(widget) => Some((
+                id,
+                widget.debug_name(),
+                element.layout.is_some(),
+                absolute_paint_bounds(&app.tree, id),
+            )),
+            ElementKind::Empty | ElementKind::Component(_) => None,
+        })
+        .collect::<Vec<_>>();
+    panic!("missing {debug_name} in scrolling showcase; available widgets={available:?}")
 }
 
 /// Extracts scrollbar-like rounded rectangles from a public painted scene.
@@ -277,6 +323,23 @@ fn assert_interactive_scrolling_input_contract(state: InteractiveScrollingState)
             }),
         );
         assert!(outcome.event_dispatched, "{debug_name}: wheel not routed");
+        if debug_name == "ScrollView" {
+            let pre_layout = scrollbar_rects(&app, &mut text_system);
+            assert!(
+                pre_layout.iter().all(|rect| {
+                    rect.x < bounds.right() - 20.0
+                        || rect.x > bounds.right()
+                        || rect.y < bounds.y
+                        || rect.bottom() > bounds.bottom()
+                }),
+                "ScrollView: stale paint must skip its scrollbar until requested layout completes"
+            );
+        }
+        app.layout(
+            constraints,
+            ailloli_ui::core::Scale::new(1.0),
+            &mut text_system,
+        );
         let after = scrollbar_rects(&app, &mut text_system);
         assert_ne!(
             before, after,
@@ -446,9 +509,116 @@ fn write_capture(name: &str, png: &[u8]) {
     eprintln!("wrote {}", output.display());
 }
 
+/// Returns committed absolute bounds and line count for one exact text artifact.
+fn committed_text_geometry(app: &Runtime<()>, content: &str) -> (Rect, usize) {
+    app.tree
+        .iter_elements()
+        .find_map(|(id, element)| {
+            let layout = element.layout.as_ref()?;
+            let LayoutArtifact::Text(text) = layout.artifact.as_ref()?;
+            (text.text() == content).then(|| {
+                (
+                    absolute_paint_bounds(&app.tree, id).expect("absolute text bounds"),
+                    text.lines.len(),
+                )
+            })
+        })
+        .unwrap_or_else(|| panic!("missing committed text artifact: {content}"))
+}
+
+/// Returns the actual logical-pixel extent emitted for one exact text command.
+fn painted_text_geometry(
+    scene: &ailloli_ui::runtime::Scene,
+    content: &str,
+    committed: Rect,
+) -> Rect {
+    scene
+        .layers
+        .iter()
+        .flat_map(|layer| layer.cmds.iter())
+        .filter_map(|command| match command {
+            DrawCmd::Text(text) if text.layout.text() == content => {
+                let first_baseline = text
+                    .layout
+                    .lines
+                    .first()
+                    .map_or(0.0, |line| line.baseline_y);
+                Some(Rect::new(
+                    text.pos[0],
+                    text.pos[1] - first_baseline,
+                    text.layout.metrics.width,
+                    text.layout.metrics.height,
+                ))
+            }
+            _ => None,
+        })
+        .min_by(|left, right| {
+            let left_distance = (left.x - committed.x).powi(2) + (left.y - committed.y).powi(2);
+            let right_distance = (right.x - committed.x).powi(2) + (right.y - committed.y).powi(2);
+            left_distance.total_cmp(&right_distance)
+        })
+        .unwrap_or_else(|| panic!("missing painted text command: {content}"))
+}
+
+/// Proves the documentation sibling mutation is laid out before any resize.
+fn assert_reactive_layout_consistency() {
+    let state = ShowcaseState::new();
+    let mut app: Runtime<()> = Runtime::new(RuntimeHandle::new());
+    app.reconcile(View::component(CaptureRoot {
+        presentation: state.clone(),
+        scrolling: InteractiveScrollingState::new(),
+        interactive: Rc::new(RefCell::new(None)),
+    }));
+    let mut text_system = TextSystem::new();
+    let constraints = Constraints::tight(1280.0, 756.0);
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
+
+    state.select_openxr_for_capture();
+    let prepared = app.prepare_frame();
+    assert!(
+        prepared.needs_layout(),
+        "selection must schedule native layout"
+    );
+    app.layout(constraints, Scale::new(1.0), &mut text_system);
+
+    let selected = crate::content::topic("openxr");
+    let (title, title_lines) = committed_text_geometry(&app, selected.title);
+    let (summary, _) = committed_text_geometry(&app, selected.summary);
+    let scene = app.paint(&mut text_system);
+    let painted_title = painted_text_geometry(&scene, selected.title, title);
+    let painted_summary = painted_text_geometry(&scene, selected.summary, summary);
+    assert_eq!(title_lines, 2, "selected title must exercise wrapping");
+    assert!(
+        summary.y >= title.bottom() + 10.0,
+        "summary overlaps title before resize: title={title:?} summary={summary:?}"
+    );
+    assert!(
+        painted_summary.y >= painted_title.bottom() + 10.0,
+        "painted summary overlaps title before resize: title={painted_title:?} summary={painted_summary:?}; committed title={title:?} summary={summary:?}"
+    );
+
+    app.layout(
+        Constraints::tight(1284.0, 760.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let (resized_title, _) = committed_text_geometry(&app, selected.title);
+    let (resized_summary, _) = committed_text_geometry(&app, selected.summary);
+    assert!(
+        resized_summary.y >= resized_title.bottom() + 10.0,
+        "resize must not be required to repair reactive geometry"
+    );
+}
+
+#[test]
+fn documentation_selection_reflows_before_resize() {
+    assert_reactive_layout_consistency();
+}
+
 #[test]
 #[ignore = "requires a native compositor and WGPU capture"]
 fn sandbox_showcase_visual_capture() {
+    assert_reactive_layout_consistency();
     let capture = CaptureHandle::new();
     let request_ids = Arc::new(Mutex::new(Vec::new()));
     let completed = Arc::new(AtomicUsize::new(0));
@@ -458,7 +628,7 @@ fn sandbox_showcase_visual_capture() {
     assert_interactive_scrolling_input_contract(scrolling_state.clone());
     let interactive = Rc::new(RefCell::new(None));
     let capture_root = CaptureRoot {
-        presentation: showcase_state,
+        presentation: showcase_state.clone(),
         scrolling: scrolling_state,
         interactive: interactive.clone(),
     };
@@ -474,6 +644,7 @@ fn sandbox_showcase_visual_capture() {
             request_ids: request_ids.clone(),
             completed,
             interactive: interactive.clone(),
+            presentation: showcase_state.clone(),
             started_at: Instant::now(),
             timed_out: timed_out.clone(),
         })
@@ -495,7 +666,7 @@ fn sandbox_showcase_visual_capture() {
         "sandbox capture exceeded the explicit 30-second timeout"
     );
     let captures = request_ids.lock().expect("capture request lock").clone();
-    assert_eq!(captures.len(), 2, "both captures must be requested");
+    assert_eq!(captures.len(), 3, "all captures must be requested");
     for (name, capture_id) in captures {
         let frame = capture
             .take_result(capture_id)

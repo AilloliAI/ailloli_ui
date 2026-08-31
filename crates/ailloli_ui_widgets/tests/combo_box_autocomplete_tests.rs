@@ -114,6 +114,46 @@ fn open_combobox_popup_is_overlay_only() {
 }
 
 #[test]
+fn combobox_placeholder_waits_for_a_matching_layout_artifact() {
+    let placeholder = State::new("OLD-COMBO-PLACEHOLDER".to_string());
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        ComboBox::<Choice>::new()
+            .placeholder(placeholder.clone())
+            .option(Choice::Apple, "Apple")
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::loose(360.0, 280.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let initial = app.paint(&mut text_system);
+    assert!(scene_contains_text(&initial, "OLD-COMBO-PLACEHOLDER"));
+
+    placeholder.set("FRESH-COMBO-PLACEHOLDER".to_string());
+
+    let plan = runtime.frame_work_plan();
+    assert!(plan.needs_layout());
+    assert!(!plan.needs_build());
+    let stale = app.paint(&mut text_system);
+    assert!(
+        !scene_contains_text(&stale, "FRESH-COMBO-PLACEHOLDER"),
+        "fresh placeholder must not be shaped against the previous artifact"
+    );
+
+    app.layout(
+        Constraints::loose(360.0, 280.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let committed = app.paint(&mut text_system);
+    assert!(scene_contains_text(&committed, "FRESH-COMBO-PLACEHOLDER"));
+}
+
+#[test]
 fn combobox_filters_selects_enabled_option_and_dispatches() {
     let selected = State::new(Choice::Apple);
     let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
@@ -426,6 +466,15 @@ fn paint_scene(app: &Runtime<()>) -> Vec<DrawCmd> {
         .iter()
         .flat_map(|layer| layer.cmds.iter().cloned())
         .collect()
+}
+
+fn scene_contains_text(scene: &ailloli_ui_runtime::Scene, expected: &str) -> bool {
+    scene.layers.iter().any(|layer| {
+        layer
+            .cmds
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == expected))
+    })
 }
 
 fn mount_open_popup<A: 'static>(

@@ -8,6 +8,7 @@ use ailloli_ui_core::{Color, IconId, Point, Theme};
 use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, State};
 use ailloli_ui_runtime::input::{dispatch_event_to_target, InputRole, InputRouter};
+use ailloli_ui_runtime::popup::{PopupFocusPolicy, PopupRole};
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{
@@ -22,6 +23,7 @@ enum Action {
     Confirm,
     Cancel,
     Search,
+    Submit,
 }
 
 #[test]
@@ -184,6 +186,113 @@ fn dialog_confirm_cancel_backdrop_and_escape_close_bound_state() {
 }
 
 #[test]
+fn dialog_composed_content_mounts_a_retained_modal_popup() {
+    let open = State::new(true);
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        Dialog::<Action>::new()
+            .fill()
+            .bind_open(open.clone())
+            .on_submit(Action::Submit)
+            .on_cancel(Action::Cancel)
+            .modal_content(
+                Container::new()
+                    .width(300.0)
+                    .height(180.0)
+                    .background(Color::hex_rgb(0x202428)),
+            )
+            .child(Container::new().fill().background(Color::hex_rgb(0x111416)))
+            .into_view(),
+    );
+    layout_app(&mut app, 640.0, 360.0);
+
+    let popup_view = {
+        let portal = runtime.popup_portal();
+        let portal = portal.borrow();
+        let popup_id = portal
+            .topmost()
+            .expect("composed dialog popup should be open");
+        let request = portal.request(popup_id).expect("registered dialog request");
+        assert_eq!(request.semantics().role(), PopupRole::Dialog);
+        assert_eq!(
+            request.semantics().focus_policy(),
+            PopupFocusPolicy::TrapWithinPopup
+        );
+        assert!(request.semantics().restores_focus_on_close());
+        assert_eq!(
+            portal.bounds(popup_id),
+            Some(ailloli_ui_core::Rect::new(0.0, 0.0, 640.0, 360.0))
+        );
+        request.content().build()
+    };
+    assert_eq!(popup_view.children.len(), 1);
+
+    let mut popup_app = Runtime::new(runtime.clone());
+    let surface = popup_app.reconcile(popup_view);
+    layout_app(&mut popup_app, 640.0, 360.0);
+    dispatch_event_to_target(
+        &popup_app.tree,
+        runtime.clone(),
+        surface,
+        &keyboard_event(NamedKey::Enter),
+    );
+    assert!(!open.read());
+    assert_eq!(runtime.take_actions(), vec![Action::Submit]);
+
+    open.set(true);
+    layout_app(&mut popup_app, 640.0, 360.0);
+    dispatch_event_to_target(
+        &popup_app.tree,
+        runtime.clone(),
+        surface,
+        &keyboard_event(NamedKey::Escape),
+    );
+    assert!(!open.read());
+    assert_eq!(runtime.take_actions(), vec![Action::Cancel]);
+
+    open.set(true);
+    layout_app(&mut popup_app, 640.0, 360.0);
+    dispatch_event_to_target(
+        &popup_app.tree,
+        runtime.clone(),
+        surface,
+        &pointer_button(4.0, 4.0, false),
+    );
+    assert!(!open.read());
+    assert_eq!(runtime.take_actions(), vec![Action::Cancel]);
+}
+
+#[test]
+fn dialog_legacy_text_waits_for_committed_layout_artifacts() {
+    let title = State::new("Old title".to_string());
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime);
+    app.reconcile(
+        Dialog::<Action>::new()
+            .fill()
+            .default_open(true)
+            .title(title.clone())
+            .child(Container::new().fill())
+            .into_view(),
+    );
+    layout_app(&mut app, 420.0, 280.0);
+    assert!(paint_cmds_action(&app)
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "Old title")));
+
+    title.set("Fresh title".to_string());
+    assert!(!paint_cmds_action(&app)
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "Fresh title")));
+
+    layout_app(&mut app, 420.0, 280.0);
+    assert!(paint_cmds_action(&app)
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "Fresh title")));
+}
+
+#[test]
 fn command_palette_filters_selects_and_reports_text_input_role() {
     let open = State::new(true);
     let query = State::new("se".to_string());
@@ -236,6 +345,44 @@ fn command_palette_filters_selects_and_reports_text_input_role() {
     layout_app(&mut app, 640.0, 360.0);
     router.route_event(&app.tree, runtime.clone(), &keyboard_event(NamedKey::Enter));
     assert!(runtime.take_actions().is_empty());
+}
+
+#[test]
+fn command_palette_query_waits_for_a_matching_layout_artifact() {
+    let open = State::new(true);
+    let query = State::new("old-query".to_string());
+    let runtime: RuntimeHandle<Action> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        CommandPalette::<Action>::new()
+            .fill()
+            .bind_open(open)
+            .bind_query(query.clone())
+            .item(CommandItem::new("Search").keyword("old-query"))
+            .child(Container::new().fill().background(Color::hex_rgb(0x111416)))
+            .into_view(),
+    );
+    layout_app(&mut app, 640.0, 360.0);
+    assert!(paint_cmds_action(&app)
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "old-query")));
+
+    query.set("fresh-query".to_string());
+
+    let plan = runtime.frame_work_plan();
+    assert!(plan.needs_layout());
+    let stale = paint_cmds_action(&app);
+    assert!(
+        !stale
+            .iter()
+            .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "fresh-query")),
+        "fresh query must not be shaped into stale overlay geometry"
+    );
+
+    layout_app(&mut app, 640.0, 360.0);
+    assert!(paint_cmds_action(&app)
+        .iter()
+        .any(|cmd| matches!(cmd, DrawCmd::Text(text) if text.layout.text() == "fresh-query")));
 }
 
 fn layout_app<A: 'static>(app: &mut Runtime<A>, w: f32, h: f32) -> ailloli_ui_core::Size {

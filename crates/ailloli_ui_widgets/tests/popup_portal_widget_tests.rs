@@ -3,14 +3,14 @@
 use std::time::{Duration, Instant};
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
-use ailloli_ui_core::event::{Event, Key, KeyEvent, KeyState, Modifiers, NamedKey};
+use ailloli_ui_core::event::{Event, ImeEvent, Key, KeyEvent, KeyState, Modifiers, NamedKey};
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_core::{Constraints, LogicalWindowId, Point, Rect};
 use ailloli_ui_runtime::app::{PresentationGeneration, Runtime, RuntimeHandle};
 use ailloli_ui_runtime::component::{IntoView, View, ViewKind};
 use ailloli_ui_runtime::input::{
     dispatch_event_envelope_to_target, EventEnvelope, EventId, EventMeta, EventTimestamp,
-    InputRouter,
+    InputRole, InputRouter,
 };
 use ailloli_ui_runtime::popup::{
     PopupBackendCapabilities, PopupDismissReason, PopupIntent, PopupMountPolicy, PopupRole,
@@ -21,15 +21,94 @@ use ailloli_ui_runtime::scene::LayerKind;
 use ailloli_ui_runtime::DrawCmd;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::controls::{
-    Autocomplete, ComboBox, ContextMenu, ContextMenuEntry, ContextMenuItem, Dropdown, Select,
-    Tooltip,
+    Autocomplete, Button, ComboBox, ContextMenu, ContextMenuEntry, ContextMenuItem, Dialog,
+    Dropdown, Select, TextInput, Tooltip,
 };
+use ailloli_ui_widgets::layout::Column;
 use ailloli_ui_widgets::text::Text;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Choice {
     One,
     Two,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ModalAction {
+    Save,
+    Cancel,
+}
+
+#[test]
+fn retained_dialog_routes_to_text_input_button_and_backdrop() {
+    let open = ailloli_ui_runtime::component::State::new(true);
+    let name = ailloli_ui_runtime::component::State::new(String::new());
+    let runtime = RuntimeHandle::<ModalAction>::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(
+        Dialog::new()
+            .fill()
+            .bind_open(open.clone())
+            .on_cancel(ModalAction::Cancel)
+            .modal_content(
+                Column::new()
+                    .width(300.0)
+                    .height(180.0)
+                    .gap(20.0)
+                    .child(
+                        TextInput::new()
+                            .width(300.0)
+                            .height(40.0)
+                            .bind(name.clone())
+                            .placeholder("Name"),
+                    )
+                    .child(
+                        Button::with_label("Save")
+                            .width(300.0)
+                            .height(40.0)
+                            .on_click(ModalAction::Save),
+                    ),
+            )
+            .into_view(),
+    );
+    layout(&mut app, 640.0, 360.0);
+
+    let mut text = TextSystem::new();
+    let _ = app.paint(&mut text);
+    let mut mounts = PopupOverlayMounts::new(runtime.clone());
+    let window = LogicalWindowId::new(HEADLESS_POPUP_WINDOW_ID);
+    assert_eq!(
+        mounts
+            .sync(&window, PresentationGeneration::INITIAL)
+            .mounted(),
+        1
+    );
+    mounts.layout(Scale::new(1.0), &mut text);
+    assert!(mounts.has_focus(), "modal popup should trap focus on open");
+
+    click_mounted_popup(&mut mounts, 100, Point::new(190.0, 110.0));
+    assert_eq!(mounts.focused_input_role(), InputRole::TextSingleLine);
+    assert!(mounts
+        .route_envelope(&popup_envelope(102, Event::Ime(ImeEvent::commit("A"))))
+        .consumed());
+    assert_eq!(name.read(), "A");
+
+    click_mounted_popup(&mut mounts, 110, Point::new(190.0, 170.0));
+    assert_eq!(runtime.take_actions(), vec![ModalAction::Save]);
+    assert!(open.read());
+
+    click_mounted_popup(&mut mounts, 120, Point::new(10.0, 10.0));
+    assert!(!open.read());
+    assert_eq!(runtime.take_actions(), vec![ModalAction::Cancel]);
+    layout(&mut app, 640.0, 360.0);
+    assert_eq!(
+        mounts.sync(&window, PresentationGeneration::INITIAL).open(),
+        0
+    );
+    assert!(runtime
+        .take_popup_intents()
+        .iter()
+        .any(|intent| matches!(intent, PopupIntent::RestoreFocus { .. })));
 }
 
 #[test]
@@ -98,6 +177,8 @@ fn tooltip_uses_the_retained_portal_without_a_procedural_copy() {
     let mut input = InputRouter::default();
     input.route_event(&app.tree, runtime.clone(), &pointer_move(4.0, 4.0));
     let scene = paint_with_input(&app, input.snapshot());
+    let plan = runtime.frame_work_plan();
+    assert!(!plan.needs_build() && !plan.needs_layout());
 
     assert_open_role(&runtime, PopupRole::Tooltip);
     assert!(!scene
@@ -440,6 +521,30 @@ fn popup_envelope(id: u64, event: Event) -> EventEnvelope {
         ),
         event,
     )
+}
+
+fn click_mounted_popup<A: 'static>(mounts: &mut PopupOverlayMounts<A>, id: u64, point: Point) {
+    let press = mounts.route_envelope(&popup_envelope(
+        id,
+        Event::Pointer(PointerEvent::button(
+            point,
+            MouseButton::Left,
+            true,
+            Modifiers::default(),
+        )),
+    ));
+    assert!(press.consumed());
+    let release = mounts.route_envelope(&popup_envelope(
+        id + 1,
+        Event::Pointer(PointerEvent::button(
+            point,
+            MouseButton::Left,
+            false,
+            Modifiers::default(),
+        )),
+    ));
+    assert!(release.consumed());
+    assert!(release.route().event_dispatched);
 }
 
 fn layout<A: 'static>(app: &mut Runtime<A>, width: f32, height: f32) {

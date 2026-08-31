@@ -46,6 +46,13 @@ fn context_menu_paints_labels_shortcuts_disabled_and_submenu_marker() {
     let mut app = Runtime::new(RuntimeHandle::new());
     app.reconcile(view);
     layout_app(&mut app);
+    assert_eq!(
+        app.runtime
+            .reactive_runtime_diagnostics()
+            .abandoned_layout_transactions(),
+        0,
+        "context-menu visibility bookkeeping must not supersede its authoritative layout"
+    );
 
     let (mounts, mut text_system, root_popup) = mount_open_popups(&app);
     let request = app
@@ -67,6 +74,13 @@ fn context_menu_paints_labels_shortcuts_disabled_and_submenu_marker() {
     assert!(texts.iter().any(|text| text == "Enter"));
     assert!(texts.iter().any(|text| text == "Disabled"));
     assert!(texts.iter().any(|text| text == "More"));
+    assert_eq!(
+        app.runtime
+            .reactive_runtime_diagnostics()
+            .stale_paint_feedback(),
+        0,
+        "context-menu paint must not mutate one of its own observed dependencies"
+    );
 }
 
 #[test]

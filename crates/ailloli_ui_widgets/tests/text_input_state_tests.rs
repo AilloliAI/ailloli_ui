@@ -200,6 +200,11 @@ fn text_input_disabled_ends_preedit_in_both_input_modes() {
             Scale::new(1.0),
             &mut text_system,
         );
+        assert!(
+            !runtime.frame_work_plan().needs_layout(),
+            "layout left stale geometry before preedit paint (multiline={multiline}): {:?}",
+            runtime.frame_work_plan()
+        );
         let during_preedit = app.paint_with_input(&mut text_system, router.snapshot(), 0);
         assert!(
             scene_contains_text_fragment(&during_preedit, "PREEDIT-MARKER"),
@@ -219,6 +224,53 @@ fn text_input_disabled_ends_preedit_in_both_input_modes() {
         );
         assert_eq!(value.read(), "stable");
     }
+}
+
+#[test]
+fn text_input_ime_preedit_waits_for_a_matching_layout_artifact() {
+    let value = State::new("stable".to_string());
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime.clone());
+    app.reconcile(TextInput::new().bind(value).into_view());
+    let mut text_system = TextSystem::new();
+    app.layout(
+        Constraints::tight(240.0, 40.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+
+    let mut router = InputRouter::default();
+    focus_input(&mut router, &app, runtime.clone());
+    let _ = app.paint_with_input(&mut text_system, router.snapshot(), 0);
+    let _ = app.prepare_frame();
+    router.route_event(
+        &app.tree,
+        runtime.clone(),
+        &Event::Ime(ImeEvent::Preedit {
+            preedit: ImePreedit::new("FRESH-PREEDIT"),
+            pos: None,
+        }),
+    );
+
+    let plan = runtime.frame_work_plan();
+    assert!(plan.needs_layout());
+    assert!(!plan.needs_build());
+    let stale_scene = app.paint_with_input(&mut text_system, router.snapshot(), 1);
+    assert!(
+        !scene_contains_text_fragment(&stale_scene, "FRESH-PREEDIT"),
+        "fresh IME text must not be painted with the previous text artifact"
+    );
+
+    app.layout(
+        Constraints::tight(240.0, 40.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+    let committed_scene = app.paint_with_input(&mut text_system, router.snapshot(), 2);
+    assert!(scene_contains_text_fragment(
+        &committed_scene,
+        "FRESH-PREEDIT"
+    ));
 }
 
 #[test]

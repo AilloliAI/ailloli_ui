@@ -17,7 +17,7 @@ const WINDOW_ID: &str = "tree_virtualization-tree-virtualization";
 /// Stable retained key used for focus and diagnostics lookup.
 const TREE_KEY: &str = "tree_virtualization-virtual-tree";
 /// Output filename beneath the repository capture directory.
-const CAPTURE_NAME: &str = "ui_bundle_tree_virtualization_tree_virtualization.png";
+const CAPTURE_NAME: &str = "tree_view_virtualization.png";
 /// Total retained nodes loaded into the synthetic tree.
 const ROW_COUNT: u64 = 100_000;
 /// Deep row selected and scrolled into the initial viewport.

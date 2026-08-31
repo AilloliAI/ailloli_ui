@@ -101,6 +101,23 @@ The following invariants are part of the framework contract:
 - build, layout, paint, and hit testing never perform filesystem I/O. Sources
   are owned by workers and deliver owned deltas through bounded queues.
 
+Reactive state is UI-thread-local. Reading a `Signal`, `State`, reactive
+`Binding`, or derived `Memo` during a retained build, layout, or paint callback
+automatically associates that mounted consumer with the sources actually read.
+An ordinary read outside those callbacks is passive: it returns the value but
+does not schedule future work. Owner-provided invalidators installed by runtime
+contexts remain active for compatibility and are independent of automatic
+observation.
+
+Dependencies are replaced only after a callback succeeds. Consequently, a
+conditional callback that changes from reading `A` to reading `B` stops reacting
+to `A` and starts reacting to `B` as one update; a panicking callback keeps its
+previous dependencies. Mutations commit the value and revision before
+notification, release state and subscriber borrows, notify retained consumers,
+then invoke the owner-provided invalidator. Notification is synchronous and may
+be reentrant. Mounted consumers are held weakly and are disconnected on
+unmount, while independently owned state remains usable.
+
 `Invalidation::Paint` reuses both the reconciled tree and layout.
 `Invalidation::Layout` recomputes the affected ancestor path, while
 `Invalidation::Build` reconciles the owning component before layout. Existing
@@ -108,6 +125,19 @@ The following invariants are part of the framework contract:
 `Context::signal_with_invalidation` when a signal has a narrower contract, and
 use `Signal::set_if_changed` only for small values where `PartialEq` is cheap.
 Large trees should be represented by a retained handle and monotonic revision.
+
+Layout dependency observation is transactional. Speculative measurements stage
+their reads without changing the active dependency set. Reads from measurements
+that contribute to the accepted result are combined with reads from the
+authoritative allocation and published only when the complete layout attempt
+succeeds. Abandoned alternatives, superseded attempts, and panics preserve the
+last committed dependency set and geometry.
+
+Paint consumes committed layout results and their reusable artifacts. A widget
+must not reshape newly read geometry-dependent content into bounds produced for
+older content. If a layout dependency changes before paint, the runtime requests
+layout for a later traversal and either replays a coherent committed artifact or
+skips unsafe paint. It never starts recursive layout from paint.
 
 For large trees, migrate from repeatedly constructing `Vec<TreeNode<_>>` to a
 UI-local `TreeModelHandle` and apply atomic deltas:

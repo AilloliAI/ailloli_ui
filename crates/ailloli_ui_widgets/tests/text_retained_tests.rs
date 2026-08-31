@@ -1,5 +1,7 @@
 //! Retained text layout reuse, wrapping, binding, interaction, and composition scenarios.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
@@ -116,6 +118,35 @@ fn text_wraps_by_default_under_width_constraint() {
 }
 
 #[test]
+fn text_max_width_shapes_before_flex_assigns_its_height() {
+    let runtime: RuntimeHandle<()> = RuntimeHandle::new();
+    let mut app = Runtime::new(runtime);
+    let root_id = app.reconcile(
+        Text::new("OpenXR integration")
+            .size(24.0)
+            .max_width(210.0)
+            .into_view(),
+    );
+    let mut text_system = TextSystem::new();
+
+    app.layout(
+        Constraints::loose(682.0, 220.0),
+        Scale::new(1.0),
+        &mut text_system,
+    );
+
+    let layout = app.tree.get(root_id).unwrap().layout.as_ref().unwrap();
+    let LayoutArtifact::Text(artifact) = layout.artifact.as_ref().unwrap();
+    assert_eq!(artifact.lines.len(), 2);
+    assert!(
+        layout.size.h >= artifact.metrics.height,
+        "text artifact exceeds its committed slot: size={:?} metrics={:?}",
+        layout.size,
+        artifact.metrics
+    );
+}
+
+#[test]
 fn text_nowrap_builder_keeps_single_line() {
     let runtime: RuntimeHandle<()> = RuntimeHandle::new();
     let mut app = Runtime::new(runtime);
@@ -187,6 +218,108 @@ fn bound_text_updates_after_state_change_and_relayout() {
     layout_app(&mut app, Constraints::loose(400.0, 120.0));
 
     assert_eq!(first_text(&app), "B");
+}
+
+#[test]
+fn bound_text_paints_only_the_committed_artifact_before_relayout() {
+    let state = State::new("short".to_string());
+    let mut app: Runtime<()> = Runtime::new(RuntimeHandle::new());
+    let root_id = app.reconcile(Text::new(state.clone()).width(140.0).into_view());
+    layout_app(&mut app, Constraints::loose(400.0, 220.0));
+
+    let committed = match app
+        .tree
+        .get(root_id)
+        .and_then(|element| element.layout.as_ref())
+        .and_then(|layout| layout.artifact.as_ref())
+        .expect("committed text artifact")
+    {
+        LayoutArtifact::Text(layout) => layout.clone(),
+    };
+
+    state.set("Project settings were updated successfully and should wrap cleanly.".to_string());
+
+    let mut text_system = TextSystem::new();
+    let painted = app
+        .paint(&mut text_system)
+        .layers
+        .iter()
+        .flat_map(|layer| layer.cmds.iter())
+        .find_map(|cmd| match cmd {
+            DrawCmd::Text(text) => Some(text.layout.clone()),
+            _ => None,
+        })
+        .expect("text paint command");
+
+    assert!(Arc::ptr_eq(&committed, &painted));
+    assert_eq!(painted.text(), "short");
+
+    layout_app(&mut app, Constraints::loose(400.0, 220.0));
+    assert_eq!(
+        first_text(&app),
+        "Project settings were updated successfully and should wrap cleanly."
+    );
+}
+
+#[test]
+fn stale_text_replay_uses_the_committed_artifact_without_reading_its_binding() {
+    let state = State::new("short".to_string());
+    let binding_reads = Rc::new(Cell::new(0_u32));
+    let reads = binding_reads.clone();
+    let content = state.map(move |value| {
+        binding_reads.set(binding_reads.get() + 1);
+        value
+    });
+    let mut app: Runtime<()> = Runtime::new(RuntimeHandle::new());
+    let root_id = app.reconcile(Text::new(content).width(140.0).into_view());
+    layout_app(&mut app, Constraints::loose(400.0, 220.0));
+    assert_eq!(reads.get(), 1);
+
+    let committed = match app
+        .tree
+        .get(root_id)
+        .and_then(|element| element.layout.as_ref())
+        .and_then(|layout| layout.artifact.as_ref())
+        .expect("committed text artifact")
+    {
+        LayoutArtifact::Text(layout) => layout.clone(),
+    };
+    state.set("fresh content that requires another authoritative layout".to_string());
+
+    let mut text_system = TextSystem::new();
+    let painted = app
+        .paint(&mut text_system)
+        .layers
+        .iter()
+        .flat_map(|layer| layer.cmds.iter())
+        .find_map(|command| match command {
+            DrawCmd::Text(text) => Some(text.layout.clone()),
+            _ => None,
+        })
+        .expect("stale-safe committed text replay");
+
+    assert!(Arc::ptr_eq(&committed, &painted));
+    assert_eq!(painted.text(), "short");
+    assert_eq!(
+        reads.get(),
+        1,
+        "stale replay must not evaluate the current text binding"
+    );
+}
+
+#[test]
+fn bound_text_keeps_the_long_committed_artifact_until_short_content_is_relaid_out() {
+    let long = "Project settings were updated successfully and should wrap cleanly.";
+    let state = State::new(long.to_string());
+    let mut app: Runtime<()> = Runtime::new(RuntimeHandle::new());
+    app.reconcile(Text::new(state.clone()).width(140.0).into_view());
+    layout_app(&mut app, Constraints::loose(400.0, 220.0));
+
+    state.set("short".to_string());
+    assert_eq!(first_text(&app), long);
+
+    layout_app(&mut app, Constraints::loose(400.0, 220.0));
+    assert_eq!(first_text(&app), "short");
 }
 
 #[test]

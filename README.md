@@ -112,6 +112,18 @@ Ailloli UI uses targeted retained work so changes can invalidate build, layout,
 or paint independently without forcing unrelated stable components to be
 rebuilt.
 
+### Reactive consistency
+
+Retained build, layout, and paint callbacks automatically subscribe to the
+reactive sources they actually read. Dependencies are replaced only after a
+callback succeeds, so conditional reads stop obsolete work without exposing a
+partially updated dependency graph.
+
+Layout stages geometry, cache entries, and contributing reactive dependencies
+as one transaction. Paint consumes only committed layout artifacts; when an
+artifact is stale, the runtime schedules layout and skips unsafe rendering
+instead of drawing fresh content into obsolete bounds.
+
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete crate architecture,
 runtime contracts, and design principles.
 
