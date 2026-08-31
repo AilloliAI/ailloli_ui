@@ -796,7 +796,7 @@ fn resources_section(theme: Theme) -> View<Action> {
             theme,
             "LEARNING RESOURCES",
             "Start now, then go deeper",
-            "Documentation, source, contribution, and voluntary sponsorship use canonical destinations. crates.io and the Book remain visibly unavailable until they exist.",
+            "Documentation, source, contribution, sponsorship, and the published crate use canonical destinations. The Book remains visibly unavailable until it exists.",
         ))
         .child(resource_cards(theme, 184.0))
         .into_view()

@@ -17,6 +17,9 @@ pub const CONTRIBUTING_URL: &str =
 /// Voluntary organization sponsorship profile.
 pub const SPONSORS_URL: &str = "https://github.com/sponsors/AilloliAI";
 
+/// Published façade crate on crates.io.
+pub const CRATES_IO_URL: &str = "https://crates.io/crates/ailloli_ui";
+
 /// Meaningful initial value shared by the reactive input and preview.
 pub const INITIAL_REACTIVE_HEADLINE: &str = "Build native Rust interfaces";
 
@@ -68,7 +71,7 @@ pub struct Resource {
 
 /// Resources shown in stable display order.
 ///
-/// The first two entries are live and reused by the compact header. All four
+/// The first two entries are live and reused by the compact header. All five
 /// canonical destinations precede resources that remain unavailable, so the
 /// renderer never manufactures a placeholder URL.
 pub const RESOURCES: &[Resource] = &[
@@ -94,8 +97,8 @@ pub const RESOURCES: &[Resource] = &[
     },
     Resource {
         title: "crates.io",
-        description: "The future package page for the unpublished ailloli_ui façade.",
-        availability: ResourceAvailability::ComingSoon,
+        description: "Install the published ailloli_ui façade and inspect its beta releases.",
+        availability: ResourceAvailability::Live(CRATES_IO_URL),
     },
     Resource {
         title: "The Ailloli UI Book",
@@ -274,8 +277,9 @@ mod tests {
             GITHUB_REPOSITORY_URL,
             CONTRIBUTING_URL,
             SPONSORS_URL,
+            CRATES_IO_URL,
         ];
-        let actual = RESOURCES[..4]
+        let actual = RESOURCES[..5]
             .iter()
             .map(|resource| match resource.availability {
                 ResourceAvailability::Live(url) => url,
@@ -287,7 +291,7 @@ mod tests {
 
     #[test]
     fn unpublished_resources_have_no_placeholder_url() {
-        assert!(RESOURCES[4..]
+        assert!(RESOURCES[5..]
             .iter()
             .all(|resource| { matches!(resource.availability, ResourceAvailability::ComingSoon) }));
     }
@@ -298,7 +302,7 @@ mod tests {
         let opener = MemoryExternalUrlOpener::new();
         runtime.set_external_url_opener(Rc::new(opener.clone()));
 
-        for resource in &RESOURCES[..4] {
+        for resource in &RESOURCES[..5] {
             let ResourceAvailability::Live(source) = resource.availability else {
                 panic!("canonical resource is disabled");
             };
@@ -315,6 +319,7 @@ mod tests {
                 GITHUB_REPOSITORY_URL,
                 CONTRIBUTING_URL,
                 SPONSORS_URL,
+                CRATES_IO_URL,
             ]
         );
         assert!(runtime.take_open_url_errors().is_empty());
