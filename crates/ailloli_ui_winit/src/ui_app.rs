@@ -4,6 +4,8 @@
 //! pointer/keyboard/IME events, and runs `layout → paint → render` on each redraw.
 //! [`crate::WinitHost`] is the sole `ApplicationHandler` on the high-level path.
 
+#[cfg(feature = "devtools")]
+use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
@@ -869,6 +871,9 @@ pub struct UiApp<A> {
     /// FIFO deterministic faults keyed by logical window.
     presentation_test_faults: Vec<(ailloli_ui_core::LogicalWindowId, PresentationTestFault)>,
     #[cfg(feature = "test_support")]
+    /// Deduplicated native presentation closes applied at a safe loop boundary.
+    presentation_test_closes: Vec<ailloli_ui_core::LogicalWindowId>,
+    #[cfg(feature = "test_support")]
     /// Cumulative counters retained after detach/recreation.
     presentation_test_counters: HashMap<ailloli_ui_core::LogicalWindowId, PresentationTestCounters>,
     #[cfg(feature = "devtools")]
@@ -938,6 +943,8 @@ impl<A: 'static> UiApp<A> {
             host_wake: None,
             #[cfg(feature = "test_support")]
             presentation_test_faults: Vec::new(),
+            #[cfg(feature = "test_support")]
+            presentation_test_closes: Vec::new(),
             #[cfg(feature = "test_support")]
             presentation_test_counters: HashMap::new(),
             #[cfg(feature = "devtools")]
@@ -1022,7 +1029,7 @@ impl<A: 'static> UiApp<A> {
     }
 
     #[cfg(feature = "devtools")]
-    /// Rearms all devtools wake latches and reports whether any commands remain.
+    /// Rearms devtools wake latches and returns exact presentations with commands.
     ///
     /// The first observed per-window wake error is promoted to the application slot.
     ///
@@ -1033,24 +1040,41 @@ impl<A: 'static> UiApp<A> {
     /// let app = ailloli_ui_winit::UiApp::<()>::new();
     /// assert!(app.error().is_none());
     /// ```
-    pub(crate) fn begin_devtools_host_service(&mut self) -> bool {
-        let mut pending = false;
+    pub(crate) fn begin_devtools_host_service(
+        &mut self,
+    ) -> Vec<(ailloli_ui_core::LogicalWindowId, PresentationGeneration)> {
+        let mut pending = BTreeSet::new();
         let mut first_error = None;
         for state in self.windows.values() {
-            pending |= state.devtools.begin_host_service();
+            if state.devtools.begin_host_service() {
+                pending.insert((
+                    ailloli_ui_core::LogicalWindowId::new(state.logical_window_id.clone()),
+                    state.presentation_generation,
+                ));
+            }
             if let Some(error) = state.devtools.take_wake_error() {
                 first_error.get_or_insert(error);
             }
         }
         for retained in &self.retained_windows {
-            pending |= retained.devtools.begin_host_service();
+            if retained.devtools.begin_host_service() {
+                pending.insert((
+                    ailloli_ui_core::LogicalWindowId::new(retained.logical_window_id.clone()),
+                    retained.presentation_generation,
+                ));
+            }
             if let Some(error) = retained.devtools.take_wake_error() {
                 first_error.get_or_insert(error);
             }
         }
         #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         for state in &self.wayland_overlays {
-            pending |= state.devtools.begin_host_service();
+            if state.devtools.begin_host_service() {
+                pending.insert((
+                    ailloli_ui_core::LogicalWindowId::new(state.logical_window_id.clone()),
+                    state.presentation_generation,
+                ));
+            }
             if let Some(error) = state.devtools.take_wake_error() {
                 first_error.get_or_insert(error);
             }
@@ -1058,7 +1082,7 @@ impl<A: 'static> UiApp<A> {
         if let Some(error) = first_error {
             self.devtools_wake_error.get_or_insert(error);
         }
-        pending
+        pending.into_iter().collect()
     }
 
     #[cfg(feature = "devtools")]
@@ -1126,6 +1150,28 @@ impl<A: 'static> UiApp<A> {
                 .push((logical_window_id.clone(), fault));
         }
         known
+    }
+
+    /// Queues destruction of one attached native presentation for a host test.
+    ///
+    /// The request is deduplicated and applied only at the next safe event-loop
+    /// boundary. It exists solely to prove that reactive work stops targeting a
+    /// presentation after its runtime tree has been destroyed.
+    #[cfg(feature = "test_support")]
+    #[doc(hidden)]
+    pub fn request_presentation_test_close(
+        &mut self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+    ) -> bool {
+        let attached = self
+            .windows
+            .values()
+            .any(|state| state.logical_window_id == logical_window_id.as_str());
+        if attached && !self.presentation_test_closes.contains(logical_window_id) {
+            self.presentation_test_closes
+                .push(logical_window_id.clone());
+        }
+        attached
     }
 
     /// Routes one provider-neutral event through a currently attached and
@@ -1574,6 +1620,79 @@ impl<A: 'static> UiApp<A> {
         false
     }
 
+    /// Requests redraw only when the exact presentation generation still exists.
+    ///
+    /// Dirty work from a detached or superseded tree must never wake a newer
+    /// native attachment that happens to reuse the same logical window ID.
+    /// Suspended retained state accepts its last generation and coalesces a
+    /// redraw intent for replay after attachment.
+    pub(crate) fn request_presentation_redraw(
+        &mut self,
+        logical_window_id: &ailloli_ui_core::LogicalWindowId,
+        presentation_generation: PresentationGeneration,
+    ) -> bool {
+        if let Some(state) = self.windows.values().find(|state| {
+            state.logical_window_id == logical_window_id.as_str()
+                && state.presentation_generation == presentation_generation
+        }) {
+            if native_presentation_accepts_retained_redraw(
+                state.lifecycle.state(),
+                &state.resize,
+                state.render_retry_at,
+            ) {
+                state.window.request_redraw();
+                return true;
+            }
+            return false;
+        }
+        #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+        if let Some(state) = self.wayland_overlays.iter().find(|state| {
+            state.logical_window_id == logical_window_id.as_str()
+                && state.presentation_generation == presentation_generation
+        }) {
+            if state.lifecycle.state() != PresentationState::Ready
+                || state.render_retry_at.is_some()
+                || !state.capabilities.placed
+            {
+                return false;
+            }
+            state.needs_redraw.set(true);
+            if let Some(wake) = self.host_wake.as_ref() {
+                let _ = wake.wake();
+            }
+            return true;
+        }
+        if let Some(retained) = self.retained_windows.iter_mut().find(|state| {
+            state.logical_window_id == logical_window_id.as_str()
+                && state.presentation_generation == presentation_generation
+        }) {
+            retained
+                .presentation_intents
+                .push(PresentationIntent::Redraw);
+            return true;
+        }
+        false
+    }
+
+    /// Requests one redraw for every exact presentation with retained work.
+    ///
+    /// Runtime tree IDs and dirty roots remain encapsulated by the provider-
+    /// neutral runtime. Stale generations and headless trees are ignored while
+    /// their retained work remains pending for an explicit future scope.
+    pub(crate) fn request_pending_presentation_redraws(&mut self) -> usize {
+        let pending = self.runtime.pending_presentation_work();
+        pending
+            .into_iter()
+            .filter(|work| {
+                work.frame_work_plan().needs_paint()
+                    && self.request_presentation_redraw(
+                        work.logical_window_id(),
+                        work.presentation_generation(),
+                    )
+            })
+            .count()
+    }
+
     /// Drains global chrome operations and applies or retains them by logical id.
     ///
     /// Live operations target the first matching window and request redraw.
@@ -1780,6 +1899,8 @@ impl<A: 'static> UiApp<A> {
     ) {
         self.flush_pending_file_batches();
         #[cfg(feature = "test_support")]
+        self.service_presentation_test_closes(event_loop);
+        #[cfg(feature = "test_support")]
         self.service_presentation_test_faults(event_loop);
         #[cfg(all(target_os = "linux", feature = "native_overlay"))]
         self.service_wayland_overlays(event_loop);
@@ -1797,6 +1918,7 @@ impl<A: 'static> UiApp<A> {
         let mut pending_render_redraw = false;
         let now = Instant::now();
         let pending_scheduled_redraw = self.runtime.promote_due_scheduled_repaints(now) != 0;
+        self.request_pending_presentation_redraws();
         let next_scheduled_wakeup = self.runtime.next_scheduled_repaint_due_global();
         for state in self.windows.values_mut() {
             if state.resize.take_due_redraw_request() {
@@ -1875,9 +1997,6 @@ impl<A: 'static> UiApp<A> {
             || pending_scheduled_redraw
             || pending_render_redraw
         {
-            if pending_scheduled_redraw {
-                self.request_redraw_all();
-            }
             ailloli_ui_bench::record(ailloli_ui_bench::Event::AboutToWaitRedraw {
                 ts_ms: now_ms(),
                 awaiting_resize: pending_resize_redraw,
@@ -2623,6 +2742,45 @@ impl<A: 'static> UiApp<A> {
                     self.retained_windows.push(retained);
                 }
             }
+        }
+    }
+
+    #[cfg(feature = "test_support")]
+    /// Applies queued test-only presentation destruction at a safe boundary.
+    fn service_presentation_test_closes(&mut self, event_loop: &ActiveEventLoop) {
+        let logical_window_ids = std::mem::take(&mut self.presentation_test_closes);
+        for logical_window_id in logical_window_ids {
+            let Some(window_id) = self.windows.iter().find_map(|(window_id, state)| {
+                (state.logical_window_id == logical_window_id.as_str()).then_some(*window_id)
+            }) else {
+                continue;
+            };
+            let Some(mut state) = self.windows.remove(&window_id) else {
+                continue;
+            };
+            self.window_snapshots
+                .insert(state.logical_window_id.clone(), window_snapshot(&state));
+            state.input_bench.flush();
+            let _ = state.lifecycle.apply(PresentationEvent::Destroy);
+            state.runtime.runtime.clear_presentation_scope();
+            drop(state);
+        }
+
+        if self.windows.is_empty()
+            && self.retained_windows.is_empty()
+            && self.pending.is_empty()
+            && {
+                #[cfg(all(target_os = "linux", feature = "native_overlay"))]
+                {
+                    self.wayland_overlays.is_empty()
+                }
+                #[cfg(not(all(target_os = "linux", feature = "native_overlay")))]
+                {
+                    true
+                }
+            }
+        {
+            event_loop.exit();
         }
     }
 
@@ -3769,6 +3927,28 @@ fn scene_to_layer_passes(scene: &ailloli_ui_runtime::Scene) -> Vec<LayerPass<'_>
             )
         })
         .collect()
+}
+
+/// Decides whether a retained-work sweep may ask a live native window to draw.
+///
+/// Dirty runtime work stays queued while a zero extent or timed retry prevents
+/// rendering. A non-zero resize waiting after zero extent is allowed through so
+/// the normal redraw path can reconfigure the surface and advance lifecycle.
+fn native_presentation_accepts_retained_redraw(
+    lifecycle: PresentationState,
+    resize: &ResizeController,
+    render_retry_at: Option<Instant>,
+) -> bool {
+    if render_retry_at.is_some() || !resize.accepts_retained_redraw_request() {
+        return false;
+    }
+    match lifecycle {
+        PresentationState::Ready => true,
+        PresentationState::Unavailable(PresentationUnavailableReason::ZeroExtent) => {
+            resize.has_pending_nonzero_request()
+        }
+        _ => false,
+    }
 }
 
 /// Classifies timeout as retry, recoverable surface errors as reconfigure, and all else fatal.
@@ -5302,10 +5482,15 @@ mod tests {
 
         /// Creates a reconciled but unattached retained window named `main`.
         fn retained_fixture() -> RetainedWindowState<u32> {
+            retained_fixture_named("main")
+        }
+
+        /// Creates one reconciled but unattached retained window by logical ID.
+        fn retained_fixture_named(logical_window_id: &str) -> RetainedWindowState<u32> {
             let mut app = UiApp::<u32>::new();
             app.retain_pending_window(PendingWindow {
                 options: WindowOptions {
-                    logical_window_id: "main".to_string(),
+                    logical_window_id: logical_window_id.to_string(),
                     ..Default::default()
                 },
                 root: View::empty(),
@@ -5432,6 +5617,113 @@ mod tests {
         }
 
         #[test]
+        fn dirty_runtime_trees_wake_only_exact_retained_presentations() {
+            let mut app = UiApp::<u32>::new();
+            let alpha = app.retain_pending_window(PendingWindow {
+                options: WindowOptions {
+                    logical_window_id: "alpha".to_string(),
+                    ..Default::default()
+                },
+                root: View::empty(),
+                clear: Color::BLACK,
+            });
+            let beta = app.retain_pending_window(PendingWindow {
+                options: WindowOptions {
+                    logical_window_id: "beta".to_string(),
+                    ..Default::default()
+                },
+                root: View::empty(),
+                clear: Color::BLACK,
+            });
+            let stable = app.retain_pending_window(PendingWindow {
+                options: WindowOptions {
+                    logical_window_id: "stable".to_string(),
+                    ..Default::default()
+                },
+                root: View::empty(),
+                clear: Color::BLACK,
+            });
+            let popup = Runtime::new(app.runtime.clone());
+            let generation = PresentationGeneration::INITIAL;
+            alpha
+                .runtime
+                .runtime
+                .set_presentation_scope("alpha", generation);
+            beta.runtime
+                .runtime
+                .set_presentation_scope("beta", generation);
+            stable
+                .runtime
+                .runtime
+                .set_presentation_scope("stable", generation);
+            popup.runtime.set_presentation_scope("alpha", generation);
+            popup.runtime.request_layout(ElementId(7));
+            beta.runtime.runtime.request_repaint(ElementId(8));
+            app.retained_windows.extend([alpha, beta, stable]);
+
+            assert_eq!(app.request_pending_presentation_redraws(), 2);
+            assert_eq!(
+                app.retained_windows[0].presentation_intents.drain(),
+                vec![PresentationIntent::Redraw]
+            );
+            assert_eq!(
+                app.retained_windows[1].presentation_intents.drain(),
+                vec![PresentationIntent::Redraw]
+            );
+            assert!(app.retained_windows[2]
+                .presentation_intents
+                .drain()
+                .is_empty());
+
+            popup.runtime.take_dirty_elements();
+            popup.runtime.clear_presentation_scope();
+            app.retained_windows[1]
+                .runtime
+                .runtime
+                .take_dirty_elements();
+            app.retained_windows.remove(0);
+            app.retained_windows[0]
+                .runtime
+                .runtime
+                .request_layout(ElementId(9));
+            assert_eq!(app.request_pending_presentation_redraws(), 1);
+            assert_eq!(
+                app.retained_windows[0].presentation_intents.drain(),
+                vec![PresentationIntent::Redraw]
+            );
+            assert!(app.retained_windows[1]
+                .presentation_intents
+                .drain()
+                .is_empty());
+        }
+
+        #[test]
+        fn stale_dirty_generation_does_not_wake_newer_retained_attachment() {
+            let mut app = UiApp::<u32>::new();
+            let mut retained = app.retain_pending_window(PendingWindow {
+                options: WindowOptions {
+                    logical_window_id: "main".to_string(),
+                    ..Default::default()
+                },
+                root: View::empty(),
+                clear: Color::BLACK,
+            });
+            retained.presentation_generation = PresentationGeneration::new(2);
+            retained
+                .runtime
+                .runtime
+                .set_presentation_scope("main", PresentationGeneration::new(1));
+            retained.runtime.runtime.request_repaint(ElementId(1));
+            app.retained_windows.push(retained);
+
+            assert_eq!(app.request_pending_presentation_redraws(), 0);
+            assert!(app.retained_windows[0]
+                .presentation_intents
+                .drain()
+                .is_empty());
+        }
+
+        #[test]
         fn stale_generation_is_rejected_by_ready_lifecycle() {
             let mut retained = retained_fixture();
             UiApp::<u32>::allow_presentation_creation(&mut retained).unwrap();
@@ -5441,6 +5733,45 @@ mod tests {
             assert!(!retained.lifecycle.accepts(PresentationGeneration::INITIAL));
             prepare_retained_for_detach(&mut retained, Size::new(320.0, 240.0));
             assert!(!retained.lifecycle.accepts(PresentationGeneration::new(1)));
+        }
+
+        #[test]
+        fn retained_redraw_sweep_waits_for_renderable_lifecycle_extent_and_retry() {
+            let mut resize = ResizeController::default();
+
+            assert!(native_presentation_accepts_retained_redraw(
+                PresentationState::Ready,
+                &resize,
+                None,
+            ));
+            assert!(!resize.request(PhysicalSize::new(0, 480)));
+            assert!(!native_presentation_accepts_retained_redraw(
+                PresentationState::Ready,
+                &resize,
+                None,
+            ));
+            assert!(!native_presentation_accepts_retained_redraw(
+                PresentationState::Unavailable(PresentationUnavailableReason::ZeroExtent),
+                &resize,
+                None,
+            ));
+
+            assert!(resize.request(PhysicalSize::new(640, 480)));
+            assert!(native_presentation_accepts_retained_redraw(
+                PresentationState::Unavailable(PresentationUnavailableReason::ZeroExtent),
+                &resize,
+                None,
+            ));
+            assert!(!native_presentation_accepts_retained_redraw(
+                PresentationState::Suspended,
+                &resize,
+                None,
+            ));
+            assert!(!native_presentation_accepts_retained_redraw(
+                PresentationState::Ready,
+                &resize,
+                Some(Instant::now()),
+            ));
         }
 
         #[cfg(feature = "test_support")]

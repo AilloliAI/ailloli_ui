@@ -8,10 +8,15 @@ use super::{Memo, Signal};
 
 /// Public DX state handle built on top of the retained runtime `Signal`.
 ///
-/// Clones alias one signal value, revision, and invalidation callback. Like
-/// [`Signal`], this `Rc`-based type is UI-thread-local and neither `Send` nor
-/// `Sync`. [`Self::new`] uses a no-op invalidator; component code should normally
-/// obtain state from a runtime context so mutations schedule the intended work.
+/// Clones alias one signal value, revision, historical callback, and dynamic
+/// retained consumers. Like [`Signal`], this `Rc`-based type is UI-thread-local
+/// and neither `Send` nor `Sync`. [`Self::new`] starts without an owner callback,
+/// but every successful read during retained Build, Layout, or Paint registers
+/// that exact mounted consumer. Reads outside those callbacks remain passive.
+/// Successful callbacks replace their previous observations atomically, so
+/// conditional reads track only the branch that committed. A failed callback
+/// preserves its previous observations. Unmounting removes the consumer; the
+/// state itself remains usable while another handle owns it.
 ///
 /// # Examples
 ///
@@ -39,10 +44,14 @@ impl<T> Clone for State<T> {
 
 /// Provides the operations defined for `State<T>`.
 impl<T: 'static> State<T> {
-    /// Creates standalone state whose invalidation callback does nothing.
+    /// Creates standalone state without an initial owner callback.
     ///
-    /// Mutations still advance the hidden signal revision. This constructor is
-    /// useful for local data handles but does not itself schedule a frame.
+    /// Mutations advance the hidden source revision and notify retained consumers
+    /// established by later Build/Layout/Paint reads. Before such a read, after
+    /// their unmount, or when accessed only outside retained scopes, the state
+    /// schedules no frame. This differs from state created by a runtime context,
+    /// which also retains its owner-provided historical invalidator for
+    /// compatibility.
     ///
     /// # Examples
     ///
@@ -71,7 +80,7 @@ impl<T: 'static> State<T> {
         Self { signal }
     }
 
-    /// Replaces the value and invokes the underlying invalidator.
+    /// Replaces the value and notifies the underlying signal's consumers.
     ///
     /// Equality is not checked. Borrowing and callback panics follow
     /// [`Signal::set`].
@@ -88,7 +97,7 @@ impl<T: 'static> State<T> {
         self.signal.set(value);
     }
 
-    /// Mutates the value in place and invokes the underlying invalidator.
+    /// Mutates the value in place and notifies the underlying signal's consumers.
     ///
     /// The closure is executed synchronously under a mutable `RefCell` borrow;
     /// panic behavior follows [`Signal::update`].
@@ -126,7 +135,12 @@ impl<T: 'static> State<T> {
 
 /// Provides the operations defined for `State<T>`.
 impl<T: Clone + 'static> State<T> {
-    /// Clones and returns the current value.
+    /// Clones, observes, and returns the current value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if cloning `T` panics or the underlying signal value is already
+    /// mutably borrowed through another alias.
     ///
     /// # Examples
     ///

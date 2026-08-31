@@ -406,8 +406,9 @@ impl<A: 'static, D: HostDriver<A>> WinitHost<A, D> {
             return;
         };
         capture.begin_host_service();
-        if capture.has_pending() {
-            self.ui.request_redraw_all();
+        for logical_window_id in capture.pending_window_ids() {
+            self.ui
+                .request_window_redraw(&ailloli_ui_core::LogicalWindowId::new(logical_window_id));
         }
         if let Some(error) = capture.wake_error() {
             self.capture_wake_error.get_or_insert(error);
@@ -425,8 +426,11 @@ impl<A: 'static, D: HostDriver<A>> WinitHost<A, D> {
         }
         #[cfg(feature = "devtools")]
         {
-            if self.ui.begin_devtools_host_service() {
-                self.ui.request_redraw_all();
+            for (logical_window_id, presentation_generation) in
+                self.ui.begin_devtools_host_service()
+            {
+                self.ui
+                    .request_presentation_redraw(&logical_window_id, presentation_generation);
             }
             if let Some(error) = self.ui.take_devtools_wake_error() {
                 self.devtools_wake_error.get_or_insert(error);
@@ -434,13 +438,12 @@ impl<A: 'static, D: HostDriver<A>> WinitHost<A, D> {
         }
         self.service_inbox();
         self.service_capture_requests();
-        if self.ui.runtime().service_ui_sources() {
-            self.ui.request_redraw_all();
-        }
+        let _ = self.ui.runtime().service_ui_sources();
         let outcome = self.driver.service(&self.ui.runtime(), Instant::now());
         if outcome.redraw_all {
             self.ui.request_redraw_all();
         }
+        self.ui.request_pending_presentation_redraws();
         if outcome.exit || self.ui.runtime().take_close_requested() {
             event_loop.exit();
         }

@@ -17,6 +17,9 @@ use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 /// Defaults to 14-logical-pixel white UI text and
 /// [`WrapMode::WordOrAnywhere`]. Without a text system, layout falls back to
 /// zero width and `1.2 * px_size` height, while paint emits nothing.
+/// Reactive content is observed during layout. Until a newer layout commits,
+/// paint keeps using the previously shaped artifact instead of fitting new
+/// content into stale bounds.
 ///
 /// # Examples
 ///
@@ -217,11 +220,24 @@ impl<A: 'static> Widget<A> for TextWidget {
         constraints: Constraints,
     ) -> LayoutResult {
         let content = self.content.read();
-        let max_w = self
-            .layout
-            .width
-            .resolve(constraints.max_w)
-            .unwrap_or(constraints.max_w);
+        // Shaping must use the same declarative width ceiling that will size
+        // the widget. Applying `max_width` only after intrinsic measurement
+        // can report a one-line height to a flex parent, then reshape into two
+        // lines during the tight Commit pass and paint outside that stale slot.
+        let constraints = constraints.normalized();
+        let resolved = self.layout.resolve(constraints);
+        let max_w = if resolved.width.is_some() {
+            // Explicit widths obey the parent's complete interval, just like
+            // the final `apply_layout_size` call below.
+            resolved.size(0.0, 0.0, constraints).0
+        } else {
+            // An intrinsic width ignores the parent's minimum, but both the
+            // parent maximum and a declarative `max_width` cap shaping.
+            resolved
+                .max_width
+                .unwrap_or(constraints.max_w)
+                .min(constraints.max_w)
+        };
         let prepared = ctx
             .text_system
             .as_deref_mut()
@@ -245,18 +261,10 @@ impl<A: 'static> Widget<A> for TextWidget {
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
-        let content = self.content.read();
-        let prepared = match layout.artifact.as_ref() {
-            Some(LayoutArtifact::Text(prepared)) if prepared.text() == content.as_str() => {
-                prepared.clone()
-            }
-            _ => {
-                let Some(ts) = ctx.text_system.as_deref_mut() else {
-                    return;
-                };
-                layout_via_system(ts, &content, self.style, bounds.w, self.wrap_mode)
-            }
+        let Some(LayoutArtifact::Text(prepared)) = layout.artifact.as_ref() else {
+            return;
         };
+        let prepared = prepared.clone();
         let baseline = prepared.lines.first().map(|l| l.baseline_y).unwrap_or(0.0);
         let cmd = DrawCmd::Text(DrawText {
             // Contract: pos.y is baseline (baseline contract).
@@ -267,6 +275,10 @@ impl<A: 'static> Widget<A> for TextWidget {
         });
 
         ctx.push(cmd);
+    }
+
+    fn can_replay_committed_text_artifact(&self) -> bool {
+        true
     }
 
     fn event(&self, _ctx: &mut EventCtx<A>, _event: &Event, _bounds: Rect, _layout: &LayoutResult) {

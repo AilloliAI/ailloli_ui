@@ -1301,6 +1301,8 @@ pub enum PopupRole {
     Menu,
     /// Non-interactive explanatory tooltip.
     Tooltip,
+    /// Modal dialog whose retained descendants own focus until dismissal.
+    Dialog,
 }
 
 /// Focus behavior requested when the popup becomes visible.

@@ -1,5 +1,8 @@
 //! Application runtime orchestration for retained layout, paint, and input state.
 
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_text::TextSystem;
@@ -9,8 +12,8 @@ use crate::component::{IntoView, View};
 use crate::element::reconcile::{reconcile_existing_component, reconcile_root};
 use crate::element::{ElementKind, ElementTree};
 use crate::input::InputSnapshot;
-use crate::layout::{commit_layout_element, LayoutEngine};
-use crate::scene::{paint_element, PaintCtx, Scene};
+use crate::layout::{commit_layout_element_observed, LayoutEngine};
+use crate::scene::{paint_element_observed, PaintCtx, Scene};
 
 /// Per-window or per-root retained pipeline for reconciliation, layout, and paint.
 ///
@@ -164,18 +167,44 @@ impl<A: 'static> Runtime<A> {
         let Some(root_id) = self.root else {
             return;
         };
-        {
-            let mut ctx = crate::layout::LayoutCtx::with_text_system(scale, text_system);
+        let layout_published = {
+            let mut ctx = self.reactive_layout_context(scale, text_system);
             let mut engine = LayoutEngine::new(&mut self.tree);
-            let _ = engine.layout_element(&mut ctx, root_id, constraints);
+            let (_, published) =
+                engine.layout_element_with_publication(&mut ctx, root_id, constraints);
+            published
+        };
+        if !layout_published {
+            return;
         }
-        let mut ctx = crate::layout::LayoutCtx::with_text_system(scale, text_system);
-        commit_layout_element(
+        let mut ctx = self.reactive_layout_context(scale, text_system);
+        commit_layout_element_observed(
             &mut self.tree,
+            &self.runtime,
             &mut ctx,
             root_id,
             ailloli_ui_core::Offset::default(),
         );
+    }
+
+    /// Creates a layout context wired to this runtime's exact dependency graph.
+    fn reactive_layout_context<'a>(
+        &self,
+        scale: Scale,
+        text_system: &'a mut TextSystem,
+    ) -> crate::layout::LayoutCtx<'a> {
+        let publisher = self.runtime.clone();
+        let retry = self.runtime.clone();
+        let diagnostics = self.runtime.clone();
+        let mut ctx = crate::layout::LayoutCtx::with_text_system(scale, text_system);
+        ctx.set_reactive_layout_callbacks(
+            Rc::new(move |updates| publisher.replace_reactive_dependencies_batch(updates)),
+            Rc::new(move |element_id| retry.invalidate(element_id, Invalidation::Layout)),
+        );
+        ctx.set_reactive_layout_abandon_callback(Rc::new(move || {
+            diagnostics.record_abandoned_layout_transaction();
+        }));
+        ctx
     }
 
     /// Applies pending element-scoped invalidations and returns only the
@@ -248,8 +277,9 @@ impl<A: 'static> Runtime<A> {
             return Scene::default();
         };
         let mut ctx = PaintCtx::with_text_system_and_input(text_system, input, frame_time_ms);
-        paint_element(
+        paint_element_observed(
             &self.tree,
+            &self.runtime,
             &mut ctx,
             root_id,
             ailloli_ui_core::Offset::default(),
@@ -315,48 +345,58 @@ impl<A: 'static> Runtime<A> {
             return;
         }
 
-        let mut components = Vec::new();
+        let mut components = HashSet::new();
+        let mut layout_roots = Vec::new();
+        let mut direct_layout_nodes = HashSet::new();
         for (element_id, invalidation) in invalidations {
             match invalidation {
                 Invalidation::Paint => self.tree.mark_paint_dirty(element_id),
                 Invalidation::Layout => {
-                    self.tree.mark_layout_path_dirty(element_id);
+                    layout_roots.push(element_id);
                     if self
                         .tree
                         .get(element_id)
                         .is_some_and(|element| matches!(element.kind, ElementKind::Component(_)))
                     {
-                        for child in self.tree.children_of(element_id).to_vec() {
-                            self.tree.mark_element_layout_dirty(child);
-                        }
+                        direct_layout_nodes
+                            .extend(self.tree.children_of(element_id).iter().copied());
                     }
                 }
                 Invalidation::Build => {
                     if let Some(component_id) = self.owner_component(element_id) {
-                        if !components.contains(&component_id) {
-                            components.push(component_id);
-                        }
+                        components.insert(component_id);
                     } else {
-                        self.tree.mark_layout_path_dirty(element_id);
+                        layout_roots.push(element_id);
                     }
                 }
             }
         }
-        components.sort_by_key(|id| self.element_depth(*id));
-
-        let mut selected = Vec::new();
-        for component_id in components {
-            let covered_by_parent = selected.iter().any(|parent| {
-                *parent != component_id && self.tree.is_ancestor_of(*parent, component_id)
-            });
-            if !covered_by_parent {
-                selected.push(component_id);
-            }
-        }
+        let component_paths = self.component_path_metadata(&components);
+        let mut selected = components
+            .into_iter()
+            .filter(|component_id| {
+                self.tree
+                    .parent_of(*component_id)
+                    .and_then(|parent| component_paths.get(&parent))
+                    .and_then(|(_, nearest_component)| *nearest_component)
+                    .is_none()
+            })
+            .collect::<Vec<_>>();
+        selected.sort_by_key(|id| (component_paths.get(id).map_or(0, |(depth, _)| *depth), id.0));
 
         for component_id in selected {
             if reconcile_existing_component(&mut self.tree, &self.runtime, component_id) {
-                self.tree.mark_layout_path_dirty(component_id);
+                layout_roots.push(component_id);
+            }
+        }
+        layout_roots.sort_by_key(|id| id.0);
+        layout_roots.dedup();
+        let visited = self.tree.mark_layout_paths_dirty(layout_roots);
+        let mut direct_layout_nodes = direct_layout_nodes.into_iter().collect::<Vec<_>>();
+        direct_layout_nodes.sort_by_key(|id| id.0);
+        for child in direct_layout_nodes {
+            if !visited.contains(&child) {
+                self.tree.mark_element_layout_dirty(child);
             }
         }
         self.prune_stale_popup_owners();
@@ -386,14 +426,48 @@ impl<A: 'static> Runtime<A> {
         None
     }
 
-    /// Counts retained ancestors; roots and unknown IDs have depth zero.
-    fn element_depth(&self, element_id: ailloli_ui_core::ids::ElementId) -> usize {
-        let mut depth = 0;
-        let mut current = self.tree.parent_of(element_id);
-        while let Some(id) = current {
-            depth += 1;
-            current = self.tree.parent_of(id);
+    /// Resolves depths and nearest Build candidates over the union of paths.
+    ///
+    /// Each retained node shared by several candidates is expanded once. The
+    /// nearest-candidate entry is inclusive, so callers inspect a component's
+    /// parent to determine whether a shallower Build subsumes it.
+    fn component_path_metadata(
+        &self,
+        components: &HashSet<ailloli_ui_core::ids::ElementId>,
+    ) -> HashMap<ailloli_ui_core::ids::ElementId, (usize, Option<ailloli_ui_core::ids::ElementId>)>
+    {
+        let mut metadata = HashMap::<
+            ailloli_ui_core::ids::ElementId,
+            (usize, Option<ailloli_ui_core::ids::ElementId>),
+        >::new();
+        for &component_id in components {
+            if metadata.contains_key(&component_id) {
+                continue;
+            }
+            let mut path = Vec::new();
+            let mut path_seen = HashSet::new();
+            let mut current = Some(component_id);
+            while let Some(id) = current {
+                if metadata.contains_key(&id) || !path_seen.insert(id) {
+                    break;
+                }
+                path.push(id);
+                current = self.tree.parent_of(id);
+            }
+            while let Some(id) = path.pop() {
+                let parent_metadata = self
+                    .tree
+                    .parent_of(id)
+                    .and_then(|parent| metadata.get(&parent).copied());
+                let depth = parent_metadata.map_or(0, |(depth, _)| depth.saturating_add(1));
+                let nearest_component = if components.contains(&id) {
+                    Some(id)
+                } else {
+                    parent_metadata.and_then(|(_, nearest_component)| nearest_component)
+                };
+                metadata.insert(id, (depth, nearest_component));
+            }
         }
-        depth
+        metadata
     }
 }

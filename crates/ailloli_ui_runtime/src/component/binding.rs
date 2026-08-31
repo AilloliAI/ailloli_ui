@@ -7,7 +7,14 @@ use super::{Memo, Signal, State};
 /// Unifies `disabled(true)`, `disabled(signal)`, and `disabled(memo)` without separate DSL methods.
 /// Cloning a static binding clones `T`; cloning reactive variants aliases their
 /// existing `Rc`-backed source. Reads always return an owned value and memos are
-/// evaluated on every read.
+/// evaluated on every read. Signal-backed and transitively reactive memo reads
+/// register the innermost retained Build/Layout/Paint consumer; static values do
+/// not create a dependency. Conditional memo reads observe only sources reached
+/// by the executed branch. The surrounding callback publishes that set only on
+/// success and replaces its previous set atomically. Because the reactive
+/// variants are `Rc`-backed, a binding is UI-thread-local and neither `Send` nor
+/// `Sync`. Subscriptions belong to the mounted consumer rather than the binding:
+/// unmounting removes them while independently owned bindings remain usable.
 ///
 /// # Examples
 ///
@@ -91,7 +98,14 @@ impl<T: Clone> Binding<T> {
     /// Returns an owned current value.
     ///
     /// Static and signal variants clone `T`; a memo evaluates its stored
-    /// computation. Borrow conflicts or memo panics propagate.
+    /// computation. Reactive variants are observed by the innermost retained
+    /// build, layout, or paint callback; reads elsewhere are passive. A failed
+    /// surrounding callback does not publish its staged dependency set.
+    ///
+    /// # Panics
+    ///
+    /// Panics if cloning `T` panics, a signal value is already mutably borrowed
+    /// through another alias, or the stored memo computation panics.
     ///
     /// # Examples
     ///
@@ -130,12 +144,13 @@ impl<T> Binding<T> {
         matches!(self, Binding::Signal(_))
     }
 
-    /// Revision of the reactive source used by layout caches.
+    /// Observed revision of the reactive source used by retained caches.
     ///
     /// Static bindings and opaque memos without a reactive source remain at
     /// revision zero. Memos derived from a [`Signal`] preserve its revision.
     /// Revisions reserve zero for pristine/opaque sources and wrap from
-    /// `u64::MAX` to one.
+    /// `u64::MAX` to one. Signal and derived-memo revision reads observe their
+    /// source unless the runtime explicitly installs an untracked admin scope.
     ///
     /// # Examples
     ///

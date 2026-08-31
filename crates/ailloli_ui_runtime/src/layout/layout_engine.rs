@@ -1,11 +1,18 @@
 //! Retained-tree layout engine and invalidation-aware traversal.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::ids::ElementId;
 use ailloli_ui_core::{Rect, Size};
 
+use crate::component::reactive::{
+    with_untracked_reads, ReactiveDependencyBatchResult, ReactiveDependencyUpdate,
+    ReactiveReadScope, ReactiveReadSet, ReactiveStage,
+};
 use crate::element::element_node::LayoutCacheKey;
 use crate::element::{ElementKind, ElementTree};
+use crate::layout::layout_attempt::{FinishedLayoutAttempt, LayoutAttemptEvent, StagedLayout};
 use crate::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutResult};
 
 /// Recursive retained-tree layout driver with per-element result caching.
@@ -85,6 +92,66 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
         element_id: ElementId,
         constraints: Constraints,
     ) -> LayoutResult {
+        self.layout_element_with_publication(ctx, element_id, constraints)
+            .0
+    }
+
+    /// Lays out an outer runtime root and reports whether its overlay published.
+    ///
+    /// The boolean is `false` when a superseding reactive mutation rejects the
+    /// attempt. Runtime orchestration uses it to avoid invoking post-layout
+    /// hooks against the previous committed geometry. Nested calls participate
+    /// in their owner's attempt and therefore do not publish independently.
+    pub(crate) fn layout_element_with_publication(
+        &mut self,
+        ctx: &mut LayoutCtx<'_>,
+        element_id: ElementId,
+        constraints: Constraints,
+    ) -> (LayoutResult, bool) {
+        if ctx.has_layout_attempt() {
+            return (
+                self.layout_element_staged(ctx, element_id, constraints),
+                false,
+            );
+        }
+
+        let authoritative = ctx.layout_pass().is_committed();
+        ctx.begin_layout_attempt();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.layout_element_staged(ctx, element_id, constraints)
+        }));
+        match result {
+            Ok(result) => {
+                let attempt = ctx.take_layout_attempt();
+                let staged = attempt.finish(|branch| ctx.measure_branch_is_adopted(branch));
+                ctx.clear_measure_branch_adoptions();
+                let published = match staged {
+                    Ok(attempt) => self.commit_attempt(ctx, attempt, authoritative),
+                    Err(()) => {
+                        ctx.record_reactive_layout_abandon();
+                        self.tree.mark_layout_path_dirty(element_id);
+                        ctx.request_reactive_layout_retry(element_id);
+                        false
+                    }
+                };
+                (result, published)
+            }
+            Err(payload) => {
+                drop(ctx.take_layout_attempt());
+                ctx.clear_measure_branch_adoptions();
+                ctx.record_reactive_layout_abandon();
+                std::panic::resume_unwind(payload)
+            }
+        }
+    }
+
+    /// Computes one element against the active layout overlay.
+    fn layout_element_staged(
+        &mut self,
+        ctx: &mut LayoutCtx<'_>,
+        element_id: ElementId,
+        constraints: Constraints,
+    ) -> LayoutResult {
         let text_metrics_revision = ctx
             .text_system
             .as_deref()
@@ -101,10 +168,11 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
         let Some(element) = self.tree.get(element_id) else {
             return LayoutResult::zero();
         };
-        let layout_dependency_revision = match &element.kind {
+        let mount_generation = element.mount_generation();
+        let layout_dependency_revision = with_untracked_reads(|| match &element.kind {
             ElementKind::Widget(widget) => widget.layout_dependency_revision(),
             ElementKind::Empty | ElementKind::Component(_) => 0,
-        };
+        });
         let cache_key = LayoutCacheKey {
             constraints: [
                 constraints.min_w.to_bits(),
@@ -120,27 +188,51 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
             topology_revision: element.topology_revision,
             virtual_viewport,
         };
-        let (cached_key, cached_layout, cache_is_eligible) = if ctx.layout_pass().is_measure() {
+
+        if let Some((layout, dependencies)) =
+            ctx.layout_attempt()
+                .cached(element_id, ctx.layout_pass(), mount_generation, cache_key)
+        {
+            return self.stage_cache_hit(
+                ctx,
+                element_id,
+                mount_generation,
+                layout,
+                cache_key,
+                dependencies,
+            );
+        }
+
+        let retained_cache = if ctx.layout_pass().is_measure() {
             (
                 element.measurement_layout_cache_key,
-                element.measurement_layout.as_ref(),
+                element.measurement_layout.clone(),
+                element.measurement_reactive_dependencies.clone(),
                 true,
             )
         } else {
             (
                 element.layout_cache_key,
-                element.layout.as_ref(),
+                element.layout.clone(),
+                element.layout_reactive_dependencies.clone(),
                 !element.dirty.layout,
             )
         };
-        if cache_is_eligible && cached_key == Some(cache_key) {
-            if let Some(layout) = cached_layout {
-                self.tree.record_layout_cache_hit(element_id);
-                return layout.clone();
+        if retained_cache.3 && retained_cache.0 == Some(cache_key) && retained_cache.2.is_current()
+        {
+            if let Some(layout) = retained_cache.1 {
+                return self.stage_cache_hit(
+                    ctx,
+                    element_id,
+                    mount_generation,
+                    layout,
+                    cache_key,
+                    retained_cache.2,
+                );
             }
         }
-        self.tree.record_layout_cache_miss(element_id);
-        self.tree.record_layout(element_id);
+
+        let observation = ReactiveReadScope::new();
 
         let child_ids = self.tree.children_of(element_id).to_vec();
         let mut children = child_ids
@@ -195,15 +287,261 @@ impl<'t, A: 'static> LayoutEngine<'t, A> {
                 }
             }
         };
+        let dependencies = observation.finish();
+        let measure_branch = ctx
+            .layout_pass()
+            .is_measure()
+            .then(|| ctx.current_measure_branch())
+            .flatten();
+        let attempt = ctx.layout_attempt_mut();
+        attempt.record(LayoutAttemptEvent::CacheMiss(element_id));
+        attempt.record(LayoutAttemptEvent::Layout(element_id));
+        attempt.stage(StagedLayout {
+            element_id,
+            mount_generation,
+            result: result.clone(),
+            cache_key,
+            dependencies,
+            measure_branch,
+            callback_executed: true,
+        });
+        result
+    }
 
-        #[cfg(feature = "devtools")]
-        if ctx.layout_pass().is_committed() {
-            let debug = ctx.record_debug_layout(element_id, constraints, result.size);
-            self.tree.set_layout_debug(element_id, debug);
+    /// Restores cached dependencies into the element scope and stages the hit.
+    fn stage_cache_hit(
+        &mut self,
+        ctx: &mut LayoutCtx<'_>,
+        element_id: ElementId,
+        mount_generation: crate::component::reactive::MountGeneration,
+        layout: LayoutResult,
+        cache_key: LayoutCacheKey,
+        cached_dependencies: ReactiveReadSet,
+    ) -> LayoutResult {
+        let observation = ReactiveReadScope::new();
+        cached_dependencies.adopt_into_current();
+        let dependencies = observation.finish();
+        let measure_branch = cache_key
+            .layout_pass
+            .is_measure()
+            .then(|| ctx.current_measure_branch())
+            .flatten();
+        let attempt = ctx.layout_attempt_mut();
+        attempt.record(LayoutAttemptEvent::CacheHit(element_id));
+        attempt.stage(StagedLayout {
+            element_id,
+            mount_generation,
+            result: layout.clone(),
+            cache_key,
+            dependencies,
+            measure_branch,
+            callback_executed: false,
+        });
+        layout
+    }
+
+    /// Applies a validated overlay as one non-callback runtime-owned batch.
+    fn commit_attempt(
+        &mut self,
+        ctx: &mut LayoutCtx<'_>,
+        mut attempt: FinishedLayoutAttempt,
+        authoritative: bool,
+    ) -> bool {
+        let attempt_token = attempt.token;
+        attempt.collect_stale_elements(|element_id, mount_generation| {
+            self.tree
+                .get(element_id)
+                .is_some_and(|element| element.mount_generation() == mount_generation)
+        });
+        if !attempt.stale_elements_mut().is_empty() {
+            self.reject_stale_attempt(ctx, attempt.stale_elements_mut());
+            return false;
+        }
+        if authoritative {
+            attempt.rebuild_dependency_updates(|element_id, mount_generation, mut dependencies| {
+                self.tree.get(element_id).map(|element| {
+                    dependencies.merge(&element.layout_commit_reactive_dependencies);
+                    ReactiveDependencyUpdate::new(
+                        element_id,
+                        mount_generation,
+                        ReactiveStage::Layout,
+                        dependencies,
+                    )
+                })
+            });
+            if matches!(
+                ctx.publish_reactive_layout(attempt.dependency_updates()),
+                ReactiveDependencyBatchResult::Stale
+            ) {
+                attempt.collect_update_elements_as_stale();
+                self.reject_stale_attempt(ctx, attempt.stale_elements_mut());
+                return false;
+            }
         }
 
+        for event in attempt.drain_events() {
+            match event {
+                LayoutAttemptEvent::CacheHit(id) => self.tree.record_layout_cache_hit(id),
+                LayoutAttemptEvent::CacheMiss(id) => self.tree.record_layout_cache_miss(id),
+                LayoutAttemptEvent::Layout(id) => self.tree.record_layout(id),
+            }
+        }
+        for entry in attempt.drain_entries() {
+            #[cfg(feature = "devtools")]
+            if entry.cache_key.layout_pass.is_committed() {
+                let constraints = Constraints {
+                    min_w: f32::from_bits(entry.cache_key.constraints[0]),
+                    max_w: f32::from_bits(entry.cache_key.constraints[1]),
+                    min_h: f32::from_bits(entry.cache_key.constraints[2]),
+                    max_h: f32::from_bits(entry.cache_key.constraints[3]),
+                };
+                let debug =
+                    ctx.record_debug_layout(entry.element_id, constraints, entry.result.size);
+                self.tree.set_layout_debug(entry.element_id, debug);
+            }
+            self.tree.set_layout_with_cache_key(
+                entry.element_id,
+                entry.result,
+                entry.cache_key,
+                entry.dependencies,
+                attempt_token,
+                entry.callback_executed,
+            );
+        }
+        true
+    }
+
+    /// Abandons one generation-stale overlay and schedules exact retries.
+    fn reject_stale_attempt(&mut self, ctx: &LayoutCtx<'_>, element_ids: &mut Vec<ElementId>) {
+        element_ids.sort_by_key(|element_id| element_id.0);
+        element_ids.dedup();
+        ctx.record_reactive_layout_abandon();
         self.tree
-            .set_layout_with_cache_key(element_id, result.clone(), cache_key);
-        result
+            .mark_layout_paths_dirty(element_ids.iter().copied());
+        for element_id in element_ids.iter().copied() {
+            ctx.request_reactive_layout_retry(element_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use ailloli_ui_core::{Constraints, Rect, Scale, Size};
+
+    use super::LayoutEngine;
+    use crate::app::RuntimeHandle;
+    use crate::component::Widget;
+    use crate::element::{ElementKind, ElementTree};
+    use crate::layout::{LayoutChild, LayoutCtx, LayoutResult};
+    use crate::scene::PaintCtx;
+
+    /// Fixed leaf whose callback count proves whether an attempted cache write ran.
+    struct ResizableLeaf {
+        extent: Rc<Cell<f32>>,
+        layouts: Rc<Cell<u32>>,
+    }
+
+    impl Widget<()> for ResizableLeaf {
+        fn debug_name(&self) -> &'static str {
+            "ResizableLeaf"
+        }
+
+        fn layout(
+            &self,
+            _engine: &mut LayoutEngine<'_, ()>,
+            _ctx: &mut LayoutCtx<'_>,
+            _children: &mut [LayoutChild],
+            _constraints: Constraints,
+        ) -> LayoutResult {
+            self.layouts.set(self.layouts.get() + 1);
+            let size = Size::new(self.extent.get(), self.extent.get());
+            LayoutResult {
+                size,
+                children: Vec::new(),
+                paint_bounds: Rect::new(0.0, 0.0, size.w, size.h),
+                visual_bounds: Rect::new(0.0, 0.0, size.w, size.h),
+                overlay_hit_bounds: Vec::new(),
+                clip: None,
+                is_window_root_clip: false,
+                artifact: None,
+            }
+        }
+
+        fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
+    }
+
+    #[test]
+    fn stale_batch_rejection_preserves_previous_geometry_and_cache() {
+        let extent = Rc::new(Cell::new(10.0));
+        let layouts = Rc::new(Cell::new(0));
+        let mut tree = ElementTree::new();
+        let root = tree.create_element(
+            ElementKind::Widget(Rc::new(ResizableLeaf {
+                extent: extent.clone(),
+                layouts: layouts.clone(),
+            })),
+            None,
+            None,
+        );
+
+        let mut first_ctx = LayoutCtx::new(Scale::new(1.0));
+        let (_, first_published) = LayoutEngine::new(&mut tree).layout_element_with_publication(
+            &mut first_ctx,
+            root,
+            Constraints::loose(100.0, 100.0),
+        );
+        assert!(first_published);
+        let first = tree.get(root).unwrap();
+        let old_layout = first.layout.clone();
+        let old_cache_key = first.layout_cache_key;
+        let old_attempt = first.committed_layout_attempt;
+        let staged_generation = first.mount_generation();
+
+        extent.set(20.0);
+        tree.mark_layout_path_dirty(root);
+
+        let runtime = RuntimeHandle::<()>::new();
+        runtime.register_element_mount(root, staged_generation.next());
+        let publisher = runtime.clone();
+        let retried = Rc::new(Cell::new(false));
+        let retry = retried.clone();
+        let abandoned = Rc::new(Cell::new(0_u32));
+        let abandon = abandoned.clone();
+        let mut stale_ctx = LayoutCtx::new(Scale::new(1.0));
+        stale_ctx.set_reactive_layout_callbacks(
+            Rc::new(move |updates| publisher.replace_reactive_dependencies_batch(updates)),
+            Rc::new(move |element_id| {
+                assert_eq!(element_id, root);
+                retry.set(true);
+            }),
+        );
+        stale_ctx.set_reactive_layout_abandon_callback(Rc::new(move || {
+            abandon.set(abandon.get() + 1);
+        }));
+
+        let (attempted, published) = LayoutEngine::new(&mut tree).layout_element_with_publication(
+            &mut stale_ctx,
+            root,
+            Constraints::loose(100.0, 100.0),
+        );
+
+        assert_eq!(attempted.size.w, 20.0);
+        assert!(!published);
+        assert_eq!(layouts.get(), 2);
+        assert!(retried.get());
+        assert_eq!(abandoned.get(), 1);
+        let retained = tree.get(root).unwrap();
+        assert!(retained
+            .layout
+            .as_ref()
+            .zip(old_layout.as_ref())
+            .is_some_and(|(retained, old)| retained.geometry_eq(old)));
+        assert!(retained.layout.as_ref().unwrap().artifact.is_none());
+        assert_eq!(retained.layout_cache_key, old_cache_key);
+        assert_eq!(retained.committed_layout_attempt, old_attempt);
+        assert!(retained.dirty.layout);
     }
 }

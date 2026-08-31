@@ -3,6 +3,7 @@
 //! Capture coordinates are physical pixels. Declarative requests are retained
 //! across wake failures and completed results remain queued until explicitly taken.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -745,6 +746,25 @@ impl CaptureHandle {
             .unwrap_or(false)
     }
 
+    /// Returns sorted logical windows that still have pending capture work.
+    ///
+    /// The snapshot does not claim requests. It is used only by the host to
+    /// avoid waking unrelated presentations before per-window capture drains.
+    pub(crate) fn pending_window_ids(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .map(|state| {
+                state
+                    .pending
+                    .iter()
+                    .map(|request| request.target.window_id().to_string())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Returns whether a pending request targets exactly `window_id`.
     ///
     /// Returns `false` if the mutex is poisoned. Element and full-window
@@ -1191,6 +1211,19 @@ mod tests {
         });
 
         assert!(handle.has_pending_for_window("second"));
+    }
+
+    #[test]
+    fn pending_capture_windows_are_sorted_and_deduplicated() {
+        let handle = CaptureHandle::new();
+        handle.request_window("beta");
+        handle.request_element("alpha", "first");
+        handle.request_element("beta", "second");
+
+        assert_eq!(
+            handle.pending_window_ids(),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::fmt;
 
 use ailloli_ui_core::{LogicalWindowId, Size};
 
-use super::WindowChromeOp;
+use super::{FrameWorkPlan, WindowChromeOp};
 
 /// Monotonic generation of a native presentation attached to a logical window.
 ///
@@ -62,6 +62,58 @@ impl PresentationGeneration {
     /// Returns the next generation or `None` at `u64::MAX`.
     fn checked_next(self) -> Option<Self> {
         self.0.checked_add(1).map(Self)
+    }
+}
+
+/// Provider-neutral frame work pending for one exact presentation.
+///
+/// This host boundary intentionally exposes only the logical presentation,
+/// its attachment generation, and the aggregate frame stages. Retained-tree
+/// identifiers and exact dirty roots remain private to the runtime.
+///
+/// The type is public only so presentation adapters in sibling crates can
+/// consume it. It remains reachable through the lower-level
+/// `ailloli_ui::runtime` module alias, but the item itself is hidden from
+/// generated documentation and is not re-exported at the facade top level or
+/// through its prelude.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresentationWorkPlan {
+    /// Stable logical-window identity.
+    logical_window_id: LogicalWindowId,
+    /// Exact native-presentation generation addressed by the work.
+    presentation_generation: PresentationGeneration,
+    /// Aggregate retained stages required by every tree in this presentation.
+    frame_work_plan: FrameWorkPlan,
+}
+
+impl PresentationWorkPlan {
+    /// Creates one presentation-scoped aggregate without exposing tree roots.
+    pub(crate) const fn new(
+        logical_window_id: LogicalWindowId,
+        presentation_generation: PresentationGeneration,
+        frame_work_plan: FrameWorkPlan,
+    ) -> Self {
+        Self {
+            logical_window_id,
+            presentation_generation,
+            frame_work_plan,
+        }
+    }
+
+    /// Returns the stable logical window addressed by this work.
+    pub fn logical_window_id(&self) -> &LogicalWindowId {
+        &self.logical_window_id
+    }
+
+    /// Returns the exact presentation generation addressed by this work.
+    pub const fn presentation_generation(&self) -> PresentationGeneration {
+        self.presentation_generation
+    }
+
+    /// Returns the aggregate build/layout/paint stages required by the frame.
+    pub const fn frame_work_plan(&self) -> FrameWorkPlan {
+        self.frame_work_plan
     }
 }
 

@@ -19,6 +19,111 @@
 //! Lower-level integration (custom event loop, raw `DrawCmd`) is available via
 //! [`runtime`] and, with `winit`, [`ailloli_ui_winit`](https://docs.rs/ailloli_ui_winit).
 //!
+//! ## Reactive state
+//!
+//! Standalone [`State`] becomes reactive automatically when a retained widget
+//! or component reads it. Passing it to [`widgets::text::Text`] establishes the
+//! observation during layout; ordinary reads outside retained callbacks remain
+//! passive.
+//!
+//! ```
+//! use ailloli_ui::core::Scale;
+//! use ailloli_ui::prelude::{Constraints, State, Text};
+//! use ailloli_ui::runtime::app::{Runtime, RuntimeHandle};
+//! use ailloli_ui::text::TextSystem;
+//!
+//! let title = State::new(String::from("Ready"));
+//! let label = Text::new(title.clone());
+//! let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+//! let mut text_system = TextSystem::new();
+//! runtime.reconcile(label);
+//! runtime.layout(
+//!     Constraints::tight(240.0, 80.0),
+//!     Scale::new(1.0),
+//!     &mut text_system,
+//! );
+//! assert!(!runtime.runtime.has_dirty_elements());
+//!
+//! title.set(String::from("Running"));
+//!
+//! assert_eq!(title.read(), "Running");
+//! assert!(runtime.runtime.frame_work_plan().needs_layout());
+//! ```
+//!
+//! Derived values may select dependencies conditionally. On each successful
+//! retained callback, only the sources read by the executed branch remain
+//! observed.
+//!
+//! ```
+//! use ailloli_ui::core::Scale;
+//! use ailloli_ui::prelude::{Constraints, Memo, State, Text};
+//! use ailloli_ui::runtime::app::{Runtime, RuntimeHandle};
+//! use ailloli_ui::text::TextSystem;
+//!
+//! let detailed = State::new(false);
+//! let short = State::new(String::from("Ready"));
+//! let long = State::new(String::from("Ready for the next task"));
+//! let choose_detailed = detailed.clone();
+//! let read_short = short.clone();
+//! let read_long = long.clone();
+//! let content = Memo::new(move || {
+//!     if choose_detailed.read() {
+//!         read_long.read()
+//!     } else {
+//!         read_short.read()
+//!     }
+//! });
+//! let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+//! let mut text_system = TextSystem::new();
+//! runtime.reconcile(Text::new(content));
+//! runtime.layout(
+//!     Constraints::tight(240.0, 80.0),
+//!     Scale::new(1.0),
+//!     &mut text_system,
+//! );
+//!
+//! detailed.set(true);
+//! assert!(runtime.runtime.frame_work_plan().needs_layout());
+//! runtime.layout(
+//!     Constraints::tight(240.0, 80.0),
+//!     Scale::new(1.0),
+//!     &mut text_system,
+//! );
+//!
+//! short.set(String::from("This branch is no longer active"));
+//! assert!(runtime.runtime.frame_work_plan().is_empty());
+//! long.set(String::from("Updated active branch"));
+//! assert!(runtime.runtime.frame_work_plan().needs_layout());
+//! ```
+//!
+//! Cloned state can feed multiple retained consumers. Each mounted consumer is
+//! observed independently and unmounting one does not disconnect the others.
+//!
+//! ```
+//! use ailloli_ui::core::Scale;
+//! use ailloli_ui::prelude::{Column, Constraints, State, Text};
+//! use ailloli_ui::runtime::app::{Runtime, RuntimeHandle};
+//! use ailloli_ui::text::TextSystem;
+//!
+//! let status = State::new(String::from("Idle"));
+//! let root = Column::new()
+//!     .child(Text::new(status.clone()))
+//!     .child(Text::new(status.clone()));
+//! let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+//! let mut text_system = TextSystem::new();
+//! runtime.reconcile(root);
+//! runtime.layout(
+//!     Constraints::tight(240.0, 80.0),
+//!     Scale::new(1.0),
+//!     &mut text_system,
+//! );
+//!
+//! status.set(String::from("Busy"));
+//!
+//! assert_eq!(status.read(), "Busy");
+//! assert_eq!(runtime.runtime.take_dirty_elements().len(), 2);
+//! ```
+//!
 //! Product-specific integrations (chat providers, IDE chrome, remote workspaces,
 //! desktop automation, etc.) deliberately live outside this public façade.
 

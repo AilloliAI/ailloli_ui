@@ -16,7 +16,6 @@ use ailloli_ui_fs_runtime::{FileTreeEnqueueOutcome, FileTreeRuntime, FileTreeWor
 use ailloli_ui_runtime::app::UiServiceRegistration;
 use ailloli_ui_runtime::component::{Binding, ComponentNode, Context, IntoView, View};
 use ailloli_ui_runtime::input::EventCtx;
-use ailloli_ui_runtime::Invalidation;
 
 use crate::layout::layout_ext::finish_view_sized;
 
@@ -728,7 +727,6 @@ impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
             )))
         });
         let runtime = runtime_signal.read();
-        let invalidate = context.invalidation_target(Invalidation::Build);
         {
             let mut runtime_state = runtime.borrow_mut();
             if runtime_state.root_uri() != &root_uri {
@@ -747,7 +745,7 @@ impl<A: 'static> ComponentNode<A> for LocalFileExplorerComponent<A> {
                 self.cache_mode,
                 &default_expanded,
             );
-            runtime_state.ensure_service(&runtime, context, invalidate);
+            runtime_state.ensure_service(&runtime, context);
             runtime_state.service_pending();
         }
         let _async_loading_compat = self.async_loading;
@@ -881,12 +879,7 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
     }
 
     /// Installs worker wake integration and one retained UI drain callback.
-    fn ensure_service(
-        &mut self,
-        owner: &Rc<RefCell<Self>>,
-        context: &Context<A>,
-        invalidate: Rc<dyn Fn()>,
-    ) {
+    fn ensure_service(&mut self, owner: &Rc<RefCell<Self>>, context: &Context<A>) {
         if let (Some(worker), Some(wake)) = (self.worker.as_ref(), context.runtime().ui_wake()) {
             if let Err(error) = worker.install_wake(wake) {
                 self.error.get_or_insert_with(|| error.to_string());
@@ -901,9 +894,6 @@ impl<A: 'static> LocalFileExplorerRuntime<A> {
                 return false;
             };
             let changed = owner.borrow_mut().service_pending();
-            if changed {
-                invalidate();
-            }
             changed
         });
         let registration = context.register_ui_service(&callback);

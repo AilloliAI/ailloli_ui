@@ -10,7 +10,10 @@ use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint, LayoutStyle};
 use ailloli_ui_core::Point;
 use ailloli_ui_core::{IconId, Theme};
 use ailloli_ui_fs::{FileKind, FileUri};
-use ailloli_ui_runtime::component::{Binding, ComponentNode, Context, IntoView, Signal, View};
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
+use ailloli_ui_runtime::component::{
+    Binding, ComponentNode, Context, IntoView, Signal, State, View,
+};
 use ailloli_ui_runtime::input::{ClickAction, EventCtx};
 use ailloli_ui_runtime::Invalidation;
 
@@ -1053,6 +1056,7 @@ impl<A: 'static> IntoView<A> for FileExplorer<A> {
     fn into_view(self) -> View<A> {
         finish_view_sized(
             View::component(FileExplorerComponent {
+                input_identity: Rc::new(()),
                 layout: self.layout,
                 nodes: self.nodes,
                 bound_nodes: self.bound_nodes,
@@ -1082,6 +1086,8 @@ impl<A: 'static> IntoView<A> for FileExplorer<A> {
 
 /// Snapshot explorer component inputs retained across runtime builds.
 struct FileExplorerComponent<A> {
+    /// Identity of one declarative explorer payload across its own rebuilds.
+    input_identity: Rc<()>,
     /// Outer logical sizing policy.
     layout: LayoutStyle,
     /// Read-only fallback flat file-node snapshot.
@@ -1124,6 +1130,83 @@ struct FileExplorerComponent<A> {
     on_create_dir: Option<CreateDirHandler<A>>,
 }
 
+/// Passive owner for the snapshot signal handed to the inner [`TreeView`].
+///
+/// Rebuilding the explorer for an unrelated menu/edit signal must not rewrite
+/// the complete tree and enqueue another owner build. A genuinely replaced
+/// declarative payload, or a new bound-node revision, swaps in a fresh
+/// standalone source. The enclosing build already owns reconciliation of the
+/// new source, so no redundant invalidation is emitted while it is running.
+struct FileExplorerTreeSnapshot {
+    /// Identity of the declarative component payload that supplied the nodes.
+    input_identity: Rc<()>,
+    /// Last bound-node revision projected into `signal`.
+    bound_revision: Option<u64>,
+    /// Snapshot source observed by the inner tree only.
+    signal: Signal<Vec<TreeNode<FileUri>>>,
+}
+
+impl FileExplorerTreeSnapshot {
+    /// Creates the first retained projection without scheduling owner work.
+    fn new(
+        input_identity: Rc<()>,
+        bound_revision: Option<u64>,
+        nodes: Vec<TreeNode<FileUri>>,
+    ) -> Self {
+        Self {
+            input_identity,
+            bound_revision,
+            signal: State::new(nodes).into_signal(),
+        }
+    }
+
+    /// Replaces the source only when the authoritative input actually changed.
+    fn sync_input(
+        &mut self,
+        input_identity: &Rc<()>,
+        bound_revision: Option<u64>,
+        nodes: Vec<TreeNode<FileUri>>,
+    ) {
+        if Rc::ptr_eq(&self.input_identity, input_identity) && self.bound_revision == bound_revision
+        {
+            return;
+        }
+        let current = with_untracked_reads(|| self.signal.read());
+        let nodes = preserve_transient_tree_nodes(current, nodes);
+        self.input_identity = input_identity.clone();
+        self.bound_revision = bound_revision;
+        self.signal = State::new(nodes).into_signal();
+    }
+
+    /// Refreshes one bound snapshot after an action callback mutated its source.
+    fn sync_bound_nodes(&mut self, nodes: &Signal<Vec<FileExplorerNode>>) {
+        let revision = nodes.revision();
+        if self.bound_revision == Some(revision) {
+            return;
+        }
+        let mut nodes = nodes.read();
+        sort_file_nodes(&mut nodes);
+        let next = nodes.iter().map(to_tree_node).collect::<Vec<_>>();
+        let next = preserve_transient_tree_nodes(self.signal.read(), next);
+        self.bound_revision = Some(revision);
+        self.signal = State::new(next).into_signal();
+    }
+}
+
+/// Retains one standalone source in a component hook slot.
+///
+/// The outer hook signal never changes; the inner source is observed and
+/// invalidated only by the nested retained consumer that reads it.
+fn retained_standalone_signal<A: 'static, T: 'static>(
+    context: &mut Context<A>,
+    initial: T,
+) -> Signal<T> {
+    context
+        .signal_with(|| State::new(initial))
+        .read()
+        .into_signal()
+}
+
 /// Builds a sorted intent-only tree plus transient edit and context-menu wiring.
 impl<A: 'static> ComponentNode<A> for FileExplorerComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
@@ -1135,13 +1218,32 @@ impl<A: 'static> ComponentNode<A> for FileExplorerComponent<A> {
         sort_file_nodes(&mut nodes);
 
         let tree_nodes = nodes.iter().map(to_tree_node).collect::<Vec<_>>();
-        let tree_nodes_signal = context.signal(tree_nodes.clone());
-        let tree_nodes = preserve_transient_tree_nodes(tree_nodes_signal.read(), tree_nodes);
-        tree_nodes_signal.set(tree_nodes);
-        let menu_open = context.signal(false);
-        let menu_anchor = context.signal(Point::default());
-        let menu_entries = context.signal(Vec::<ContextMenuEntry<A>>::new());
-        let tree_command = context.signal(None::<TreeViewCommand<FileUri>>);
+        let bound_revision = self.bound_nodes.as_ref().map(Signal::revision);
+        let mut initial_tree_nodes = Some(tree_nodes);
+        let tree_snapshot = context
+            .signal_with(|| {
+                Rc::new(RefCell::new(FileExplorerTreeSnapshot::new(
+                    self.input_identity.clone(),
+                    bound_revision,
+                    initial_tree_nodes
+                        .take()
+                        .expect("initial file explorer tree snapshot"),
+                )))
+            })
+            .read();
+        if let Some(tree_nodes) = initial_tree_nodes {
+            tree_snapshot
+                .borrow_mut()
+                .sync_input(&self.input_identity, bound_revision, tree_nodes);
+        }
+        let tree_nodes_signal = tree_snapshot.borrow().signal.clone();
+        // These values belong to the nested menu/tree consumers. Standalone
+        // sources let exact dependency tracking rebuild or relayout only that
+        // consumer instead of invoking FileExplorer's historical Build edge.
+        let menu_open = retained_standalone_signal(context, false);
+        let menu_anchor = retained_standalone_signal(context, Point::default());
+        let menu_entries = retained_standalone_signal(context, Vec::<ContextMenuEntry<A>>::new());
+        let tree_command = retained_standalone_signal(context, None::<TreeViewCommand<FileUri>>);
         let tree_focus_key = format!("ailloli_ui-file-explorer-tree-{}", context.element_id().0);
         let menu_focus_key = format!(
             "ailloli_ui-file-explorer-context-menu-{}",
@@ -1229,7 +1331,7 @@ impl<A: 'static> ComponentNode<A> for FileExplorerComponent<A> {
         let on_action = self.on_action.clone();
         let on_toggle = self.on_toggle.clone();
         let bound_nodes_for_toggle = self.bound_nodes.clone();
-        let tree_nodes_for_toggle = tree_nodes_signal.clone();
+        let tree_snapshot_for_toggle = tree_snapshot.clone();
         tree = tree.on_toggle_ctx(move |ctx, uri, expanded| {
             if let Some(handler) = &on_toggle {
                 handler(ctx, uri.clone(), expanded);
@@ -1239,7 +1341,7 @@ impl<A: 'static> ComponentNode<A> for FileExplorerComponent<A> {
                 &on_action,
                 FileExplorerAction::Toggle { uri, expanded },
             );
-            sync_bound_tree_nodes(&bound_nodes_for_toggle, &tree_nodes_for_toggle);
+            sync_bound_tree_nodes(&bound_nodes_for_toggle, &tree_snapshot_for_toggle);
         });
 
         if self.on_action.is_some() || self.on_remove.is_some() {
@@ -2346,16 +2448,10 @@ fn dispatch_retained_file_shortcut<T, A>(
 /// Mirrors transient/expanded tree state back only when snapshot nodes are bound.
 fn sync_bound_tree_nodes(
     bound_nodes: &Option<Signal<Vec<FileExplorerNode>>>,
-    tree_nodes_signal: &Signal<Vec<TreeNode<FileUri>>>,
+    tree_snapshot: &Rc<RefCell<FileExplorerTreeSnapshot>>,
 ) {
     if let Some(nodes) = bound_nodes {
-        let mut nodes = nodes.read();
-        sort_file_nodes(&mut nodes);
-        let next = nodes.iter().map(to_tree_node).collect::<Vec<_>>();
-        tree_nodes_signal.set(preserve_transient_tree_nodes(
-            tree_nodes_signal.read(),
-            next,
-        ));
+        tree_snapshot.borrow_mut().sync_bound_nodes(nodes);
     }
 }
 

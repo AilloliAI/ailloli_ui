@@ -61,6 +61,20 @@ pub struct PaintContext<'a> {
 /// ```
 pub type PaintCtx<'a> = PaintContext<'a>;
 
+/// Allocation-free marker used to discard one stale element paint unit.
+pub(crate) struct PaintCheckpoint {
+    /// Base-layer count before the unit started.
+    layers_len: usize,
+    /// Existing base target and its command count, when one was active.
+    base_target: Option<(usize, usize)>,
+    /// Overlay-layer count before the unit started.
+    overlay_layers_len: usize,
+    /// Existing overlay target and its command count, when one was active.
+    overlay_target: Option<(usize, usize)>,
+    /// Lazily selected unscoped overlay target before the unit started.
+    default_overlay_layer: Option<usize>,
+}
+
 /// Implements the `Default` contract for `PaintContext<'a>`.
 impl<'a> Default for PaintContext<'a> {
     /// Constructs the documented default value.
@@ -145,6 +159,55 @@ impl<'a> PaintContext<'a> {
         s.input = input;
         s.frame_time_ms = frame_time_ms;
         s
+    }
+
+    /// Captures append-only layer positions without allocating or cloning commands.
+    pub(crate) fn checkpoint(&self) -> PaintCheckpoint {
+        let base_target = self
+            .isolated_scope_stack
+            .last()
+            .copied()
+            .or_else(|| self.layers.len().checked_sub(1))
+            .and_then(|index| {
+                self.layers
+                    .get(index)
+                    .map(|layer| (index, layer.cmds.len()))
+            });
+        let overlay_target = self
+            .overlay_target_stack
+            .last()
+            .copied()
+            .or(self.default_overlay_layer)
+            .and_then(|index| {
+                self.overlay_layers
+                    .get(index)
+                    .map(|layer| (index, layer.cmds.len()))
+            });
+        PaintCheckpoint {
+            layers_len: self.layers.len(),
+            base_target,
+            overlay_layers_len: self.overlay_layers.len(),
+            overlay_target,
+            default_overlay_layer: self.default_overlay_layer,
+        }
+    }
+
+    /// Removes commands and layers appended after `checkpoint`.
+    pub(crate) fn rollback_to(&mut self, checkpoint: PaintCheckpoint) {
+        if let Some((index, command_count)) = checkpoint.base_target {
+            if let Some(layer) = self.layers.get_mut(index) {
+                layer.cmds.truncate(command_count);
+            }
+        }
+        self.layers.truncate(checkpoint.layers_len);
+
+        if let Some((index, command_count)) = checkpoint.overlay_target {
+            if let Some(layer) = self.overlay_layers.get_mut(index) {
+                layer.cmds.truncate(command_count);
+            }
+        }
+        self.overlay_layers.truncate(checkpoint.overlay_layers_len);
+        self.default_overlay_layer = checkpoint.default_overlay_layer;
     }
 
     /// Borrows the underlying Parley engine, or returns `None` without text services.

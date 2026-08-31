@@ -1,12 +1,16 @@
 //! Single- and multi-line editable text widgets plus a legacy draw helper.
 
+use std::cell::Cell;
+
 use crate::layout::layout_ext::finish_view_sized;
+use crate::transactional_layout::TransactionalLayoutPending;
 use ailloli_ui_core::event::{Event, ImePreedit};
 #[cfg(test)]
 use ailloli_ui_core::geometry::Size;
 use ailloli_ui_core::geometry::{Constraints, Rect};
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
 use ailloli_ui_core::{Color, FontId, ScrollbarAxis, TextStyle, Theme};
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Signal, View, Widget,
 };
@@ -21,12 +25,12 @@ use ailloli_ui_text::{TextEditAction, TextLayoutParams, WrapMode};
 use crate::text::editable_text::{draw_editable_mono_line, EditableTextStyle};
 
 #[cfg(test)]
-use super::text_field_core::{apply_edit_action, display_text_for_edit};
+use super::text_field_core::apply_edit_action;
 use super::text_field_core::{
-    handle_multi_line_text_event, handle_single_line_text_event, ime_cursor_rect,
-    ime_cursor_rect_multi_line, layout_multi_line_text, layout_single_line_text,
-    multi_line_scrollbar_geometry, paint_multi_line_text, paint_single_line_text,
-    reveal_caret_multi_line_from_current_layout, TextFieldEventOptions,
+    display_text_for_edit, handle_multi_line_text_event, handle_single_line_text_event,
+    ime_cursor_rect, ime_cursor_rect_multi_line, layout_multi_line_text, layout_single_line_text,
+    multi_line_scrollbar_geometry, paint_committed_single_line_text, paint_multi_line_text,
+    read_display_buffer, reveal_caret_multi_line_from_current_layout, TextFieldEventOptions,
 };
 use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction, ScrollbarVisualState};
 
@@ -471,10 +475,15 @@ pub struct TextInputWidget<A = ()> {
     buffer: Signal<TextBuffer>,
     /// Caret, selection, IME, drag, and scroll state.
     edit: Signal<TextEditState>,
+    /// Revision of the composed value/preedit text that can change shaping.
+    display_revision: Signal<u64>,
     /// Requests a post-layout multi-line caret reveal when no artifact existed.
     pending_reveal: Signal<bool>,
     /// Retained hover and captured multiline scrollbar gesture.
     scrollbar_interaction: Signal<ScrollbarInteraction>,
+    /// Geometry-derived interaction cleanup staged for the active layout attempt.
+    pending_scrollbar_interaction:
+        Cell<Option<TransactionalLayoutPending<Option<ScrollbarInteraction>>>>,
     /// Optional reactive placeholder.
     placeholder: Option<Binding<String>>,
     /// Paint, spacing, and text metrics.
@@ -497,29 +506,38 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
-        let (size, text_layout) = if self.mode == TextInputMode::MultiLine {
-            layout_multi_line_text(
-                ctx,
-                constraints,
-                self.layout,
-                &self.value,
-                &self.buffer,
-                &self.edit,
-                self.placeholder.as_ref().map(|p| p.read()),
-                self.style,
-            )
-        } else {
-            layout_single_line_text(
-                ctx,
-                constraints,
-                self.layout,
-                &self.value,
-                &self.buffer,
-                &self.edit,
-                self.placeholder.as_ref().map(|p| p.read()),
-                self.style,
-            )
-        };
+        let _ = self.value.revision();
+        let _ = self.buffer.revision();
+        let _ = self.display_revision.read();
+        let placeholder = self
+            .placeholder
+            .as_ref()
+            .map(|placeholder| placeholder.read());
+        let (size, text_layout) = with_untracked_reads(|| {
+            if self.mode == TextInputMode::MultiLine {
+                layout_multi_line_text(
+                    ctx,
+                    constraints,
+                    self.layout,
+                    &self.value,
+                    &self.buffer,
+                    &self.edit,
+                    placeholder,
+                    self.style,
+                )
+            } else {
+                layout_single_line_text(
+                    ctx,
+                    constraints,
+                    self.layout,
+                    &self.value,
+                    &self.buffer,
+                    &self.edit,
+                    placeholder,
+                    self.style,
+                )
+            }
+        });
 
         let mut result = LayoutResult {
             size,
@@ -531,23 +549,29 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
             is_window_root_clip: false,
             artifact: text_layout.map(LayoutArtifact::Text),
         };
-        let geometries = if self.mode == TextInputMode::MultiLine {
-            multi_line_scrollbar_geometry(
-                Rect::new(0.0, 0.0, size.w, size.h),
-                &result,
-                &self.value,
-                &self.buffer,
-                &self.edit,
-                self.style,
-            )
-            .into_iter()
-            .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(ctx.layout_pass(), &geometries) {
-            self.scrollbar_interaction.set(interaction);
+        let geometries = with_untracked_reads(|| {
+            if self.mode == TextInputMode::MultiLine {
+                multi_line_scrollbar_geometry(
+                    Rect::new(0.0, 0.0, size.w, size.h),
+                    &result,
+                    &self.value,
+                    &self.buffer,
+                    &self.edit,
+                    self.style,
+                )
+                .into_iter()
+                .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
+        });
+        let mut interaction = with_untracked_reads(|| self.scrollbar_interaction.read());
+        let interaction = interaction
+            .reconcile(ctx.layout_pass(), &geometries)
+            .then_some(interaction);
+        if ctx.layout_pass().is_committed() {
+            self.pending_scrollbar_interaction
+                .set(TransactionalLayoutPending::new(ctx, interaction));
         }
         result.overlay_hit_bounds = geometries
             .iter()
@@ -556,19 +580,31 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
         result
     }
 
-    fn layout_committed(&self, _ctx: &mut LayoutCtx<'_>, bounds: Rect, layout: &LayoutResult) {
-        if self.mode != TextInputMode::MultiLine || !self.pending_reveal.read() {
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, bounds: Rect, layout: &LayoutResult) {
+        if let Some(interaction) = self
+            .pending_scrollbar_interaction
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+            .flatten()
+        {
+            self.scrollbar_interaction.set(interaction);
+        }
+        if self.mode != TextInputMode::MultiLine
+            || !with_untracked_reads(|| self.pending_reveal.read())
+        {
             return;
         }
         self.pending_reveal.set(false);
-        let _ = reveal_caret_multi_line_from_current_layout(
-            bounds,
-            layout,
-            &self.value,
-            &self.buffer,
-            &self.edit,
-            self.style,
-        );
+        with_untracked_reads(|| {
+            let _ = reveal_caret_multi_line_from_current_layout(
+                bounds,
+                layout,
+                &self.value,
+                &self.buffer,
+                &self.edit,
+                self.style,
+            );
+        });
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
@@ -621,7 +657,7 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
                 thumb_color_for_state(style.border.with_alpha(0.62), visual),
             );
         } else {
-            paint_single_line_text(
+            paint_committed_single_line_text(
                 ctx,
                 bounds,
                 layout,
@@ -667,6 +703,7 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
                 return;
             }
         }
+        let before_display = self.composed_display_text();
         let before = self.value.read();
         if self.mode == TextInputMode::MultiLine {
             handle_multi_line_text_event(
@@ -695,6 +732,10 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
             );
         }
         let after = self.value.read();
+        if self.composed_display_text() != before_display {
+            self.display_revision
+                .update(|revision| *revision = revision.wrapping_add(1).max(1));
+        }
         if after != before {
             if let Some(on_change) = &self.on_change {
                 on_change(ctx, after);
@@ -741,6 +782,23 @@ impl<A: 'static> Widget<A> for TextInputWidget<A> {
     }
 }
 
+impl<A> TextInputWidget<A> {
+    /// Returns the exact value plus preedit string currently presented by paint.
+    fn composed_display_text(&self) -> String {
+        with_untracked_reads(|| {
+            let buffer = read_display_buffer(&self.value, &self.buffer);
+            let value = buffer.as_str();
+            let edit = self.edit.read();
+            display_text_for_edit(
+                &value,
+                edit.caret_byte.min(value.len()),
+                edit.preedit.as_ref(),
+            )
+            .0
+        })
+    }
+}
+
 /// Component properties used to allocate persistent edit and buffer signals.
 struct TextInputComponent<A> {
     /// Outer logical sizing policy.
@@ -759,19 +817,29 @@ struct TextInputComponent<A> {
 
 impl<A: 'static> ComponentNode<A> for TextInputComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
-        let edit = context.signal(TextEditState::new());
-        let buffer = context.signal(TextBuffer::from_string(self.value.read()));
-        let pending_reveal = context.signal(false);
+        let edit = context.signal_with_invalidation(TextEditState::new(), Invalidation::Paint);
+        let buffer = context.signal_with_invalidation_factory(
+            || with_untracked_reads(|| TextBuffer::from_string(self.value.read())),
+            Invalidation::Paint,
+        );
+        // This is administrative post-layout work, not a geometry input. Event
+        // paths explicitly request layout when they arm it; clearing it after a
+        // successful commit only needs the paint requested by the resulting
+        // scroll-state update.
+        let pending_reveal = context.signal_with_invalidation(false, Invalidation::Paint);
         let scrollbar_interaction =
             context.signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint);
+        let display_revision = context.signal_with_invalidation(0_u64, Invalidation::Layout);
 
         View::leaf(TextInputWidget {
             layout: self.layout,
             value: self.value.clone(),
             buffer,
             edit,
+            display_revision,
             pending_reveal,
             scrollbar_interaction,
+            pending_scrollbar_interaction: Cell::new(None),
             placeholder: self.placeholder.clone(),
             style: self.style,
             mode: self.mode,
@@ -824,8 +892,10 @@ mod tests {
             value: signal(value.to_string()),
             buffer: signal(TextBuffer::from_string(value.to_string())),
             edit: signal(TextEditState::new()),
+            display_revision: signal(0),
             pending_reveal: signal(false),
             scrollbar_interaction: signal(ScrollbarInteraction::default()),
+            pending_scrollbar_interaction: Cell::new(None),
             placeholder: None,
             style: TextInputStyle {
                 text: TextStyle::new(FontId::Mono, 14, Color::new(1.0, 1.0, 1.0, 1.0)),
@@ -874,6 +944,43 @@ mod tests {
         .expect("ime cursor rect");
 
         assert!(rect.h > 0.0);
+    }
+
+    #[test]
+    fn text_input_paint_skips_a_mismatched_committed_artifact() {
+        let widget = widget_with_value("fresh");
+        let mut text_system = TextSystem::new();
+        let stale = text_system.layout_cached(TextLayoutParams {
+            text: "stale",
+            style: widget.style.text,
+            max_width: Some(200.0),
+            wrap_mode: WrapMode::NoWrap,
+        });
+        let layout = LayoutResult {
+            size: Size::new(200.0, 40.0),
+            children: Vec::new(),
+            paint_bounds: Rect::new(0.0, 0.0, 200.0, 40.0),
+            visual_bounds: Rect::new(0.0, 0.0, 200.0, 40.0),
+            overlay_hit_bounds: Vec::new(),
+            clip: None,
+            is_window_root_clip: false,
+            artifact: Some(LayoutArtifact::Text(stale)),
+        };
+        let mut paint = PaintCtx::with_text_system(&mut text_system);
+
+        <TextInputWidget as Widget<()>>::paint(
+            &widget,
+            &mut paint,
+            Rect::new(0.0, 0.0, 200.0, 40.0),
+            &layout,
+        );
+
+        assert!(paint.layers.iter().all(|layer| {
+            layer
+                .cmds
+                .iter()
+                .all(|cmd| !matches!(cmd, DrawCmd::Text(_)))
+        }));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Interactive terminal-grid renderer backed by `ailloli_ui_terminal_core` state.
 
+use std::cell::RefCell;
 use std::mem;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use ailloli_ui_core::scroll::{
 };
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
 use ailloli_ui_core::{ClipShape, Color, FontId, Offset, TextStyle, Theme};
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, View, Widget};
 use ailloli_ui_runtime::input::{EventCtx, FocusPolicy, InputRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
@@ -31,6 +33,7 @@ use ailloli_ui_text::{
 
 use super::terminal::{TerminalPosition, TerminalSelection};
 use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
+use crate::transactional_layout::TransactionalLayoutPending;
 
 /// Shared callback receiving bytes encoded for the terminal peer.
 type InputHandler<A> = Rc<dyn Fn(&mut EventCtx<A>, Vec<u8>)>;
@@ -644,11 +647,12 @@ impl<A: 'static> Terminal<A> {
         self
     }
 
-    /// Installs a state poll invoked during layout, paint, and event handling.
+    /// Installs a state poll invoked during authoritative layout and event handling.
     ///
     /// `Some(state)` replaces the signal only when different; `None` leaves it
-    /// unchanged. The callback should be fast and non-blocking because it may run
-    /// several times per frame.
+    /// unchanged. A layout poll is staged and becomes visible only after that
+    /// authoritative layout commits; paint never polls or mutates terminal state.
+    /// The callback should be fast and non-blocking.
     ///
     /// # Examples
     ///
@@ -749,14 +753,15 @@ impl<A: 'static> ComponentNode<A> for TerminalComponent<A> {
         View::leaf(TerminalWidget {
             layout: self.layout,
             state: self.state.clone(),
-            scroll: context.signal(ScrollState::with_offset(Offset::new(
-                0.0,
-                self.initial_scroll_y,
-            ))),
-            last_geometry: context.signal(None),
-            last_resize_state_size: context.signal(None),
-            follow_output: context.signal(self.follow_output),
-            last_line_count: context.signal(usize::MAX),
+            scroll: context.signal_with_invalidation(
+                ScrollState::with_offset(Offset::new(0.0, self.initial_scroll_y)),
+                Invalidation::Paint,
+            ),
+            last_geometry: context.signal_with_invalidation(None, Invalidation::Paint),
+            last_resize_state_size: context.signal_with_invalidation(None, Invalidation::Paint),
+            follow_output: context
+                .signal_with_invalidation(self.follow_output, Invalidation::Paint),
+            last_line_count: context.signal_with_invalidation(usize::MAX, Invalidation::Paint),
             selection: context.signal(self.selection),
             selection_mode: context.signal(self.selection_mode),
             drag_anchor: context.signal(None),
@@ -774,6 +779,7 @@ impl<A: 'static> ComponentNode<A> for TerminalComponent<A> {
             state_sync: self.state_sync.clone(),
             resize_sync: self.resize_sync.clone(),
             geometry_sync: self.geometry_sync.clone(),
+            pending_layout: RefCell::new(None),
         })
     }
 }
@@ -848,6 +854,22 @@ struct TerminalWidget<A> {
     resize_sync: Option<ResizeSync>,
     /// Optional sink receiving committed logical/pixel geometry.
     geometry_sync: Option<GeometrySync>,
+    /// Authoritative layout-derived state awaiting successful commit.
+    pending_layout: RefCell<Option<TransactionalLayoutPending<PendingTerminalLayout>>>,
+}
+
+/// State derived by one authoritative terminal layout attempt.
+struct PendingTerminalLayout {
+    /// Complete external state polled for this attempt, when it differs.
+    external_state: Option<TerminalState>,
+    /// Cell and viewport geometry measured by this attempt.
+    geometry: TerminalGeometry,
+    /// Scroll offset clamped against the state used by this attempt.
+    scroll: ScrollState,
+    /// Visual-line count used by the staged scroll calculation.
+    line_count: usize,
+    /// Gesture state reconciled against the staged scrollbar geometry.
+    scrollbar_interaction: Option<ScrollbarInteraction>,
 }
 
 impl<A: 'static> Widget<A> for TerminalWidget<A> {
@@ -862,20 +884,37 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
-        self.sync_external_state();
+        let retained_state = self.state.read();
+        let external_state = ctx
+            .layout_pass()
+            .is_committed()
+            .then(|| self.poll_external_state(&retained_state))
+            .flatten();
+        let effective_state = external_state.as_ref().unwrap_or(&retained_state);
         let intrinsic = Size::new(self.style.width, self.style.height);
         let size = apply_layout_size(intrinsic, self.layout, constraints);
-        let line_count = self.visual_line_count();
-        self.update_viewport_for_lines(Size::new(size.w, size.h), line_count);
-
         let viewport = Rect::new(0.0, 0.0, size.w, size.h);
+        let geometry = self.geometry_for_bounds(ctx.text_system.as_deref_mut(), viewport);
+        let line_count = terminal_visual_line_count(effective_state);
+        let scroll =
+            self.viewport_state_for_lines(Size::new(size.w, size.h), geometry.metrics, line_count);
         let geometries = self
-            .scrollbar_geometry(viewport, self.committed_metrics(), line_count)
+            .scrollbar_geometry_for_state(viewport, geometry.metrics, line_count, scroll)
             .into_iter()
             .collect::<Vec<_>>();
-        let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(ctx.layout_pass(), &geometries) {
-            self.scrollbar_interaction.set(interaction);
+        let mut interaction = with_untracked_reads(|| self.scrollbar_interaction.read());
+        let interaction_changed = interaction.reconcile(ctx.layout_pass(), &geometries);
+        if ctx.layout_pass().is_committed() {
+            self.pending_layout.replace(TransactionalLayoutPending::new(
+                ctx,
+                PendingTerminalLayout {
+                    external_state,
+                    geometry,
+                    scroll,
+                    line_count,
+                    scrollbar_interaction: interaction_changed.then_some(interaction),
+                },
+            ));
         }
         LayoutResult {
             size,
@@ -893,30 +932,46 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
     }
 
     fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        self.sync_external_state();
-        let geometry = self.geometry_for_bounds(ctx.text_system.as_deref_mut(), bounds);
-        self.sync_committed_geometry(geometry);
-        let line_count = self.visual_line_count();
-        self.update_viewport_for_lines_with_metrics(
-            Size::new(bounds.w, bounds.h),
-            geometry.metrics,
-            line_count,
-        );
+        let Some(pending) = self
+            .pending_layout
+            .borrow_mut()
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        if let Some(next) = pending.external_state {
+            let changed = with_untracked_reads(|| self.state.read() != next);
+            if changed {
+                self.state.set(next);
+            }
+        }
+        let state_changed = self.sync_committed_geometry(pending.geometry);
+        let (scroll, line_count) = if state_changed {
+            let line_count = with_untracked_reads(|| self.visual_line_count());
+            (
+                self.viewport_state_for_lines(
+                    Size::new(bounds.w, bounds.h),
+                    pending.geometry.metrics,
+                    line_count,
+                ),
+                line_count,
+            )
+        } else {
+            (pending.scroll, pending.line_count)
+        };
+        self.commit_viewport_state(scroll, line_count);
+        if let Some(interaction) = pending.scrollbar_interaction {
+            self.scrollbar_interaction.set(interaction);
+        }
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        self.sync_external_state();
-        if self.resize_sync.is_none() && self.geometry_sync.is_none() && self.auto_resize {
-            self.resize_local_state_for(Size::new(bounds.w, bounds.h));
-        }
         let state = self.state.read();
         let lines = terminal_visual_lines(&state);
-        let geometry = self.geometry_for_bounds(ctx.text_system.as_deref_mut(), bounds);
-        self.update_viewport_for_lines_with_metrics(
-            Size::new(bounds.w, bounds.h),
-            geometry.metrics,
-            lines.len(),
-        );
+        let Some(geometry) = self.last_geometry.read() else {
+            return;
+        };
 
         ctx.push(DrawCmd::RRect(DrawRRect {
             rect: bounds,
@@ -955,7 +1010,9 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
             );
         });
 
-        if let Some(scrollbar) = self.scrollbar_geometry(bounds, geometry.metrics, lines.len()) {
+        if let Some(scrollbar) =
+            self.scrollbar_geometry_for_state(bounds, geometry.metrics, lines.len(), scroll)
+        {
             let visual = self
                 .scrollbar_interaction
                 .read()
@@ -1141,26 +1198,34 @@ impl<A: 'static> Widget<A> for TerminalWidget<A> {
 }
 
 impl<A: 'static> TerminalWidget<A> {
-    /// Polls external state and replaces the signal only when changed.
+    /// Polls external state without publishing it into the retained signal.
+    fn poll_external_state(&self, current: &TerminalState) -> Option<TerminalState> {
+        self.state_sync
+            .as_ref()
+            .and_then(|sync| sync())
+            .filter(|next| next != current)
+    }
+
+    /// Polls external state during input and replaces the signal when changed.
     fn sync_external_state(&self) -> bool {
-        let Some(sync) = self.state_sync.as_ref() else {
+        let current = with_untracked_reads(|| self.state.read());
+        let Some(next) = self.poll_external_state(&current) else {
             return false;
         };
-        let Some(next) = sync() else {
-            return false;
-        };
-        if self.state.read() == next {
-            return false;
-        }
         self.state.set(next);
         true
     }
 
     /// Publishes changed geometry through geometry, resize, or local-resize priority.
     fn sync_committed_geometry(&self, geometry: TerminalGeometry) -> bool {
-        let geometry_changed = self.last_geometry.read() != Some(geometry);
-        let state_size = self.state.read().active_screen().size();
-        let state_size_changed = self.last_resize_state_size.read() != Some(state_size);
+        let (geometry_changed, state_size, state_size_changed) = with_untracked_reads(|| {
+            let state_size = self.state.read().active_screen().size();
+            (
+                self.last_geometry.read() != Some(geometry),
+                state_size,
+                self.last_resize_state_size.read() != Some(state_size),
+            )
+        });
         if !geometry_changed && !state_size_changed {
             return false;
         }
@@ -1180,7 +1245,7 @@ impl<A: 'static> TerminalWidget<A> {
 
         if let Some(sync) = self.geometry_sync.as_ref() {
             if let Some(next) = sync(geometry) {
-                if self.state.read() != next {
+                if with_untracked_reads(|| self.state.read() != next) {
                     self.last_resize_state_size
                         .set(Some(next.active_screen().size()));
                     self.state.set(next);
@@ -1193,7 +1258,7 @@ impl<A: 'static> TerminalWidget<A> {
         if let Some(sync) = self.resize_sync.as_ref() {
             let viewport = geometry.viewport_size();
             if let Some(next) = sync(viewport) {
-                if self.state.read() != next {
+                if with_untracked_reads(|| self.state.read() != next) {
                     self.last_resize_state_size
                         .set(Some(next.active_screen().size()));
                     self.state.set(next);
@@ -1210,15 +1275,9 @@ impl<A: 'static> TerminalWidget<A> {
         false
     }
 
-    /// Computes fallback geometry for a size and resizes local state.
-    fn resize_local_state_for(&self, size: Size) -> bool {
-        let bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        self.resize_local_state_to(self.geometry_for_bounds(None, bounds).terminal_size())
-    }
-
     /// Resizes local state only when its active-screen grid differs.
     fn resize_local_state_to(&self, next: TerminalSize) -> bool {
-        let current = self.state.read().active_screen().size();
+        let current = with_untracked_reads(|| self.state.read().active_screen().size());
         if current == next {
             return false;
         }
@@ -1278,6 +1337,18 @@ impl<A: 'static> TerminalWidget<A> {
         cell_metrics: TerminalCellMetrics,
         line_count: usize,
     ) -> Option<ScrollbarGeometry> {
+        let scroll = self.scroll.read();
+        self.scrollbar_geometry_for_state(bounds, cell_metrics, line_count, scroll)
+    }
+
+    /// Resolves the styled vertical bar for an explicit staged scroll state.
+    fn scrollbar_geometry_for_state(
+        &self,
+        bounds: Rect,
+        cell_metrics: TerminalCellMetrics,
+        line_count: usize,
+        scroll: ScrollState,
+    ) -> Option<ScrollbarGeometry> {
         if !self.scrollbars {
             return None;
         }
@@ -1286,17 +1357,11 @@ impl<A: 'static> TerminalWidget<A> {
             ScrollbarAxis::Vertical,
             bounds,
             self.scroll_metrics_with_cell_metrics(content, cell_metrics, line_count),
-            self.scroll.read(),
+            scroll,
         )
         .with_paint_metrics(self.style.scrollbar_width, 24.0, self.style.scrollbar_inset)
         .with_hit_thickness(16.0)
         .resolve()
-    }
-
-    /// Synchronizes follow/clamp behavior using committed cell metrics.
-    fn update_viewport_for_lines(&self, size: Size, line_count: usize) {
-        let metrics = self.committed_metrics();
-        self.update_viewport_for_lines_with_metrics(size, metrics, line_count);
     }
 
     /// Follows changed output to bottom and clamps scroll to current metrics.
@@ -1306,19 +1371,40 @@ impl<A: 'static> TerminalWidget<A> {
         metrics: TerminalCellMetrics,
         line_count: usize,
     ) {
+        let scroll = self.viewport_state_for_lines(size, metrics, line_count);
+        self.commit_viewport_state(scroll, line_count);
+    }
+
+    /// Computes follow/clamp output without mutating retained state.
+    fn viewport_state_for_lines(
+        &self,
+        size: Size,
+        metrics: TerminalCellMetrics,
+        line_count: usize,
+    ) -> ScrollState {
         let content = self.content_rect(Rect::new(0.0, 0.0, size.w, size.h));
-        let cell_metrics = metrics;
-        let metrics = self.scroll_metrics_with_cell_metrics(content, cell_metrics, line_count);
-        let previous = self.last_line_count.read();
-        let mut next = self.scroll.read();
-        if previous != line_count && self.follow_output.read() {
+        let metrics = self.scroll_metrics_with_cell_metrics(content, metrics, line_count);
+        let (previous, mut next, follow_output) = with_untracked_reads(|| {
+            (
+                self.last_line_count.read(),
+                self.scroll.read(),
+                self.follow_output.read(),
+            )
+        });
+        if previous != line_count && follow_output {
             next = next
                 .scroll_to(metrics.max_offset(), metrics, ScrollAxes::VERTICAL)
                 .state();
         }
-        let clamped = next.clamp_to(metrics, ScrollAxes::VERTICAL);
-        if clamped.changed || next != self.scroll.read() {
-            self.scroll.set(clamped.state());
+        next.clamp_to(metrics, ScrollAxes::VERTICAL).state()
+    }
+
+    /// Publishes one authoritative viewport snapshot after layout commits.
+    fn commit_viewport_state(&self, scroll: ScrollState, line_count: usize) {
+        let (retained_scroll, previous) =
+            with_untracked_reads(|| (self.scroll.read(), self.last_line_count.read()));
+        if retained_scroll != scroll {
+            self.scroll.set(scroll);
         }
         if previous != line_count {
             self.last_line_count.set(line_count);
@@ -2938,18 +3024,17 @@ mod tests {
     }
 
     #[test]
-    fn terminal_sync_state_from_updates_before_paint() {
+    fn terminal_paint_does_not_poll_external_state() {
         let state = State::new(TerminalState::new());
         let mut paint_state = TerminalState::new();
         paint_state.write_str("paint-sync");
         let queue = Rc::new(RefCell::new(VecDeque::from([
             None,
-            None,
             Some(paint_state.clone()),
         ])));
         let sync_queue = queue.clone();
         let runtime: RuntimeHandle<()> = RuntimeHandle::new();
-        let mut app = Runtime::new(runtime);
+        let mut app = Runtime::new(runtime.clone());
         app.reconcile(
             Terminal::new(state.clone())
                 .sync_state_from(move || sync_queue.borrow_mut().pop_front().unwrap_or(None))
@@ -2971,6 +3056,25 @@ mod tests {
             .contains("paint-sync"));
 
         let _ = app.paint(&mut text_system);
+
+        assert!(!state
+            .read()
+            .screen
+            .line(0)
+            .expect("line")
+            .plain_text()
+            .contains("paint-sync"));
+        assert_eq!(queue.borrow().len(), 1, "paint must not poll state");
+
+        let mut router = InputRouter::default();
+        router.route_event(
+            &app.tree,
+            runtime,
+            &Event::Pointer(PointerEvent::Moved {
+                pos: ailloli_ui_core::Point::new(1.0, 1.0),
+                modifiers: Modifiers::default(),
+            }),
+        );
 
         assert!(state
             .read()

@@ -1,5 +1,6 @@
 //! Right-click menus rendered through retained popup portals.
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -674,8 +675,17 @@ impl<A: 'static> ComponentNode<A> for ContextMenuComponent<A> {
         let runtime = context.runtime();
         let root_popup_id = runtime.popup_id_for_element(context.element_id()).ok();
         let internal_open = context.signal(self.default_open);
-        let last_requested_open =
-            context.signal(root_popup_id.is_some_and(|popup_id| runtime.popup_is_open(popup_id)));
+        let popup_was_open = root_popup_id.is_some_and(|popup_id| runtime.popup_is_open(popup_id));
+        let last_requested_open = context
+            .signal_with(|| Rc::new(Cell::new(popup_was_open)))
+            .read();
+        let pointer_anchor = context.signal(None);
+        let active_index = context.signal(None);
+        let submenu_parent_index = context.signal(None);
+        let submenu_active_index = context.signal(None);
+        let pressed_entry = context.signal(None);
+        let geometry = context.signal_with(|| Rc::new(Cell::new(None))).read();
+        let submenu_popup_id = context.signal_with(|| Rc::new(Cell::new(None))).read();
         let controller = ContextMenuController {
             runtime,
             open: self.open.clone(),
@@ -684,29 +694,33 @@ impl<A: 'static> ComponentNode<A> for ContextMenuComponent<A> {
             last_requested_open,
             anchor: self.anchor.clone(),
             anchor_explicit: self.anchor_explicit,
-            pointer_anchor: context.signal(None),
+            pointer_anchor,
             entries: self.entries.clone(),
             disabled: self.disabled.clone(),
             style: self.style.clone(),
-            active_index: context.signal(None),
-            submenu_parent_index: context.signal(None),
-            submenu_active_index: context.signal(None),
-            pressed_entry: context.signal(None),
-            geometry: context.signal(None),
+            active_index,
+            submenu_parent_index,
+            submenu_active_index,
+            pressed_entry,
+            geometry,
             root_popup_id,
-            submenu_popup_id: context.signal(None),
+            submenu_popup_id,
         };
         let popup_content = context_menu_root_content(controller.clone());
+        let popup = PopupPortalBridge::new_retained_with_content(
+            context,
+            menu_popup_semantics(true),
+            initially_open,
+            popup_content,
+        );
+        if !controller.sync_portal_visibility(&popup) || controller.disabled.read() {
+            popup.close(PopupDismissReason::Programmatic);
+        }
         View::node(
             ContextMenuWidget {
                 layout: self.layout,
                 controller,
-                popup: PopupPortalBridge::new_retained_with_content(
-                    context,
-                    menu_popup_semantics(true),
-                    initially_open,
-                    popup_content,
-                ),
+                popup,
             },
             children,
         )
@@ -754,8 +768,12 @@ struct ContextMenuController<A> {
     bound_open: Option<Signal<bool>>,
     /// Retained open state used by an uncontrolled menu.
     internal_open: Signal<bool>,
-    /// Last open state reconciled into the popup registry.
-    last_requested_open: Signal<bool>,
+    /// Passive last open state reconciled into the popup registry.
+    ///
+    /// This is bookkeeping rather than a render input. Keeping it outside the
+    /// reactive graph prevents an edge update from superseding the build or
+    /// layout that is currently publishing the corresponding portal state.
+    last_requested_open: Rc<Cell<bool>>,
     /// Static or reactive preferred anchor in logical window coordinates.
     anchor: Binding<Point>,
     /// Whether the caller explicitly supplied the anchor.
@@ -776,12 +794,18 @@ struct ContextMenuController<A> {
     submenu_active_index: Signal<Option<usize>>,
     /// Entry and depth captured by the active pointer press.
     pressed_entry: Signal<Option<ContextMenuPressedEntry>>,
-    /// Last resolved root/submenu rectangles and entry rows.
-    geometry: Signal<Option<ContextMenuGeometry>>,
+    /// Passive last resolved root/submenu rectangles and entry rows.
+    ///
+    /// Host geometry is refreshed by input handling. It must not invalidate
+    /// the popup while that same popup is painting its committed artifact.
+    geometry: Rc<Cell<Option<ContextMenuGeometry>>>,
     /// Popup identity reserved for root menu content.
     root_popup_id: Option<PopupId>,
-    /// Popup identity reserved for the current submenu, if any.
-    submenu_popup_id: Signal<Option<PopupId>>,
+    /// Passive popup identity reserved for the current submenu, if any.
+    ///
+    /// The retained popup component writes this during its build. Treating the
+    /// identity as reactive would continuously rebuild the owner tree.
+    submenu_popup_id: Rc<Cell<Option<PopupId>>>,
 }
 
 impl<A> Clone for ContextMenuController<A> {
@@ -854,13 +878,6 @@ impl<A: 'static> Widget<A> for ContextMenuWidget<A> {
         }
 
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        if self.controller.sync_portal_visibility(&self.popup) && !self.controller.disabled.read() {
-            // Semantic placement is published during paint; the host then
-            // resolves it against the complete presentation viewport.
-        } else {
-            self.popup.close(PopupDismissReason::Programmatic);
-        }
-
         LayoutResult {
             size,
             children: child_layouts,
@@ -933,7 +950,7 @@ impl<A: 'static> ContextMenuController<A> {
             .root_popup_id
             .is_some_and(|popup_id| self.runtime.popup_is_open(popup_id));
         if requested && !portal_open {
-            if !self.last_requested_open.read() {
+            if !self.last_requested_open.get() {
                 // A bound signal may request focus before the next layout has
                 // synchronized its rising edge into the popup portal. Keep
                 // that pending request intact; only a request already known
@@ -967,7 +984,7 @@ impl<A: 'static> ContextMenuController<A> {
     /// Applies visibility edges to the root portal and mirrors host dismissals.
     fn sync_portal_visibility(&self, popup: &PopupPortalBridge<A>) -> bool {
         let requested = self.requested_open();
-        let previously_requested = self.last_requested_open.read();
+        let previously_requested = self.last_requested_open.get();
         if previously_requested != requested {
             self.last_requested_open.set(requested);
         }
@@ -1078,7 +1095,7 @@ impl<A: 'static> ContextMenuController<A> {
 
     /// Stores changed resolved geometry without redundant signal writes.
     fn update_geometry(&self, geometry: ContextMenuGeometry) {
-        if self.geometry.read() != Some(geometry) {
+        if self.geometry.get() != Some(geometry) {
             self.geometry.set(Some(geometry));
         }
     }
@@ -1390,7 +1407,7 @@ impl<A: 'static> ContextMenuController<A> {
 
         let Some(root_geometry) = self
             .refresh_resolved_geometry()
-            .or_else(|| self.geometry.read())
+            .or_else(|| self.geometry.get())
         else {
             ctx.request_repaint();
             ctx.stop_propagation();
@@ -1406,7 +1423,7 @@ impl<A: 'static> ContextMenuController<A> {
             &item.submenu,
         );
         if self.ensure_submenu_registered(ctx) {
-            if let Some(popup_id) = self.submenu_popup_id.read() {
+            if let Some(popup_id) = self.submenu_popup_id.get() {
                 let _ = ctx.runtime().open_popup(popup_id, parent_row, submenu);
             }
         }
@@ -1440,7 +1457,7 @@ impl<A: 'static> ContextMenuController<A> {
     /// Ensures the submenu portal has the current owner, parent, and content.
     fn ensure_submenu_registered(&self, ctx: &EventCtx<A>) -> bool {
         let (Some(root_popup_id), Some(submenu_popup_id)) =
-            (self.root_popup_id, self.submenu_popup_id.read())
+            (self.root_popup_id, self.submenu_popup_id.get())
         else {
             return false;
         };
@@ -1477,7 +1494,7 @@ impl<A: 'static> ContextMenuController<A> {
         self.submenu_parent_index.set(None);
         self.submenu_active_index.set(None);
         self.pressed_entry.set(None);
-        if let Some(popup_id) = self.submenu_popup_id.read() {
+        if let Some(popup_id) = self.submenu_popup_id.get() {
             ctx.runtime().close_popup(popup_id, reason);
         }
         ctx.request_repaint();
@@ -1841,7 +1858,6 @@ impl<A: 'static> Widget<A> for RetainedContextMenuRoot<A> {
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        self.controller.refresh_resolved_geometry();
         self.controller.paint_entries(
             ctx,
             bounds,

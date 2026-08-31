@@ -1,16 +1,29 @@
 //! Single-threaded reactive values and lazy derived computations.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::rc::Rc;
 
-/// Mutable reactive cell; updates call `invalidate` to schedule redraw.
+use super::reactive::ReactiveSource;
+
+/// Mutable UI-local reactive cell with retained dependency observation.
 ///
-/// Clones alias the same [`RefCell`], invalidation callback, and revision cell.
-/// The `Rc`-based handle is neither `Send` nor `Sync`; use it on the owning UI
-/// thread. Mutations and callbacks run synchronously. A callback panic occurs
-/// after the value and revision have changed, while a mutation-closure panic can
-/// leave a partially changed value without advancing revision or invalidating.
+/// Clones alias the same [`RefCell`], source revision, historical invalidation
+/// callback, and dynamic retained consumers. A successful read during Build,
+/// Layout, or Paint records the innermost exact consumer; a read outside such a
+/// callback is passive. After a retained callback succeeds, its newly observed
+/// sources replace its previous sources as one update. This makes conditional
+/// reads follow the branch that actually committed; a panic keeps the previous
+/// observations. Unmounting a consumer removes its observations while leaving
+/// externally owned signals readable and mutable.
+///
+/// Mutations commit the value and revision, snapshot live retained consumers,
+/// release all value and subscriber borrows, notify those consumers, and then
+/// invoke the historical callback. Do not rely on ordering among retained
+/// consumers. Notification is synchronous and reentrant; if a retained consumer
+/// panics, later consumers and the historical callback are not invoked for that
+/// mutation. The `Rc`-based handle is neither `Send` nor `Sync` and must remain
+/// on its owning UI thread.
 ///
 /// # Examples
 ///
@@ -26,10 +39,8 @@ use std::rc::Rc;
 pub struct Signal<T> {
     /// Aliased mutable value.
     value: Rc<RefCell<T>>,
-    /// Synchronous callback invoked after successful mutations.
-    invalidate: Rc<dyn Fn()>,
-    /// Shared nonzero-after-first-change wrapping revision.
-    revision: Rc<Cell<u64>>,
+    /// Shared revision, historical invalidator, and retained subscribers.
+    source: Rc<ReactiveSource>,
 }
 
 /// Implements the `Clone` contract for `Signal<T>`.
@@ -38,20 +49,22 @@ impl<T> Clone for Signal<T> {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
-            invalidate: self.invalidate.clone(),
-            revision: self.revision.clone(),
+            source: self.source.clone(),
         }
     }
 }
 
 /// Provides the operations defined for `Signal<T>`.
 impl<T> Signal<T> {
-    /// Creates a signal around caller-owned storage and an invalidation callback.
+    /// Creates a signal around caller-owned storage and a historical callback.
     ///
     /// The initial revision is zero. Multiple calls using the same `value` do
     /// not share revisions unless the resulting [`Signal`] itself is cloned.
-    /// The callback may capture UI scheduling state and is invoked synchronously
-    /// after every successful mutation.
+    /// The callback is the historical, owner-provided invalidator: it may capture
+    /// UI scheduling state and runs synchronously after exact retained consumers
+    /// on every successful mutation. It remains installed even when no retained
+    /// consumer has observed the signal. Reads establish dynamic dependencies
+    /// independently of this callback.
     ///
     /// # Examples
     ///
@@ -67,12 +80,11 @@ impl<T> Signal<T> {
     pub fn new(value: Rc<RefCell<T>>, invalidate: Rc<dyn Fn()>) -> Self {
         Self {
             value,
-            invalidate,
-            revision: Rc::new(Cell::new(0)),
+            source: ReactiveSource::new(invalidate),
         }
     }
 
-    /// Creates a signal with an explicitly shared revision cell.
+    /// Creates a signal with an explicitly shared reactive source.
     ///
     /// This crate-internal constructor lets state slots recreate handles that
     /// observe one revision. Public callers obtain the same sharing behavior by
@@ -88,19 +100,11 @@ impl<T> Signal<T> {
     /// signal.set(1);
     /// assert_eq!(alias.revision(), 1);
     /// ```
-    pub(crate) fn with_revision(
-        value: Rc<RefCell<T>>,
-        invalidate: Rc<dyn Fn()>,
-        revision: Rc<Cell<u64>>,
-    ) -> Self {
-        Self {
-            value,
-            invalidate,
-            revision,
-        }
+    pub(crate) fn with_source(value: Rc<RefCell<T>>, source: Rc<ReactiveSource>) -> Self {
+        Self { value, source }
     }
 
-    /// Replaces the value, advances revision, then invokes invalidation.
+    /// Replaces the value, advances revision, then notifies all consumers.
     ///
     /// Equality is not checked, so setting an equal value still invalidates.
     /// Revisions advance from zero to one and wrap from `u64::MAX` back to one;
@@ -108,8 +112,11 @@ impl<T> Signal<T> {
     ///
     /// # Panics
     ///
-    /// Panics on a conflicting `RefCell` borrow or when the invalidation callback
+    /// Panics on a conflicting `RefCell` borrow or when a notification callback
     /// panics. In the callback case, the new value and revision remain committed.
+    /// Retained consumers run before the historical callback; a retained panic
+    /// stops the remaining notification sequence. All signal borrows are released
+    /// before callbacks run, so a callback may read or mutate the signal again.
     ///
     /// # Examples
     ///
@@ -123,11 +130,11 @@ impl<T> Signal<T> {
     /// ```
     pub fn set(&self, value: T) {
         *self.value.borrow_mut() = value;
-        self.bump_revision();
-        (self.invalidate)();
+        self.source.bump_revision();
+        self.source.notify();
     }
 
-    /// Mutates the value in place, advances revision, then invalidates.
+    /// Mutates the value in place, advances revision, then notifies consumers.
     ///
     /// The closure is called exactly once under a mutable `RefCell` borrow.
     /// This method does not detect whether the closure actually changed `T`.
@@ -135,8 +142,8 @@ impl<T> Signal<T> {
     /// # Panics
     ///
     /// Panics on conflicting borrowing. If `f` panics, its partial mutation is
-    /// retained but revision and invalidation are skipped. An invalidation panic
-    /// propagates after mutation and revision commit.
+    /// retained but revision and notification are skipped. A notification panic
+    /// propagates after mutation and revision commit, with the value borrow gone.
     ///
     /// # Examples
     ///
@@ -148,15 +155,19 @@ impl<T> Signal<T> {
     /// assert_eq!(signal.read(), vec![1, 2]);
     /// ```
     pub fn update(&self, f: impl FnOnce(&mut T)) {
-        f(&mut self.value.borrow_mut());
-        self.bump_revision();
-        (self.invalidate)();
+        {
+            let mut value = self.value.borrow_mut();
+            f(&mut value);
+        }
+        self.source.bump_revision();
+        self.source.notify();
     }
 
-    /// Returns the shared mutation revision without borrowing the value.
+    /// Returns and observes the shared mutation revision without borrowing `T`.
     ///
     /// Zero means no successful mutating method has completed. The revision is
-    /// nonzero thereafter but can repeat after `u64` wraparound.
+    /// nonzero thereafter but can repeat after `u64` wraparound. In a retained
+    /// observation scope this registers the same source as [`Self::read`].
     ///
     /// # Examples
     ///
@@ -169,13 +180,9 @@ impl<T> Signal<T> {
     /// assert_eq!(signal.revision(), 1);
     /// ```
     pub fn revision(&self) -> u64 {
-        self.revision.get()
-    }
-
-    /// Advances the revision while reserving zero as the pristine sentinel.
-    fn bump_revision(&self) {
-        self.revision
-            .set(self.revision.get().wrapping_add(1).max(1));
+        let revision = self.source.revision();
+        self.source.observe();
+        revision
     }
 }
 
@@ -212,19 +219,22 @@ impl<T: PartialEq> Signal<T> {
         }
         *current = value;
         drop(current);
-        self.bump_revision();
-        (self.invalidate)();
+        self.source.bump_revision();
+        self.source.notify();
         true
     }
 }
 
 /// Provides the operations defined for `Signal<T>`.
 impl<T: Clone> Signal<T> {
-    /// Clones and returns the current value.
+    /// Clones, observes, and returns the current value.
     ///
     /// # Panics
     ///
-    /// Panics when the value is already mutably borrowed through another alias.
+    /// A successful read is attributed only to the innermost retained build,
+    /// layout, or paint callback. Outside those callbacks it schedules no future
+    /// frame. Panics when the value is already mutably borrowed through another
+    /// alias.
     ///
     /// # Examples
     ///
@@ -236,14 +246,17 @@ impl<T: Clone> Signal<T> {
     /// assert_eq!(copy, "hello");
     /// ```
     pub fn read(&self) -> T {
-        self.value.borrow().clone()
+        let value = self.value.borrow().clone();
+        self.source.observe();
+        value
     }
 
     /// Creates a lazy derived value whose revision mirrors this signal.
     ///
     /// No value is cached: every [`Memo::read`] clones the current `T` and calls
-    /// `f`. The mapping itself does not register an additional invalidation
-    /// callback; consumers observe the originating signal's revision.
+    /// `f`. The mapping itself installs no additional historical callback.
+    /// Reading the memo transitively observes this signal in the active retained
+    /// consumer scope.
     ///
     /// # Examples
     ///
@@ -336,10 +349,12 @@ impl<T: Default> Signal<T> {
     /// assert_eq!(signal.revision(), 2);
     /// ```
     pub fn take(&self) -> T {
-        let mut value = self.value.borrow_mut();
-        let old = std::mem::take(&mut *value);
-        self.bump_revision();
-        (self.invalidate)();
+        let old = {
+            let mut value = self.value.borrow_mut();
+            std::mem::take(&mut *value)
+        };
+        self.source.bump_revision();
+        self.source.notify();
         old
     }
 }
@@ -351,6 +366,13 @@ impl<T: Default> Signal<T> {
 /// neither `Send` nor `Sync`. Revision reporting is advisory: [`Self::new`]
 /// always reports zero, while memos derived through [`Signal::map`] propagate
 /// their source revision.
+///
+/// A memo is dynamically reactive when its computation reads a [`Signal`] or
+/// [`super::State`] during a retained build, layout, or paint callback, even if
+/// its advisory revision is zero. Only sources reached by the executed branch
+/// are observed. After the surrounding callback succeeds, that conditional set
+/// atomically replaces the callback's previous observations; a panic leaves the
+/// previous set active. Reads outside retained callbacks are passive.
 ///
 /// # Examples
 ///
@@ -386,8 +408,9 @@ impl<T> Memo<T> {
     /// Creates an opaque lazy computation with constant revision zero.
     ///
     /// `read_fn` is not evaluated during construction and its outputs are not
-    /// cached. If it observes mutable external state, values can change while
-    /// [`Self::revision`] remains zero.
+    /// cached. If it reads a signal during a retained callback, that signal is
+    /// observed dynamically even though [`Self::revision`] remains zero. Other
+    /// mutable external state can change without notifying the retained runtime.
     ///
     /// # Examples
     ///
@@ -435,7 +458,9 @@ impl<T> Memo<T> {
     /// Evaluates the memo's advisory revision function.
     ///
     /// A standalone memo returns zero. Derived signal memos return the source's
-    /// nonzero-after-change wrapping revision. This call does not read the value.
+    /// nonzero-after-change wrapping revision. This call does not read the value,
+    /// but a signal-derived revision function observes that signal when invoked
+    /// during a retained callback.
     ///
     /// # Examples
     ///

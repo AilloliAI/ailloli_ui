@@ -24,4 +24,5 @@ pub use draw_cmd::{
 pub use isolated_effects::{BlendMode, IsolatedEffects};
 pub use paint_ctx::{PaintCtx, Painter};
 pub use paint_engine::paint_element;
+pub(crate) use paint_engine::paint_element_observed;
 pub use scene_graph::{Layer, LayerKind, Scene};

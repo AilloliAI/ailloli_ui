@@ -44,6 +44,16 @@ impl ShowcaseState {
             ),
         }
     }
+
+    /// Selects the OpenXR documentation topic for deterministic tests.
+    #[cfg(test)]
+    pub(crate) fn select_openxr_for_capture(&self) {
+        let selected = topic("openxr");
+        self.selected_topic.set(selected.id.to_string());
+        self.selected_topic_title.set(selected.title.to_string());
+        self.selected_topic_summary
+            .set(selected.summary.to_string());
+    }
 }
 
 /// Runs the interactive, single-window public framework showcase.
@@ -654,11 +664,10 @@ fn documentation_explorer_panel(
                             .tone(BadgeTone::Accent)
                             .variant(BadgeVariant::Outline),
                     )
-                    .child(styled_bound_text(
-                        state.selected_topic_title,
-                        24,
-                        palette.text,
-                    ))
+                    .child(
+                        styled_bound_text(state.selected_topic_title, 24, palette.text)
+                            .max_width(210.0),
+                    )
                     .child(styled_bound_text(
                         state.selected_topic_summary,
                         14,

@@ -1,6 +1,7 @@
 //! Deterministic reconciliation between a new view tree and retained elements.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use ailloli_ui_core::ElementId;
 
@@ -8,6 +9,10 @@ use std::collections::HashSet;
 
 use super::{ElementKind, ElementTree, Key};
 use crate::app::RuntimeHandle;
+use crate::component::reactive::{
+    MountGeneration, ReactiveReadScope, ReactiveReadSet, ReactiveStage,
+};
+use crate::component::view::{component_mount_identity, widget_mount_identity};
 use crate::component::{Context, View, ViewKind};
 
 #[derive(Debug, Clone)]
@@ -114,6 +119,32 @@ fn key_from_view<A>(view: &View<A>) -> Option<Key> {
     view.key_ref().map(|k| Key::String(k.to_string()))
 }
 
+/// Returns whether two declarative payloads represent the same retained type.
+///
+/// Public constructors retain the concrete implementation type in a private
+/// sidecar. Directly constructed trait-object variants fail closed: only the
+/// exact same `Rc` allocation is considered the same mount.
+fn same_mount_payload_type<A: 'static>(old: &ElementKind<A>, new: &ViewKind<A>) -> bool {
+    match (old, new) {
+        (ElementKind::Empty, ViewKind::Empty) => true,
+        (ElementKind::Widget(old), ViewKind::Widget(new)) => {
+            match (widget_mount_identity(old), widget_mount_identity(new)) {
+                (Some(old), Some(new)) => old == new,
+                (None, None) => Rc::ptr_eq(old, new),
+                _ => false,
+            }
+        }
+        (ElementKind::Component(old), ViewKind::Component(new)) => {
+            match (component_mount_identity(old), component_mount_identity(new)) {
+                (Some(old), Some(new)) => old == new,
+                (None, None) => Rc::ptr_eq(old, new),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Recursively removes descendants, scoped component state, then the node.
 fn remove_subtree<A>(tree: &mut ElementTree<A>, id: ElementId, runtime: &RuntimeHandle<A>) {
     let children = tree.get(id).map(|e| e.children.clone()).unwrap_or_default();
@@ -121,11 +152,36 @@ fn remove_subtree<A>(tree: &mut ElementTree<A>, id: ElementId, runtime: &Runtime
         remove_subtree(tree, c, runtime);
     }
 
+    runtime.unregister_element_mount(id);
     runtime
         .states()
         .borrow_mut()
         .remove_element_scoped(runtime.element_tree_id(), id);
     let _ = tree.remove_element(id);
+}
+
+/// Publishes one successful Build observation set or schedules a clean retry.
+///
+/// A callback may synchronously mutate a source that it already read. Its
+/// returned view can still be reconciled for this traversal, but its stale
+/// dependency snapshot must never replace the last authoritative graph. The
+/// deferred Build is coalesced by the runtime and never re-enters the callback.
+fn publish_build_dependencies_or_retry<A: 'static>(
+    runtime: &RuntimeHandle<A>,
+    element_id: ElementId,
+    mount_generation: MountGeneration,
+    reads: &ReactiveReadSet,
+) {
+    if reads.is_current() {
+        runtime.replace_reactive_dependencies(
+            element_id,
+            mount_generation,
+            ReactiveStage::Build,
+            reads,
+        );
+    } else {
+        runtime.request_build(element_id);
+    }
 }
 
 /// Creates a retained subtree, building each component exactly once encountered.
@@ -146,6 +202,11 @@ fn create_from_view<A: 'static>(
     };
 
     let id = tree.create_element(kind, key, parent);
+    let mount_generation = tree
+        .get(id)
+        .expect("newly-created retained element must exist")
+        .mount_generation();
+    runtime.register_element_mount(id, mount_generation);
     tree.set_view_metadata(id, flex_item, size_hint);
 
     match view.kind {
@@ -161,7 +222,10 @@ fn create_from_view<A: 'static>(
         ViewKind::Component(component) => {
             tree.record_build(id);
             let mut ctx = Context::new(id, runtime.clone());
+            let scope = ReactiveReadScope::new();
             let built = component.build(&mut ctx);
+            let reads = scope.finish();
+            publish_build_dependencies_or_retry(runtime, id, mount_generation, &reads);
             let child_id = create_from_view(tree, runtime, Some(id), built);
             tree.set_children(id, vec![child_id]);
         }
@@ -236,8 +300,25 @@ pub fn reconcile_element<A: 'static>(
     let flex_item = new_view.flex_item;
     let size_hint = new_view.size_hint;
 
-    // Update kind.
+    // Update kind and retire every dependency/state edge when the mounted
+    // payload category or concrete type changes at this stable element ID.
+    let mount_replaced = tree
+        .get(element_id)
+        .is_some_and(|element| !same_mount_payload_type(&element.kind, &new_view.kind));
+    let mut mount_generation = tree
+        .get(element_id)
+        .map(|element| element.mount_generation());
     if let Some(el) = tree.get_mut(element_id) {
+        if mount_replaced {
+            mount_generation = Some(el.advance_mount_generation());
+            el.layout = None;
+            el.layout_reactive_dependencies = Default::default();
+            el.layout_commit_reactive_dependencies = Default::default();
+            el.committed_layout_generation = None;
+            el.committed_layout_attempt = None;
+            el.layout_callback_executed = false;
+            el.committed_bounds = None;
+        }
         el.key = new_key;
         el.kind = match &new_view.kind {
             ViewKind::Empty => ElementKind::Empty,
@@ -251,7 +332,17 @@ pub fn reconcile_element<A: 'static>(
         el.layout_cache_key = None;
         el.measurement_layout = None;
         el.measurement_layout_cache_key = None;
+        el.measurement_reactive_dependencies = Default::default();
         el.commit_dirty = true;
+    }
+    if let Some(mount_generation) = mount_generation {
+        runtime.register_element_mount(element_id, mount_generation);
+    }
+    if mount_replaced {
+        runtime
+            .states()
+            .borrow_mut()
+            .remove_element_scoped(runtime.element_tree_id(), element_id);
     }
     tree.set_view_metadata(element_id, flex_item, size_hint);
 
@@ -264,7 +355,16 @@ pub fn reconcile_element<A: 'static>(
         ViewKind::Component(component) => {
             tree.record_build(element_id);
             let mut ctx = Context::new(element_id, runtime.clone());
-            vec![component.build(&mut ctx)]
+            let scope = ReactiveReadScope::new();
+            let built = component.build(&mut ctx);
+            let reads = scope.finish();
+            publish_build_dependencies_or_retry(
+                runtime,
+                element_id,
+                mount_generation.expect("reconciled retained element must have a generation"),
+                &reads,
+            );
+            vec![built]
         }
     };
 
@@ -350,12 +450,20 @@ pub fn reconcile_existing_component<A: 'static>(
         el.layout_cache_key = None;
         el.measurement_layout = None;
         el.measurement_layout_cache_key = None;
+        el.measurement_reactive_dependencies = Default::default();
         el.commit_dirty = true;
     }
 
     tree.record_build(element_id);
     let mut ctx = Context::new(element_id, runtime.clone());
+    let mount_generation = tree
+        .get(element_id)
+        .expect("existing component must remain mounted")
+        .mount_generation();
+    let scope = ReactiveReadScope::new();
     let built = component.build(&mut ctx);
+    let reads = scope.finish();
+    publish_build_dependencies_or_retry(runtime, element_id, mount_generation, &reads);
     reconcile_child_views(tree, runtime, element_id, vec![built]);
     true
 }
@@ -415,6 +523,77 @@ fn reconcile_child_views<A: 'static>(
 /// Tests implementation details.
 mod tests {
     use super::*;
+    use crate::app::Runtime;
+    use crate::component::{Component, ComponentNode, Widget};
+    use crate::layout::{LayoutChild, LayoutCtx, LayoutEngine, LayoutResult};
+    use crate::scene::PaintCtx;
+    use ailloli_ui_core::{Constraints, Rect};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct WidgetA;
+    struct WidgetB;
+
+    macro_rules! impl_empty_widget {
+        ($widget:ty, $name:literal) => {
+            impl Widget<()> for $widget {
+                fn debug_name(&self) -> &'static str {
+                    $name
+                }
+
+                fn layout(
+                    &self,
+                    _engine: &mut LayoutEngine<'_, ()>,
+                    _ctx: &mut LayoutCtx<'_>,
+                    _children: &mut [LayoutChild],
+                    _constraints: Constraints,
+                ) -> LayoutResult {
+                    LayoutResult::empty()
+                }
+
+                fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
+            }
+        };
+    }
+
+    impl_empty_widget!(WidgetA, "WidgetA");
+    impl_empty_widget!(WidgetB, "WidgetB");
+
+    struct ComponentA;
+    struct ComponentB;
+
+    impl ComponentNode<()> for ComponentA {
+        fn build(&self, _context: &mut Context<()>) -> View<()> {
+            View::empty()
+        }
+    }
+
+    impl ComponentNode<()> for ComponentB {
+        fn build(&self, _context: &mut Context<()>) -> View<()> {
+            View::empty()
+        }
+    }
+
+    fn render_u8_slot(context: &mut Context<()>, seen: Rc<RefCell<Vec<String>>>) -> View<()> {
+        let state = context.state(7_u8);
+        seen.borrow_mut().push(format!("u8:{}", state.read()));
+        View::empty()
+    }
+
+    fn render_string_slot(context: &mut Context<()>, seen: Rc<RefCell<Vec<String>>>) -> View<()> {
+        let state = context.state(String::from("fresh"));
+        seen.borrow_mut().push(format!("string:{}", state.read()));
+        View::empty()
+    }
+
+    fn render_initial_u8_slot(
+        context: &mut Context<()>,
+        (seen, initial): (Rc<RefCell<Vec<u8>>>, u8),
+    ) -> View<()> {
+        let state = context.state(initial);
+        seen.borrow_mut().push(state.read());
+        View::empty()
+    }
 
     #[test]
     /// Verifies that reconcile by index without keys.
@@ -454,5 +633,126 @@ mod tests {
         let out = reconcile_children(&old, &new_keys);
         assert_eq!(out[0].as_ref().unwrap().id, ElementId(11));
         assert_eq!(out[1].as_ref().unwrap().id, ElementId(10));
+    }
+
+    #[test]
+    fn replacing_a_widget_with_another_concrete_type_advances_the_mount_generation() {
+        let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+        let root = runtime.reconcile_view(View::leaf(WidgetA));
+        let first_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        let reconciled = runtime.reconcile_view(View::leaf(WidgetB));
+        let replacement_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        assert_eq!(reconciled, root);
+        assert!(replacement_generation.get() > first_generation.get());
+    }
+
+    #[test]
+    fn replacing_a_component_with_another_concrete_type_advances_the_mount_generation() {
+        let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+        let root = runtime.reconcile_view(View::component(ComponentA));
+        let first_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        let reconciled = runtime.reconcile_view(View::component(ComponentB));
+        let replacement_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        assert_eq!(reconciled, root);
+        assert!(replacement_generation.get() > first_generation.get());
+    }
+
+    #[test]
+    fn rebuilding_the_same_component_type_preserves_the_mount_generation() {
+        let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+        let root = runtime.reconcile_view(View::component(ComponentA));
+        let first_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        assert_eq!(
+            runtime.reconcile_view(View::component(ComponentA)),
+            root,
+            "a fresh declarative payload of the same component type must reconcile in place"
+        );
+        assert_eq!(
+            runtime.tree.get(root).unwrap().mount_generation(),
+            first_generation
+        );
+
+        runtime.runtime.request_build(root);
+        runtime.prepare_frame();
+
+        assert_eq!(
+            runtime.tree.get(root).unwrap().mount_generation(),
+            first_generation
+        );
+    }
+
+    #[test]
+    fn changing_a_function_component_render_resets_slots_and_advances_generation() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+        let root = runtime.reconcile_view(View::component(Component::new(
+            seen.clone(),
+            render_u8_slot,
+        )));
+        let first_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        let reconciled = runtime.reconcile_view(View::component(Component::new(
+            seen.clone(),
+            render_string_slot,
+        )));
+        let replacement_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        assert_eq!(reconciled, root);
+        assert!(replacement_generation.get() > first_generation.get());
+        assert_eq!(
+            seen.borrow().as_slice(),
+            ["u8:7", "string:fresh"],
+            "the second render must receive a fresh state slot of its own type"
+        );
+    }
+
+    #[test]
+    fn fresh_function_item_wrappers_preserve_the_mount_and_slots() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+        let root = runtime.reconcile_view(View::component(Component::new(
+            (seen.clone(), 7),
+            render_initial_u8_slot,
+        )));
+        let first_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        runtime.reconcile_view(View::component(Component::new(
+            (seen.clone(), 99),
+            render_initial_u8_slot,
+        )));
+
+        assert_eq!(
+            runtime.tree.get(root).unwrap().mount_generation(),
+            first_generation
+        );
+        assert_eq!(seen.borrow().as_slice(), [7, 7]);
+    }
+
+    #[test]
+    fn explicitly_erased_function_pointer_preserves_the_historical_type_mount() {
+        type Props = (Rc<RefCell<Vec<u8>>>, u8);
+        type ErasedComponent = Component<Props, ()>;
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let first: ErasedComponent =
+            Component::<Props, ()>::new((seen.clone(), 7), render_initial_u8_slot);
+        let mut runtime = Runtime::new(RuntimeHandle::<()>::new());
+        let root = runtime.reconcile_view(View::component(first));
+        let first_generation = runtime.tree.get(root).unwrap().mount_generation();
+
+        let second: ErasedComponent =
+            Component::<Props, ()>::new((seen.clone(), 99), render_initial_u8_slot);
+        runtime.reconcile_view(View::component(second));
+
+        assert_eq!(
+            runtime.tree.get(root).unwrap().mount_generation(),
+            first_generation
+        );
+        assert_eq!(seen.borrow().as_slice(), [7, 7]);
     }
 }

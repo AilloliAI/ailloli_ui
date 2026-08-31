@@ -1,6 +1,6 @@
 //! Retained runtime implementation of the public generic editor.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -15,6 +15,7 @@ use ailloli_ui_editor::{
     EditorClickZone, EditorConfig, EditorEngine, EditorFrame, EditorLanguage, EditorPaintItem,
     EditorSession,
 };
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{ComponentNode, Context, Signal, View, Widget};
 use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, InputRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutPass, LayoutResult};
@@ -24,6 +25,7 @@ use ailloli_ui_text::TextSelection;
 use ailloli_ui_text::{TextBuffer, TextEditAction, TextInputMode, TextKeymap};
 
 use super::adapter::paint_editor_frame;
+use crate::transactional_layout::TransactionalLayoutPending;
 
 /// Explicit reasons for moving the viewport after the caret changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +84,7 @@ impl<A: 'static> ComponentNode<A> for EditorComponent {
             });
             initial_session.edit.caret_byte = caret.min(len);
         }
-        let session = context.signal(initial_session);
+        let session = context.signal_with_invalidation(initial_session, Invalidation::Paint);
         let caret_scroll_intent = context.signal_with_invalidation(
             self.initial_selection
                 .is_some()
@@ -97,6 +99,8 @@ impl<A: 'static> ComponentNode<A> for EditorComponent {
             config: self.config,
             caret_follow_margin_lines: self.caret_follow_margin_lines,
             caret_scroll_intent,
+            pending_layout: RefCell::new(None),
+            committed_session_revision: Cell::new(None),
         })
     }
 }
@@ -127,6 +131,18 @@ pub(crate) struct EditorWidget {
     caret_follow_margin_lines: f32,
     /// Explicit reason, if any, for moving the viewport during the next layout.
     caret_scroll_intent: Signal<Option<CaretScrollIntent>>,
+    /// Session and intent updates owned by one exact authoritative attempt.
+    pending_layout: RefCell<Option<TransactionalLayoutPending<PendingEditorLayout>>>,
+    /// Session revision proven to match the last authoritative editor layout.
+    committed_session_revision: Cell<Option<u64>>,
+}
+
+/// Editor-owned state published only by the attempt that computed its geometry.
+struct PendingEditorLayout {
+    /// Reconciled session when layout changed its retained representation.
+    session: Option<EditorSession>,
+    /// Replacement for the retained caret intent; outer `None` means unchanged.
+    caret_scroll_intent: Option<Option<CaretScrollIntent>>,
 }
 
 /// Implements generic editor layout, painting, keyboard/IME, wheel, and selection.
@@ -144,9 +160,14 @@ impl<A: 'static> Widget<A> for EditorWidget {
     ) -> LayoutResult {
         let intrinsic = Size::new(constraints.max_w.clamp(0.0, 320.0), 180.0);
         let size = apply_layout_size(intrinsic, self.layout, constraints);
-        let mut session = self.sync_session_from_props();
+        let (mut session, mut session_changed) = self.session_for_layout();
         let layout_pass = ctx.layout_pass();
-        if let Some(intent) = self.caret_scroll_intent.read() {
+        let retained_intent = with_untracked_reads(|| self.caret_scroll_intent.read());
+        let mut next_intent = retained_intent;
+        if session_changed {
+            next_intent = Some(CaretScrollIntent::RevealNavigation);
+        }
+        if let Some(intent) = next_intent {
             if let Some(text_system) = ctx.text_system.as_deref_mut() {
                 let bounds = Rect::new(0.0, 0.0, size.w, size.h);
                 let mut frame = self
@@ -164,7 +185,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
                     CaretScrollEvaluation::Evaluated {
                         scroll_changed: true,
                     } => {
-                        self.session.set(session.clone());
+                        session_changed = true;
                         frame = self
                             .engine
                             .borrow_mut()
@@ -175,15 +196,24 @@ impl<A: 'static> Widget<A> for EditorWidget {
                             intent,
                             self.caret_follow_margin_lines,
                         ) {
-                            self.session.set(session);
+                            session_changed = true;
                         }
-                        self.caret_scroll_intent.set(None);
+                        next_intent = None;
                     }
                     CaretScrollEvaluation::Evaluated {
                         scroll_changed: false,
-                    } => self.caret_scroll_intent.set(None),
+                    } => next_intent = None,
                 }
             }
+        }
+        if layout_pass.is_committed() {
+            self.pending_layout.replace(TransactionalLayoutPending::new(
+                ctx,
+                PendingEditorLayout {
+                    session: session_changed.then_some(session),
+                    caret_scroll_intent: (next_intent != retained_intent).then_some(next_intent),
+                },
+            ));
         }
 
         LayoutResult {
@@ -198,13 +228,36 @@ impl<A: 'static> Widget<A> for EditorWidget {
         }
     }
 
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        let Some(pending) = self
+            .pending_layout
+            .borrow_mut()
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        if let Some(session) = pending.session {
+            self.session.set(session);
+        }
+        if let Some(intent) = pending.caret_scroll_intent {
+            self.caret_scroll_intent.set(intent);
+        }
+        self.committed_session_revision
+            .set(Some(with_untracked_reads(|| self.session.revision())));
+    }
+
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let focused = ctx.is_focused();
         let frame_time_ms = ctx.frame_time_ms();
         let Some(text_system) = ctx.text_system.as_deref_mut() else {
             return;
         };
-        let session = self.sync_session_from_props();
+        let session_revision = self.session.revision();
+        if self.committed_session_revision.get() != Some(session_revision) {
+            return;
+        }
+        let session = self.session.read();
         let frame = self.engine.borrow_mut().frame_at(
             &session,
             bounds,
@@ -241,7 +294,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
                 delta, modifiers, ..
             }) => {
                 let style = self.config.style;
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 let axes =
                     ailloli_ui_editor::input::scroll::axes_for_wrap_mode(session.config.wrap_mode);
                 let behavior =
@@ -254,7 +307,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
                 };
                 if session.scroll_by(Offset::new(scroll_delta.x, scroll_delta.y), metrics) {
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
@@ -264,7 +317,7 @@ impl<A: 'static> Widget<A> for EditorWidget {
                 pressed,
                 modifiers,
             }) => {
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 if *pressed {
                     if !bounds.contains(pos.x, pos.y) {
                         return;
@@ -301,17 +354,17 @@ impl<A: 'static> Widget<A> for EditorWidget {
                         }
                     }
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 } else if session.edit.drag_anchor.is_some() {
                     session.end_pointer_selection();
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
             Event::Pointer(PointerEvent::Moved { pos, .. }) => {
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 if let Some(anchor) = session.edit.drag_anchor {
                     let viewport = ailloli_ui_editor::EditorViewport::new(
                         bounds,
@@ -336,16 +389,16 @@ impl<A: 'static> Widget<A> for EditorWidget {
                     let metrics = self.engine.borrow().scroll_metrics_cached(&session, bounds);
                     session.scroll_by(delta, metrics);
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
             Event::Pointer(PointerEvent::Cancelled { .. }) => {
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 if session.edit.drag_anchor.is_some() {
                     session.end_pointer_selection();
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
@@ -366,7 +419,11 @@ impl<A: 'static> Widget<A> for EditorWidget {
     }
 
     fn ime_cursor_rect(&self, bounds: Rect, _layout: &LayoutResult) -> Option<Rect> {
-        let session = self.sync_session_from_props();
+        let revision = with_untracked_reads(|| self.session.revision());
+        if self.committed_session_revision.get() != Some(revision) {
+            return None;
+        }
+        let session = with_untracked_reads(|| self.session.read());
         Some(self.engine.borrow().caret_rect_cached(&session, bounds))
     }
 }
@@ -374,22 +431,17 @@ impl<A: 'static> Widget<A> for EditorWidget {
 /// Reconciles external props and applies editor actions/clipboard effects.
 impl EditorWidget {
     /// Reconciles external buffer/configuration props into retained session state.
-    fn sync_session_from_props(&self) -> EditorSession {
-        let mut session = self.session.read();
+    fn session_for_layout(&self) -> (EditorSession, bool) {
+        let mut session = with_untracked_reads(|| self.session.read());
         let config_changed = session.set_config(self.config);
         let buffer_changed = session.replace_buffer_if_changed(self.buffer.read());
         let changed = config_changed || buffer_changed;
-        if changed {
-            self.session.set(session.clone());
-            self.caret_scroll_intent
-                .set(Some(CaretScrollIntent::RevealNavigation));
-        }
-        session
+        (session, changed)
     }
 
     /// Applies one edit, bridges clipboard effects, and publishes buffer changes.
     fn apply_edit_action<A>(&self, ctx: &mut EventCtx<A>, action: TextEditAction) {
-        let mut session = self.sync_session_from_props();
+        let mut session = with_untracked_reads(|| self.session.read());
         let mut action = action;
         if matches!(action, TextEditAction::RequestPaste) {
             if let Some(text) = ctx.read_clipboard_text() {
@@ -408,10 +460,8 @@ impl EditorWidget {
             self.session.set(session);
             if let Some(intent) = intent {
                 self.caret_scroll_intent.set(Some(intent));
-                ctx.request_layout();
-            } else {
-                ctx.request_repaint();
             }
+            ctx.request_layout();
         }
     }
 }

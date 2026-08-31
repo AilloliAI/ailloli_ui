@@ -194,12 +194,10 @@ impl<A: 'static> Context<A> {
         let slot_index = self.next_signal_slot;
         self.next_signal_slot += 1;
 
-        let runtime = self.runtime.clone();
         let element_id = self.element_id;
-
-        let invalidate = Rc::new(move || {
-            runtime.invalidate_from(element_id, invalidation, InvalidationSource::Signal);
-        });
+        let invalidate = self
+            .runtime
+            .weak_signal_invalidator(element_id, invalidation);
 
         let element_tree_id = self.runtime.element_tree_id();
         self.runtime
@@ -415,7 +413,9 @@ impl<A: 'static> Context<A> {
     /// Registers a polled UI service and returns its lifetime guard.
     ///
     /// The callback is invoked by [`RuntimeHandle::service_ui_sources`] and
-    /// returns whether it produced work. Dropping the registration removes only
+    /// returns whether it changed component-visible state. A `true` result
+    /// requests `Build` for this exact component owner and mount generation;
+    /// `false` queues no retained work. Dropping the registration removes only
     /// that tree-scoped service. Callback panics propagate from servicing.
     ///
     /// # Examples
@@ -433,6 +433,7 @@ impl<A: 'static> Context<A> {
     /// assert!(!runtime.service_ui_sources());
     /// ```
     pub fn register_ui_service(&self, service: &Rc<dyn Fn() -> bool>) -> UiServiceRegistration<A> {
-        self.runtime.register_ui_service(service)
+        self.runtime
+            .register_owned_ui_service(self.element_id, service)
     }
 }

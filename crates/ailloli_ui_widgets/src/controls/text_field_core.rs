@@ -186,10 +186,12 @@ pub(crate) fn layout_single_line_text(
 #[allow(clippy::too_many_arguments)]
 /// Paints clipped single-line text, selection, and blinking caret.
 ///
-/// A matching layout artifact is reused; otherwise text is reshaped during
-/// paint when a text system exists. Horizontal scroll shifts the baseline.
-/// Placeholder color is used only when value and preedit are empty. Selection
-/// is hidden during preedit, and a non-positive blink cadence hides the caret.
+/// This compatibility path permits paint-time shaping for inline editors whose
+/// bounds are fixed independently of text metrics. Retained controls whose text
+/// contributes to layout use [`paint_committed_single_line_text`] instead.
+/// Horizontal scroll shifts the baseline. Placeholder color is used only when
+/// value and preedit are empty. Selection is hidden during preedit, and a
+/// non-positive blink cadence hides the caret.
 ///
 /// # Examples
 ///
@@ -215,6 +217,64 @@ pub(crate) fn paint_single_line_text(
     placeholder: Option<String>,
     style: TextInputStyle,
     focused: bool,
+) {
+    paint_single_line_text_with_policy(
+        ctx,
+        bounds,
+        layout,
+        value,
+        buffer,
+        edit,
+        placeholder,
+        style,
+        focused,
+        true,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Paints a single-line editor only from its exact committed text artifact.
+///
+/// Missing or mismatched artifacts skip the text unit rather than shaping
+/// current state into geometry committed for older content.
+pub(crate) fn paint_committed_single_line_text(
+    ctx: &mut PaintCtx<'_>,
+    bounds: Rect,
+    layout: &LayoutResult,
+    value: &Signal<String>,
+    buffer: &Signal<TextBuffer>,
+    edit: &Signal<TextEditState>,
+    placeholder: Option<String>,
+    style: TextInputStyle,
+    focused: bool,
+) {
+    paint_single_line_text_with_policy(
+        ctx,
+        bounds,
+        layout,
+        value,
+        buffer,
+        edit,
+        placeholder,
+        style,
+        focused,
+        false,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Shared implementation selecting whether fixed-geometry reshaping is allowed.
+fn paint_single_line_text_with_policy(
+    ctx: &mut PaintCtx<'_>,
+    bounds: Rect,
+    layout: &LayoutResult,
+    value: &Signal<String>,
+    buffer: &Signal<TextBuffer>,
+    edit: &Signal<TextEditState>,
+    placeholder: Option<String>,
+    style: TextInputStyle,
+    focused: bool,
+    allow_fixed_geometry_reshape: bool,
 ) {
     let buffer = read_display_buffer(value, buffer);
     let value = buffer.as_str();
@@ -243,19 +303,20 @@ pub(crate) fn paint_single_line_text(
         ..style
     };
 
-    let layout_handle = match layout.artifact.as_ref() {
-        Some(LayoutArtifact::Text(layout)) if layout.text() == text => layout.clone(),
-        _ => {
-            let Some(ts) = ctx.text_system.as_deref_mut() else {
+    let layout_handle = match text_layout_from_artifact(layout, &text).cloned() {
+        Some(layout) => layout,
+        None if allow_fixed_geometry_reshape => {
+            let Some(text_system) = ctx.text_system.as_deref_mut() else {
                 return;
             };
-            ts.layout_cached(TextLayoutParams {
+            text_system.layout_cached(TextLayoutParams {
                 text: &text,
                 style: style.text,
                 max_width: Some(bounds.w.max(0.0)),
                 wrap_mode: WrapMode::NoWrap,
             })
         }
+        None => return,
     };
 
     let content_rect = text_input_content_rect(bounds, style);
@@ -372,10 +433,12 @@ pub(crate) fn layout_multi_line_text(
 #[allow(clippy::too_many_arguments)]
 /// Paints clipped wrapped text, per-line selection, caret, and scrollbar.
 ///
-/// Both scroll axes offset the text. A vertical scrollbar is emitted only when
-/// content exceeds the viewport by more than half a logical pixel. Its painted
-/// thumb remains two pixels wide with an 18-pixel minimum, while the shared
-/// pointer target expands to 16 logical pixels inside the content viewport.
+/// Both scroll axes offset the text. The text paint unit requires an exact
+/// committed artifact and skips mismatched current content rather than shaping
+/// it during paint. A vertical scrollbar is emitted only when content exceeds
+/// the viewport by more than half a logical pixel. Its painted thumb remains
+/// two pixels wide with an 18-pixel minimum, while the shared pointer target
+/// expands to 16 logical pixels inside the content viewport.
 ///
 /// # Examples
 ///
@@ -427,19 +490,8 @@ pub(crate) fn paint_multi_line_text(
     };
 
     let content_rect = text_input_content_rect(bounds, style);
-    let layout_handle = match layout.artifact.as_ref() {
-        Some(LayoutArtifact::Text(layout)) if layout.text() == text => layout.clone(),
-        _ => {
-            let Some(ts) = ctx.text_system.as_deref_mut() else {
-                return;
-            };
-            ts.layout_cached(TextLayoutParams {
-                text: &text,
-                style: style.text,
-                max_width: Some(content_rect.w.max(0.0)),
-                wrap_mode: WrapMode::WordOrAnywhere,
-            })
-        }
+    let Some(layout_handle) = text_layout_from_artifact(layout, &text).cloned() else {
+        return;
     };
 
     let origin_x = content_rect.x - edit_state.scroll_x;
@@ -1053,6 +1105,7 @@ pub(crate) fn apply_multi_line_edit_action<A>(
     if outcome.state_changed || outcome.text_changed {
         if !reveal_caret_multi_line(&mut edit_state, bounds, layout, &text_after, style) {
             pending_reveal.set(true);
+            ctx.request_layout();
         } else if pending_reveal.read() {
             pending_reveal.set(false);
         }

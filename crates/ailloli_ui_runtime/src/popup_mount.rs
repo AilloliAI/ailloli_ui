@@ -26,7 +26,7 @@ use crate::popup::{
     ElementTreeId, PopupBackendCapabilities, PopupContent, PopupFocusPolicy, PopupId,
     PopupMountPolicy, PopupOwner,
 };
-use crate::scene::{paint_element, LayerKind, PaintCtx, Scene};
+use crate::scene::{paint_element_observed, LayerKind, PaintCtx, Scene};
 
 /// Element hit in one popup tree, including its tree namespace.
 ///
@@ -761,6 +761,7 @@ impl<A: 'static> PopupOverlayMounts<A> {
                 mount.open = false;
                 mount.bounds = None;
                 mount.focus_on_next_layout = false;
+                mount.runtime.runtime.clear_presentation_scope();
                 mount
                     .input
                     .cancel_pointer_state(&mount.runtime.tree, mount.runtime.runtime.clone());
@@ -958,8 +959,9 @@ impl<A: 'static> PopupOverlayMounts<A> {
                 frame_time_ms,
             );
             context.with_clip(bounds, |context| {
-                paint_element(
+                paint_element_observed(
                     &mount.runtime.tree,
+                    &mount.runtime.runtime,
                     context,
                     root,
                     Offset::new(bounds.x, bounds.y),
@@ -1481,4 +1483,144 @@ fn translate_pointer_sample(sample: &PointerSample, bounds: Rect) -> Option<Poin
         translated = translated.with_contact_size(contact_size).ok()?;
     }
     Some(translated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::component::{ComponentNode, Context, Signal, View};
+    use crate::popup::{PopupDismissReason, PopupRequest};
+
+    /// Popup-local component whose build observes one shared source.
+    #[derive(Clone)]
+    struct ReactivePopupContent {
+        /// Source used to prove presentation-scoped wake and cleanup.
+        value: Signal<u64>,
+    }
+
+    impl ComponentNode<()> for ReactivePopupContent {
+        fn build(&self, _context: &mut Context<()>) -> View<()> {
+            let _ = self.value.read();
+            View::empty()
+        }
+    }
+
+    #[test]
+    fn cached_popup_scope_exists_only_while_the_popup_is_open() {
+        let shared = RuntimeHandle::<()>::new();
+        let logical_window_id = LogicalWindowId::new("main");
+        let generation = PresentationGeneration::new(3);
+        let popup_id = PopupId::new(1);
+        shared
+            .register_popup(PopupRequest::new(
+                popup_id,
+                PopupOwner::new(
+                    logical_window_id.clone(),
+                    generation,
+                    ElementTreeId::new(40),
+                    ElementId(2),
+                ),
+                PopupContent::new(View::empty),
+            ))
+            .unwrap();
+        shared.open_popup_unpositioned(popup_id).unwrap();
+
+        let mut mounts = PopupOverlayMounts::new(shared.clone());
+        mounts.sync(&logical_window_id, generation);
+        let mounted = mounts.mounts.get(&popup_id).expect("mounted popup");
+        assert_eq!(
+            mounted.runtime.runtime.presentation_scope(),
+            Some((logical_window_id.clone(), generation))
+        );
+
+        shared.close_popup(popup_id, PopupDismissReason::Programmatic);
+        mounts.sync(&logical_window_id, generation);
+        let mounted = mounts.mounts.get(&popup_id).expect("cached popup");
+        assert!(!mounted.open);
+        assert!(mounted.runtime.runtime.presentation_scope().is_none());
+
+        shared.open_popup_unpositioned(popup_id).unwrap();
+        mounts.sync(&logical_window_id, generation);
+        let mounted = mounts.mounts.get(&popup_id).expect("reopened popup");
+        assert!(mounted.open);
+        assert_eq!(
+            mounted.runtime.runtime.presentation_scope(),
+            Some((logical_window_id, generation))
+        );
+    }
+
+    #[test]
+    fn cached_popup_reactive_work_wakes_only_while_presented_and_cleans_up_on_drop() {
+        let shared = RuntimeHandle::<()>::new();
+        let logical_window_id = LogicalWindowId::new("main-reactive-popup");
+        let generation = PresentationGeneration::new(5);
+        let popup_id = PopupId::new(2);
+        let value = Signal::new(Rc::new(RefCell::new(0_u64)), Rc::new(|| {}));
+        let content_value = value.clone();
+        shared
+            .register_popup(PopupRequest::new(
+                popup_id,
+                PopupOwner::new(
+                    logical_window_id.clone(),
+                    generation,
+                    ElementTreeId::new(41),
+                    ElementId(3),
+                ),
+                PopupContent::new(move || {
+                    View::component(ReactivePopupContent {
+                        value: content_value.clone(),
+                    })
+                }),
+            ))
+            .unwrap();
+        {
+            let portal = shared.popup_portal();
+            portal
+                .borrow_mut()
+                .set_bounds(popup_id, Rect::new(10.0, 12.0, 80.0, 40.0))
+                .unwrap();
+        }
+        shared.open_popup_unpositioned(popup_id).unwrap();
+
+        let mut mounts = PopupOverlayMounts::new(shared.clone());
+        mounts.sync(&logical_window_id, generation);
+        let mut text_system = TextSystem::new();
+        mounts.layout(Scale::new(1.0), &mut text_system);
+        assert_eq!(shared.reactive_dependency_consumer_count(), 1);
+
+        value.set(1);
+        let open_work = shared.pending_presentation_work();
+        assert_eq!(open_work.len(), 1);
+        assert_eq!(open_work[0].logical_window_id(), &logical_window_id);
+        assert_eq!(open_work[0].presentation_generation(), generation);
+        mounts.layout(Scale::new(1.0), &mut text_system);
+
+        shared.close_popup(popup_id, PopupDismissReason::Programmatic);
+        mounts.sync(&logical_window_id, generation);
+        value.set(2);
+        assert!(
+            shared.pending_presentation_work().is_empty(),
+            "a cached closed popup has no active presentation to wake"
+        );
+
+        shared.open_popup_unpositioned(popup_id).unwrap();
+        mounts.sync(&logical_window_id, generation);
+        let reopened_work = shared.pending_presentation_work();
+        assert_eq!(reopened_work.len(), 1);
+        assert_eq!(reopened_work[0].logical_window_id(), &logical_window_id);
+        assert_eq!(reopened_work[0].presentation_generation(), generation);
+        mounts.layout(Scale::new(1.0), &mut text_system);
+
+        drop(mounts);
+        assert_eq!(
+            shared.reactive_dependency_consumer_count(),
+            0,
+            "dropping popup mounts must remove every popup-tree subscription"
+        );
+        value.set(3);
+        assert!(shared.pending_presentation_work().is_empty());
+    }
 }

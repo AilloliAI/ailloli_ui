@@ -4,6 +4,7 @@
 //! remains fixed while the body scrolls on both axes; disabled rows are skipped
 //! by pointer and keyboard selection.
 
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ use ailloli_ui_core::style::{
     Border, BoxShadow, FlexItemStyle, LayoutSizeHint, LayoutStyle, Length, Radius,
 };
 use ailloli_ui_core::{Color, FontId, IconId, Offset, TextStyle, Theme};
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Memo, Signal, View, Widget,
 };
@@ -32,6 +34,7 @@ use ailloli_ui_text::{PreparedTextLayout, TextLayoutParams, TextSystem, WrapMode
 
 use super::badge::BadgeTone;
 use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
+use crate::transactional_layout::TransactionalLayoutPending;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Density preset used to derive [`TableViewStyle`].
@@ -1244,12 +1247,13 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TableViewC
             style: self.style.clone(),
             max_body_height: self.max_body_height,
             zebra: self.zebra,
-            scroll: context.signal(ScrollState::new()),
+            scroll: context.signal_with_invalidation(ScrollState::new(), Invalidation::Paint),
             active_index: context.signal(None),
-            metrics: context.signal(TableMetrics::default()),
+            metrics: context.signal_with_invalidation(TableMetrics::default(), Invalidation::Paint),
             behavior: ScrollBehavior::new(ScrollAxes::BOTH),
             scrollbar_interaction: context
                 .signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint),
+            pending_layout: Cell::new(None),
         })
     }
 }
@@ -1333,6 +1337,19 @@ struct TableViewWidget<T, A> {
     behavior: ScrollBehavior,
     /// Retained hover and captured overlay-scrollbar gesture.
     scrollbar_interaction: Signal<ScrollbarInteraction>,
+    /// Geometry-derived state owned by one exact authoritative attempt.
+    pending_layout: Cell<Option<TransactionalLayoutPending<PendingTableLayout>>>,
+}
+
+/// State published only by the successful attempt that computed it.
+#[derive(Clone, Copy)]
+struct PendingTableLayout {
+    /// Final authoritative body metrics.
+    metrics: Option<TableMetrics>,
+    /// Final authoritative clamp.
+    scroll: Option<ScrollState>,
+    /// Geometry-dependent gesture cleanup.
+    scrollbar_interaction: Option<ScrollbarInteraction>,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T, A> {
@@ -1368,25 +1385,33 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
             viewport: Size::new(size.w, body_h),
             content: Size::new(final_content_width, body_content_height),
         };
-        self.metrics.set(metrics);
-        let out = self.scroll.read().clamp_to(
-            ScrollMetrics::new(metrics.viewport, metrics.content),
-            ScrollAxes::BOTH,
-        );
-        if out.changed {
-            self.scroll.set(out.state());
-        }
+        let retained_scroll = with_untracked_reads(|| self.scroll.read());
+        let scroll = retained_scroll
+            .clamp_to(
+                ScrollMetrics::new(metrics.viewport, metrics.content),
+                ScrollAxes::BOTH,
+            )
+            .state();
 
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        let geometries = self.scrollbar_geometries(paint_bounds, metrics);
+        let geometries = self.scrollbar_geometries_for_state(paint_bounds, metrics, scroll);
         let interactive_geometries = if self.disabled.read() {
             Vec::new()
         } else {
             geometries
         };
-        let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(ctx.layout_pass(), &interactive_geometries) {
-            self.scrollbar_interaction.set(interaction);
+        let mut interaction = with_untracked_reads(|| self.scrollbar_interaction.read());
+        let interaction_changed = interaction.reconcile(ctx.layout_pass(), &interactive_geometries);
+        if ctx.layout_pass().is_committed() {
+            let retained_metrics = with_untracked_reads(|| self.metrics.read());
+            self.pending_layout.set(TransactionalLayoutPending::new(
+                ctx,
+                PendingTableLayout {
+                    metrics: (retained_metrics != metrics).then_some(metrics),
+                    scroll: (retained_scroll != scroll).then_some(scroll),
+                    scrollbar_interaction: interaction_changed.then_some(interaction),
+                },
+            ));
         }
         LayoutResult {
             size,
@@ -1400,6 +1425,26 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
             clip: None,
             is_window_root_clip: false,
             artifact: None,
+        }
+    }
+
+    /// Publishes geometry-derived internal state only after authoritative commit.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        let Some(pending) = self
+            .pending_layout
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        if let Some(metrics) = pending.metrics {
+            self.metrics.set(metrics);
+        }
+        if let Some(scroll) = pending.scroll {
+            self.scroll.set(scroll);
+        }
+        if let Some(interaction) = pending.scrollbar_interaction {
+            self.scrollbar_interaction.set(interaction);
         }
     }
 
@@ -1538,6 +1583,16 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TableViewWidget<T
 impl<T: Clone + PartialEq + 'static, A: 'static> TableViewWidget<T, A> {
     /// Resolves body-overlay bars for each overflowing axis.
     fn scrollbar_geometries(&self, bounds: Rect, table: TableMetrics) -> Vec<ScrollbarGeometry> {
+        self.scrollbar_geometries_for_state(bounds, table, self.scroll.read())
+    }
+
+    /// Resolves body-overlay bars for explicit transaction-local scroll state.
+    fn scrollbar_geometries_for_state(
+        &self,
+        bounds: Rect,
+        table: TableMetrics,
+        scroll: ScrollState,
+    ) -> Vec<ScrollbarGeometry> {
         let body = self.body_rect(bounds);
         let metrics = ScrollMetrics::new(table.viewport, table.content);
         let max = metrics.max_offset();
@@ -1546,30 +1601,22 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TableViewWidget<T, A> {
         let mut geometries = Vec::with_capacity(2);
         if show_vertical {
             let reserve = if show_horizontal { 9.0 } else { 0.0 };
-            if let Some(geometry) = ScrollbarGeometrySpec::new(
-                ScrollbarAxis::Vertical,
-                body,
-                metrics,
-                self.scroll.read(),
-            )
-            .with_paint_metrics(6.0, 24.0, 3.0)
-            .with_end_reserve(reserve)
-            .resolve()
+            if let Some(geometry) =
+                ScrollbarGeometrySpec::new(ScrollbarAxis::Vertical, body, metrics, scroll)
+                    .with_paint_metrics(6.0, 24.0, 3.0)
+                    .with_end_reserve(reserve)
+                    .resolve()
             {
                 geometries.push(geometry);
             }
         }
         if show_horizontal {
             let reserve = if show_vertical { 9.0 } else { 0.0 };
-            if let Some(geometry) = ScrollbarGeometrySpec::new(
-                ScrollbarAxis::Horizontal,
-                body,
-                metrics,
-                self.scroll.read(),
-            )
-            .with_paint_metrics(6.0, 24.0, 3.0)
-            .with_end_reserve(reserve)
-            .resolve()
+            if let Some(geometry) =
+                ScrollbarGeometrySpec::new(ScrollbarAxis::Horizontal, body, metrics, scroll)
+                    .with_paint_metrics(6.0, 24.0, 3.0)
+                    .with_end_reserve(reserve)
+                    .resolve()
             {
                 geometries.push(geometry);
             }

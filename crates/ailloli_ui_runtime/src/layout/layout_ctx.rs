@@ -6,14 +6,26 @@ use ailloli_ui_core::geometry::{Constraints, Rect};
 use ailloli_ui_core::ids::ElementId;
 use ailloli_ui_core::math::Scale;
 use ailloli_ui_text::TextSystem;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
+use super::layout_attempt::{LayoutAttempt, LayoutAttemptToken};
 use super::layout_engine::LayoutEngine;
 #[cfg(feature = "devtools")]
 use super::layout_result::LayoutDebugInfo;
 use super::layout_result::LayoutResult;
+use crate::component::reactive::{ReactiveDependencyBatchResult, ReactiveDependencyUpdate};
 
-#[cfg(feature = "devtools")]
-use std::collections::HashMap;
+/// Erased runtime callback used to atomically publish committed layout reads.
+type ReactiveLayoutPublisher =
+    Rc<dyn Fn(&[ReactiveDependencyUpdate]) -> ReactiveDependencyBatchResult>;
+
+/// Erased runtime callback used when a layout attempt observes stale input.
+type ReactiveLayoutRetry = Rc<dyn Fn(ElementId)>;
+
+/// Erased runtime callback used when a whole staging overlay is discarded.
+type ReactiveLayoutAbandon = Rc<dyn Fn()>;
 
 /// Authority of the geometry produced by the current layout traversal.
 ///
@@ -86,9 +98,73 @@ pub struct LayoutContext<'a> {
     virtual_viewport: Option<VirtualViewport>,
     /// Current geometry authority, inherited monotonically by descendants.
     layout_pass: LayoutPass,
+    /// Explicit speculative branches adopted by the current authoritative attempt.
+    measure_branches: Rc<RefCell<MeasureBranchState>>,
+    /// Innermost explicit speculative branch, if one is active.
+    current_measure_branch: Option<u64>,
+    /// Runtime-owned writes staged by the current outer layout call.
+    layout_attempt: Option<LayoutAttempt>,
+    /// Exact successful attempt scoped only while post-layout hooks execute.
+    committed_layout_attempt: Option<LayoutAttemptToken>,
+    /// Optional retained dependency publisher installed by `Runtime`.
+    reactive_layout_publisher: Option<ReactiveLayoutPublisher>,
+    /// Optional targeted retry scheduler installed by `Runtime`.
+    reactive_layout_retry: Option<ReactiveLayoutRetry>,
+    /// Optional internal diagnostic callback for discarded staging overlays.
+    reactive_layout_abandon: Option<ReactiveLayoutAbandon>,
     #[cfg(feature = "devtools")]
     /// Latest developer-tooling layout record for each element in this context.
     pub debug_layouts: HashMap<ElementId, LayoutDebugInfo>,
+}
+
+/// Bookkeeping shared with explicit measurement tokens.
+#[derive(Default)]
+struct MeasureBranchState {
+    /// Last allocated nonzero branch identity.
+    next_id: u64,
+    /// Direct parent of every branch allocated by the active attempt.
+    parents: HashMap<u64, Option<u64>>,
+    /// Branches explicitly accepted by their owner widget.
+    adopted: HashSet<u64>,
+}
+
+/// Result of an explicit speculative layout branch.
+///
+/// Dropping this token abandons every measurement performed by the branch.
+/// Call [`Self::adopt`] only when the result contributes to the authoritative
+/// geometry being returned by the widget. Existing widgets that use
+/// [`LayoutCtx::with_layout_pass`] retain their historical auto-adopt behavior.
+#[doc(hidden)]
+#[must_use = "dropping a measurement branch abandons its reactive dependencies"]
+pub struct LayoutMeasurement<T> {
+    /// Branch result, taken exactly once by `adopt`.
+    value: Option<T>,
+    /// Nonzero identity recorded by staged measurement entries.
+    branch_id: u64,
+    /// Shared acceptance set owned by the layout context.
+    state: Rc<RefCell<MeasureBranchState>>,
+}
+
+impl<T> LayoutMeasurement<T> {
+    /// Borrows the speculative result before deciding whether to adopt it.
+    #[doc(hidden)]
+    pub fn result(&self) -> &T {
+        self.value
+            .as_ref()
+            .expect("layout measurement result was already adopted")
+    }
+
+    /// Accepts this branch and returns its result.
+    ///
+    /// The authoritative layout attempt will publish the branch's reactive
+    /// reads only if that complete attempt also succeeds and remains current.
+    #[doc(hidden)]
+    pub fn adopt(mut self) -> T {
+        self.state.borrow_mut().adopted.insert(self.branch_id);
+        self.value
+            .take()
+            .expect("layout measurement result was already adopted")
+    }
 }
 
 /// Viewport made available to widgets whose content is larger than the
@@ -167,6 +243,13 @@ impl<'a> LayoutContext<'a> {
             text_system: None,
             virtual_viewport: None,
             layout_pass: LayoutPass::Commit,
+            measure_branches: Rc::new(RefCell::new(MeasureBranchState::default())),
+            current_measure_branch: None,
+            layout_attempt: None,
+            committed_layout_attempt: None,
+            reactive_layout_publisher: None,
+            reactive_layout_retry: None,
+            reactive_layout_abandon: None,
             #[cfg(feature = "devtools")]
             debug_layouts: HashMap::new(),
         }
@@ -194,6 +277,13 @@ impl<'a> LayoutContext<'a> {
             text_system: Some(text_system),
             virtual_viewport: None,
             layout_pass: LayoutPass::Commit,
+            measure_branches: Rc::new(RefCell::new(MeasureBranchState::default())),
+            current_measure_branch: None,
+            layout_attempt: None,
+            committed_layout_attempt: None,
+            reactive_layout_publisher: None,
+            reactive_layout_retry: None,
+            reactive_layout_abandon: None,
             #[cfg(feature = "devtools")]
             debug_layouts: HashMap::new(),
         }
@@ -227,6 +317,19 @@ impl<'a> LayoutContext<'a> {
         self.layout_pass
     }
 
+    /// Returns the exact outer attempt owning the current layout callback.
+    ///
+    /// During `layout`, this identifies the active staging overlay. During
+    /// `layout_committed`, it identifies the validated overlay whose geometry
+    /// has just been published. Outside those callbacks it returns `None`.
+    #[doc(hidden)]
+    pub fn layout_attempt_token(&self) -> Option<LayoutAttemptToken> {
+        self.layout_attempt
+            .as_ref()
+            .map(LayoutAttempt::token)
+            .or(self.committed_layout_attempt)
+    }
+
     /// Runs a descendant traversal under a sticky requested layout pass.
     ///
     /// Requesting [`LayoutPass::Commit`] beneath an existing measurement keeps
@@ -255,9 +358,169 @@ impl<'a> LayoutContext<'a> {
     ) -> R {
         let previous = self.layout_pass;
         self.layout_pass = previous.descend(requested);
-        let result = layout(self);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| layout(self)));
         self.layout_pass = previous;
-        result
+        match result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// Runs an explicitly adoptable speculative measurement branch.
+    ///
+    /// The returned token abandons the branch by default. This hidden
+    /// cross-crate API lets layout widgets distinguish probes that contribute
+    /// to their final allocation from alternatives that were only evaluated.
+    #[doc(hidden)]
+    pub fn measure_branch<R>(
+        &mut self,
+        layout: impl FnOnce(&mut Self) -> R,
+    ) -> LayoutMeasurement<R> {
+        let parent_branch = self.current_measure_branch;
+        let branch_id = {
+            let mut state = self.measure_branches.borrow_mut();
+            state.next_id = state
+                .next_id
+                .checked_add(1)
+                .expect("layout measurement branch identity exhausted");
+            let branch_id = state.next_id;
+            state.parents.insert(branch_id, parent_branch);
+            branch_id
+        };
+        let previous_pass = self.layout_pass;
+        self.layout_pass = previous_pass.descend(LayoutPass::Measure);
+        self.current_measure_branch = Some(branch_id);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| layout(self)));
+        self.current_measure_branch = parent_branch;
+        self.layout_pass = previous_pass;
+        match result {
+            Ok(value) => LayoutMeasurement {
+                value: Some(value),
+                branch_id,
+                state: self.measure_branches.clone(),
+            },
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// Returns the explicit branch currently owning speculative work.
+    pub(crate) const fn current_measure_branch(&self) -> Option<u64> {
+        self.current_measure_branch
+    }
+
+    /// Returns whether a branch and every enclosing explicit branch were accepted.
+    pub(crate) fn measure_branch_is_adopted(&self, branch_id: u64) -> bool {
+        let state = self.measure_branches.borrow();
+        let mut branch = Some(branch_id);
+        while let Some(branch_id) = branch {
+            if !state.adopted.contains(&branch_id) {
+                return false;
+            }
+            let Some(parent) = state.parents.get(&branch_id) else {
+                return false;
+            };
+            branch = *parent;
+        }
+        true
+    }
+
+    /// Clears adoption records after the outer authoritative attempt finishes.
+    pub(crate) fn clear_measure_branch_adoptions(&mut self) {
+        let mut state = self.measure_branches.borrow_mut();
+        state.adopted.clear();
+        state.parents.clear();
+    }
+
+    /// Returns whether an outer layout call currently owns the staging overlay.
+    pub(crate) const fn has_layout_attempt(&self) -> bool {
+        self.layout_attempt.is_some()
+    }
+
+    /// Starts an empty staging overlay for one outer layout call.
+    pub(crate) fn begin_layout_attempt(&mut self) {
+        assert!(
+            self.layout_attempt.is_none(),
+            "nested layout attempts must reuse the active overlay"
+        );
+        self.clear_measure_branch_adoptions();
+        self.layout_attempt = Some(LayoutAttempt::new());
+    }
+
+    /// Borrows the active staging overlay.
+    pub(crate) fn layout_attempt(&self) -> &LayoutAttempt {
+        self.layout_attempt
+            .as_ref()
+            .expect("layout attempt is not active")
+    }
+
+    /// Mutably borrows the active staging overlay.
+    pub(crate) fn layout_attempt_mut(&mut self) -> &mut LayoutAttempt {
+        self.layout_attempt
+            .as_mut()
+            .expect("layout attempt is not active")
+    }
+
+    /// Removes the active overlay for validation, commit, or abandonment.
+    pub(crate) fn take_layout_attempt(&mut self) -> LayoutAttempt {
+        self.layout_attempt
+            .take()
+            .expect("layout attempt is not active")
+    }
+
+    /// Scopes one validated attempt identity to a post-layout hook.
+    pub(crate) fn with_committed_layout_attempt<R>(
+        &mut self,
+        token: Option<LayoutAttemptToken>,
+        callback: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = std::mem::replace(&mut self.committed_layout_attempt, token);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(self)));
+        self.committed_layout_attempt = previous;
+        match result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// Installs runtime-owned dependency publication and retry callbacks.
+    pub(crate) fn set_reactive_layout_callbacks(
+        &mut self,
+        publisher: ReactiveLayoutPublisher,
+        retry: ReactiveLayoutRetry,
+    ) {
+        self.reactive_layout_publisher = Some(publisher);
+        self.reactive_layout_retry = Some(retry);
+    }
+
+    /// Installs the runtime-owned discarded-attempt diagnostic callback.
+    pub(crate) fn set_reactive_layout_abandon_callback(&mut self, abandon: ReactiveLayoutAbandon) {
+        self.reactive_layout_abandon = Some(abandon);
+    }
+
+    /// Publishes a prevalidated batch when this context belongs to a runtime.
+    pub(crate) fn publish_reactive_layout(
+        &self,
+        updates: &[ReactiveDependencyUpdate],
+    ) -> ReactiveDependencyBatchResult {
+        if let Some(publisher) = &self.reactive_layout_publisher {
+            publisher(updates)
+        } else {
+            ReactiveDependencyBatchResult::Accepted { renewed: false }
+        }
+    }
+
+    /// Schedules another targeted layout after a superseded attempt.
+    pub(crate) fn request_reactive_layout_retry(&self, element_id: ElementId) {
+        if let Some(retry) = &self.reactive_layout_retry {
+            retry(element_id);
+        }
+    }
+
+    /// Records one outer staging overlay discarded before publication.
+    pub(crate) fn record_reactive_layout_abandon(&self) {
+        if let Some(abandon) = &self.reactive_layout_abandon {
+            abandon();
+        }
     }
 
     /// Replaces the current content viewport and returns the previous value.

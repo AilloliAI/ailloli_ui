@@ -1,6 +1,6 @@
 //! Retained runtime implementation of the public document-aware code editor.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -16,6 +16,7 @@ use ailloli_ui_editor::{
     CodeFileSummary, Diagnostic, Document, EditorClickZone, EditorEngine, EditorHitZone,
     EditorLanguage, EditorPaintItem, EditorViewport, FoldRegion, SearchQuery,
 };
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{ComponentNode, Context, Signal, View, Widget};
 use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, FocusPolicy, InputRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
@@ -30,6 +31,7 @@ use super::widget::{
     pointer_selection_scroll_delta, CaretScrollEvaluation, CaretScrollIntent,
 };
 use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
+use crate::transactional_layout::TransactionalLayoutPending;
 
 /// Builder snapshot that creates initial code-editor session and engine state.
 ///
@@ -106,7 +108,7 @@ impl<A: 'static> ComponentNode<A> for CodeEditorComponent<A> {
         if self.config.features.folding {
             apply_fold_regions_prop(&mut initial_session, self.fold_regions.clone());
         }
-        let session = context.signal(initial_session);
+        let session = context.signal_with_invalidation(initial_session, Invalidation::Paint);
         let caret_scroll_intent = context.signal_with_invalidation(
             (self.initial_selection.is_some() && self.initial_scroll.is_none())
                 .then_some(CaretScrollIntent::RevealNavigation),
@@ -132,6 +134,8 @@ impl<A: 'static> ComponentNode<A> for CodeEditorComponent<A> {
             caret_follow_margin_lines: self.caret_follow_margin_lines,
             caret_scroll_intent,
             scrollbar_interaction,
+            pending_layout: RefCell::new(None),
+            committed_session_revision: Cell::new(None),
         })
     }
 }
@@ -183,6 +187,20 @@ pub(crate) struct CodeEditorWidget<A> {
     caret_scroll_intent: Signal<Option<CaretScrollIntent>>,
     /// Retained hover and captured scrollbar gesture.
     scrollbar_interaction: Signal<ScrollbarInteraction>,
+    /// Session and gesture updates owned by one exact authoritative attempt.
+    pending_layout: RefCell<Option<TransactionalLayoutPending<PendingCodeEditorLayout>>>,
+    /// Session revision proven to match the last authoritative editor layout.
+    committed_session_revision: Cell<Option<u64>>,
+}
+
+/// Code-editor state published only by the attempt that computed its geometry.
+struct PendingCodeEditorLayout {
+    /// Reconciled session when layout changed its retained representation.
+    session: Option<CodeEditorSession>,
+    /// Replacement for the retained caret intent; outer `None` means unchanged.
+    caret_scroll_intent: Option<Option<CaretScrollIntent>>,
+    /// Geometry-dependent scrollbar gesture cleanup.
+    scrollbar_interaction: Option<ScrollbarInteraction>,
 }
 
 /// Implements editor layout, paint, keyboard/IME, wheel, selection, and fold input.
@@ -201,15 +219,21 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
         let intrinsic = Size::new(constraints.max_w.clamp(0.0, 420.0), 220.0);
         let size = apply_layout_size(intrinsic, self.layout, constraints);
         let bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        let mut session = self.sync_session_from_props();
+        let (mut session, mut session_changed, reveal_navigation) = self.session_for_layout();
         let mut geometries = Vec::new();
         let layout_pass = ctx.layout_pass();
+        let retained_intent = with_untracked_reads(|| self.caret_scroll_intent.read());
+        let mut next_intent = if reveal_navigation {
+            Some(CaretScrollIntent::RevealNavigation)
+        } else {
+            retained_intent
+        };
         if let Some(text_system) = ctx.text_system.as_deref_mut() {
             let mut frame =
                 self.engine
                     .borrow_mut()
                     .code_frame(&session, bounds, true, text_system);
-            if let Some(intent) = self.caret_scroll_intent.read() {
+            if let Some(intent) = next_intent {
                 match evaluate_caret_scroll_intent(
                     layout_pass,
                     &mut session.editor,
@@ -221,7 +245,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                     CaretScrollEvaluation::Evaluated {
                         scroll_changed: true,
                     } => {
-                        self.session.set(session.clone());
+                        session_changed = true;
                         frame = self.engine.borrow_mut().code_frame(
                             &session,
                             bounds,
@@ -234,7 +258,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                             intent,
                             self.caret_follow_margin_lines,
                         ) {
-                            self.session.set(session.clone());
+                            session_changed = true;
                             frame = self.engine.borrow_mut().code_frame(
                                 &session,
                                 bounds,
@@ -242,11 +266,11 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                                 text_system,
                             );
                         }
-                        self.caret_scroll_intent.set(None);
+                        next_intent = None;
                     }
                     CaretScrollEvaluation::Evaluated {
                         scroll_changed: false,
-                    } => self.caret_scroll_intent.set(None),
+                    } => next_intent = None,
                 }
             }
             geometries = code_scrollbar_geometries(
@@ -255,9 +279,17 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                 self.config.scrollbars,
             );
         }
-        let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(layout_pass, &geometries) {
-            self.scrollbar_interaction.set(interaction);
+        let mut interaction = with_untracked_reads(|| self.scrollbar_interaction.read());
+        let interaction_changed = interaction.reconcile(layout_pass, &geometries);
+        if layout_pass.is_committed() {
+            self.pending_layout.replace(TransactionalLayoutPending::new(
+                ctx,
+                PendingCodeEditorLayout {
+                    session: session_changed.then_some(session),
+                    caret_scroll_intent: (next_intent != retained_intent).then_some(next_intent),
+                    scrollbar_interaction: interaction_changed.then_some(interaction),
+                },
+            ));
         }
 
         LayoutResult {
@@ -275,13 +307,39 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
         }
     }
 
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        let Some(pending) = self
+            .pending_layout
+            .borrow_mut()
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        if let Some(session) = pending.session {
+            self.session.set(session);
+        }
+        if let Some(intent) = pending.caret_scroll_intent {
+            self.caret_scroll_intent.set(intent);
+        }
+        if let Some(interaction) = pending.scrollbar_interaction {
+            self.scrollbar_interaction.set(interaction);
+        }
+        self.committed_session_revision
+            .set(Some(with_untracked_reads(|| self.session.revision())));
+    }
+
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         let focused = ctx.is_focused();
         let frame_time_ms = ctx.frame_time_ms();
         let Some(text_system) = ctx.text_system.as_deref_mut() else {
             return;
         };
-        let session = self.sync_session_from_props();
+        let session_revision = self.session.revision();
+        if self.committed_session_revision.get() != Some(session_revision) {
+            return;
+        }
+        let session = self.session.read();
         let mut frame = self.engine.borrow_mut().code_frame_at(
             &session,
             bounds,
@@ -312,7 +370,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
         if matches!(event, Event::Pointer(_)) {
-            let mut session = self.sync_session_from_props();
+            let mut session = with_untracked_reads(|| self.session.read());
             let metrics = self
                 .engine
                 .borrow()
@@ -339,11 +397,14 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                         Offset::new(0.0, target - session.editor.edit.scroll_y)
                     }
                 };
-                if session.editor.scroll_by(delta, metrics) {
+                let scrolled = session.editor.scroll_by(delta, metrics);
+                if scrolled {
                     self.session.set(session);
                 }
             }
-            if response.repaint {
+            if response.scroll_to.is_some() {
+                ctx.request_layout();
+            } else if response.repaint {
                 ctx.request_repaint();
             }
             if response.consumed {
@@ -377,7 +438,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                 delta, modifiers, ..
             }) => {
                 let style = self.config.editor.style;
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 let axes = ailloli_ui_editor::input::scroll::axes_for_wrap_mode(
                     session.editor.config.wrap_mode,
                 );
@@ -397,7 +458,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                     .scroll_by(Offset::new(scroll_delta.x, scroll_delta.y), metrics)
                 {
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
@@ -407,7 +468,7 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                 pressed,
                 modifiers,
             }) => {
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 if *pressed {
                     if !bounds.contains(pos.x, pos.y) {
                         return;
@@ -488,17 +549,17 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                         EditorHitZone::Outside => {}
                     }
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 } else if session.editor.edit.drag_anchor.is_some() {
                     session.editor.end_pointer_selection();
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
             Event::Pointer(PointerEvent::Moved { pos, .. }) => {
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 if let Some(anchor) = session.editor.edit.drag_anchor {
                     let viewport = EditorViewport::with_gutter(
                         bounds,
@@ -527,16 +588,16 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
                         .code_scroll_metrics_cached(&session, bounds);
                     session.editor.scroll_by(delta, metrics);
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
             Event::Pointer(PointerEvent::Cancelled { .. }) => {
-                let mut session = self.sync_session_from_props();
+                let mut session = with_untracked_reads(|| self.session.read());
                 if session.editor.edit.drag_anchor.is_some() {
                     session.editor.end_pointer_selection();
                     self.session.set(session);
-                    ctx.request_repaint();
+                    ctx.request_layout();
                     ctx.stop_propagation();
                 }
             }
@@ -557,7 +618,11 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
     }
 
     fn ime_cursor_rect(&self, bounds: Rect, _layout: &LayoutResult) -> Option<Rect> {
-        let session = self.sync_session_from_props();
+        let revision = with_untracked_reads(|| self.session.revision());
+        if self.committed_session_revision.get() != Some(revision) {
+            return None;
+        }
+        let session = with_untracked_reads(|| self.session.read());
         Some(
             self.engine
                 .borrow()
@@ -569,8 +634,8 @@ impl<A: 'static> Widget<A> for CodeEditorWidget<A> {
 /// Prop reconciliation and edit-to-document synchronization helpers.
 impl<A: 'static> CodeEditorWidget<A> {
     /// Reconciles external document/configuration props into retained session state.
-    fn sync_session_from_props(&self) -> CodeEditorSession {
-        let mut session = self.session.read();
+    fn session_for_layout(&self) -> (CodeEditorSession, bool, bool) {
+        let mut session = with_untracked_reads(|| self.session.read());
         let document = document_with_language(self.document.read(), self.language);
         let mut changed = false;
         let mut reveal_navigation = false;
@@ -629,19 +694,12 @@ impl<A: 'static> CodeEditorWidget<A> {
         }
         changed |= session.fold_regions != before_folds;
 
-        if changed {
-            self.session.set(session.clone());
-            if reveal_navigation {
-                self.caret_scroll_intent
-                    .set(Some(CaretScrollIntent::RevealNavigation));
-            }
-        }
-        session
+        (session, changed, reveal_navigation)
     }
 
     /// Applies one edit, bridges clipboard effects, and publishes document changes.
     fn apply_edit_action(&self, ctx: &mut EventCtx<A>, action: TextEditAction) {
-        let mut session = self.sync_session_from_props();
+        let mut session = with_untracked_reads(|| self.session.read());
         let mut action = action;
         if matches!(action, TextEditAction::RequestPaste) {
             if let Some(text) = ctx.read_clipboard_text() {
@@ -667,10 +725,8 @@ impl<A: 'static> CodeEditorWidget<A> {
             self.session.set(session);
             if let Some(intent) = intent {
                 self.caret_scroll_intent.set(Some(intent));
-                ctx.request_layout();
-            } else {
-                ctx.request_repaint();
             }
+            ctx.request_layout();
         }
     }
 }

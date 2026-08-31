@@ -1,6 +1,6 @@
 //! Indexed retained element tree and its mutation/query operations.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint};
 use ailloli_ui_core::{ElementId, WidgetId};
@@ -59,9 +59,9 @@ pub enum ViewKeyResolveError {
 /// assert!(tree.get(root).unwrap().dirty.layout);
 /// ```
 pub struct ElementTree<A> {
-    /// Last allocated wrapping element identifier; zero is never emitted.
+    /// Last allocated monotone element identifier; zero is never emitted.
     next_element: u64,
-    /// Last allocated wrapping widget identifier; zero is never emitted.
+    /// Last allocated monotone widget identifier; zero is never emitted.
     next_widget: u64,
     /// Retained elements indexed by stable element identity.
     elements: HashMap<ElementId, Element<A>>,
@@ -162,8 +162,8 @@ impl<A> ElementTree<A> {
     ///
     /// # Panics
     ///
-    /// In overflow-checking builds, panics if either `u64` counter overflows.
-    /// This practically requires exhausting the identifier space.
+    /// Panics before changing either counter if either `u64` identifier space
+    /// is exhausted. Identifiers are never wrapped or silently reused.
     ///
     /// # Examples
     ///
@@ -181,13 +181,22 @@ impl<A> ElementTree<A> {
         key: Option<Key>,
         parent: Option<ElementId>,
     ) -> ElementId {
-        self.next_element += 1;
-        self.next_widget += 1;
-        let id = ElementId(self.next_element);
-        let widget_id = WidgetId(self.next_widget);
+        let next_element = self
+            .next_element
+            .checked_add(1)
+            .expect("element identity space exhausted");
+        let next_widget = self
+            .next_widget
+            .checked_add(1)
+            .expect("widget identity space exhausted");
+        self.next_element = next_element;
+        self.next_widget = next_widget;
+        let id = ElementId(next_element);
+        let widget_id = WidgetId(next_widget);
         let el = Element {
             id,
             widget_id,
+            mount_generation: crate::component::reactive::MountGeneration::INITIAL,
             key,
             kind,
             dirty: DirtyFlags::layout(),
@@ -195,11 +204,17 @@ impl<A> ElementTree<A> {
             children: Vec::new(),
             layout: None,
             layout_cache_key: None,
+            layout_reactive_dependencies: Default::default(),
+            layout_commit_reactive_dependencies: Default::default(),
+            committed_layout_generation: None,
+            committed_layout_attempt: None,
             measurement_layout: None,
             measurement_layout_cache_key: None,
+            measurement_reactive_dependencies: Default::default(),
             layout_revision: 1,
             topology_revision: 1,
             layout_changed: true,
+            layout_callback_executed: false,
             commit_dirty: true,
             committed_bounds: None,
             flex_item: FlexItemStyle::default(),
@@ -241,6 +256,7 @@ impl<A> ElementTree<A> {
                 p.layout_cache_key = None;
                 p.measurement_layout = None;
                 p.measurement_layout_cache_key = None;
+                p.measurement_reactive_dependencies = Default::default();
                 p.dirty = DirtyFlags::layout();
                 p.commit_dirty = true;
             }
@@ -333,8 +349,14 @@ impl<A> ElementTree<A> {
     pub fn set_layout(&mut self, id: ElementId, layout: LayoutResult) {
         if let Some(e) = self.elements.get_mut(&id) {
             e.layout = Some(layout);
+            e.layout_reactive_dependencies = Default::default();
+            e.layout_commit_reactive_dependencies = Default::default();
+            e.committed_layout_generation = Some(e.mount_generation());
+            e.committed_layout_attempt = None;
+            e.layout_callback_executed = false;
             e.measurement_layout = None;
             e.measurement_layout_cache_key = None;
+            e.measurement_reactive_dependencies = Default::default();
             e.dirty.layout = false;
             e.dirty.paint = false;
         }
@@ -365,11 +387,15 @@ impl<A> ElementTree<A> {
         id: ElementId,
         layout: LayoutResult,
         cache_key: LayoutCacheKey,
+        dependencies: crate::component::reactive::ReactiveReadSet,
+        attempt_token: crate::layout::LayoutAttemptToken,
+        callback_executed: bool,
     ) {
         if let Some(element) = self.elements.get_mut(&id) {
             if cache_key.layout_pass.is_measure() {
                 element.measurement_layout = Some(layout);
                 element.measurement_layout_cache_key = Some(cache_key);
+                element.measurement_reactive_dependencies = dependencies;
                 return;
             }
             element.layout_changed = element
@@ -378,11 +404,16 @@ impl<A> ElementTree<A> {
                 .is_none_or(|previous| !previous.geometry_eq(&layout));
             element.layout = Some(layout);
             element.layout_cache_key = Some(cache_key);
-            element.measurement_layout = None;
-            element.measurement_layout_cache_key = None;
+            element.layout_reactive_dependencies = dependencies;
+            element.committed_layout_generation = Some(element.mount_generation());
+            // A final cache hit ran no callback in this attempt. Exposing the
+            // current token to a bounds-only hook would let pending state from
+            // an earlier superseded callback publish against the cached result.
+            element.committed_layout_attempt = callback_executed.then_some(attempt_token);
             element.dirty.layout = false;
             element.dirty.paint = false;
-            element.commit_dirty |= element.layout_changed;
+            element.layout_callback_executed = callback_executed;
+            element.commit_dirty |= element.layout_changed || callback_executed;
         }
     }
 
@@ -429,8 +460,8 @@ impl<A> ElementTree<A> {
     ///
     /// Each visited ID records a propagation diagnostic. Existing nodes become
     /// layout+paint dirty, get a nonzero wrapping layout revision, and request
-    /// commit. Traversal stops at a missing node or stored `None` parent. A
-    /// malformed parent cycle can loop forever.
+    /// commit. Traversal stops at a missing node, a stored `None` parent, or a
+    /// node already visited in the same batch.
     ///
     /// # Examples
     ///
@@ -439,23 +470,45 @@ impl<A> ElementTree<A> {
     /// // Propagated nodes receive this layout-and-paint combination.
     /// assert_eq!(DirtyFlags::layout(), DirtyFlags { layout: true, paint: true, input: false });
     /// ```
-    pub(crate) fn mark_layout_path_dirty(&mut self, mut id: ElementId) {
-        loop {
-            self.diagnostics.layout_propagation(id);
-            let parent = if let Some(element) = self.elements.get_mut(&id) {
-                element.dirty.layout = true;
-                element.dirty.paint = true;
-                element.layout_revision = element.layout_revision.wrapping_add(1).max(1);
-                element.commit_dirty = true;
-                element.parent
-            } else {
-                None
-            };
-            let Some(next) = parent else {
-                break;
-            };
-            id = next;
+    pub(crate) fn mark_layout_path_dirty(&mut self, id: ElementId) {
+        let _ = self.mark_layout_paths_dirty([id]);
+    }
+
+    /// Marks several layout roots and the union of their ancestor chains.
+    ///
+    /// Every retained node in the union is dirtied, revisioned, and counted at
+    /// most once. Reaching a node already visited by an earlier root terminates
+    /// that path because all of its ancestors were already processed. Missing
+    /// roots are diagnosed once and malformed parent cycles terminate safely.
+    /// The returned set lets callers avoid separately dirtying exact nodes that
+    /// were already part of a propagated path.
+    pub(crate) fn mark_layout_paths_dirty(
+        &mut self,
+        roots: impl IntoIterator<Item = ElementId>,
+    ) -> HashSet<ElementId> {
+        let mut visited = HashSet::new();
+        for mut id in roots {
+            loop {
+                if !visited.insert(id) {
+                    break;
+                }
+                self.diagnostics.layout_propagation(id);
+                let parent = if let Some(element) = self.elements.get_mut(&id) {
+                    element.dirty.layout = true;
+                    element.dirty.paint = true;
+                    element.layout_revision = element.layout_revision.wrapping_add(1).max(1);
+                    element.commit_dirty = true;
+                    element.parent
+                } else {
+                    None
+                };
+                let Some(next) = parent else {
+                    break;
+                };
+                id = next;
+            }
         }
+        visited
     }
 
     /// Replaces flex-item and declarative size metadata without invalidation.
@@ -705,6 +758,7 @@ impl<A> ElementTree<A> {
 mod view_key_tests {
     use super::*;
     use crate::element::ElementKind;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     /// Implements the empty_tree_with_keyed_leaf helper used by this module.
     fn empty_tree_with_keyed_leaf(key: &str) -> ElementTree<()> {
@@ -756,5 +810,31 @@ mod view_key_tests {
             err,
             ViewKeyResolveError::Duplicate { count: 2, .. }
         ));
+    }
+
+    #[test]
+    /// Exhausting either identity space fails atomically instead of wrapping.
+    fn create_element_rejects_identity_exhaustion_without_partial_advance() {
+        let mut widget_exhausted: ElementTree<()> = ElementTree::new();
+        widget_exhausted.next_element = 7;
+        widget_exhausted.next_widget = u64::MAX;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            widget_exhausted.create_element(ElementKind::Empty, None, None)
+        }));
+        assert!(result.is_err());
+        assert_eq!(widget_exhausted.next_element, 7);
+        assert_eq!(widget_exhausted.next_widget, u64::MAX);
+        assert!(widget_exhausted.elements.is_empty());
+
+        let mut element_exhausted: ElementTree<()> = ElementTree::new();
+        element_exhausted.next_element = u64::MAX;
+        element_exhausted.next_widget = 9;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            element_exhausted.create_element(ElementKind::Empty, None, None)
+        }));
+        assert!(result.is_err());
+        assert_eq!(element_exhausted.next_element, u64::MAX);
+        assert_eq!(element_exhausted.next_widget, 9);
+        assert!(element_exhausted.elements.is_empty());
     }
 }

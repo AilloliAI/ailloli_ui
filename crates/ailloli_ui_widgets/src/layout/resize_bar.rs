@@ -11,7 +11,7 @@ use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, Vi
 use ailloli_ui_runtime::input::{ActivationPolicy, EventCtx, HoverCursorRole};
 use ailloli_ui_runtime::layout::{LayoutChild, LayoutCtx, LayoutResult};
 use ailloli_ui_runtime::scene::PaintCtx;
-use ailloli_ui_runtime::{DrawCmd, DrawRRect};
+use ailloli_ui_runtime::{DrawCmd, DrawRRect, Invalidation};
 
 use super::layout_ext::{apply_layout_size, finish_view_sized};
 
@@ -338,7 +338,7 @@ impl<A: 'static> ComponentNode<A> for ResizeBarComponent<A> {
             axis: self.axis,
             style: self.style,
             on_resize: self.on_resize.clone(),
-            drag: context.signal(None),
+            drag: context.signal_with_invalidation(None, Invalidation::Paint),
         })
     }
 }

@@ -5,15 +5,18 @@
 //! as retained listbox popups. A combo box selects typed values; autocomplete
 //! keeps arbitrary text and optionally commits a suggestion label.
 
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized, LayoutExt};
+use crate::transactional_layout::TransactionalLayoutPending;
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey, WheelDelta};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::scroll::{ScrollAxes, ScrollMetrics, ScrollState};
 use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint, LayoutStyle, Length, Radius};
 use ailloli_ui_core::{FontId, IconId, TextStyle, Theme};
+use ailloli_ui_runtime::app::Invalidation;
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Memo, Signal, View, Widget,
 };
@@ -35,7 +38,7 @@ use super::popup::{
 use super::select::{SelectSize, SelectStyle};
 use super::text_field_core::{
     handle_single_line_text_event, ime_cursor_rect, layout_single_line_text,
-    paint_single_line_text, TextFieldEventOptions,
+    paint_committed_single_line_text, TextFieldEventOptions,
 };
 use super::text_input::TextInputStyle;
 
@@ -669,7 +672,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for ComboBoxCo
         let buffer = context.signal(TextBuffer::from_string(query_text.clone()));
         let edit = context.signal(edit_at_end(&query_text));
         let active_index = context.signal(None);
-        let scroll = context.signal(ScrollState::new());
+        let scroll = context.signal_with_invalidation(ScrollState::new(), Invalidation::Paint);
         let popup_id = context
             .runtime()
             .popup_id_for_element(context.element_id())
@@ -687,6 +690,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for ComboBoxCo
             buffer: buffer.clone(),
             edit: edit.clone(),
             popup_id,
+            pending_scroll: Cell::new(None),
         });
 
         View::leaf(ComboBoxWidget {
@@ -703,6 +707,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for ComboBoxCo
             query,
             buffer,
             edit,
+            pending_portal_close: Cell::new(None),
             popup: PopupPortalBridge::new_retained_with_content(
                 context,
                 listbox_popup_semantics(),
@@ -763,6 +768,8 @@ struct ComboBoxWidget<T, A> {
     buffer: Signal<TextBuffer>,
     /// Caret and selection state synchronized with the buffer.
     edit: Signal<TextEditState>,
+    /// Disabled-state close staged for the exact authoritative layout attempt.
+    pending_portal_close: Cell<Option<TransactionalLayoutPending<bool>>>,
     /// Runtime portal bridge for the retained popup.
     popup: PopupPortalBridge<A>,
 }
@@ -773,7 +780,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
         "ComboBox"
     }
 
-    /// Measures editing text, applies layout constraints, and closes when disabled.
+    /// Measures editing text and stages a disabled-state portal close.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -794,8 +801,9 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
             self.text_style(),
         );
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        if self.disabled.read() {
-            self.popup.close(PopupDismissReason::Programmatic);
+        if ctx.layout_pass().is_committed() {
+            self.pending_portal_close
+                .set(TransactionalLayoutPending::new(ctx, self.disabled.read()));
         }
 
         LayoutResult {
@@ -807,6 +815,18 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for ComboBoxWidget<T,
             clip: None,
             is_window_root_clip: false,
             artifact: text_layout.map(LayoutArtifact::Text),
+        }
+    }
+
+    /// Applies a disabled-state close only after its exact layout commits.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        if self
+            .pending_portal_close
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+            == Some(true)
+        {
+            self.popup.close(PopupDismissReason::Programmatic);
         }
     }
 
@@ -1608,7 +1628,7 @@ impl<A: 'static> ComponentNode<A> for AutocompleteComponent<A> {
         let buffer = context.signal(TextBuffer::from_string(current.clone()));
         let edit = context.signal(edit_at_end(&current));
         let active_index = context.signal(None);
-        let scroll = context.signal(ScrollState::new());
+        let scroll = context.signal_with_invalidation(ScrollState::new(), Invalidation::Paint);
         let popup_id = context
             .runtime()
             .popup_id_for_element(context.element_id())
@@ -1624,6 +1644,7 @@ impl<A: 'static> ComponentNode<A> for AutocompleteComponent<A> {
             buffer: buffer.clone(),
             edit: edit.clone(),
             popup_id,
+            pending_scroll: Cell::new(None),
         });
         View::leaf(AutocompleteWidget {
             layout: self.layout,
@@ -1637,6 +1658,7 @@ impl<A: 'static> ComponentNode<A> for AutocompleteComponent<A> {
             scroll,
             buffer,
             edit,
+            pending_portal_close: Cell::new(None),
             popup: PopupPortalBridge::new_retained_with_content(
                 context,
                 listbox_popup_semantics(),
@@ -1691,6 +1713,8 @@ struct AutocompleteWidget<A> {
     buffer: Signal<TextBuffer>,
     /// Caret and selection state synchronized with the buffer.
     edit: Signal<TextEditState>,
+    /// Disabled-state close staged for the exact authoritative layout attempt.
+    pending_portal_close: Cell<Option<TransactionalLayoutPending<bool>>>,
     /// Runtime portal bridge for the retained popup.
     popup: PopupPortalBridge<A>,
 }
@@ -1701,7 +1725,7 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
         "Autocomplete"
     }
 
-    /// Measures editing text, applies layout constraints, and closes when disabled.
+    /// Measures editing text and stages a disabled-state portal close.
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
@@ -1722,8 +1746,9 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
             self.text_style(),
         );
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
-        if self.disabled.read() {
-            self.popup.close(PopupDismissReason::Programmatic);
+        if ctx.layout_pass().is_committed() {
+            self.pending_portal_close
+                .set(TransactionalLayoutPending::new(ctx, self.disabled.read()));
         }
 
         LayoutResult {
@@ -1735,6 +1760,18 @@ impl<A: 'static> Widget<A> for AutocompleteWidget<A> {
             clip: None,
             is_window_root_clip: false,
             artifact: text_layout.map(LayoutArtifact::Text),
+        }
+    }
+
+    /// Applies a disabled-state close only after its exact layout commits.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        if self
+            .pending_portal_close
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+            == Some(true)
+        {
+            self.popup.close(PopupDismissReason::Programmatic);
         }
     }
 
@@ -2095,6 +2132,8 @@ struct RetainedComboBoxPopup<T, A> {
     edit: Signal<TextEditState>,
     /// Runtime ID used to close the mounted popup.
     popup_id: Option<PopupId>,
+    /// Scroll clamp staged for the exact authoritative layout attempt.
+    pending_scroll: Cell<Option<TransactionalLayoutPending<Option<ScrollState>>>>,
 }
 
 impl<T: Clone, A> Clone for RetainedComboBoxPopup<T, A> {
@@ -2113,6 +2152,7 @@ impl<T: Clone, A> Clone for RetainedComboBoxPopup<T, A> {
             buffer: self.buffer.clone(),
             edit: self.edit.clone(),
             popup_id: self.popup_id,
+            pending_scroll: Cell::new(None),
         }
     }
 }
@@ -2127,14 +2167,31 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for RetainedComboBoxP
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
-        _ctx: &mut LayoutCtx<'_>,
+        ctx: &mut LayoutCtx<'_>,
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
         let rows = self.filtered_indices().len().max(1);
         let size = retained_popup_size(constraints, self.style.width, rows, &self.style.popup);
-        clamp_retained_popup_scroll(&self.scroll, size, rows, &self.style.popup);
+        if ctx.layout_pass().is_committed() {
+            let retained = with_untracked_reads(|| self.scroll.read());
+            let state = clamped_retained_popup_scroll(retained, size, rows, &self.style.popup);
+            self.pending_scroll
+                .set(TransactionalLayoutPending::new(ctx, state));
+        }
         retained_popup_layout(size)
+    }
+
+    /// Publishes only the clamp computed by this exact successful attempt.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        if let Some(state) = self
+            .pending_scroll
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+            .flatten()
+        {
+            self.scroll.set(state);
+        }
     }
 
     /// Paints the popup shell, visible rows, selection mark, and border.
@@ -2373,6 +2430,8 @@ struct RetainedAutocompletePopup<A> {
     edit: Signal<TextEditState>,
     /// Runtime ID used to close the mounted popup.
     popup_id: Option<PopupId>,
+    /// Scroll clamp staged for the exact authoritative layout attempt.
+    pending_scroll: Cell<Option<TransactionalLayoutPending<Option<ScrollState>>>>,
 }
 
 impl<A> Clone for RetainedAutocompletePopup<A> {
@@ -2389,6 +2448,7 @@ impl<A> Clone for RetainedAutocompletePopup<A> {
             buffer: self.buffer.clone(),
             edit: self.edit.clone(),
             popup_id: self.popup_id,
+            pending_scroll: Cell::new(None),
         }
     }
 }
@@ -2403,14 +2463,31 @@ impl<A: 'static> Widget<A> for RetainedAutocompletePopup<A> {
     fn layout(
         &self,
         _engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
-        _ctx: &mut LayoutCtx<'_>,
+        ctx: &mut LayoutCtx<'_>,
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
         let rows = self.filtered_indices().len().max(1);
         let size = retained_popup_size(constraints, self.style.width, rows, &self.style.popup);
-        clamp_retained_popup_scroll(&self.scroll, size, rows, &self.style.popup);
+        if ctx.layout_pass().is_committed() {
+            let retained = with_untracked_reads(|| self.scroll.read());
+            let state = clamped_retained_popup_scroll(retained, size, rows, &self.style.popup);
+            self.pending_scroll
+                .set(TransactionalLayoutPending::new(ctx, state));
+        }
         retained_popup_layout(size)
+    }
+
+    /// Publishes only the clamp computed by this exact successful attempt.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        if let Some(state) = self
+            .pending_scroll
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+            .flatten()
+        {
+            self.scroll.set(state);
+        }
     }
 
     /// Paints the popup shell, visible suggestions, and border.
@@ -2644,20 +2721,16 @@ fn retained_filtered_index_at(
     filtered.get(row).copied()
 }
 
-/// Clamps vertical popup scroll to the current row-derived content extent.
-fn clamp_retained_popup_scroll(
-    scroll: &Signal<ScrollState>,
+/// Returns a changed vertical popup scroll clamped to row-derived content.
+fn clamped_retained_popup_scroll(
+    scroll: ScrollState,
     viewport: Size,
     rows: usize,
     style: &SelectStyle,
-) {
+) -> Option<ScrollState> {
     let content = Size::new(viewport.w, rows as f32 * style.option_height);
-    let outcome = scroll
-        .read()
-        .clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
-    if outcome.changed {
-        scroll.set(outcome.state());
-    }
+    let outcome = scroll.clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
+    outcome.changed.then_some(outcome.state())
 }
 
 /// Applies wheel scrolling in row-height line units.
@@ -2810,7 +2883,7 @@ fn paint_combo_input<T: Clone + PartialEq + 'static, A: 'static>(
     let focused = ctx.is_focused();
     let style = widget.text_style();
     paint_input_frame(ctx, bounds, style, focused);
-    paint_single_line_text(
+    paint_committed_single_line_text(
         ctx,
         text_edit_bounds(bounds, &widget.style, has_trailing_icon),
         layout,
@@ -2855,7 +2928,7 @@ fn paint_autocomplete_input<A: 'static>(
     let focused = ctx.is_focused();
     let style = widget.text_style();
     paint_input_frame(ctx, bounds, style, focused);
-    paint_single_line_text(
+    paint_committed_single_line_text(
         ctx,
         bounds,
         layout,
@@ -2876,4 +2949,301 @@ fn inset_rect_x(rect: Rect, inset: f32) -> Rect {
         (rect.w - inset * 2.0).max(0.0),
         rect.h,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    //! Transactional retained-popup scroll publication.
+
+    use std::cell::RefCell;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+    use ailloli_ui_core::{Offset, Scale};
+    use ailloli_ui_runtime::app::{Runtime, RuntimeHandle};
+    use ailloli_ui_runtime::component::State;
+    use ailloli_ui_runtime::layout::{ChildLayout, LayoutEngine};
+    use ailloli_ui_text::TextSystem;
+
+    /// Creates a standalone signal for direct retained-popup construction.
+    fn signal<T: 'static>(value: T) -> Signal<T> {
+        Signal::new(Rc::new(RefCell::new(value)), Rc::new(|| {}))
+    }
+
+    /// Lays out the popup child before optionally abandoning the outer attempt.
+    struct PanicAfterPopup {
+        panic_now: State<bool>,
+    }
+
+    impl Widget<()> for PanicAfterPopup {
+        fn debug_name(&self) -> &'static str {
+            "PanicAfterPopup"
+        }
+
+        fn layout(
+            &self,
+            engine: &mut LayoutEngine<'_, ()>,
+            ctx: &mut LayoutCtx<'_>,
+            children: &mut [LayoutChild],
+            constraints: Constraints,
+        ) -> LayoutResult {
+            let child = children.first_mut().expect("popup child").layout(
+                engine,
+                ctx,
+                Constraints::tight(220.0, 64.0),
+            );
+            assert!(!self.panic_now.read(), "intentional outer layout panic");
+            LayoutResult {
+                size: constraints.max_size(),
+                children: vec![ChildLayout {
+                    offset: Offset::new(7.0, 11.0),
+                    size: child.size,
+                    paint_bounds: child.paint_bounds,
+                    visual_bounds: child.visual_bounds,
+                }],
+                paint_bounds: Rect::new(0.0, 0.0, constraints.max_w, constraints.max_h),
+                visual_bounds: Rect::new(0.0, 0.0, constraints.max_w, constraints.max_h),
+                overlay_hit_bounds: Vec::new(),
+                clip: None,
+                is_window_root_clip: false,
+                artifact: None,
+            }
+        }
+
+        fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
+    }
+
+    /// Relayouts one child twice with independently selected viewport heights.
+    struct RelayoutPopup {
+        /// Viewport used by the first child layout call.
+        first_height: f32,
+        /// Viewport used by the authoritative final child layout call.
+        final_height: f32,
+    }
+
+    impl Widget<()> for RelayoutPopup {
+        fn debug_name(&self) -> &'static str {
+            "RelayoutPopup"
+        }
+
+        fn layout(
+            &self,
+            engine: &mut LayoutEngine<'_, ()>,
+            ctx: &mut LayoutCtx<'_>,
+            children: &mut [LayoutChild],
+            constraints: Constraints,
+        ) -> LayoutResult {
+            let child = children.first_mut().expect("popup child");
+            let _ = child.layout(engine, ctx, Constraints::tight(220.0, self.first_height));
+            let child = child.layout(engine, ctx, Constraints::tight(220.0, self.final_height));
+            LayoutResult {
+                size: constraints.max_size(),
+                children: vec![ChildLayout {
+                    offset: Offset::new(9.0, 13.0),
+                    size: child.size,
+                    paint_bounds: child.paint_bounds,
+                    visual_bounds: child.visual_bounds,
+                }],
+                paint_bounds: Rect::new(0.0, 0.0, constraints.max_w, constraints.max_h),
+                visual_bounds: Rect::new(0.0, 0.0, constraints.max_w, constraints.max_h),
+                overlay_hit_bounds: Vec::new(),
+                clip: None,
+                is_window_root_clip: false,
+                artifact: None,
+            }
+        }
+
+        fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
+    }
+
+    #[test]
+    fn abandoned_popup_layout_does_not_publish_a_nonzero_scroll_clamp() {
+        let scroll = signal(ScrollState::with_offset(Offset::new(0.0, 400.0)));
+        let popup: RetainedComboBoxPopup<(), ()> = RetainedComboBoxPopup {
+            options: vec![ComboBoxOption::new((), "Only row")],
+            selected: None,
+            bound: None,
+            disabled: Binding::Static(false),
+            on_change: None,
+            style: ComboBoxStyle::default(),
+            active_index: signal(None),
+            scroll: scroll.clone(),
+            query: signal(String::new()),
+            buffer: signal(TextBuffer::from_string(String::new())),
+            edit: signal(edit_at_end("")),
+            popup_id: None,
+            pending_scroll: Cell::new(None),
+        };
+        let panic_now = State::new(true);
+        let mut runtime = Runtime::new(RuntimeHandle::new());
+        runtime.reconcile(View::node(
+            PanicAfterPopup {
+                panic_now: panic_now.clone(),
+            },
+            vec![View::leaf(popup)],
+        ));
+        let mut text_system = TextSystem::new();
+
+        let abandoned = catch_unwind(AssertUnwindSafe(|| {
+            runtime.layout(
+                Constraints::tight(240.0, 80.0),
+                Scale::new(1.0),
+                &mut text_system,
+            );
+        }));
+        assert!(abandoned.is_err());
+        assert_eq!(
+            scroll.read().offset.y,
+            400.0,
+            "an abandoned attempt must not publish its staged clamp"
+        );
+
+        panic_now.set(false);
+        runtime.layout(
+            Constraints::tight(240.0, 80.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        assert_eq!(
+            scroll.read().offset.y,
+            0.0,
+            "the matching successful commit must publish the clamp"
+        );
+    }
+
+    #[test]
+    fn final_same_attempt_popup_layout_cancels_an_earlier_clamp() {
+        let scroll = signal(ScrollState::with_offset(Offset::new(0.0, 20.0)));
+        let options = (0..10)
+            .map(|index| ComboBoxOption::new(index, format!("Row {index}")))
+            .collect();
+        let popup: RetainedComboBoxPopup<usize, ()> = RetainedComboBoxPopup {
+            options,
+            selected: None,
+            bound: None,
+            disabled: Binding::Static(false),
+            on_change: None,
+            style: ComboBoxStyle::default(),
+            active_index: signal(None),
+            scroll: scroll.clone(),
+            query: signal(String::new()),
+            buffer: signal(TextBuffer::from_string(String::new())),
+            edit: signal(edit_at_end("")),
+            popup_id: None,
+            pending_scroll: Cell::new(None),
+        };
+        let mut runtime = Runtime::new(RuntimeHandle::new());
+        runtime.reconcile(View::node(
+            RelayoutPopup {
+                first_height: 400.0,
+                final_height: 64.0,
+            },
+            vec![View::leaf(popup)],
+        ));
+        let mut text_system = TextSystem::new();
+
+        runtime.layout(
+            Constraints::tight(240.0, 440.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+
+        assert_eq!(
+            scroll.read().offset.y,
+            20.0,
+            "the final small viewport keeps the valid offset and cancels the earlier clamp"
+        );
+    }
+
+    #[test]
+    fn final_same_attempt_popup_layout_publishes_a_late_clamp() {
+        let scroll = signal(ScrollState::with_offset(Offset::new(0.0, 20.0)));
+        let options = (0..10)
+            .map(|index| ComboBoxOption::new(index, format!("Row {index}")))
+            .collect();
+        let popup: RetainedComboBoxPopup<usize, ()> = RetainedComboBoxPopup {
+            options,
+            selected: None,
+            bound: None,
+            disabled: Binding::Static(false),
+            on_change: None,
+            style: ComboBoxStyle::default(),
+            active_index: signal(None),
+            scroll: scroll.clone(),
+            query: signal(String::new()),
+            buffer: signal(TextBuffer::from_string(String::new())),
+            edit: signal(edit_at_end("")),
+            popup_id: None,
+            pending_scroll: Cell::new(None),
+        };
+        let mut runtime = Runtime::new(RuntimeHandle::new());
+        runtime.reconcile(View::node(
+            RelayoutPopup {
+                first_height: 64.0,
+                final_height: 400.0,
+            },
+            vec![View::leaf(popup)],
+        ));
+        let mut text_system = TextSystem::new();
+
+        runtime.layout(
+            Constraints::tight(240.0, 440.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+
+        assert_eq!(
+            scroll.read().offset.y,
+            0.0,
+            "the final large viewport must publish its clamp after an earlier no-op"
+        );
+    }
+
+    #[test]
+    fn abandoned_disabled_trigger_layout_does_not_close_its_popup() {
+        let runtime_handle = RuntimeHandle::new();
+        let mut runtime = Runtime::new(runtime_handle.clone());
+        let panic_now = State::new(true);
+        runtime.reconcile(View::node(
+            PanicAfterPopup {
+                panic_now: panic_now.clone(),
+            },
+            vec![ComboBox::<()>::new()
+                .disabled(true)
+                .default_open(true)
+                .option((), "Only row")
+                .into_view()],
+        ));
+        let popup_id = runtime_handle
+            .popup_portal()
+            .borrow()
+            .topmost()
+            .expect("default-open popup");
+        assert!(runtime_handle.popup_is_open(popup_id));
+        let mut text_system = TextSystem::new();
+
+        let abandoned = catch_unwind(AssertUnwindSafe(|| {
+            runtime.layout(
+                Constraints::tight(240.0, 80.0),
+                Scale::new(1.0),
+                &mut text_system,
+            );
+        }));
+        assert!(abandoned.is_err());
+        assert!(
+            runtime_handle.popup_is_open(popup_id),
+            "an abandoned disabled layout must not leak its close effect"
+        );
+
+        panic_now.set(false);
+        runtime.layout(
+            Constraints::tight(240.0, 80.0),
+            Scale::new(1.0),
+            &mut text_system,
+        );
+        assert!(
+            !runtime_handle.popup_is_open(popup_id),
+            "the matching committed disabled layout must close the popup"
+        );
+    }
 }

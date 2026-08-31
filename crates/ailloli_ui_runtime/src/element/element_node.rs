@@ -6,6 +6,8 @@ use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint};
 use ailloli_ui_core::{ElementId, WidgetId};
 
 use super::{DirtyFlags, Key};
+use crate::component::reactive::MountGeneration;
+use crate::component::reactive::ReactiveReadSet;
 use crate::component::{ComponentNode, Widget};
 #[cfg(feature = "devtools")]
 use crate::layout::LayoutDebugInfo;
@@ -92,6 +94,8 @@ pub struct Element<A> {
     pub id: ElementId,
     /// Stable widget-facing identity allocated alongside the element.
     pub widget_id: WidgetId,
+    /// Generation of the payload currently mounted at this stable element ID.
+    pub(crate) mount_generation: MountGeneration,
     /// Optional reconciliation key; `None` selects positional matching.
     pub key: Option<Key>,
     /// Empty, widget, or component payload.
@@ -106,16 +110,28 @@ pub struct Element<A> {
     pub layout: Option<LayoutResult>,
     /// Cache inputs associated with `layout`, or `None` when invalidated.
     pub(crate) layout_cache_key: Option<LayoutCacheKey>,
+    /// Direct reactive reads required by the authoritative layout cache.
+    pub(crate) layout_reactive_dependencies: ReactiveReadSet,
+    /// Reactive reads retained by the last successful `layout_committed` hook.
+    pub(crate) layout_commit_reactive_dependencies: ReactiveReadSet,
+    /// Payload generation that produced the authoritative layout and artifact.
+    pub(crate) committed_layout_generation: Option<MountGeneration>,
+    /// Exact validated attempt that most recently refreshed committed layout.
+    pub(crate) committed_layout_attempt: Option<crate::layout::LayoutAttemptToken>,
     /// Most recent speculative layout, kept separate from committed geometry.
     pub(crate) measurement_layout: Option<LayoutResult>,
     /// Cache inputs associated with `measurement_layout`.
     pub(crate) measurement_layout_cache_key: Option<LayoutCacheKey>,
+    /// Direct reactive reads required by the speculative layout cache.
+    pub(crate) measurement_reactive_dependencies: ReactiveReadSet,
     /// Nonzero wrapping revision of element-owned layout inputs.
     pub(crate) layout_revision: u64,
     /// Nonzero wrapping revision of direct-child ordering.
     pub(crate) topology_revision: u64,
     /// Whether geometry differs from the previously cached result.
     pub(crate) layout_changed: bool,
+    /// Whether the final authoritative result came from a real layout callback.
+    pub(crate) layout_callback_executed: bool,
     /// Whether layout commit must reconsider this element/subtree.
     pub(crate) commit_dirty: bool,
     /// Last absolute logical-pixel bounds delivered during commit.
@@ -148,6 +164,7 @@ impl<A> Clone for Element<A> {
         Self {
             id: self.id,
             widget_id: self.widget_id,
+            mount_generation: self.mount_generation,
             key: self.key.clone(),
             kind: self.kind.clone(),
             dirty: self.dirty,
@@ -155,11 +172,17 @@ impl<A> Clone for Element<A> {
             children: self.children.clone(),
             layout: self.layout.clone(),
             layout_cache_key: self.layout_cache_key,
+            layout_reactive_dependencies: self.layout_reactive_dependencies.clone(),
+            layout_commit_reactive_dependencies: self.layout_commit_reactive_dependencies.clone(),
+            committed_layout_generation: self.committed_layout_generation,
+            committed_layout_attempt: self.committed_layout_attempt,
             measurement_layout: self.measurement_layout.clone(),
             measurement_layout_cache_key: self.measurement_layout_cache_key,
+            measurement_reactive_dependencies: self.measurement_reactive_dependencies.clone(),
             layout_revision: self.layout_revision,
             topology_revision: self.topology_revision,
             layout_changed: self.layout_changed,
+            layout_callback_executed: self.layout_callback_executed,
             commit_dirty: self.commit_dirty,
             committed_bounds: self.committed_bounds,
             flex_item: self.flex_item,
@@ -167,5 +190,19 @@ impl<A> Clone for Element<A> {
             #[cfg(feature = "devtools")]
             layout_debug: self.layout_debug.clone(),
         }
+    }
+}
+
+impl<A> Element<A> {
+    /// Returns the exact retained payload generation for dependency tracking.
+    #[doc(hidden)]
+    pub const fn mount_generation(&self) -> MountGeneration {
+        self.mount_generation
+    }
+
+    /// Advances the payload generation without silent identity reuse.
+    pub(crate) fn advance_mount_generation(&mut self) -> MountGeneration {
+        self.mount_generation = self.mount_generation.next();
+        self.mount_generation
     }
 }

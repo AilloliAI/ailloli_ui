@@ -1,10 +1,10 @@
 //! Type-erased, tree-scoped retained component state slots.
 
+use crate::component::reactive::ReactiveSource;
 use crate::component::signal::Signal;
 use crate::popup::ElementTreeId;
 use ailloli_ui_core::ids::ElementId;
 use std::any::Any;
-use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -55,7 +55,7 @@ struct ScopedStateSlot {
 /// ```
 #[derive(Default)]
 pub struct StateStore {
-    /// Sparse type-erased `(value, revision)` tuples.
+    /// Sparse type-erased `(value, reactive source)` tuples.
     values: HashMap<ScopedStateSlot, Box<dyn Any>>,
 }
 
@@ -67,8 +67,8 @@ impl StateStore {
     /// values from independent element trees cannot alias one another.
     ///
     /// `initial` is evaluated by the caller before this method; it is discarded
-    /// if the slot already exists. Returned handles share value/revision, while
-    /// each captures the `invalidate` callback supplied on that particular call.
+    /// if the slot already exists. Returned handles share value/source and keep
+    /// the invalidator installed when the slot was first created.
     ///
     /// # Panics
     ///
@@ -145,10 +145,10 @@ impl StateStore {
     /// Lazily initializes a retained signal slot. The factory is never
     /// evaluated again while the same typed slot remains mounted.
     ///
-    /// Every returned handle shares the slot value and revision but owns the
-    /// invalidation callback passed in that call. The store retains its `Rc`s
-    /// until removal; outstanding handles keep old state alive after removal,
-    /// while a later lookup creates a fresh independent slot.
+    /// Every returned handle shares the slot value, source revision, first
+    /// historical invalidator, and dynamic retained subscribers. The store
+    /// retains its `Rc`s until removal; outstanding handles keep old state alive
+    /// after removal, while a later lookup creates a fresh independent slot.
     ///
     /// # Panics
     ///
@@ -185,17 +185,20 @@ impl StateStore {
         };
 
         self.values.entry(slot).or_insert_with(|| {
-            Box::new((Rc::new(RefCell::new(initial())), Rc::new(Cell::new(0_u64)))) as Box<dyn Any>
+            Box::new((
+                Rc::new(RefCell::new(initial())),
+                ReactiveSource::new(invalidate),
+            )) as Box<dyn Any>
         });
 
-        let (value, revision) = self
+        let (value, source) = self
             .values
             .get(&slot)
             .expect("state slot must exist")
-            .downcast_ref::<(Rc<RefCell<T>>, Rc<Cell<u64>>)>()
+            .downcast_ref::<(Rc<RefCell<T>>, Rc<ReactiveSource>)>()
             .expect("state slot type mismatch");
 
-        Signal::with_revision(value.clone(), invalidate, revision.clone())
+        Signal::with_source(value.clone(), source.clone())
     }
 
     /// Removes an element from the legacy root-tree namespace (`tree 0`).

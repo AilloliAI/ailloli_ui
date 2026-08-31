@@ -105,7 +105,8 @@ impl CaptureOpts {
     /// Writes the PNG to `path` when the capture completes (creates parent directories).
     ///
     /// This implicitly enables automatic exit after all capture requests, but
-    /// does not force PNG encoding back on if [`Self::encode_png(false)`] was set;
+    /// does not force PNG encoding back on if [`Self::encode_png`] was set to
+    /// `false`;
     /// that combination reports an empty-PNG I/O error at application exit.
     ///
     /// # Examples

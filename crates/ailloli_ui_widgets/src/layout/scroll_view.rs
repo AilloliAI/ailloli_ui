@@ -1,5 +1,7 @@
 //! Single-child clipped scrolling, virtualization hints, follow-end, and bars.
 
+use std::cell::Cell;
+
 use ailloli_ui_core::event::{Event, PointerEvent};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::scroll::{
@@ -8,6 +10,7 @@ use ailloli_ui_core::scroll::{
 };
 use ailloli_ui_core::style::FlexItemStyle;
 use ailloli_ui_core::{Color, Offset};
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{ComponentNode, Context, IntoView, Signal, View, Widget};
 use ailloli_ui_runtime::input::EventCtx;
 use ailloli_ui_runtime::layout::LayoutEngine;
@@ -18,6 +21,7 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{DrawCmd, DrawRRect, Invalidation};
 
 use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
+use crate::transactional_layout::TransactionalLayoutPending;
 
 /// Visual style for [`ScrollView`] scrollbars.
 ///
@@ -338,10 +342,10 @@ impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
         let state = context.signal_with_invalidation(
             ScrollState::with_offset(self.initial_offset),
-            Invalidation::Layout,
+            Invalidation::Paint,
         );
         let follow_end_active =
-            context.signal_with_invalidation(self.follow_end, Invalidation::Layout);
+            context.signal_with_invalidation(self.follow_end, Invalidation::Paint);
         let scrollbar_interaction =
             context.signal_with_invalidation(ScrollbarInteraction::default(), Invalidation::Paint);
         let mut children = Vec::new();
@@ -359,6 +363,7 @@ impl<A: 'static> ComponentNode<A> for ScrollViewComponent<A> {
                 scrollbars: self.scrollbars,
                 scrollbar_style: self.scrollbar_style,
                 scrollbar_interaction,
+                pending_layout: Cell::new(None),
             },
             children,
         )
@@ -383,6 +388,19 @@ struct ScrollViewWidget {
     scrollbar_style: ScrollbarStyle,
     /// Retained hover and captured scrollbar gesture.
     scrollbar_interaction: Signal<ScrollbarInteraction>,
+    /// Geometry-derived state owned by one exact authoritative attempt.
+    pending_layout: Cell<Option<TransactionalLayoutPending<PendingScrollViewLayout>>>,
+}
+
+/// State published only by the successful attempt that computed it.
+#[derive(Clone, Copy)]
+struct PendingScrollViewLayout {
+    /// Final authoritative clamp.
+    state: Option<ScrollState>,
+    /// Final authoritative follow-end transition.
+    follow_end_active: Option<bool>,
+    /// Geometry-dependent gesture cleanup.
+    scrollbar_interaction: Option<ScrollbarInteraction>,
 }
 
 /// Implements bounded/unbounded layout passes, clipping, bars, and wheel input.
@@ -399,7 +417,12 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
         constraints: Constraints,
     ) -> LayoutResult {
         let mut child_layouts = Vec::new();
-        let mut state = self.state.read();
+        // `state` is owned by this exact retained widget. Its pre-clamp value is
+        // administrative because only the final authoritative pass may publish
+        // the geometry-dependent clamp in `layout_committed`.
+        let mut state = with_untracked_reads(|| self.state.read());
+        let mut next_follow_end_active = None;
+        let mut persist_state = false;
         let constraints_max = constraints.max_size();
         let mut size = finite_or_zero_size(constraints_max);
 
@@ -420,7 +443,7 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
             size = viewport_size(constraints_max, r.size);
             if self.has_bounded_scroll_viewport(constraints_max) {
                 let metrics = ScrollMetrics::new(size, r.size);
-                let next_state = self.sync_scroll_state_for_layout(state, metrics);
+                let (next_state, next_follow) = self.sync_scroll_state_for_layout(state, metrics);
                 if !same_offset(state.offset, next_state.offset) {
                     let previous_viewport =
                         ctx.replace_virtual_viewport(Some(VirtualViewport::new(
@@ -431,6 +454,8 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
                     ctx.replace_virtual_viewport(previous_viewport);
                 }
                 state = next_state;
+                next_follow_end_active = next_follow;
+                persist_state = true;
             } else {
                 // Flex containers probe growing children with an unbounded
                 // main axis before assigning their final slot. That probe is
@@ -456,21 +481,29 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
                 .map(|child| ScrollMetrics::new(size, child.size));
             metrics
                 .map(|metrics| {
-                    scrollbars_for(
-                        viewport,
-                        metrics,
-                        self.state.read(),
-                        self.axes,
-                        self.scrollbar_style,
-                    )
+                    scrollbars_for(viewport, metrics, state, self.axes, self.scrollbar_style)
                 })
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
-        let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(ctx.layout_pass(), &scrollbar_geometries) {
-            self.scrollbar_interaction.set(interaction);
+        // Reconciliation can clear a gesture against authoritative geometry.
+        // Its context-owned Paint invalidator is the static ownership edge;
+        // observing the pre-reconcile value would supersede this layout when
+        // the cleanup writes the new value below.
+        let mut interaction = with_untracked_reads(|| self.scrollbar_interaction.read());
+        let interaction_changed = interaction.reconcile(ctx.layout_pass(), &scrollbar_geometries);
+        if ctx.layout_pass().is_committed() {
+            let retained_state = with_untracked_reads(|| self.state.read());
+            self.pending_layout.set(TransactionalLayoutPending::new(
+                ctx,
+                PendingScrollViewLayout {
+                    state: (persist_state && !same_offset(retained_state.offset, state.offset))
+                        .then_some(state),
+                    follow_end_active: next_follow_end_active,
+                    scrollbar_interaction: interaction_changed.then_some(interaction),
+                },
+            ));
         }
 
         LayoutResult {
@@ -485,6 +518,25 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
             clip: Some(ailloli_ui_core::ClipShape::Rect(viewport)),
             is_window_root_clip: false,
             artifact: None,
+        }
+    }
+
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        let Some(pending) = self
+            .pending_layout
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        if let Some(state) = pending.state {
+            self.state.set(state);
+        }
+        if let Some(active) = pending.follow_end_active {
+            self.follow_end_active.set(active);
+        }
+        if let Some(interaction) = pending.scrollbar_interaction {
+            self.scrollbar_interaction.set(interaction);
         }
     }
 
@@ -543,7 +595,11 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
                 }
             }
             if response.repaint || scrolled {
-                ctx.request_repaint();
+                if scrolled {
+                    ctx.request_layout();
+                } else {
+                    ctx.request_repaint();
+                }
             }
             if response.consumed {
                 ctx.stop_propagation();
@@ -564,7 +620,7 @@ impl<A: 'static> Widget<A> for ScrollViewWidget {
             if outcome.changed {
                 self.state.set(outcome.state());
                 self.sync_follow_end_after_manual_scroll(outcome.after, outcome.max_offset);
-                ctx.request_repaint();
+                ctx.request_layout();
                 ctx.stop_propagation();
             }
         }
@@ -603,32 +659,28 @@ impl ScrollViewWidget {
         &self,
         state: ScrollState,
         metrics: ScrollMetrics,
-    ) -> ScrollState {
+    ) -> (ScrollState, Option<bool>) {
         if !self.follow_end {
             let clamped = state.clamp_to(metrics, self.axes);
-            if clamped.changed {
-                let next = clamped.state();
-                self.state.set(next);
-                return next;
-            }
-            return state;
+            return (clamped.state(), None);
         }
 
         let max_offset = self.axes.filter_offset(metrics.max_offset());
-        let follow_active = self.follow_end_active.read();
+        let follow_active = with_untracked_reads(|| self.follow_end_active.read());
+        let mut next_follow_active = follow_active;
         let target = if follow_active {
             ScrollState::with_offset(max_offset)
         } else {
             let clamped = state.clamp_to(metrics, self.axes).state();
             if offset_at_end(clamped.offset, max_offset, self.axes) {
-                self.set_follow_end_active(true);
+                next_follow_active = true;
             }
             clamped
         };
-        if !same_offset(state.offset, target.offset) {
-            self.state.set(target);
-        }
-        target
+        (
+            target,
+            (next_follow_active != follow_active).then_some(next_follow_active),
+        )
     }
 
     /// Updates end-following after a wheel or other manual offset change.
@@ -641,7 +693,7 @@ impl ScrollViewWidget {
 
     /// Writes the follow-end flag only when its value changes.
     fn set_follow_end_active(&self, active: bool) {
-        if self.follow_end_active.read() != active {
+        if with_untracked_reads(|| self.follow_end_active.read()) != active {
             self.follow_end_active.set(active);
         }
     }

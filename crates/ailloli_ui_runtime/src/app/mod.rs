@@ -36,6 +36,7 @@ pub use presentation::{
     reduce_presentation, PendingPresentationIntents, PresentationCursor, PresentationEvent,
     PresentationGeneration, PresentationIntent, PresentationLifecycle, PresentationReduction,
     PresentationState, PresentationTransitionError, PresentationUnavailableReason,
+    PresentationWorkPlan,
 };
 pub use runtime::Runtime;
 pub use runtime_handle::{

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey};
 use ailloli_ui_core::style::{FlexItemStyle, LayoutSizeHint, LayoutStyle};
 use ailloli_ui_core::{Constraints, EdgeInsets, FontId, Offset, Rect, Size, TextStyle};
-use ailloli_ui_runtime::app::RuntimeHandle;
+use ailloli_ui_runtime::app::{Invalidation, RuntimeHandle};
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Memo, Signal, View, Widget,
 };
@@ -19,6 +19,7 @@ use ailloli_ui_text::{TextLayoutParams, WrapMode};
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized, LayoutExt};
 use crate::layout::Container;
 use crate::text::Text;
+use crate::transactional_layout::TransactionalLayoutPending;
 
 use super::popup::{
     resolve_popup_rect, window_viewport, PopupAlignment, PopupPlacement, PopupPortalBridge,
@@ -390,7 +391,7 @@ struct TooltipComponent<A> {
 
 impl<A: 'static> ComponentNode<A> for TooltipComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
-        let state = context.signal(TooltipState::default());
+        let state = context.signal_with_invalidation(TooltipState::default(), Invalidation::Paint);
         let children = self.child.clone().into_iter().collect();
         let popup_content = self.content.retained(self.style);
         View::node(
@@ -408,7 +409,8 @@ impl<A: 'static> ComponentNode<A> for TooltipComponent<A> {
                 owner: context.element_id(),
                 runtime: context.runtime(),
                 has_trigger: Cell::new(false),
-                portal_presented: context.signal(false),
+                pending_layout: Cell::new(None),
+                portal_presented: context.signal_with_invalidation(false, Invalidation::Paint),
                 popup: PopupPortalBridge::new_retained_with_content(
                     context,
                     PopupSemantics::tooltip(),
@@ -478,6 +480,15 @@ struct TooltipState {
     dismissed_until_focus_exit: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Widget-owned values published only after their exact layout attempt commits.
+struct TooltipLayoutCommit {
+    /// Whether authoritative trigger geometry is non-empty.
+    has_trigger: bool,
+    /// Whether unavailable content requires closing an existing portal mount.
+    close_portal: bool,
+}
+
 /// Retained portal owner and interaction state machine around the trigger child.
 struct TooltipWidget<A> {
     /// Outer logical sizing policy for the trigger child.
@@ -506,6 +517,8 @@ struct TooltipWidget<A> {
     runtime: RuntimeHandle<A>,
     /// Whether a trigger child received layout in the latest pass.
     has_trigger: Cell<bool>,
+    /// Trigger availability and close effect staged for one layout attempt.
+    pending_layout: Cell<Option<TransactionalLayoutPending<TooltipLayoutCommit>>>,
     /// Whether this widget currently has content mounted in the portal.
     portal_presented: Signal<bool>,
     /// Bridge that synchronizes retained popup content with the runtime registry.
@@ -537,11 +550,16 @@ impl<A: 'static> Widget<A> for TooltipWidget<A> {
             });
         }
         let size = apply_layout_size(intrinsic, self.layout, constraints);
-        self.has_trigger
-            .set(!children.is_empty() && size.w > 0.0 && size.h > 0.0);
-        if !self.is_available() {
-            self.popup.close(PopupDismissReason::Programmatic);
-            self.portal_presented.set(false);
+        let has_trigger = !children.is_empty() && size.w > 0.0 && size.h > 0.0;
+        let available = !self.disabled.read() && has_trigger && self.content.has_text();
+        if ctx.layout_pass().is_committed() {
+            self.pending_layout.set(TransactionalLayoutPending::new(
+                ctx,
+                TooltipLayoutCommit {
+                    has_trigger,
+                    close_portal: !available,
+                },
+            ));
         }
         let bounds = Rect::new(0.0, 0.0, size.w, size.h);
         LayoutResult {
@@ -553,6 +571,22 @@ impl<A: 'static> Widget<A> for TooltipWidget<A> {
             clip: None,
             is_window_root_clip: false,
             artifact: None,
+        }
+    }
+
+    /// Publishes trigger availability and applies close only after commit.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        let Some(commit) = self
+            .pending_layout
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        self.has_trigger.set(commit.has_trigger);
+        if commit.close_portal {
+            self.popup.close(PopupDismissReason::Programmatic);
+            self.portal_presented.set_if_changed(false);
         }
     }
 
@@ -570,12 +604,12 @@ impl<A: 'static> Widget<A> for TooltipWidget<A> {
         }
         if !self.resolve_phase(now).is_painted() || !self.is_available() {
             self.popup.close(PopupDismissReason::Programmatic);
-            self.portal_presented.set(false);
+            self.portal_presented.set_if_changed(false);
             return;
         }
         let Some(label) = self.content.text().filter(|label| !label.is_empty()) else {
             self.popup.close(PopupDismissReason::Programmatic);
-            self.portal_presented.set(false);
+            self.portal_presented.set_if_changed(false);
             return;
         };
         self.publish_label_geometry(ctx, bounds, &label);
@@ -591,12 +625,12 @@ impl<A: 'static> Widget<A> for TooltipWidget<A> {
             Event::Focus(focus) if focus.focused => {
                 self.sync_focus_within(true);
                 self.popup.open_unpositioned(Some(ctx));
-                self.portal_presented.set(true);
+                self.portal_presented.set_if_changed(true);
             }
             Event::Focus(_) => {
                 self.sync_focus_within(false);
                 self.popup.close(PopupDismissReason::OutsidePress);
-                self.portal_presented.set(false);
+                self.portal_presented.set_if_changed(false);
             }
             Event::Keyboard(key)
                 if key.state == KeyState::Pressed
@@ -637,7 +671,7 @@ impl<A: 'static> TooltipWidget<A> {
         state.dismissed_until_hover_exit = state.hovered;
         state.phase = TooltipPhase::Hidden;
         self.update_state(state);
-        self.portal_presented.set(false);
+        self.portal_presented.set_if_changed(false);
         true
     }
 
@@ -740,7 +774,7 @@ impl<A: 'static> TooltipWidget<A> {
         state.phase = TooltipPhase::Hidden;
         self.update_state(state);
         self.popup.close(reason);
-        self.portal_presented.set(false);
+        self.portal_presented.set_if_changed(false);
     }
 
     /// Measures the retained content and publishes its resolved host geometry.
@@ -782,7 +816,7 @@ impl<A: 'static> TooltipWidget<A> {
             .unwrap_or(Rect::new(trigger.x, trigger.y, 0.0, 0.0))
         };
         self.popup.open_without_event(trigger, card);
-        self.portal_presented.set(true);
+        self.portal_presented.set_if_changed(true);
     }
 }
 

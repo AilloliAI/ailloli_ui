@@ -37,6 +37,7 @@ use super::text_field_core::{
 };
 use super::text_input::TextInputStyle;
 use super::tree_model::{TreeModelHandle, TreeModelSubscription, TreeMutation};
+use crate::transactional_layout::TransactionalLayoutPending;
 
 /// Maximum interval between row clicks that can count as activation.
 const TREE_ACTIVATE_MAX_DELAY: Duration = Duration::from_millis(500);
@@ -2033,7 +2034,10 @@ struct TreeViewComponent<T, A> {
 impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewComponent<T, A> {
     /// Allocates uncontrolled expansion, model invalidation, editor, and cache state.
     fn build(&self, context: &mut Context<A>) -> View<A> {
-        let internal_expanded = context.signal(unique_vec(self.default_expanded.clone()));
+        let internal_expanded = context.signal_with_invalidation(
+            unique_vec(self.default_expanded.clone()),
+            Invalidation::Layout,
+        );
         let expanded = self
             .expanded
             .clone()
@@ -2063,6 +2067,7 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
             expanded,
             mutable_expanded,
             command: self.command.clone(),
+            pending_command: RefCell::new(None),
             disabled: self.disabled.clone(),
             draggable: self.draggable.clone(),
             mutation_mode: self.mutation_mode.clone(),
@@ -2084,14 +2089,17 @@ impl<T: Clone + PartialEq + 'static, A: 'static> ComponentNode<A> for TreeViewCo
             style: self.style.clone(),
             virtualized: self.virtualized,
             diagnostics: self.diagnostics.clone(),
-            active_index: context.signal(None),
-            drag: context.signal(None),
-            editing: context.signal(None),
-            draft: context.signal(None),
-            edit_value: context.signal(String::new()),
-            edit_buffer: context.signal(TextBuffer::from_string(String::new())),
-            edit_state: context.signal(TextEditState::new()),
-            last_click: context.signal(None),
+            active_index: context.signal_with_invalidation(None, Invalidation::Paint),
+            drag: context.signal_with_invalidation(None, Invalidation::Paint),
+            editing: context.signal_with_invalidation(None, Invalidation::Paint),
+            draft: context.signal_with_invalidation(None, Invalidation::Layout),
+            edit_value: context.signal_with_invalidation(String::new(), Invalidation::Paint),
+            edit_buffer: context.signal_with_invalidation(
+                TextBuffer::from_string(String::new()),
+                Invalidation::Paint,
+            ),
+            edit_state: context.signal_with_invalidation(TextEditState::new(), Invalidation::Paint),
+            last_click: context.signal_with_invalidation(None, Invalidation::Paint),
             observed_max_width: Rc::new(Cell::new(160.0)),
             snapshot_flat_cache: Rc::new(RefCell::new(SnapshotFlatCache::default())),
         })
@@ -2307,6 +2315,8 @@ struct TreeViewWidget<T, A> {
     mutable_expanded: Option<Signal<Vec<T>>>,
     /// Optional one-shot external command signal.
     command: Option<Signal<Option<TreeViewCommand<T>>>>,
+    /// Command observed by one exact authoritative layout attempt.
+    pending_command: RefCell<Option<TransactionalLayoutPending<TreeViewCommand<T>>>>,
     /// Whole-tree disabled state.
     disabled: Binding<bool>,
     /// Drag enablement.
@@ -2388,7 +2398,11 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         _children: &mut [LayoutChild],
         constraints: Constraints,
     ) -> LayoutResult {
-        self.consume_pending_command();
+        if ctx.layout_pass().is_committed() {
+            let command = self.command.as_ref().and_then(Signal::read);
+            self.pending_command
+                .replace(command.and_then(|command| TransactionalLayoutPending::new(ctx, command)));
+        }
         let total_rows = self.visible_len();
         let layout_range = self.layout_row_range(ctx, constraints, total_rows);
         let layout_rows = layout_range.len();
@@ -2456,6 +2470,26 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
             is_window_root_clip: false,
             artifact: None,
         }
+    }
+
+    /// Publishes a staged editor command only after its observing layout won.
+    ///
+    /// A create command inserts a row and therefore deliberately schedules a
+    /// second authoritative layout. Paint fails closed between those frames
+    /// instead of drawing that fresh draft against older geometry.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        let Some(command) = self
+            .pending_command
+            .borrow_mut()
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        if let Some(command_signal) = &self.command {
+            command_signal.set(None);
+        }
+        self.apply_pending_command(command);
     }
 
     /// Paints the current row range, selection/active/drop/editor state, and focus.
@@ -2548,15 +2582,12 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
         }
     }
 
-    /// Consumes commands and routes enabled input to editor, pointer, or keyboard logic.
+    /// Consumes queued commands, then routes enabled input to widget logic.
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
-        // A command may come from an externally-owned `State`, which has no
-        // runtime invalidator of its own. Incremental layout can therefore
-        // legitimately reuse this widget without calling `layout`. Consume
-        // the command at the next routed event as well as during layout so
-        // the legacy command binding remains usable without defeating the
-        // layout cache.
-        self.consume_pending_command();
+        // Events run outside build/layout/paint traversal. Applying the command
+        // here lets a first typed character reach the freshly opened editor;
+        // geometry-changing commands still request Layout through their state.
+        self.consume_pending_command_for_event();
         if self.disabled.read() {
             return;
         }
@@ -2640,11 +2671,8 @@ impl<T: Clone + PartialEq + 'static, A: 'static> Widget<A> for TreeViewWidget<T,
 }
 
 impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
-    /// Takes one pending command before attempting rename/create behavior.
-    ///
-    /// Commands are cleared even when feature gates, target lookup, or factories
-    /// reject the requested operation.
-    fn consume_pending_command(&self) {
+    /// Applies one queued command at the start of an event traversal.
+    fn consume_pending_command_for_event(&self) {
         let Some(command_signal) = &self.command else {
             return;
         };
@@ -2652,6 +2680,11 @@ impl<T: Clone + PartialEq + 'static, A: 'static> TreeViewWidget<T, A> {
             return;
         };
         command_signal.set(None);
+        self.apply_pending_command(command);
+    }
+
+    /// Applies one command after the layout attempt that observed it committed.
+    fn apply_pending_command(&self, command: TreeViewCommand<T>) {
         match command {
             TreeViewCommand::BeginRename(id) => {
                 let nodes = self.visible_nodes();

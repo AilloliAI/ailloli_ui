@@ -11,7 +11,11 @@ use ailloli_ui_core::event::Event;
 use ailloli_ui_core::geometry::{Constraints, Point, Rect};
 use ailloli_ui_core::style::FlexItemStyle;
 use ailloli_ui_core::style::LayoutSizeHint;
-use std::rc::Rc;
+use std::any::TypeId;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::rc::{Rc, Weak};
 
 /// Declarative view tree node (widget, component, or empty).
 ///
@@ -149,7 +153,7 @@ impl<A> View<A> {
     pub fn leaf(widget: impl Widget<A> + 'static) -> Self {
         Self {
             key: None,
-            kind: ViewKind::Widget(Rc::new(widget)),
+            kind: ViewKind::Widget(track_widget(widget)),
             children: Vec::new(),
             flex_item: FlexItemStyle::default(),
             size_hint: LayoutSizeHint::default(),
@@ -180,7 +184,7 @@ impl<A> View<A> {
     pub fn node(widget: impl Widget<A> + 'static, children: Vec<View<A>>) -> Self {
         Self {
             key: None,
-            kind: ViewKind::Widget(Rc::new(widget)),
+            kind: ViewKind::Widget(track_widget(widget)),
             children,
             flex_item: FlexItemStyle::default(),
             size_hint: LayoutSizeHint::default(),
@@ -206,7 +210,7 @@ impl<A> View<A> {
     pub fn component(component: impl ComponentNode<A> + 'static) -> Self {
         Self {
             key: None,
-            kind: ViewKind::Component(Rc::new(component)),
+            kind: ViewKind::Component(track_component(component)),
             children: Vec::new(),
             flex_item: FlexItemStyle::default(),
             size_hint: LayoutSizeHint::default(),
@@ -342,7 +346,12 @@ impl<T, A> IntoViewKeyExt<A> for T where T: IntoView<A> {}
 ///
 /// Callbacks run synchronously on the UI thread and panics propagate. Layout
 /// and paint use logical pixels. Implementations must not retain borrowed
-/// engines, contexts, child slices, events, bounds, or results.
+/// engines, contexts, child slices, events, bounds, or results. Reactive reads
+/// made by successful layout and paint callbacks are observed automatically;
+/// event-callback reads are passive unless the state also has an owner-provided
+/// invalidator. Reconciliation preserves a mount for a fresh payload of the
+/// same concrete widget type and starts a new mount generation when that type
+/// changes.
 ///
 /// # Examples
 ///
@@ -411,6 +420,12 @@ pub trait Widget<A>: 'static {
     /// authoritative allocation. Implementations must not persist effects
     /// derived from geometry during a measurement pass.
     ///
+    /// Reactive reads from measurement are staged for the current layout
+    /// attempt. Reads from measurements that contribute to the accepted result
+    /// are combined with reads from authoritative allocation and published only
+    /// after the attempt succeeds. Abandoned alternatives and panicking attempts
+    /// do not replace the previous dependency set.
+    ///
     /// # Examples
     ///
     /// ```
@@ -437,7 +452,15 @@ pub trait Widget<A>: 'static {
     /// Emits base draw commands for absolute logical-pixel `bounds`.
     ///
     /// Base paint runs before descendants. `layout` is the cached result from
-    /// this element's layout pass and may contain a reusable artifact.
+    /// this element's committed layout pass and may contain a reusable artifact.
+    /// Geometry-dependent drawing must use that committed result; a widget must
+    /// not reshape newly read content into bounds computed for older content.
+    /// When geometry dependencies are stale, the runtime schedules layout for a
+    /// later traversal and does not invoke unsafe paint against stale geometry.
+    ///
+    /// Reactive reads from base and overlay paint form one dependency set. It
+    /// replaces the prior paint set only after the element's paint traversal
+    /// succeeds; a panic preserves the prior set.
     ///
     /// # Examples
     ///
@@ -454,10 +477,30 @@ pub trait Widget<A>: 'static {
     /// ```
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult);
 
+    /// Returns whether stale paint may replay this widget's committed text artifact.
+    ///
+    /// The default is fail-closed. A widget may opt in only when its complete
+    /// stale-safe visual unit is the immutable [`crate::layout::LayoutArtifact::Text`]
+    /// stored by its successful authoritative layout. Controls that add frames,
+    /// padding, scrolling, selection, carets, or overlays must keep the default.
+    /// The runtime calls this hook without invoking `paint` or reading widget state.
+    #[doc(hidden)]
+    fn can_replay_committed_text_artifact(&self) -> bool {
+        false
+    }
+
     /// Observes newly committed absolute bounds after layout.
     ///
-    /// The default does nothing. It runs only when geometry/layout changed and
-    /// before descendants are committed; it should not mutate tree topology.
+    /// The default does nothing. It runs after a real authoritative layout
+    /// callback, or when committed bounds or retained hook inputs changed.
+    /// Stable cache hits do not rerun it. The complete visited subtree already
+    /// has authoritative bounds; the hook should not mutate tree topology.
+    /// Reactive reads are combined with the successful authoritative layout
+    /// observations. This callback is not run for speculative measurement.
+    /// If it panics, the authoritative geometry remains committed and the
+    /// previously published hook dependencies remain active. Reactive writes
+    /// performed before the panic are not rolled back; any invalidation they
+    /// emit remains queued for a later frame rather than re-entering layout.
     ///
     /// # Examples
     ///
@@ -650,7 +693,14 @@ pub trait Widget<A>: 'static {
 /// Stateful declarative component contract.
 ///
 /// Each build runs synchronously with a fresh hook cursor and returns exactly
-/// one root view. Panics propagate and reconciliation is not transactional.
+/// one root view. Reactive reads are observed automatically. After a successful
+/// build, the sources reached by that build atomically replace the component's
+/// previous observations; this includes switching conditional branches or
+/// observing no source. A panic preserves the previous observations, although
+/// reconciliation and application-side mutations are not rolled back. All
+/// observations are removed when the component unmounts. A fresh payload of
+/// the same concrete component type preserves the mount; changing that type
+/// starts a new mount generation. Panics propagate.
 ///
 /// # Examples
 ///
@@ -663,6 +713,11 @@ pub trait Widget<A>: 'static {
 /// ```
 pub trait ComponentNode<A>: 'static {
     /// Builds the component's current declarative root view.
+    ///
+    /// The callback runs synchronously on the UI thread. Reading a
+    /// [`Signal`](super::Signal),
+    /// [`State`](super::State), reactive [`Binding`](super::Binding), or derived
+    /// [`Memo`](super::Memo) records the source for this mounted component.
     ///
     /// # Examples
     ///
@@ -678,11 +733,235 @@ pub trait ComponentNode<A>: 'static {
     fn build(&self, context: &mut Context<A>) -> View<A>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MountPayloadClass {
+    Widget,
+    Component,
+}
+
+struct MountIdentityRecord {
+    lifetime: Weak<dyn MountLiveness>,
+    identity: PrivateMountIdentity,
+}
+
+thread_local! {
+    static MOUNT_IDENTITIES: RefCell<MountIdentityRegistry> =
+        RefCell::new(MountIdentityRegistry::default());
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrivateMountIdentity(TypeId);
+
+#[derive(Default)]
+struct MountIdentityRegistry {
+    records: HashMap<(MountPayloadClass, usize), MountIdentityRecord>,
+}
+
+struct MountTracked<T> {
+    payload: T,
+    class: MountPayloadClass,
+}
+
+trait MountLiveness: 'static {}
+
+impl<T: 'static> MountLiveness for MountTracked<T> {}
+
+impl<T> Drop for MountTracked<T> {
+    fn drop(&mut self) {
+        let data_pointer = self as *const Self as usize;
+        MOUNT_IDENTITIES.with(|identities| {
+            identities
+                .borrow_mut()
+                .records
+                .remove(&(self.class, data_pointer));
+        });
+    }
+}
+
+fn register_mount_identity(
+    class: MountPayloadClass,
+    data_pointer: usize,
+    lifetime: Weak<dyn MountLiveness>,
+    identity: PrivateMountIdentity,
+) {
+    MOUNT_IDENTITIES.with(|identities| {
+        identities.borrow_mut().records.insert(
+            (class, data_pointer),
+            MountIdentityRecord { lifetime, identity },
+        );
+    });
+}
+
+fn mount_identity(class: MountPayloadClass, data_pointer: usize) -> Option<PrivateMountIdentity> {
+    MOUNT_IDENTITIES.with(|identities| {
+        let mut identities = identities.borrow_mut();
+        let key = (class, data_pointer);
+        let live = identities
+            .records
+            .get(&key)
+            .is_some_and(|record| record.lifetime.strong_count() > 0);
+        if !live {
+            identities.records.remove(&key);
+            return None;
+        }
+        identities.records.get(&key).map(|record| record.identity)
+    })
+}
+
+fn new_mount_identity<T: 'static>() -> PrivateMountIdentity {
+    PrivateMountIdentity(TypeId::of::<T>())
+}
+
+fn track_widget<A, T>(widget: T) -> Rc<dyn Widget<A>>
+where
+    T: Widget<A> + 'static,
+{
+    let tracked: Rc<MountTracked<T>> = Rc::new(MountTracked {
+        payload: widget,
+        class: MountPayloadClass::Widget,
+    });
+    let liveness: Rc<dyn MountLiveness> = tracked.clone();
+    let lifetime = Rc::downgrade(&liveness);
+    let erased: Rc<dyn Widget<A>> = tracked;
+    register_mount_identity(
+        MountPayloadClass::Widget,
+        Rc::as_ptr(&erased) as *const () as usize,
+        lifetime,
+        new_mount_identity::<T>(),
+    );
+    erased
+}
+
+fn track_component<A, T>(component: T) -> Rc<dyn ComponentNode<A>>
+where
+    T: ComponentNode<A> + 'static,
+{
+    let tracked: Rc<MountTracked<T>> = Rc::new(MountTracked {
+        payload: component,
+        class: MountPayloadClass::Component,
+    });
+    let liveness: Rc<dyn MountLiveness> = tracked.clone();
+    let lifetime = Rc::downgrade(&liveness);
+    let erased: Rc<dyn ComponentNode<A>> = tracked;
+    register_mount_identity(
+        MountPayloadClass::Component,
+        Rc::as_ptr(&erased) as *const () as usize,
+        lifetime,
+        new_mount_identity::<T>(),
+    );
+    erased
+}
+
+pub(crate) fn widget_mount_identity<A>(widget: &Rc<dyn Widget<A>>) -> Option<PrivateMountIdentity> {
+    mount_identity(
+        MountPayloadClass::Widget,
+        Rc::as_ptr(widget) as *const () as usize,
+    )
+}
+
+pub(crate) fn component_mount_identity<A>(
+    component: &Rc<dyn ComponentNode<A>>,
+) -> Option<PrivateMountIdentity> {
+    mount_identity(
+        MountPayloadClass::Component,
+        Rc::as_ptr(component) as *const () as usize,
+    )
+}
+
+impl<T, A> Widget<A> for MountTracked<T>
+where
+    T: Widget<A> + 'static,
+{
+    fn debug_name(&self) -> &'static str {
+        self.payload.debug_name()
+    }
+
+    fn layout_dependency_revision(&self) -> u64 {
+        self.payload.layout_dependency_revision()
+    }
+
+    fn layout(
+        &self,
+        engine: &mut LayoutEngine<'_, A>,
+        ctx: &mut LayoutCtx<'_>,
+        children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        self.payload.layout(engine, ctx, children, constraints)
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
+        self.payload.paint(ctx, bounds, layout);
+    }
+
+    fn can_replay_committed_text_artifact(&self) -> bool {
+        self.payload.can_replay_committed_text_artifact()
+    }
+
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, bounds: Rect, layout: &LayoutResult) {
+        self.payload.layout_committed(ctx, bounds, layout);
+    }
+
+    fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
+        self.payload.paint_overlay(ctx, bounds, layout);
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
+        self.payload.event(ctx, event, bounds, layout);
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        self.payload.focus_policy()
+    }
+
+    fn activation_policy(&self) -> ActivationPolicy {
+        self.payload.activation_policy()
+    }
+
+    fn input_role(&self) -> InputRole {
+        self.payload.input_role()
+    }
+
+    fn hover_cursor_role(&self) -> HoverCursorRole {
+        self.payload.hover_cursor_role()
+    }
+
+    fn hover_cursor_role_at(
+        &self,
+        bounds: Rect,
+        layout: &LayoutResult,
+        pos: Point,
+    ) -> HoverCursorRole {
+        self.payload.hover_cursor_role_at(bounds, layout, pos)
+    }
+
+    fn ime_cursor_rect(&self, bounds: Rect, layout: &LayoutResult) -> Option<Rect> {
+        self.payload.ime_cursor_rect(bounds, layout)
+    }
+}
+
+impl<T, A> ComponentNode<A> for MountTracked<T>
+where
+    T: ComponentNode<A> + 'static,
+{
+    fn build(&self, context: &mut Context<A>) -> View<A> {
+        self.payload.build(context)
+    }
+}
+
 /// Function-backed component storing cloneable props.
 ///
-/// Every build clones `props` and passes the clone by value to `render`. The
-/// function pointer cannot capture an environment; use a custom
-/// [`ComponentNode`] when retained captures are needed.
+/// Every build clones `props` and passes the clone by value to `render`.
+/// Function items and closure expressions keep their concrete Rust type, which
+/// lets reconciliation distinguish different render implementations without
+/// adding identity methods to [`ComponentNode`].
+///
+/// Existing annotations such as `Component<P, A>` remain valid and use the
+/// default erased function-pointer type. That explicit erasure preserves the
+/// historical type-based reconciliation contract: changing the callback while
+/// keeping the same erased type does not identify a new mount. Callers that
+/// intentionally replace an erased callback should use a distinct component
+/// type or reconciliation key.
 ///
 /// # Examples
 ///
@@ -692,17 +971,20 @@ pub trait ComponentNode<A>: 'static {
 /// let view = Component::new(String::from("root"), render).into_view();
 /// assert!(matches!(view.kind, ailloli_ui_runtime::component::ViewKind::Component(_)));
 /// ```
-pub struct Component<P, A> {
+pub struct Component<P, A, F = fn(&mut Context<A>, P) -> View<A>> {
     /// Cloneable properties passed by value to every render invocation.
     props: P,
-    /// Non-capturing render function used to build the retained view.
-    render: fn(&mut Context<A>, P) -> View<A>,
+    /// Typed render callback used to build the retained view.
+    render: F,
+    /// Application type retained without imposing ownership or auto-trait bounds.
+    application: PhantomData<fn() -> A>,
 }
 
-impl<P, A> Component<P, A>
+impl<P, A, F> Component<P, A, F>
 where
     P: Clone + 'static,
     A: 'static,
+    F: Fn(&mut Context<A>, P) -> View<A> + 'static,
 {
     /// Creates a function-backed component without running `render`.
     ///
@@ -714,15 +996,20 @@ where
     /// let view = Component::new(7, render).into_view();
     /// assert!(view.children.is_empty());
     /// ```
-    pub fn new(props: P, render: fn(&mut Context<A>, P) -> View<A>) -> Self {
-        Self { props, render }
+    pub fn new(props: P, render: F) -> Self {
+        Self {
+            props,
+            render,
+            application: PhantomData,
+        }
     }
 }
 
-impl<P, A> ComponentNode<A> for Component<P, A>
+impl<P, A, F> ComponentNode<A> for Component<P, A, F>
 where
     P: Clone + 'static,
     A: 'static,
+    F: Fn(&mut Context<A>, P) -> View<A> + 'static,
 {
     /// Builds the retained view required by this component.
     fn build(&self, context: &mut Context<A>) -> View<A> {
@@ -730,10 +1017,11 @@ where
     }
 }
 
-impl<P, A> IntoView<A> for Component<P, A>
+impl<P, A, F> IntoView<A> for Component<P, A, F>
 where
     P: Clone + 'static,
     A: 'static,
+    F: Fn(&mut Context<A>, P) -> View<A> + 'static,
 {
     /// Converts this value into its retained view representation.
     fn into_view(self) -> View<A> {

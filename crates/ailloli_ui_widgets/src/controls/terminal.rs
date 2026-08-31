@@ -4,7 +4,7 @@
 //! protocol. Event chunks are joined and split on newlines, complete history is
 //! bounded, and the optional event source is drained during layout, paint, and input.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use ailloli_ui_core::scroll::{
 };
 use ailloli_ui_core::style::{Border, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius};
 use ailloli_ui_core::{ClipShape, Color, FontId, Offset, TextStyle, Theme};
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Signal, View, Widget,
 };
@@ -29,6 +30,7 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawRRect, DrawRect, DrawText, Inv
 use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
 
 use crate::scrollbar::{thumb_color_for_state, ScrollbarInteraction};
+use crate::transactional_layout::TransactionalLayoutPending;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Semantic line category used to choose a default text style.
@@ -1158,10 +1160,10 @@ impl<A: 'static> ComponentNode<A> for TerminalViewComponent {
         View::leaf(TerminalViewWidget {
             layout: self.layout,
             buffer: context.signal(buffer),
-            scroll: context.signal(ScrollState::with_offset(Offset::new(
-                0.0,
-                self.initial_scroll_y,
-            ))),
+            scroll: context.signal_with_invalidation(
+                ScrollState::with_offset(Offset::new(0.0, self.initial_scroll_y)),
+                Invalidation::Paint,
+            ),
             selection: context.signal(initial_selection),
             drag_anchor: context.signal(None),
             scrollbar_interaction: context
@@ -1176,6 +1178,7 @@ impl<A: 'static> ComponentNode<A> for TerminalViewComponent {
             cursor_line: self.cursor_line,
             selectable: self.selectable,
             scrollbars: self.scrollbars,
+            pending_layout: Cell::new(None),
         })
     }
 }
@@ -1362,6 +1365,17 @@ struct TerminalViewWidget {
     selectable: bool,
     /// Whether to reserve and paint a scrollbar.
     scrollbars: bool,
+    /// Geometry-derived state owned by one exact authoritative attempt.
+    pending_layout: Cell<Option<TransactionalLayoutPending<PendingTerminalViewLayout>>>,
+}
+
+/// State published only by the successful attempt that computed it.
+#[derive(Clone, Copy)]
+struct PendingTerminalViewLayout {
+    /// Final authoritative scroll clamp.
+    scroll: Option<ScrollState>,
+    /// Geometry-dependent gesture cleanup.
+    scrollbar_interaction: Option<ScrollbarInteraction>,
 }
 
 impl<A: 'static> Widget<A> for TerminalViewWidget {
@@ -1382,16 +1396,27 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
         let lines = self.buffer.read().visible_lines();
         let intrinsic = Size::new(self.style.width, self.style.height);
         let size = apply_layout_size(intrinsic, self.layout, constraints);
-        self.clamp_scroll(Size::new(size.w, size.h), lines.len());
+        let scroll = self.clamped_scroll(Size::new(size.w, size.h), lines.len());
 
         let viewport = Rect::new(0.0, 0.0, size.w, size.h);
         let geometries = self
-            .scrollbar_geometry(viewport, lines.len())
+            .scrollbar_geometry_for_state(viewport, lines.len(), scroll)
             .into_iter()
             .collect::<Vec<_>>();
-        let mut interaction = self.scrollbar_interaction.read();
-        if interaction.reconcile(ctx.layout_pass(), &geometries) {
-            self.scrollbar_interaction.set(interaction);
+        // Authoritative geometry can retire a captured gesture. This signal
+        // already has a context-owned Paint invalidator, and observing its old
+        // value would make the same layout transaction stale when reconciled.
+        let mut interaction = with_untracked_reads(|| self.scrollbar_interaction.read());
+        let interaction_changed = interaction.reconcile(ctx.layout_pass(), &geometries);
+        if ctx.layout_pass().is_committed() {
+            let retained_scroll = with_untracked_reads(|| self.scroll.read());
+            self.pending_layout.set(TransactionalLayoutPending::new(
+                ctx,
+                PendingTerminalViewLayout {
+                    scroll: (retained_scroll != scroll).then_some(scroll),
+                    scrollbar_interaction: interaction_changed.then_some(interaction),
+                },
+            ));
         }
         LayoutResult {
             size,
@@ -1408,11 +1433,27 @@ impl<A: 'static> Widget<A> for TerminalViewWidget {
         }
     }
 
+    /// Publishes only the state derived by the successful authoritative pass.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        let Some(pending) = self
+            .pending_layout
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        else {
+            return;
+        };
+        if let Some(scroll) = pending.scroll {
+            self.scroll.set(scroll);
+        }
+        if let Some(interaction) = pending.scrollbar_interaction {
+            self.scrollbar_interaction.set(interaction);
+        }
+    }
+
     /// Paints surface, lines, search/selection/cursor, and optional scrollbar.
     fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
         self.drain_source();
         let lines = self.buffer.read().visible_lines();
-        self.clamp_scroll(Size::new(bounds.w, bounds.h), lines.len());
         let style = &self.style;
 
         ctx.push(DrawCmd::RRect(DrawRRect {
@@ -1654,6 +1695,16 @@ impl TerminalViewWidget {
 
     /// Resolves shared vertical scrollbar geometry while preserving terminal styling.
     fn scrollbar_geometry(&self, bounds: Rect, line_count: usize) -> Option<ScrollbarGeometry> {
+        self.scrollbar_geometry_for_state(bounds, line_count, self.scroll.read())
+    }
+
+    /// Resolves scrollbar geometry for an explicit transaction-local state.
+    fn scrollbar_geometry_for_state(
+        &self,
+        bounds: Rect,
+        line_count: usize,
+        scroll: ScrollState,
+    ) -> Option<ScrollbarGeometry> {
         if !self.scrollbars {
             return None;
         }
@@ -1662,7 +1713,7 @@ impl TerminalViewWidget {
             ScrollbarAxis::Vertical,
             bounds,
             self.scroll_metrics(content, line_count),
-            self.scroll.read(),
+            scroll,
         )
         .with_paint_metrics(self.style.scrollbar_width, 24.0, self.style.scrollbar_inset)
         .with_hit_thickness(16.0)
@@ -1671,12 +1722,20 @@ impl TerminalViewWidget {
 
     /// Clamps retained vertical offset against the current viewport and content.
     fn clamp_scroll(&self, size: Size, line_count: usize) {
+        let current = with_untracked_reads(|| self.scroll.read());
+        let next = self.clamped_scroll(size, line_count);
+        if current != next {
+            self.scroll.set(next);
+        }
+    }
+
+    /// Computes the bounded offset without mutating state during layout.
+    fn clamped_scroll(&self, size: Size, line_count: usize) -> ScrollState {
         let content = self.content_rect(Rect::new(0.0, 0.0, size.w, size.h));
         let metrics = self.scroll_metrics(content, line_count);
-        let out = self.scroll.read().clamp_to(metrics, ScrollAxes::VERTICAL);
-        if out.changed {
-            self.scroll.set(out.state());
-        }
+        with_untracked_reads(|| self.scroll.read())
+            .clamp_to(metrics, ScrollAxes::VERTICAL)
+            .state()
     }
 
     /// Converts a point inside content to a clamped line and approximate column.

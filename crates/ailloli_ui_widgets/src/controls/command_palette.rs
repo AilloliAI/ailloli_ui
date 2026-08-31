@@ -1,8 +1,9 @@
 //! Full-slot command palette overlay with editable filtering and keyboard navigation.
 
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
+use crate::transactional_layout::TransactionalLayoutPending;
 use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, Key, KeyState, NamedKey, WheelDelta};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
@@ -11,6 +12,8 @@ use ailloli_ui_core::style::{
     Border, BoxShadow, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius,
 };
 use ailloli_ui_core::{Color, FontId, IconId, Offset, TextStyle, Theme};
+use ailloli_ui_runtime::app::Invalidation;
+use ailloli_ui_runtime::component::reactive::with_untracked_reads;
 use ailloli_ui_runtime::component::{
     Binding, ComponentNode, Context, IntoView, Signal, View, Widget,
 };
@@ -22,7 +25,7 @@ use ailloli_ui_runtime::scene::PaintCtx;
 use ailloli_ui_runtime::{
     DrawBorder, DrawBoxShadow, DrawCmd, DrawImage, DrawRRect, DrawRect, DrawText,
 };
-use ailloli_ui_text::{TextBuffer, TextEditState, TextLayoutParams, WrapMode};
+use ailloli_ui_text::{TextBuffer, TextEditState};
 
 use super::popup::{
     apply_opacity, measure_text, paint_overlay_text_in_rect, paint_popup_border, paint_popup_shell,
@@ -682,10 +685,11 @@ impl<A: 'static> ComponentNode<A> for CommandPaletteComponent<A> {
                 disabled: self.disabled.clone(),
                 items: self.items.clone(),
                 style: self.style.clone(),
-                scroll: context.signal(ScrollState::new()),
+                scroll: context.signal_with_invalidation(ScrollState::new(), Invalidation::Paint),
                 active_index: context.signal(None),
                 buffer: context.signal(TextBuffer::from_string(current.clone())),
                 edit: context.signal(edit_at_end(&current)),
+                pending_scroll: Cell::new(None),
             },
             children,
         )
@@ -742,6 +746,8 @@ struct CommandPaletteWidget<A> {
     buffer: Signal<TextBuffer>,
     /// Caret and selection state for single-line query editing.
     edit: Signal<TextEditState>,
+    /// Scroll clamp staged for the exact authoritative layout attempt.
+    pending_scroll: Cell<Option<TransactionalLayoutPending<Option<ScrollState>>>>,
 }
 
 impl<A: 'static> Widget<A> for CommandPaletteWidget<A> {
@@ -789,8 +795,12 @@ impl<A: 'static> Widget<A> for CommandPaletteWidget<A> {
         } else {
             Vec::new()
         };
-        if self.is_open() && !self.disabled.read() {
-            self.clamp_scroll(self.list_rect_for_size(size).size());
+        if ctx.layout_pass().is_committed() {
+            let state = (self.is_open() && !self.disabled.read())
+                .then(|| self.clamped_scroll(self.list_rect_for_size(size).size()))
+                .flatten();
+            self.pending_scroll
+                .set(TransactionalLayoutPending::new(ctx, state));
         }
 
         LayoutResult {
@@ -806,6 +816,18 @@ impl<A: 'static> Widget<A> for CommandPaletteWidget<A> {
     }
 
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
+
+    /// Publishes only the clamp computed by this exact successful attempt.
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {
+        if let Some(state) = self
+            .pending_scroll
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+            .flatten()
+        {
+            self.scroll.set(state);
+        }
+    }
 
     fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
         if !self.is_open() || self.disabled.read() {
@@ -1064,17 +1086,13 @@ impl<A: 'static> CommandPaletteWidget<A> {
         previous_enabled(&filtered, current, |idx| !self.items[idx].disabled.read())
     }
 
-    /// Clamps retained vertical offset to the current result viewport.
-    fn clamp_scroll(&self, viewport: Size) {
+    /// Returns a changed retained offset clamped to the result viewport.
+    fn clamped_scroll(&self, viewport: Size) -> Option<ScrollState> {
         let rows = self.filtered_indices().len().max(1);
         let content = Size::new(viewport.w, rows as f32 * self.style.row_height);
-        let out = self
-            .scroll
-            .read()
-            .clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
-        if out.changed {
-            self.scroll.set(out.state());
-        }
+        let retained = with_untracked_reads(|| self.scroll.read());
+        let out = retained.clamp_to(ScrollMetrics::new(viewport, content), ScrollAxes::VERTICAL);
+        out.changed.then_some(out.state())
     }
 
     /// Maps a logical pointer position to an unfiltered item index.
@@ -1484,6 +1502,10 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
 
 #[allow(clippy::too_many_arguments)]
 /// Paints clipped overlay selection, query/placeholder glyphs, and caret.
+///
+/// An exact committed text artifact is mandatory. Current query or IME state
+/// that does not match that artifact is skipped until layout commits a matching
+/// one; overlay paint never reshapes into stale panel geometry.
 fn paint_overlay_single_line_text(
     ctx: &mut PaintCtx<'_>,
     bounds: Rect,
@@ -1522,19 +1544,15 @@ fn paint_overlay_single_line_text(
         ..style
     };
 
-    let layout_handle = match layout.artifact.as_ref() {
-        Some(LayoutArtifact::Text(layout)) if layout.text() == text => layout.clone(),
-        _ => {
-            let Some(ts) = ctx.text_system.as_deref_mut() else {
-                return;
-            };
-            ts.layout_cached(TextLayoutParams {
-                text: &text,
-                style: style.text,
-                max_width: Some(bounds.w.max(0.0)),
-                wrap_mode: WrapMode::NoWrap,
-            })
-        }
+    let Some(layout_handle) = layout
+        .artifact
+        .as_ref()
+        .and_then(|artifact| match artifact {
+            LayoutArtifact::Text(layout) if layout.text() == text => Some(layout.clone()),
+            _ => None,
+        })
+    else {
+        return;
     };
 
     let content_rect = text_input_content_rect(bounds, style);
@@ -1592,5 +1610,66 @@ trait RectExt {
 impl RectExt for Rect {
     fn size(self) -> Size {
         Size::new(self.w, self.h)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Fail-closed query painting against committed overlay artifacts.
+
+    use std::cell::RefCell;
+
+    use super::*;
+    use ailloli_ui_core::Size;
+    use ailloli_ui_text::{TextLayoutParams, TextSystem, WrapMode};
+
+    /// Creates a deterministic standalone signal for direct widget-helper tests.
+    fn signal<T: 'static>(value: T) -> Signal<T> {
+        Signal::new(Rc::new(RefCell::new(value)), Rc::new(|| {}))
+    }
+
+    #[test]
+    fn command_palette_query_paint_skips_a_mismatched_committed_artifact() {
+        let value = signal("fresh".to_string());
+        let buffer = signal(TextBuffer::from_string("fresh".to_string()));
+        let edit = signal(edit_at_end("fresh"));
+        let style = TextInputStyle::default();
+        let mut text_system = TextSystem::new();
+        let stale = text_system.layout_cached(TextLayoutParams {
+            text: "stale",
+            style: style.text,
+            max_width: Some(200.0),
+            wrap_mode: WrapMode::NoWrap,
+        });
+        let layout = LayoutResult {
+            size: Size::new(200.0, 40.0),
+            children: Vec::new(),
+            paint_bounds: Rect::new(0.0, 0.0, 200.0, 40.0),
+            visual_bounds: Rect::new(0.0, 0.0, 200.0, 40.0),
+            overlay_hit_bounds: Vec::new(),
+            clip: None,
+            is_window_root_clip: false,
+            artifact: Some(LayoutArtifact::Text(stale)),
+        };
+        let mut paint = PaintCtx::with_text_system(&mut text_system);
+
+        paint_overlay_single_line_text(
+            &mut paint,
+            Rect::new(0.0, 0.0, 200.0, 40.0),
+            &layout,
+            &value,
+            &buffer,
+            &edit,
+            None,
+            style,
+            true,
+        );
+
+        assert!(paint.overlay_layers.iter().all(|layer| {
+            layer
+                .cmds
+                .iter()
+                .all(|cmd| !matches!(cmd, DrawCmd::Text(_)))
+        }));
     }
 }

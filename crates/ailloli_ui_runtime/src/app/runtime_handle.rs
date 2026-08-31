@@ -6,7 +6,12 @@ use super::state_store::StateStore;
 use super::{
     FrameWorkPlan, Invalidation, InvalidationDiagnosticsSnapshot, InvalidationSource, UiWake,
 };
-use crate::app::PresentationGeneration;
+use crate::app::{PresentationGeneration, PresentationWorkPlan};
+use crate::component::reactive::{
+    MountGeneration, ReactiveConsumer, ReactiveDependencyBatchResult, ReactiveDependencyGraph,
+    ReactiveDependencyUpdate, ReactiveReadSet, ReactiveRuntimeDiagnostics,
+    ReactiveRuntimeDiagnosticsSnapshot, ReactiveStage,
+};
 use crate::popup::{
     ElementTreeId, PopupContent, PopupDismissReason, PopupId, PopupIntent, PopupPlacementSpec,
     PopupPortal, PopupPortalError, PopupPortalOutcome, PopupRequest,
@@ -14,7 +19,7 @@ use crate::popup::{
 use ailloli_ui_core::geometry::{Point, Rect};
 use ailloli_ui_core::ids::{ElementId, LogicalWindowId};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -411,7 +416,14 @@ impl<A> RuntimeHandle<A> {
         states.borrow_mut().remove_tree_scoped(element_tree_id);
 
         let mut inner = self.inner.borrow_mut();
+        inner.reactive_dependencies.remove_tree(element_tree_id);
+        inner
+            .mounted_elements
+            .retain(|(tree_id, _), _| *tree_id != element_tree_id);
         inner.dirty_elements.remove(&element_tree_id);
+        inner
+            .generation_bound_invalidations
+            .remove(&element_tree_id);
         inner
             .ui_services
             .retain(|(tree_id, _), _| *tree_id != element_tree_id);
@@ -491,12 +503,18 @@ impl<A> RuntimeHandle<A> {
         source: InvalidationSource,
     ) {
         let mut inner = self.inner.borrow_mut();
+        let generation_bound_pending = Self::generation_bound_invalidation_for_element(
+            &inner,
+            self.element_tree_id,
+            element_id,
+        )
+        .is_some();
         let coalesced = {
             let pending = inner
                 .dirty_elements
                 .entry(self.element_tree_id)
                 .or_default();
-            let coalesced = pending.contains_key(&element_id);
+            let coalesced = generation_bound_pending || pending.contains_key(&element_id);
             pending
                 .entry(element_id)
                 .and_modify(|current| *current = current.merge(invalidation))
@@ -510,6 +528,119 @@ impl<A> RuntimeHandle<A> {
             source,
             coalesced,
         );
+    }
+
+    /// Queues one source-driven invalidation for an exact mounted generation.
+    ///
+    /// Generation-bound work remains separate from host/runtime work until the
+    /// frame drain. Replacing or removing the mount can therefore discard only
+    /// stale source notifications without losing an unrelated request for the
+    /// same stable element ID.
+    fn invalidate_generation_bound(
+        &self,
+        element_id: ElementId,
+        mount_generation: MountGeneration,
+        invalidation: Invalidation,
+        source: InvalidationSource,
+        count_consumer_notification: bool,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        if inner
+            .mounted_elements
+            .get(&(self.element_tree_id, element_id))
+            != Some(&mount_generation)
+        {
+            return;
+        }
+
+        if count_consumer_notification {
+            inner.reactive_runtime_diagnostics.consumer_notification();
+        }
+        let already_pending = inner
+            .dirty_elements
+            .get(&self.element_tree_id)
+            .is_some_and(|pending| pending.contains_key(&element_id));
+        let pending = inner
+            .generation_bound_invalidations
+            .entry(self.element_tree_id)
+            .or_default();
+        let coalesced = already_pending || pending.contains_key(&element_id);
+        pending
+            .entry(element_id)
+            .and_modify(|current| {
+                debug_assert_eq!(current.mount_generation, mount_generation);
+                if current.mount_generation == mount_generation {
+                    current.invalidation = current.invalidation.merge(invalidation);
+                } else {
+                    *current = GenerationBoundInvalidation {
+                        mount_generation,
+                        invalidation,
+                    };
+                }
+            })
+            .or_insert(GenerationBoundInvalidation {
+                mount_generation,
+                invalidation,
+            });
+        inner.invalidation_diagnostics.record(
+            self.element_tree_id,
+            element_id,
+            invalidation,
+            source,
+            coalesced,
+        );
+    }
+
+    /// Removes only generation-bound work for one stable element identity.
+    fn remove_generation_bound_invalidation(
+        inner: &mut RuntimeInner<A>,
+        element_tree_id: ElementTreeId,
+        element_id: ElementId,
+    ) {
+        let remove_tree_entry = inner
+            .generation_bound_invalidations
+            .get_mut(&element_tree_id)
+            .is_some_and(|pending| {
+                pending.remove(&element_id);
+                pending.is_empty()
+            });
+        if remove_tree_entry {
+            inner
+                .generation_bound_invalidations
+                .remove(&element_tree_id);
+        }
+    }
+
+    /// Iterates current generation-bound work for one retained tree.
+    fn generation_bound_invalidations_for_tree(
+        inner: &RuntimeInner<A>,
+        element_tree_id: ElementTreeId,
+    ) -> impl Iterator<Item = (ElementId, Invalidation)> + '_ {
+        inner
+            .generation_bound_invalidations
+            .get(&element_tree_id)
+            .into_iter()
+            .flat_map(HashMap::iter)
+            .filter_map(move |(element_id, pending)| {
+                (inner.mounted_elements.get(&(element_tree_id, *element_id))
+                    == Some(&pending.mount_generation))
+                .then_some((*element_id, pending.invalidation))
+            })
+    }
+
+    /// Returns current generation-bound work for one exact retained element.
+    fn generation_bound_invalidation_for_element(
+        inner: &RuntimeInner<A>,
+        element_tree_id: ElementTreeId,
+        element_id: ElementId,
+    ) -> Option<Invalidation> {
+        let pending = inner
+            .generation_bound_invalidations
+            .get(&element_tree_id)?
+            .get(&element_id)?;
+        (inner.mounted_elements.get(&(element_tree_id, element_id))
+            == Some(&pending.mount_generation))
+        .then_some(pending.invalidation)
     }
 
     /// Returns an owned snapshot of global invalidation diagnostics.
@@ -624,9 +755,13 @@ impl<A> RuntimeHandle<A> {
         self.inner.borrow().ui_wake.clone()
     }
 
-    /// Registers UI-thread work to service after a payload-free host wake.
+    /// Registers low-level UI-thread work after a payload-free host wake.
     /// The registry owns only a weak target; the returned RAII guard and the
-    /// component state own the callback lifetime.
+    /// caller own the callback lifetime. The boolean result is observational:
+    /// this low-level registration does not infer an owner or enqueue retained
+    /// work. Component code should prefer
+    /// [`crate::component::Context::register_ui_service`], whose changed result
+    /// requests a build of that exact component owner.
     /// IDs start at one and wrap on overflow; the `(tree, id)` key means a
     /// theoretical wrap can replace an older still-live registration.
     ///
@@ -644,13 +779,47 @@ impl<A> RuntimeHandle<A> {
     /// assert_eq!(calls.get(), 1);
     /// ```
     pub fn register_ui_service(&self, service: &Rc<dyn Fn() -> bool>) -> UiServiceRegistration<A> {
+        self.register_ui_service_entry(service, None)
+    }
+
+    /// Registers a component-owned UI service using the current mount generation.
+    pub(crate) fn register_owned_ui_service(
+        &self,
+        element_id: ElementId,
+        service: &Rc<dyn Fn() -> bool>,
+    ) -> UiServiceRegistration<A> {
+        let mount_generation = self
+            .inner
+            .borrow()
+            .mounted_elements
+            .get(&(self.element_tree_id, element_id))
+            .copied();
+        self.register_ui_service_entry(
+            service,
+            Some(UiServiceOwner {
+                element_id,
+                mount_generation,
+            }),
+        )
+    }
+
+    /// Installs one weak callback with optional retained-component ownership.
+    fn register_ui_service_entry(
+        &self,
+        service: &Rc<dyn Fn() -> bool>,
+        owner: Option<UiServiceOwner>,
+    ) -> UiServiceRegistration<A> {
         let id = {
             let mut inner = self.inner.borrow_mut();
             let id = inner.next_ui_service_id;
             inner.next_ui_service_id = id.wrapping_add(1);
-            inner
-                .ui_services
-                .insert((self.element_tree_id, id), Rc::downgrade(service));
+            inner.ui_services.insert(
+                (self.element_tree_id, id),
+                UiServiceEntry {
+                    callback: Rc::downgrade(service),
+                    owner,
+                },
+            );
             id
         };
         UiServiceRegistration {
@@ -661,9 +830,11 @@ impl<A> RuntimeHandle<A> {
     }
 
     /// Services every live UI-local worker target. Callbacks run outside the
-    /// runtime borrow so they may invalidate their owning component.
-    /// Dead weak callbacks are pruned. Every live callback runs once in
-    /// unspecified hash-map order; the return value ORs their boolean results.
+    /// runtime borrow. A changed component-owned service requests `Build` for
+    /// its exact owner and mount generation; low-level registrations must
+    /// invalidate explicitly. Dead weak callbacks are pruned. Every live
+    /// callback runs once in unspecified hash-map order; the return value ORs
+    /// their boolean results.
     ///
     /// # Panics
     ///
@@ -684,17 +855,48 @@ impl<A> RuntimeHandle<A> {
             let mut inner = self.inner.borrow_mut();
             let callbacks = inner
                 .ui_services
-                .values()
-                .filter_map(Weak::upgrade)
+                .iter()
+                .filter_map(|((element_tree_id, _), entry)| {
+                    entry
+                        .callback
+                        .upgrade()
+                        .map(|callback| (callback, *element_tree_id, entry.owner))
+                })
                 .collect::<Vec<_>>();
             inner
                 .ui_services
-                .retain(|_, service| service.strong_count() != 0);
+                .retain(|_, entry| entry.callback.strong_count() != 0);
             callbacks
         };
         let mut changed = false;
-        for service in callbacks {
-            changed |= service();
+        for (service, element_tree_id, owner) in callbacks {
+            let service_changed = service();
+            changed |= service_changed;
+            if !service_changed {
+                continue;
+            }
+            let Some(owner) = owner else {
+                continue;
+            };
+            let runtime = RuntimeHandle {
+                inner: Rc::clone(&self.inner),
+                element_tree_id,
+            };
+            if let Some(mount_generation) = owner.mount_generation {
+                runtime.invalidate_generation_bound(
+                    owner.element_id,
+                    mount_generation,
+                    Invalidation::Build,
+                    InvalidationSource::Context,
+                    false,
+                );
+            } else {
+                runtime.invalidate_from(
+                    owner.element_id,
+                    Invalidation::Build,
+                    InvalidationSource::Context,
+                );
+            }
         }
         changed
     }
@@ -733,6 +935,254 @@ impl<A> RuntimeHandle<A> {
                 element_tree_id,
             };
             handle.invalidate_from(element_id, invalidation, InvalidationSource::Model);
+        })
+    }
+
+    /// Builds a weak historical invalidator retaining signal provenance.
+    pub(crate) fn weak_signal_invalidator(
+        &self,
+        element_id: ElementId,
+        invalidation: Invalidation,
+    ) -> Rc<dyn Fn()>
+    where
+        A: 'static,
+    {
+        let inner: Weak<RefCell<RuntimeInner<A>>> = Rc::downgrade(&self.inner);
+        let element_tree_id = self.element_tree_id;
+        let mount_generation = self
+            .inner
+            .borrow()
+            .mounted_elements
+            .get(&(element_tree_id, element_id))
+            .copied();
+        Rc::new(move || {
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            if let Some(mount_generation) = mount_generation {
+                RuntimeHandle {
+                    inner,
+                    element_tree_id,
+                }
+                .invalidate_generation_bound(
+                    element_id,
+                    mount_generation,
+                    invalidation,
+                    InvalidationSource::Signal,
+                    false,
+                );
+                return;
+            }
+            RuntimeHandle {
+                inner,
+                element_tree_id,
+            }
+            .invalidate_from(element_id, invalidation, InvalidationSource::Signal);
+        })
+    }
+
+    /// Registers the exact payload generation currently mounted at an element.
+    pub(crate) fn register_element_mount(
+        &self,
+        element_id: ElementId,
+        mount_generation: MountGeneration,
+    ) {
+        let mut inner = self.inner.borrow_mut();
+        let previous = inner
+            .mounted_elements
+            .insert((self.element_tree_id, element_id), mount_generation);
+        if let Some(previous) = previous.filter(|previous| *previous != mount_generation) {
+            let probes = inner.reactive_dependencies.remove_mount(
+                self.element_tree_id,
+                element_id,
+                previous,
+            );
+            inner
+                .reactive_runtime_diagnostics
+                .mount_cleanup_key_probes(probes);
+            Self::remove_generation_bound_invalidation(
+                &mut inner,
+                self.element_tree_id,
+                element_id,
+            );
+        }
+    }
+
+    /// Removes one mount and all Build/Layout/Paint dependency edges it owns.
+    pub(crate) fn unregister_element_mount(&self, element_id: ElementId) {
+        let mut inner = self.inner.borrow_mut();
+        let mount_generation = inner
+            .mounted_elements
+            .remove(&(self.element_tree_id, element_id));
+        if let Some(mount_generation) = mount_generation {
+            let probes = inner.reactive_dependencies.remove_mount(
+                self.element_tree_id,
+                element_id,
+                mount_generation,
+            );
+            inner
+                .reactive_runtime_diagnostics
+                .mount_cleanup_key_probes(probes);
+        }
+        Self::remove_generation_bound_invalidation(&mut inner, self.element_tree_id, element_id);
+    }
+
+    /// Replaces one mounted consumer's direct dependency set after success.
+    #[doc(hidden)]
+    pub fn replace_reactive_dependencies(
+        &self,
+        element_id: ElementId,
+        mount_generation: MountGeneration,
+        stage: ReactiveStage,
+        reads: &ReactiveReadSet,
+    ) -> bool
+    where
+        A: 'static,
+    {
+        let consumer = ReactiveConsumer {
+            element_tree_id: self.element_tree_id,
+            element_id,
+            mount_generation,
+            stage,
+        };
+        let mut inner = self.inner.borrow_mut();
+        let is_current = inner
+            .mounted_elements
+            .get(&(consumer.element_tree_id, consumer.element_id))
+            == Some(&consumer.mount_generation);
+        if !is_current {
+            return false;
+        }
+
+        let renewed = inner.reactive_dependencies.replace(consumer, reads, || {
+            Self::reactive_consumer_invalidator_from(Rc::downgrade(&self.inner), consumer)
+        });
+        inner
+            .reactive_runtime_diagnostics
+            .publication(reads.len(), renewed);
+        renewed
+    }
+
+    /// Publishes a prevalidated batch of exact retained dependency replacements.
+    ///
+    /// The complete batch is rejected before mutation when any mount generation
+    /// is stale. Applying a valid batch invokes no user callbacks. The return
+    /// verdict distinguishes a valid no-op from an atomically rejected stale
+    /// generation batch.
+    #[doc(hidden)]
+    pub fn replace_reactive_dependencies_batch(
+        &self,
+        updates: &[ReactiveDependencyUpdate],
+    ) -> ReactiveDependencyBatchResult
+    where
+        A: 'static,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let all_current = updates.iter().all(|update| {
+            inner
+                .mounted_elements
+                .get(&(self.element_tree_id, update.element_id))
+                == Some(&update.mount_generation)
+        });
+        if !all_current {
+            return ReactiveDependencyBatchResult::Stale;
+        }
+
+        let mut changed = false;
+        for update in updates {
+            let consumer = ReactiveConsumer {
+                element_tree_id: self.element_tree_id,
+                element_id: update.element_id,
+                mount_generation: update.mount_generation,
+                stage: update.stage,
+            };
+            let renewed = inner
+                .reactive_dependencies
+                .replace(consumer, &update.reads, || {
+                    Self::reactive_consumer_invalidator_from(Rc::downgrade(&self.inner), consumer)
+                });
+            inner
+                .reactive_runtime_diagnostics
+                .publication(update.reads.len(), renewed);
+            changed |= renewed;
+        }
+        ReactiveDependencyBatchResult::Accepted { renewed: changed }
+    }
+
+    /// Removes one exact mounted callback stage from the dependency graph.
+    #[doc(hidden)]
+    pub fn clear_reactive_dependencies(
+        &self,
+        element_id: ElementId,
+        mount_generation: MountGeneration,
+        stage: ReactiveStage,
+    ) -> bool {
+        let consumer = ReactiveConsumer {
+            element_tree_id: self.element_tree_id,
+            element_id,
+            mount_generation,
+            stage,
+        };
+        self.inner
+            .borrow_mut()
+            .reactive_dependencies
+            .remove_consumer(consumer)
+    }
+
+    /// Returns the current exact-consumer count for internal diagnostics/tests.
+    #[doc(hidden)]
+    pub fn reactive_dependency_consumer_count(&self) -> usize {
+        self.inner.borrow().reactive_dependencies.len()
+    }
+
+    /// Returns non-resetting counters for retained reactive work.
+    #[doc(hidden)]
+    pub fn reactive_runtime_diagnostics(&self) -> ReactiveRuntimeDiagnosticsSnapshot {
+        let inner = self.inner.borrow();
+        inner
+            .reactive_runtime_diagnostics
+            .snapshot(inner.reactive_dependencies.len())
+    }
+
+    /// Records one abandoned runtime-owned layout attempt.
+    pub(crate) fn record_abandoned_layout_transaction(&self) {
+        self.inner
+            .borrow_mut()
+            .reactive_runtime_diagnostics
+            .abandoned_layout_transaction();
+    }
+
+    /// Records unique stale units found by one paint traversal.
+    pub(crate) fn record_stale_paint_feedback(&self, count: usize) {
+        self.inner
+            .borrow_mut()
+            .reactive_runtime_diagnostics
+            .stale_paint_feedback(count);
+    }
+
+    /// Creates a weak, generation-checked invalidator for one retained consumer.
+    fn reactive_consumer_invalidator_from(
+        inner: Weak<RefCell<RuntimeInner<A>>>,
+        consumer: ReactiveConsumer,
+    ) -> Rc<dyn Fn()>
+    where
+        A: 'static,
+    {
+        Rc::new(move || {
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            RuntimeHandle {
+                inner,
+                element_tree_id: consumer.element_tree_id,
+            }
+            .invalidate_generation_bound(
+                consumer.element_id,
+                consumer.mount_generation,
+                consumer.stage.invalidation(),
+                InvalidationSource::Signal,
+                true,
+            );
         })
     }
 
@@ -940,11 +1390,18 @@ impl<A> RuntimeHandle<A> {
         let mut promoted = 0;
         for scheduled in scheduled {
             if scheduled.due <= now {
+                let generation_bound_pending = Self::generation_bound_invalidation_for_element(
+                    &inner,
+                    scheduled.element_tree_id,
+                    scheduled.element_id,
+                )
+                .is_some();
                 let pending = inner
                     .dirty_elements
                     .entry(scheduled.element_tree_id)
                     .or_default();
-                let coalesced = pending.contains_key(&scheduled.element_id);
+                let coalesced =
+                    generation_bound_pending || pending.contains_key(&scheduled.element_id);
                 pending
                     .entry(scheduled.element_id)
                     .and_modify(|current| {
@@ -1029,11 +1486,40 @@ impl<A> RuntimeHandle<A> {
     /// assert!(runtime.has_dirty_elements());
     /// ```
     pub fn has_dirty_elements(&self) -> bool {
-        self.inner
-            .borrow()
+        let inner = self.inner.borrow();
+        inner
             .dirty_elements
             .get(&self.element_tree_id)
             .is_some_and(|elements| !elements.is_empty())
+            || Self::generation_bound_invalidations_for_tree(&inner, self.element_tree_id)
+                .next()
+                .is_some()
+    }
+
+    /// Returns the retained invalidation already queued for one exact element.
+    ///
+    /// This crate-private observation neither drains nor promotes work. Paint
+    /// uses it to fail closed before callbacks can consume fresh state while a
+    /// build or layout affecting the same retained subtree is still pending.
+    pub(crate) fn pending_invalidation_for_element(
+        &self,
+        element_id: ElementId,
+    ) -> Option<Invalidation> {
+        let inner = self.inner.borrow();
+        let ordinary = inner
+            .dirty_elements
+            .get(&self.element_tree_id)
+            .and_then(|elements| elements.get(&element_id).copied());
+        let generation_bound = Self::generation_bound_invalidation_for_element(
+            &inner,
+            self.element_tree_id,
+            element_id,
+        );
+        match (ordinary, generation_bound) {
+            (Some(ordinary), Some(generation_bound)) => Some(ordinary.merge(generation_bound)),
+            (Some(invalidation), None) | (None, Some(invalidation)) => Some(invalidation),
+            (None, None) => None,
+        }
     }
 
     /// Drains this tree's pending invalidations and returns sorted element IDs.
@@ -1054,14 +1540,7 @@ impl<A> RuntimeHandle<A> {
     /// assert!(!runtime.has_dirty_elements());
     /// ```
     pub fn take_dirty_elements(&self) -> Vec<ElementId> {
-        let mut elements: Vec<_> = self
-            .inner
-            .borrow_mut()
-            .dirty_elements
-            .remove(&self.element_tree_id)
-            .unwrap_or_default()
-            .into_keys()
-            .collect();
+        let mut elements = self.take_invalidations().into_keys().collect::<Vec<_>>();
         elements.sort_by_key(|element_id| element_id.0);
         elements
     }
@@ -1082,11 +1561,29 @@ impl<A> RuntimeHandle<A> {
     /// assert!(runtime.frame_work_plan().needs_layout());
     /// ```
     pub(crate) fn take_invalidations(&self) -> HashMap<ElementId, Invalidation> {
-        self.inner
-            .borrow_mut()
+        let mut inner = self.inner.borrow_mut();
+        let mut invalidations = inner
             .dirty_elements
             .remove(&self.element_tree_id)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let generation_bound = inner
+            .generation_bound_invalidations
+            .remove(&self.element_tree_id)
+            .unwrap_or_default();
+        for (element_id, pending) in generation_bound {
+            if inner
+                .mounted_elements
+                .get(&(self.element_tree_id, element_id))
+                != Some(&pending.mount_generation)
+            {
+                continue;
+            }
+            invalidations
+                .entry(element_id)
+                .and_modify(|current| *current = current.merge(pending.invalidation))
+                .or_insert(pending.invalidation);
+        }
+        invalidations
     }
 
     /// Aggregate work currently pending for this tree without draining it.
@@ -1105,15 +1602,84 @@ impl<A> RuntimeHandle<A> {
     /// assert!(runtime.frame_work_plan().needs_layout());
     /// ```
     pub fn frame_work_plan(&self) -> FrameWorkPlan {
-        self.inner
-            .borrow()
+        let inner = self.inner.borrow();
+        let ordinary = inner
             .dirty_elements
             .get(&self.element_tree_id)
             .into_iter()
             .flat_map(|pending| pending.values().copied())
             .fold(FrameWorkPlan::none(), |plan, invalidation| {
                 plan.merge(FrameWorkPlan::from_invalidation(invalidation))
+            });
+        Self::generation_bound_invalidations_for_tree(&inner, self.element_tree_id)
+            .fold(ordinary, |plan, (_, invalidation)| {
+                plan.merge(FrameWorkPlan::from_invalidation(invalidation))
             })
+    }
+
+    /// Returns deterministic aggregate work for every dirty presentation.
+    ///
+    /// Trees without an installed presentation scope remain pending but are
+    /// absent from the result. Trees sharing the same logical window and exact
+    /// generation are merged to one plan. The method never drains retained
+    /// invalidations and never exposes element-tree identifiers or dirty roots.
+    ///
+    /// This provider-neutral API is public only for host adapters and is not
+    /// re-exported through the `ailloli_ui` facade.
+    #[doc(hidden)]
+    pub fn pending_presentation_work(&self) -> Vec<PresentationWorkPlan> {
+        let inner = self.inner.borrow();
+        let mut tree_plans = HashMap::<ElementTreeId, FrameWorkPlan>::new();
+        for (element_tree_id, dirty_elements) in &inner.dirty_elements {
+            let tree_plan = dirty_elements
+                .values()
+                .copied()
+                .fold(FrameWorkPlan::none(), |plan, invalidation| {
+                    plan.merge(FrameWorkPlan::from_invalidation(invalidation))
+                });
+            if !tree_plan.is_empty() {
+                tree_plans.insert(*element_tree_id, tree_plan);
+            }
+        }
+        for element_tree_id in inner.generation_bound_invalidations.keys().copied() {
+            let tree_plan = Self::generation_bound_invalidations_for_tree(&inner, element_tree_id)
+                .fold(FrameWorkPlan::none(), |plan, (_, invalidation)| {
+                    plan.merge(FrameWorkPlan::from_invalidation(invalidation))
+                });
+            if !tree_plan.is_empty() {
+                tree_plans
+                    .entry(element_tree_id)
+                    .and_modify(|plan| *plan = plan.merge(tree_plan))
+                    .or_insert(tree_plan);
+            }
+        }
+        let mut pending =
+            BTreeMap::<(LogicalWindowId, PresentationGeneration), FrameWorkPlan>::new();
+
+        for (element_tree_id, tree_plan) in tree_plans {
+            let Some((logical_window_id, presentation_generation)) =
+                inner.presentation_scopes.get(&element_tree_id)
+            else {
+                continue;
+            };
+            pending
+                .entry((logical_window_id.clone(), *presentation_generation))
+                .and_modify(|plan| *plan = plan.merge(tree_plan))
+                .or_insert(tree_plan);
+        }
+
+        pending
+            .into_iter()
+            .map(
+                |((logical_window_id, presentation_generation), frame_work_plan)| {
+                    PresentationWorkPlan::new(
+                        logical_window_id,
+                        presentation_generation,
+                        frame_work_plan,
+                    )
+                },
+            )
+            .collect()
     }
 
     /// Drains and returns all shared application actions in FIFO order.
@@ -1991,8 +2557,38 @@ impl<A> RuntimeHandle<A> {
                     })
             })
             .collect();
+        let wake_targets = pending
+            .iter()
+            .filter_map(|record| {
+                inner
+                    .presentation_scopes
+                    .get(&record.owner.element_tree_id())
+                    .is_some_and(|(logical_window_id, generation)| {
+                        logical_window_id == record.owner.logical_window_id()
+                            && *generation == record.owner.presentation_generation()
+                    })
+                    .then_some((record.owner.element_tree_id(), record.owner.element_id()))
+            })
+            .collect::<HashSet<_>>();
         inner.popup_intents.extend_from_slice(intents);
         inner.pending_popup_intents.extend(pending);
+        drop(inner);
+
+        // Opening/closing outside input routing still needs one owner frame so
+        // the host can mount, hide, or reposition the popup. Only lifecycle
+        // operations emit intents; repeatedly opening an already-open popup is
+        // therefore a no-op and cannot create a redraw loop during paint.
+        for (element_tree_id, element_id) in wake_targets {
+            RuntimeHandle {
+                inner: Rc::clone(&self.inner),
+                element_tree_id,
+            }
+            .invalidate_from(
+                element_id,
+                Invalidation::Paint,
+                InvalidationSource::Runtime,
+            );
+        }
     }
 
     /// Snapshots owners for every currently open popup in z-order.
@@ -2047,11 +2643,20 @@ pub struct RuntimeInner<A> {
     /// Optional thread-safe, payload-free host notification callback.
     ui_wake: Option<Arc<dyn UiWake>>,
     /// Weak UI-thread service callbacks keyed by tree and wrapping ID.
-    ui_services: HashMap<(ElementTreeId, u64), Weak<dyn Fn() -> bool>>,
+    ui_services: HashMap<(ElementTreeId, u64), UiServiceEntry>,
     /// Next wrapping UI-service ID; initialized to one.
     next_ui_service_id: u64,
     /// Coalesced tree-local invalidations keyed by retained element.
     pub dirty_elements: HashMap<ElementTreeId, HashMap<ElementId, Invalidation>>,
+    /// Source-driven invalidations retaining the exact mounted generation.
+    generation_bound_invalidations:
+        HashMap<ElementTreeId, HashMap<ElementId, GenerationBoundInvalidation>>,
+    /// Exact retained payload generation currently mounted at each element.
+    mounted_elements: HashMap<(ElementTreeId, ElementId), MountGeneration>,
+    /// Exact source edges retained by successful Build/Layout/Paint callbacks.
+    reactive_dependencies: ReactiveDependencyGraph,
+    /// Hidden cumulative counters for dependency and transaction behavior.
+    reactive_runtime_diagnostics: ReactiveRuntimeDiagnostics,
     /// Global bounded invalidation counters and provenance.
     invalidation_diagnostics: InvalidationDiagnostics,
     /// Active shared clipboard provider.
@@ -2095,6 +2700,33 @@ struct ScheduledInvalidation {
     invalidation: Invalidation,
     /// Monotonic deadline at or after which the entry is due.
     due: Instant,
+}
+
+/// One coalesced source notification that remains valid for one mount only.
+#[derive(Debug, Clone, Copy)]
+struct GenerationBoundInvalidation {
+    /// Payload generation observed by the notifying subscription.
+    mount_generation: MountGeneration,
+    /// Strongest retained work requested by that generation.
+    invalidation: Invalidation,
+}
+
+/// Weak callback plus optional exact component owner for one UI service.
+struct UiServiceEntry {
+    /// Callback retained by component state rather than the runtime.
+    callback: Weak<dyn Fn() -> bool>,
+    /// Component invalidated when the callback reports model-visible changes.
+    owner: Option<UiServiceOwner>,
+}
+
+/// Retained owner captured when a component registers a UI service.
+#[derive(Debug, Clone, Copy)]
+struct UiServiceOwner {
+    /// Tree-local component identity.
+    element_id: ElementId,
+    /// Exact payload generation, absent only for compatibility contexts that
+    /// are not currently mounted in a retained tree.
+    mount_generation: Option<MountGeneration>,
 }
 
 /// Popup intent paired with the complete owner identity used for scoped drains.
@@ -2168,6 +2800,10 @@ impl<A> RuntimeInner<A> {
             ui_services: HashMap::new(),
             next_ui_service_id: 1,
             dirty_elements: HashMap::new(),
+            generation_bound_invalidations: HashMap::new(),
+            mounted_elements: HashMap::new(),
+            reactive_dependencies: ReactiveDependencyGraph::default(),
+            reactive_runtime_diagnostics: ReactiveRuntimeDiagnostics::default(),
             invalidation_diagnostics: InvalidationDiagnostics::default(),
             clipboard: Rc::new(MemoryClipboard::new()),
             external_url_opener: Rc::new(MemoryExternalUrlOpener::new()),
@@ -2204,6 +2840,24 @@ mod tests {
     use crate::app::Runtime;
     use crate::component::View;
     use crate::popup::{PopupContent, PopupOwner};
+
+    #[test]
+    fn owned_ui_service_rejects_a_replaced_mount_generation() {
+        let runtime = RuntimeHandle::<()>::new();
+        let owner = ElementId(70);
+        runtime.register_element_mount(owner, MountGeneration::INITIAL);
+        let service: Rc<dyn Fn() -> bool> = Rc::new(|| true);
+        let _registration = runtime.register_owned_ui_service(owner, &service);
+
+        assert!(runtime.service_ui_sources());
+        assert!(runtime.frame_work_plan().needs_build());
+        assert_eq!(runtime.take_dirty_elements(), [owner]);
+
+        runtime.register_element_mount(owner, MountGeneration::INITIAL.next());
+        assert!(runtime.service_ui_sources());
+        assert!(runtime.pending_presentation_work().is_empty());
+        assert!(!runtime.has_dirty_elements());
+    }
 
     #[test]
     /// A future timer remains scheduled and does not dirty its target early.

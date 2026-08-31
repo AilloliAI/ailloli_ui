@@ -498,6 +498,20 @@ impl ResizeController {
         }
         self.pending.is_some()
     }
+
+    /// Reports whether retained runtime work may request an immediate redraw.
+    ///
+    /// Zero extent and an armed surface retry suspend host sweeps without
+    /// consuming retained dirty work. A later non-zero native resize is
+    /// immediately eligible so it can recover a zero-extent presentation.
+    pub(crate) fn accepts_retained_redraw_request(&self) -> bool {
+        self.retry_at.is_none() && (!self.zero_extent_unavailable || self.pending.is_some())
+    }
+
+    /// Reports whether a non-zero resize is waiting to recover a dormant surface.
+    pub(crate) fn has_pending_nonzero_request(&self) -> bool {
+        self.pending.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -718,5 +732,25 @@ mod tests {
         assert!(!controller.take_due_redraw_request());
         assert_eq!(target.resize_calls, 1);
         assert_eq!(target.reconfigure_calls, 0);
+    }
+
+    #[test]
+    fn retained_redraw_gate_suspends_zero_and_retry_without_losing_recovery() {
+        let mut controller = ResizeController::default();
+
+        assert!(controller.accepts_retained_redraw_request());
+        assert!(!controller.request(PhysicalSize::new(0, 600)));
+        assert!(!controller.accepts_retained_redraw_request());
+
+        assert!(controller.request(PhysicalSize::new(800, 600)));
+        assert!(controller.has_pending_nonzero_request());
+        assert!(controller.accepts_retained_redraw_request());
+
+        controller.defer(PhysicalSize::new(800, 600));
+        assert!(!controller.accepts_retained_redraw_request());
+        controller.retry_at = Some(Instant::now() - Duration::from_millis(1));
+        assert!(!controller.accepts_retained_redraw_request());
+        assert!(controller.take_due_redraw_request());
+        assert!(controller.accepts_retained_redraw_request());
     }
 }

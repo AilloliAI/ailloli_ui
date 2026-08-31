@@ -1,5 +1,6 @@
 //! Modal confirmation dialogs painted over an optional host child.
 
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::layout::layout_ext::{apply_layout_size, finish_view_sized};
@@ -7,8 +8,7 @@ use ailloli_ui_core::event::pointer::{MouseButton, PointerEvent};
 use ailloli_ui_core::event::{Event, KeyState, NamedKey};
 use ailloli_ui_core::geometry::{Constraints, Rect, Size};
 use ailloli_ui_core::style::{
-    AlignItems, Border, BoxShadow, FlexItemStyle, JustifyContent, LayoutSizeHint, LayoutStyle,
-    Radius,
+    Border, BoxShadow, FlexItemStyle, LayoutSizeHint, LayoutStyle, Radius,
 };
 use ailloli_ui_core::{Color, FontId, Offset, TextStyle, Theme};
 use ailloli_ui_runtime::component::{
@@ -16,14 +16,17 @@ use ailloli_ui_runtime::component::{
 };
 use ailloli_ui_runtime::input::{ClickAction, EventCtx, FocusPolicy, IntoClickAction};
 use ailloli_ui_runtime::layout::{ChildLayout, LayoutChild, LayoutCtx, LayoutPass, LayoutResult};
-use ailloli_ui_runtime::scene::PaintCtx;
-use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawRRect, DrawRect};
-
-use ailloli_ui_text::WrapMode;
-
-use super::popup::{
-    paint_overlay_text_in_rect, paint_overlay_text_in_rect_aligned, OverlayTextOptions,
+use ailloli_ui_runtime::popup::{
+    PopupContent, PopupDismissReason, PopupFocusPolicy, PopupRole, PopupSemantics,
 };
+use ailloli_ui_runtime::scene::PaintCtx;
+use ailloli_ui_runtime::{DrawBorder, DrawBoxShadow, DrawCmd, DrawRRect, DrawRect, DrawText};
+
+use ailloli_ui_text::{TextLayoutHandle, TextLayoutParams, WrapMode};
+
+use crate::transactional_layout::TransactionalLayoutPending;
+
+use super::popup::PopupPortalBridge;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 /// Semantic treatment for a dialog's confirm action.
@@ -207,6 +210,10 @@ pub struct Dialog<A = ()> {
     on_confirm: Option<Rc<ClickAction<A>>>,
     /// Optional cancellation action.
     on_cancel: Option<Rc<ClickAction<A>>>,
+    /// Optional submit action used by non-repeated Enter in composed modal content.
+    on_submit: Option<Rc<ClickAction<A>>>,
+    /// Optional retained modal content replacing the fixed confirmation surface.
+    modal_content: Option<View<A>>,
     /// Optional sole host child painted under the overlay.
     child: Option<View<A>>,
 }
@@ -248,6 +255,8 @@ impl<A: 'static> Dialog<A> {
             style: DialogStyle::default(),
             on_confirm: None,
             on_cancel: None,
+            on_submit: None,
+            modal_content: None,
             child: None,
         }
     }
@@ -463,6 +472,42 @@ impl<A: 'static> Dialog<A> {
         self
     }
 
+    /// Installs the action invoked by a non-repeated Enter key in composed modal content.
+    ///
+    /// Descendants receive the event first; a descendant which consumes Enter prevents
+    /// this fallback submission. The fixed confirmation surface keeps its historical
+    /// pointer-only confirmation behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::controls::Dialog;
+    /// let dialog = Dialog::new().on_submit(());
+    /// let _ = dialog;
+    /// ```
+    pub fn on_submit(mut self, action: impl IntoClickAction<A>) -> Self {
+        self.on_submit = Some(Rc::new(action.into_click_action()));
+        self
+    }
+
+    /// Replaces the fixed confirmation panel with retained, declarative modal content.
+    ///
+    /// The content is mounted in a full-viewport retained overlay and may freely compose
+    /// `Text`, `TextInput`, `Button`, `ScrollView`, and layout widgets. The host child set
+    /// by [`Self::child`] remains mounted below the modal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ailloli_ui_widgets::{controls::Dialog, text::Text};
+    /// let dialog = Dialog::<()>::new().modal_content(Text::new("Settings"));
+    /// let _ = dialog;
+    /// ```
+    pub fn modal_content(mut self, content: impl IntoView<A>) -> Self {
+        self.modal_content = Some(content.into_view());
+        self
+    }
+
     /// Sets the sole underlying host child, replacing any previous child.
     ///
     /// The child fills the resolved host slot and remains painted while the
@@ -510,12 +555,50 @@ struct DialogComponent<A> {
     on_confirm: Option<Rc<ClickAction<A>>>,
     /// Optional cancel action shared by button, Escape, and outside dismissal.
     on_cancel: Option<Rc<ClickAction<A>>>,
+    /// Optional Enter fallback for composed modal content.
+    on_submit: Option<Rc<ClickAction<A>>>,
+    /// Optional retained modal subtree.
+    modal_content: Option<View<A>>,
     /// Optional underlying host content painted below the modal overlay.
     child: Option<View<A>>,
 }
 
 impl<A: 'static> ComponentNode<A> for DialogComponent<A> {
     fn build(&self, context: &mut Context<A>) -> View<A> {
+        let internal_open = context.signal(self.default_open);
+        let popup = self.modal_content.as_ref().map(|content| {
+            let content = content.clone();
+            let open = self.open.clone();
+            let bound_open = self.bound_open.clone();
+            let internal_open_for_surface = internal_open.clone();
+            let disabled = self.disabled.clone();
+            let on_cancel = self.on_cancel.clone();
+            let on_submit = self.on_submit.clone();
+            let style = self.style.clone();
+            PopupPortalBridge::new_retained_with_content(
+                context,
+                PopupSemantics::new()
+                    .with_role(PopupRole::Dialog)
+                    .with_focus_policy(PopupFocusPolicy::TrapWithinPopup)
+                    .dismiss_on_outside_press(false)
+                    .dismiss_on_escape(false),
+                false,
+                PopupContent::new(move || {
+                    View::node(
+                        ModalSurfaceWidget {
+                            open: open.clone(),
+                            bound_open: bound_open.clone(),
+                            internal_open: internal_open_for_surface.clone(),
+                            disabled: disabled.clone(),
+                            on_cancel: on_cancel.clone(),
+                            on_submit: on_submit.clone(),
+                            style: style.clone(),
+                        },
+                        vec![content.clone()],
+                    )
+                }),
+            )
+        });
         let mut children = Vec::new();
         if let Some(child) = self.child.clone() {
             children.push(child);
@@ -525,7 +608,7 @@ impl<A: 'static> ComponentNode<A> for DialogComponent<A> {
                 layout: self.layout,
                 open: self.open.clone(),
                 bound_open: self.bound_open.clone(),
-                internal_open: context.signal(self.default_open),
+                internal_open,
                 disabled: self.disabled.clone(),
                 title: self.title.clone(),
                 body: self.body.clone(),
@@ -535,6 +618,10 @@ impl<A: 'static> ComponentNode<A> for DialogComponent<A> {
                 style: self.style.clone(),
                 on_confirm: self.on_confirm.clone(),
                 on_cancel: self.on_cancel.clone(),
+                popup,
+                pending_portal: Cell::new(None),
+                pending_legacy_paint: RefCell::new(None),
+                committed_legacy_paint: RefCell::new(None),
             },
             children,
         )
@@ -558,6 +645,8 @@ impl<A: 'static> IntoView<A> for Dialog<A> {
                 style: self.style,
                 on_confirm: self.on_confirm,
                 on_cancel: self.on_cancel,
+                on_submit: self.on_submit,
+                modal_content: self.modal_content,
                 child: self.child,
             }),
             self.flex_item,
@@ -594,6 +683,212 @@ struct DialogWidget<A> {
     on_confirm: Option<Rc<ClickAction<A>>>,
     /// Optional retained cancel action.
     on_cancel: Option<Rc<ClickAction<A>>>,
+    /// Retained portal used only by composed modal content.
+    popup: Option<PopupPortalBridge<A>>,
+    /// Visibility and full-viewport geometry staged by authoritative layout.
+    pending_portal: Cell<Option<TransactionalLayoutPending<DialogPortalState>>>,
+    /// Text artifacts staged by the exact authoritative legacy layout.
+    pending_legacy_paint: RefCell<Option<TransactionalLayoutPending<LegacyDialogPaint>>>,
+    /// Text artifacts published only after successful layout commit.
+    committed_legacy_paint: RefCell<Option<LegacyDialogPaint>>,
+}
+
+#[derive(Clone, Copy)]
+struct DialogPortalState {
+    open: bool,
+    bounds: Rect,
+}
+
+#[derive(Clone)]
+struct LegacyDialogPaint {
+    size: Size,
+    title: TextLayoutHandle,
+    body: TextLayoutHandle,
+    cancel: TextLayoutHandle,
+    confirm: TextLayoutHandle,
+}
+
+/// Full-viewport retained modal shell mounted in the runtime popup tree.
+struct ModalSurfaceWidget<A> {
+    open: Option<Binding<bool>>,
+    bound_open: Option<Signal<bool>>,
+    internal_open: Signal<bool>,
+    disabled: Binding<bool>,
+    on_cancel: Option<Rc<ClickAction<A>>>,
+    on_submit: Option<Rc<ClickAction<A>>>,
+    style: DialogStyle,
+}
+
+impl<A: 'static> ModalSurfaceWidget<A> {
+    fn close(&self) {
+        if let Some(bound) = &self.bound_open {
+            bound.set(false);
+        } else if self.open.is_none() {
+            self.internal_open.set(false);
+        }
+    }
+
+    fn cancel(&self, ctx: &mut EventCtx<A>) {
+        if let Some(action) = &self.on_cancel {
+            action.run(ctx);
+        }
+        self.close();
+        ctx.request_layout();
+        ctx.stop_propagation();
+    }
+}
+
+impl<A: 'static> Widget<A> for ModalSurfaceWidget<A> {
+    fn debug_name(&self) -> &'static str {
+        "DialogModalSurface"
+    }
+
+    fn layout(
+        &self,
+        engine: &mut ailloli_ui_runtime::layout::LayoutEngine<'_, A>,
+        ctx: &mut LayoutCtx<'_>,
+        children: &mut [LayoutChild],
+        constraints: Constraints,
+    ) -> LayoutResult {
+        let size = constraints.constrain(Size::new(
+            finite_or(constraints.max_w, constraints.min_w),
+            finite_or(constraints.max_h, constraints.min_h),
+        ));
+        let mut child_layouts = Vec::new();
+        if let Some(child) = children.first_mut() {
+            let available_width = self.style.panel_width.min((size.w - 48.0).max(180.0));
+            let available_height = (size.h - 48.0).max(self.style.panel_min_height);
+            let result = child.layout(
+                engine,
+                ctx,
+                Constraints::loose(available_width, available_height),
+            );
+            let child_size = Size::new(
+                result.size.w.min(available_width),
+                result
+                    .size
+                    .h
+                    .max(self.style.panel_min_height)
+                    .min(available_height),
+            );
+            let offset = Offset::new((size.w - child_size.w) * 0.5, (size.h - child_size.h) * 0.5);
+            child_layouts.push(ChildLayout {
+                offset,
+                size: child_size,
+                paint_bounds: Rect::new(offset.x, offset.y, child_size.w, child_size.h),
+                visual_bounds: Rect::new(offset.x, offset.y, child_size.w, child_size.h),
+            });
+        }
+        let bounds = Rect::new(0.0, 0.0, size.w, size.h);
+        LayoutResult {
+            size,
+            children: child_layouts,
+            paint_bounds: bounds,
+            visual_bounds: bounds,
+            // The retained popup tree is already the topmost presentation. Keeping
+            // the full viewport in the overlay stratum would make this ancestor win
+            // before its TextInput/Button descendants are considered. Its base hit
+            // bounds still receive backdrop presses after descendant hit-testing.
+            overlay_hit_bounds: Vec::new(),
+            clip: None,
+            is_window_root_clip: false,
+            artifact: None,
+        }
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, layout: &LayoutResult) {
+        ctx.push(DrawCmd::Rect(DrawRect {
+            rect: bounds,
+            color: self.style.backdrop,
+        }));
+        if let Some(child) = layout.children.first() {
+            let panel = Rect::new(
+                bounds.x + child.offset.x,
+                bounds.y + child.offset.y,
+                child.size.w,
+                child.size.h,
+            );
+            for shadow in self
+                .style
+                .shadows
+                .iter()
+                .copied()
+                .filter(|shadow| !shadow.inset)
+            {
+                ctx.push(DrawCmd::BoxShadow(DrawBoxShadow {
+                    rect: panel,
+                    radius: self.style.radius,
+                    shadow,
+                }));
+            }
+            ctx.push(DrawCmd::RRect(DrawRRect {
+                rect: panel,
+                radius: self.style.radius.tl,
+                color: self.style.panel_background,
+            }));
+            if self.style.border.is_visible() {
+                ctx.push(DrawCmd::Border(DrawBorder {
+                    rect: panel,
+                    radius: self.style.radius,
+                    border: self.style.border,
+                }));
+            }
+        }
+    }
+
+    fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, layout: &LayoutResult) {
+        if self.disabled.read() {
+            return;
+        }
+        match event {
+            Event::Keyboard(key)
+                if key.state == KeyState::Pressed
+                    && !key.repeat
+                    && matches!(
+                        key.key,
+                        ailloli_ui_core::event::Key::Named(NamedKey::Escape)
+                    ) =>
+            {
+                self.cancel(ctx);
+            }
+            Event::Keyboard(key)
+                if key.state == KeyState::Pressed
+                    && !key.repeat
+                    && matches!(key.key, ailloli_ui_core::event::Key::Named(NamedKey::Enter)) =>
+            {
+                if let Some(action) = &self.on_submit {
+                    action.run(ctx);
+                    self.close();
+                    ctx.request_layout();
+                    ctx.stop_propagation();
+                }
+            }
+            Event::Pointer(PointerEvent::Button {
+                pos,
+                button: MouseButton::Left,
+                pressed: false,
+                ..
+            }) => {
+                let inside_panel = layout.children.first().is_some_and(|child| {
+                    Rect::new(
+                        bounds.x + child.offset.x,
+                        bounds.y + child.offset.y,
+                        child.size.w,
+                        child.size.h,
+                    )
+                    .contains(pos.x, pos.y)
+                });
+                if !inside_panel {
+                    self.cancel(ctx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn focus_policy(&self) -> FocusPolicy {
+        FocusPolicy::Focusable
+    }
 }
 
 impl<A: 'static> Widget<A> for DialogWidget<A> {
@@ -623,10 +918,67 @@ impl<A: 'static> Widget<A> for DialogWidget<A> {
         }
         let paint_bounds = Rect::new(0.0, 0.0, size.w, size.h);
         let overlay_hit_bounds = if self.is_open() && !self.disabled.read() {
-            vec![paint_bounds]
+            if self.popup.is_some() {
+                Vec::new()
+            } else {
+                vec![paint_bounds]
+            }
         } else {
             Vec::new()
         };
+        if ctx.layout_pass().is_committed() {
+            let open = self.is_open() && !self.disabled.read();
+            self.pending_portal.set(TransactionalLayoutPending::new(
+                ctx,
+                DialogPortalState {
+                    open,
+                    bounds: paint_bounds,
+                },
+            ));
+            if self.popup.is_none() {
+                let title = self.title.read();
+                let body = self.body.read();
+                let cancel = self.cancel_label.read();
+                let confirm = self.confirm_label.read();
+                let prepared = ctx
+                    .text_system
+                    .as_deref_mut()
+                    .map(|text| LegacyDialogPaint {
+                        size,
+                        title: text.layout_cached(TextLayoutParams {
+                            text: &title,
+                            style: self.style.title_text,
+                            max_width: Some(
+                                (self.style.panel_width - self.style.padding * 2.0).max(0.0),
+                            ),
+                            wrap_mode: WrapMode::NoWrap,
+                        }),
+                        body: text.layout_cached(TextLayoutParams {
+                            text: &body,
+                            style: self.style.body_text,
+                            max_width: Some(
+                                (self.style.panel_width - self.style.padding * 2.0).max(0.0),
+                            ),
+                            wrap_mode: WrapMode::WordOrAnywhere,
+                        }),
+                        cancel: text.layout_cached(TextLayoutParams {
+                            text: &cancel,
+                            style: self.style.button_text,
+                            max_width: Some(self.style.button_width),
+                            wrap_mode: WrapMode::NoWrap,
+                        }),
+                        confirm: text.layout_cached(TextLayoutParams {
+                            text: &confirm,
+                            style: self.style.button_text,
+                            max_width: Some(self.style.button_width),
+                            wrap_mode: WrapMode::NoWrap,
+                        }),
+                    });
+                self.pending_legacy_paint.replace(
+                    prepared.and_then(|paint| TransactionalLayoutPending::new(ctx, paint)),
+                );
+            }
+        }
 
         LayoutResult {
             size,
@@ -642,11 +994,44 @@ impl<A: 'static> Widget<A> for DialogWidget<A> {
 
     fn paint(&self, _ctx: &mut PaintCtx<'_>, _bounds: Rect, _layout: &LayoutResult) {}
 
+    fn layout_committed(&self, ctx: &mut LayoutCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
+        if let Some(state) = self
+            .pending_portal
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        {
+            if let Some(popup) = &self.popup {
+                if state.open {
+                    let popup_bounds =
+                        Rect::new(bounds.x, bounds.y, state.bounds.w, state.bounds.h);
+                    popup.open_without_event(popup_bounds, popup_bounds);
+                } else {
+                    popup.close(PopupDismissReason::Programmatic);
+                }
+            }
+        }
+        if let Some(paint) = self
+            .pending_legacy_paint
+            .borrow_mut()
+            .take()
+            .and_then(|pending| pending.into_committed(ctx))
+        {
+            self.committed_legacy_paint.replace(Some(paint));
+        }
+    }
+
     fn paint_overlay(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, _layout: &LayoutResult) {
-        if !self.is_open() || self.disabled.read() {
+        if self.popup.is_some() || !self.is_open() || self.disabled.read() {
             return;
         }
-        self.paint_dialog(ctx, bounds);
+        let paint = self.committed_legacy_paint.borrow();
+        let Some(paint) = paint
+            .as_ref()
+            .filter(|paint| paint.size == Size::new(bounds.w, bounds.h))
+        else {
+            return;
+        };
+        self.paint_dialog(ctx, bounds, paint);
     }
 
     fn event(&self, ctx: &mut EventCtx<A>, event: &Event, bounds: Rect, _layout: &LayoutResult) {
@@ -767,7 +1152,7 @@ impl<A: 'static> DialogWidget<A> {
     }
 
     /// Paints backdrop, non-inset shadows, panel, text, buttons, then border.
-    fn paint_dialog(&self, ctx: &mut PaintCtx<'_>, bounds: Rect) {
+    fn paint_dialog(&self, ctx: &mut PaintCtx<'_>, bounds: Rect, paint: &LegacyDialogPaint) {
         ctx.push_overlay(DrawCmd::Rect(DrawRect {
             rect: bounds,
             color: self.style.backdrop,
@@ -793,7 +1178,7 @@ impl<A: 'static> DialogWidget<A> {
             panel.w - self.style.padding * 2.0,
             28.0,
         );
-        paint_overlay_text_in_rect(ctx, &self.title.read(), self.style.title_text, title, 1.0);
+        push_prepared_text(ctx, title, self.style.title_text, &paint.title, false);
 
         let body_y = title.bottom() + 10.0;
         let button_top = self.cancel_rect(panel).y;
@@ -803,23 +1188,12 @@ impl<A: 'static> DialogWidget<A> {
             panel.w - self.style.padding * 2.0,
             (button_top - body_y - 10.0).max(0.0),
         );
-        paint_overlay_text_in_rect_aligned(
-            ctx,
-            &self.body.read(),
-            self.style.body_text,
-            body,
-            OverlayTextOptions {
-                opacity: 1.0,
-                wrap_mode: WrapMode::WordOrAnywhere,
-                justify_content: JustifyContent::Start,
-                align_items: AlignItems::Start,
-            },
-        );
+        push_prepared_text(ctx, body, self.style.body_text, &paint.body, false);
 
         self.paint_button(
             ctx,
             self.cancel_rect(panel),
-            &self.cancel_label.read(),
+            &paint.cancel,
             self.style.cancel_background,
             self.style.cancel_background_pressed,
         );
@@ -834,7 +1208,7 @@ impl<A: 'static> DialogWidget<A> {
         self.paint_button(
             ctx,
             self.confirm_rect(panel),
-            &self.confirm_label.read(),
+            &paint.confirm,
             confirm_bg,
             confirm_pressed,
         );
@@ -853,7 +1227,7 @@ impl<A: 'static> DialogWidget<A> {
         &self,
         ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        label: &str,
+        label: &TextLayoutHandle,
         color: Color,
         _pressed: Color,
     ) {
@@ -869,23 +1243,33 @@ impl<A: 'static> DialogWidget<A> {
                 border: self.style.button_border,
             }));
         }
-        paint_overlay_text_in_rect_aligned(
-            ctx,
-            label,
-            self.style.button_text,
-            rect,
-            OverlayTextOptions {
-                opacity: if color == self.style.cancel_background {
-                    0.92
-                } else {
-                    1.0
-                },
-                wrap_mode: WrapMode::NoWrap,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-            },
-        );
+        push_prepared_text(ctx, rect, self.style.button_text, label, true);
     }
+}
+
+fn push_prepared_text(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    style: TextStyle,
+    layout: &TextLayoutHandle,
+    centered: bool,
+) {
+    let x = if centered {
+        rect.x + ((rect.w - layout.metrics.width).max(0.0) * 0.5)
+    } else {
+        rect.x
+    };
+    let y = if centered {
+        rect.y + rect.h * 0.5 + style.px_size as f32 * 0.35
+    } else {
+        rect.y + style.px_size as f32
+    };
+    ctx.push_overlay(DrawCmd::Text(DrawText {
+        pos: [x, y],
+        color: style.color,
+        decoration: style.decoration,
+        layout: layout.clone(),
+    }));
 }
 
 /// Resolves host size from its child or finite constraint maxima.

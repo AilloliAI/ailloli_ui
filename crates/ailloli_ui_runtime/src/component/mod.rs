@@ -8,6 +8,9 @@ pub mod context;
 pub mod node;
 /// Props implementation details.
 pub mod props;
+/// Hidden retained reactive dependency contracts shared inside the framework.
+#[doc(hidden)]
+pub mod reactive;
 /// Signal implementation details.
 pub mod signal;
 /// State implementation details.
@@ -34,12 +37,12 @@ pub use view::{Component, ComponentNode, IntoView, IntoViewKeyExt, View, ViewKin
 /// ```
 /// use ailloli_ui_runtime::component::{component, Context, View, ViewKind};
 /// fn render(_: &mut Context<()>, _: u8) -> View<()> { View::empty() }
-/// let view = component(3, render);
+/// let view = component::<(), u8>(3, render);
 /// assert!(matches!(view.kind, ViewKind::Component(_)));
 /// ```
 pub fn component<A: 'static, P: Props>(
     props: P,
-    render: fn(&mut Context<A>, P) -> View<A>,
+    render: impl Fn(&mut Context<A>, P) -> View<A> + 'static,
 ) -> View<A> {
     Component::new(props, render).into_view()
 }
