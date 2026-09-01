@@ -1,4 +1,4 @@
-//! Frame render plan (single-pass compositing) — **pure CPU**.
+//! Frame render plan (single-pass compositing): **pure CPU**.
 //!
 //! Given a frame's layers + a [`PreparedResources`] snapshot, [`FrameRenderPlan::build_cpu`]
 //! produces:
@@ -178,7 +178,7 @@ pub struct PlannedLayer {
     pub batch_range: Range<usize>,
 }
 
-/// Legacy alias — use [`PlannedIsolatedPass`].
+/// Legacy alias: use [`PlannedIsolatedPass`].
 ///
 /// # Examples
 ///
@@ -680,8 +680,8 @@ impl FrameRenderPlan {
     ///
     /// `stencil_supported` is the only hardware/runtime configuration knob
     /// (still CPU-pure): when `false`, a layer that would normally use
-    /// [`ClipRenderMode::Stencil`] is downgraded to [`ClipRenderMode::ShaderMask`]
-    /// — same downgrade as the legacy `render_layer_pass` path did inline.
+    /// [`ClipRenderMode::Stencil`] is downgraded to [`ClipRenderMode::ShaderMask`].
+    /// This is the same downgrade that the legacy `render_layer_pass` path did inline.
     ///
     /// # Panics
     ///

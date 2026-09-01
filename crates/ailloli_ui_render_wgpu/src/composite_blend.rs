@@ -1,4 +1,4 @@
-//! blend modes — shader composite (Multiply / Screen) with dst framebuffer capture.
+//! blend modes: shader composite (Multiply / Screen) with dst framebuffer capture.
 
 use ailloli_ui_runtime::BlendMode;
 use bytemuck::{Pod, Zeroable};

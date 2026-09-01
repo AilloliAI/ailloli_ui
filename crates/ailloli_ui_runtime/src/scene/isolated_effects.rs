@@ -66,7 +66,7 @@ impl Default for IsolatedEffects {
 
 /// Provides the operations defined for IsolatedEffects.
 impl IsolatedEffects {
-    /// No offscreen pass required — render in the main single pass.
+    /// No offscreen pass required: render in the main single pass.
     ///
     /// This returns `true` exactly when opacity is at least `0.999`, both blur
     /// radii are at most zero, and blend mode is [`BlendMode::Normal`]. Thus

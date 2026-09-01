@@ -896,7 +896,7 @@ impl<A> Window<A> {
         self
     }
 
-    /// Custom title row required — chain [`title_bar`](Self::title_bar) before [`AppBuilder::run`].
+    /// Custom title row required: chain [`title_bar`](Self::title_bar) before [`AppBuilder::run`].
     ///
     /// Calling this method clears a previously registered custom row.
     ///
@@ -1017,7 +1017,7 @@ impl<A> Windows<A> {
         self
     }
 
-    /// Alias for [`push`](Self::push) — registers the primary window.
+    /// Alias for [`push`](Self::push): registers the primary window.
     ///
     /// The alias does not reorder or otherwise distinguish the window.
     ///
@@ -1352,9 +1352,9 @@ type UpdateFn<S, Sv, A> = fn(&mut S, &mut Sv, A) -> Commands<A>;
 /// Configurable application before [`run`](Self::run).
 ///
 /// Generic parameters:
-/// - `S` — application state from [`state`](Self::state)
-/// - `A` — action enum from an [`ActionSchema`] passed to [`actions`](Self::actions)
-/// - `Sv` — services handle from [`services`](Self::services)
+/// - `S`: application state from [`state`](Self::state)
+/// - `A`: action enum from an [`ActionSchema`] passed to [`actions`](Self::actions)
+/// - `Sv`: services handle from [`services`](Self::services)
 ///
 /// # Examples
 ///

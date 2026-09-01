@@ -43,7 +43,7 @@ jobs:
       - name: Audit repository and workflows
         run: |
           cargo +1.88.0 xtask audit --self-test
-          cargo +1.88.0 xtask audit --allow-missing-funding
+          cargo +1.88.0 xtask audit
           .github/scripts/run-actionlint.sh .github/workflows/*.yml
       - name: Inspect all publishable crate archives
         run: cargo +1.88.0 xtask package-check
@@ -59,12 +59,10 @@ jobs:
             [[ "${REF_TYPE}" == "tag" ]]
             cargo +1.88.0 xtask release-check \
               --state tagged \
-              --skip-package-check \
-              --allow-missing-funding
+              --skip-package-check
           else
             [[ "${REF}" == "refs/heads/main" ]]
             cargo +1.88.0 xtask release-check \
               --state release-ready \
-              --skip-package-check \
-              --allow-missing-funding
+              --skip-package-check
           fi

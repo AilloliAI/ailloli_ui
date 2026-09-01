@@ -1,4 +1,4 @@
-//! isolated compositor hardening — isolated compositor hardening (budgets, pool reuse, stress).
+//! isolated compositor hardening: budgets, pool reuse, and stress.
 
 use std::path::PathBuf;
 use std::sync::Arc;

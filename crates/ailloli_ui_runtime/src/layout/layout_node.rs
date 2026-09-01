@@ -83,7 +83,7 @@ pub trait Widget {
 
 /// Retained layout tree node (experimental; coexists with [`Widget`] trait layout).
 ///
-/// Not a compatibility shim — intended as the future retained layout engine base.
+/// This is not a compatibility shim; it is intended as the future retained layout engine base.
 /// Geometry is in logical pixels and values are not validated for finiteness.
 /// `ScrollY::scroll_y` is currently retained but deliberately has no effect on
 /// child offsets; callers must not yet rely on this node for visible scrolling.

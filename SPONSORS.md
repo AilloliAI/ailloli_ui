@@ -17,14 +17,14 @@ time, bug priority, roadmap control, or technical decision rights.
 The following tiers are proposals until they are explicitly approved and
 published on [GitHub Sponsors](https://github.com/sponsors/AilloliAI):
 
-- **Supporter — 5 USD/month:** GitHub badge and optional listing in Supporters.
-- **Backer — 25 USD/month:** optional name or handle with a link.
-- **Bronze Sponsor — 100 USD/month:** optional organization name and link.
-- **Silver Sponsor — 250 USD/month:** optional local logo up to 120 px wide in
+- **Supporter: 5 USD/month:** GitHub badge and optional listing in Supporters.
+- **Backer: 25 USD/month:** optional name or handle with a link.
+- **Bronze Sponsor: 100 USD/month:** optional organization name and link.
+- **Silver Sponsor: 250 USD/month:** optional local logo up to 120 px wide in
   this file.
-- **Gold Sponsor — 500 USD/month:** optional local logo up to 180 px wide in the
+- **Gold Sponsor: 500 USD/month:** optional local logo up to 180 px wide in the
   README, this file, and a future documentation Sponsors page.
-- **Corporate Sponsor — 1,000 USD/month:** optional local logo up to 240 px wide
+- **Corporate Sponsor: 1,000 USD/month:** optional local logo up to 240 px wide
   in major Sponsors locations.
 
 Recognition is optional and requires explicit consent. Anonymous sponsorship
@@ -78,8 +78,9 @@ No public sponsors are listed yet.
 - Never create a tier that promises private access, a service-level agreement,
   support time, bug priority, custom development, exclusive functionality, or
   influence over the roadmap.
-- Publish `.github/FUNDING.yml` only after the organization profile is publicly
-  active and independently verified.
+- Keep `.github/FUNDING.yml` pinned to the canonical `AilloliAI` beneficiary.
+  Do not announce sponsorship availability until the organization profile is
+  publicly active and independently verified.
 - Do not configure sponsorship webhooks or automated financial-data exports.
 
 ## FAQ
@@ -91,7 +92,8 @@ No. The license governs use of the framework, and sponsorship is voluntary.
 ### Does sponsorship make a request more likely to be implemented?
 
 No. Technical decisions consider project scope, safety, maintainability,
-community value, and available capacity—not sponsor status.
+community value, and available capacity. Sponsor status does not affect those
+decisions.
 
 ### Can a sponsor remain anonymous?
 

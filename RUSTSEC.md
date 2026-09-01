@@ -17,7 +17,7 @@ not ignored; a lockfile regression will fail `cargo audit`.
 
 ## Temporarily accepted informational advisories
 
-### RUSTSEC-2024-0436 — `paste 1.0.15` unmaintained
+### RUSTSEC-2024-0436: `paste 1.0.15` unmaintained
 
 `paste` is a build-time procedural macro reached through `image -> exr -> pulp`
 and `image -> ravif -> rav1e`. The advisory reports maintenance status, not a
@@ -28,7 +28,7 @@ Disposition: temporarily accepted with no runtime API exposure. Remove the
 exception when upstream moves to a maintained macro implementation, or
 immediately if a vulnerability advisory is issued.
 
-### RUSTSEC-2026-0206 — `rustybuzz 0.20.1` unmaintained
+### RUSTSEC-2026-0206: `rustybuzz 0.20.1` unmaintained
 
 `rustybuzz` is selected by `usvg 0.47`, which is shared by SVG validation and
 rasterization through `resvg`. The advisory reports that the crate is
@@ -40,7 +40,7 @@ Disposition: temporarily accepted while retaining bounded SVG validation.
 Re-evaluate on every `usvg`/`resvg` update and remove the exception when that
 chain adopts a maintained shaper.
 
-### RUSTSEC-2026-0192 — `ttf-parser 0.21.1` and `0.25.1` unmaintained
+### RUSTSEC-2026-0192: `ttf-parser 0.21.1` and `0.25.1` unmaintained
 
 Version `0.21.1` is selected by `fontdue 0.9`; version `0.25.1` is used directly
 and by `fontdb`, `owned_ttf_parser`, `rustybuzz`, and `usvg`. The advisory is an
@@ -52,7 +52,7 @@ Disposition: temporarily accepted. Continue bounded font and SVG inputs,
 review upstream migrations, and remove the exception once all required chains
 can move to a maintained parser without changing the public API accidentally.
 
-### RUSTSEC-2026-0186 — `memmap2 0.8.0` unsound range methods
+### RUSTSEC-2026-0186: `memmap2 0.8.0` unsound range methods
 
 The affected version is present only in the all-features Wayland chain
 `smithay-client-toolkit 0.19.2 -> xkbcommon 0.7.0 -> memmap2 0.8.0`.

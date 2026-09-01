@@ -33,7 +33,7 @@ impl ExternalUrl {
     ///
     /// Empty input and any leading/trailing Unicode whitespace are rejected
     /// before parsing. The parsed scheme must be HTTP(S) and a host must be
-    /// present. The original bytes—not the parser's normalized serialization—
+    /// present. The original bytes (not the parser's normalized serialization)
     /// are stored. Validation performs no DNS, network, allow-list, credential,
     /// or reachability check.
     ///

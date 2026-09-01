@@ -1,4 +1,4 @@
-//! isolated compositor hardening — budgets and downgrade policy for isolated offscreen compositing.
+//! isolated compositor hardening: budgets and downgrade policy for isolated offscreen compositing.
 
 use ailloli_ui_core::Rect;
 

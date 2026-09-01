@@ -1842,11 +1842,11 @@ impl Renderer {
         }
     }
 
-    /// single-pass compositing — records all layers into a single `wgpu::RenderPass`.
+    /// single-pass compositing: records all layers into a single `wgpu::RenderPass`.
     ///
     /// The four-step layout matches the plan:
     ///   1. `text_atlas.start_frame()` + `PreparedResources::prepare(...)`
-    ///      (only GPU-touching step before the pass — glyph rasterization
+    ///      (only GPU-touching step before the pass: glyph rasterization
     ///      and icon cache population).
     ///   2. `FrameRenderPlan::build_cpu(...)` (pure CPU).
     ///   3. Allocate per-frame arena buffers (3-4) + per-layer clip bindings
@@ -3132,7 +3132,7 @@ fn record_planned_layer<'a>(
     frame_has_stencil_attachment: bool,
     skip_shader_blend_composite: bool,
 ) {
-    // (3) Scissor reset — always, full-screen if `pl.scissor.is_none()`.
+    // (3) Scissor reset: always, full-screen if `pl.scissor.is_none()`.
     apply_layer_scissor(rpass, w, h, scale, pl.scissor);
 
     let use_stencil = pl.clip_mode == ClipRenderMode::Stencil;
@@ -3192,7 +3192,7 @@ fn record_planned_layer<'a>(
             continue;
         };
 
-        // single-pass compositing — if the frame has a stencil attachment but this layer is
+        // single-pass compositing: if the frame has a stencil attachment but this layer is
         // not in stencil mode, the wgpu validation requires that the pipeline
         // declares a compatible depth_stencil state. Use the passthrough
         // variants in that case (compare=Always, no write).
@@ -3285,12 +3285,12 @@ fn record_planned_layer<'a>(
 // above.
 //
 // Removed at this site:
-//   - `Renderer::render_layer_pass(...)` — replaced by `record_single_pass` +
+//   - `Renderer::render_layer_pass(...)`: replaced by `record_single_pass` +
 //     `record_planned_layer`;
-//   - `RenderBatch` / `BatchClipKey` / `batch_clip_key` / `push_render_batch`
-//     — replaced by `FrameRenderPlan::PlannedBatch` + intra-layer fusion in
+//   - `RenderBatch` / `BatchClipKey` / `batch_clip_key` / `push_render_batch`:
+//     replaced by `FrameRenderPlan::PlannedBatch` + intra-layer fusion in
 //     `frame_plan::push_planned_batch`;
-//   - `mod render_batch_tests` — replaced by `frame_plan::tests::*`
+//   - `mod render_batch_tests`: replaced by `frame_plan::tests::*`
 //     (CPU-pure, no GPU required);
-//   - `Renderer.stencil_frame: StencilFrameState` — replaced by per-frame
+//   - `Renderer.stencil_frame: StencilFrameState`: replaced by per-frame
 //     `stencil_ref` assignment inside `FrameRenderPlan::build_cpu`.

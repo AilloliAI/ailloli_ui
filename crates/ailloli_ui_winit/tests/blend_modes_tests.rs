@@ -1,4 +1,4 @@
-//! blend modes — Multiply / Screen blend modes (scenarios AC–AI).
+//! blend modes: Multiply / Screen blend modes (scenarios AC–AI).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -86,7 +86,7 @@ fn make_renderer(
     .expect("renderer")
 }
 
-/// AC — Multiply on yellow background: center darker than pure yellow.
+/// AC: Multiply on yellow background; center darker than pure yellow.
 fn scenario_ac_multiply(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -130,7 +130,7 @@ fn scenario_ac_multiply(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// AD — Screen on blue background: center lighter than background.
+/// AD: Screen on blue background; center lighter than background.
 fn scenario_ad_screen(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -166,7 +166,7 @@ fn scenario_ad_screen(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// AE — Multiply + opacity 0.6 partial blend.
+/// AE: Multiply + opacity 0.6 partial blend.
 fn scenario_ae_multiply_opacity(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -202,7 +202,7 @@ fn scenario_ae_multiply_opacity(renderer: &mut Renderer, rep: &mut ScenarioRepor
     });
 }
 
-/// AF — Multiply + content blur (distinct effects).
+/// AF: Multiply + content blur (distinct effects).
 fn scenario_af_multiply_blur(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -235,7 +235,7 @@ fn scenario_af_multiply_blur(renderer: &mut Renderer, rep: &mut ScenarioReport) 
     });
 }
 
-/// AG — blend budget skip traces downgrade, no crash.
+/// AG: blend budget skip traces downgrade, no crash.
 fn scenario_ag_blend_budget_skip(window: &Arc<winit::window::Window>, rep: &mut ScenarioReport) {
     let budget = IsolatedBudgetConfig {
         max_blend_captures_per_frame: 0,
@@ -263,7 +263,7 @@ fn scenario_ag_blend_budget_skip(window: &Arc<winit::window::Window>, rep: &mut 
     });
 }
 
-/// AH — backdrop regression (backdrop filter).
+/// AH: backdrop regression (backdrop filter).
 fn scenario_ah_backdrop(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -296,7 +296,7 @@ fn scenario_ah_backdrop(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// AI — nested_3 all Normal: 3 passes, no blend capture.
+/// AI: nested_3 all Normal; 3 passes, no blend capture.
 fn scenario_ai_nested_normal(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let outer = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(32.0, 32.0, 192.0, 192.0),
@@ -348,7 +348,7 @@ fn scenario_ai_nested_normal(renderer: &mut Renderer, rep: &mut ScenarioReport) 
 }
 
 #[test]
-#[ignore = "GPU/WSL visual regression — run with --ignored"]
+#[ignore = "GPU/WSL visual regression: run with --ignored"]
 fn blend_modes_blend_modes_all_scenarios() {
     let event_loop = new_event_loop_allow_any_thread().expect("event loop");
     let window = Arc::new(

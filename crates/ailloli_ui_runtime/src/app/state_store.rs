@@ -225,8 +225,8 @@ impl StateStore {
 
     /// Removes all state slots belonging to `element_id` in one tree only.
     ///
-    /// This scans the full sparse store in O(total slots). Other trees—even with
-    /// the same element ID—remain intact.
+    /// This scans the full sparse store in O(total slots). Other trees (even with
+    /// the same element ID) remain intact.
     ///
     /// # Examples
     ///

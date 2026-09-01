@@ -69,7 +69,7 @@ jobs:
       - name: Run fail-closed audit fixtures
         run: cargo +1.88.0 xtask audit --self-test
       - name: Audit repository candidate
-        run: cargo +1.88.0 xtask audit --allow-missing-funding
+        run: cargo +1.88.0 xtask audit
       - name: Audit new commit subjects
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

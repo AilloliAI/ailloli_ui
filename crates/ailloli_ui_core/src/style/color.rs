@@ -240,7 +240,7 @@ impl Color {
     }
 }
 
-/// Deprecated alias — use [`Color`].
+/// Deprecated alias: use [`Color`].
 ///
 /// # Examples
 ///

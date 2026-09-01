@@ -1,4 +1,4 @@
-//! multilayer compositing — Multi-layer compositing visual regressions.
+//! multilayer compositing: multi-layer compositing visual regressions.
 //!
 //! Reproduces the family of bugs where adding a second `LayerPass` (with or
 //! without clip) corrupts pixels already drawn by the previous layer (titlebar

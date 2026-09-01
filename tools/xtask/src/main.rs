@@ -28,10 +28,6 @@ enum Command {
         #[arg(long)]
         self_test: bool,
 
-        /// Permit the deferred Sponsors configuration file to be absent.
-        #[arg(long)]
-        allow_missing_funding: bool,
-
         /// Validate an additional directory containing workflow YAML files.
         #[arg(long)]
         extra_workflow_root: Vec<PathBuf>,
@@ -81,10 +77,6 @@ enum Command {
         /// Skip archive generation when it was already proved separately.
         #[arg(long)]
         skip_package_check: bool,
-
-        /// Permit the deferred Sponsors configuration file to be absent.
-        #[arg(long)]
-        allow_missing_funding: bool,
     },
 
     /// Print the dependency-derived topological publication plan.
@@ -120,7 +112,6 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Audit {
             self_test,
-            allow_missing_funding,
             extra_workflow_root,
             commit_range,
             commit_subject,
@@ -130,7 +121,6 @@ fn main() -> Result<()> {
             &root,
             audit::AuditOptions {
                 self_test,
-                allow_missing_funding,
                 extra_workflow_roots: extra_workflow_root,
                 commit_range,
                 commit_subjects: commit_subject,
@@ -147,14 +137,7 @@ fn main() -> Result<()> {
             state,
             allow_dirty,
             skip_package_check,
-            allow_missing_funding,
-        } => release::check(
-            &root,
-            state,
-            allow_dirty,
-            skip_package_check,
-            allow_missing_funding,
-        ),
+        } => release::check(&root, state, allow_dirty, skip_package_check),
         Command::ReleasePlan { json } => release::plan_command(&root, json),
         Command::VerifyRelease { version } => release::verify(&root, version.as_deref()),
     }

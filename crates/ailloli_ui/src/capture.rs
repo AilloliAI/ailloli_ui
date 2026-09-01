@@ -17,7 +17,7 @@ use ailloli_ui_winit::{
     CaptureError, CaptureHandle, CaptureRequestId, CaptureResult, CaptureTarget,
 };
 
-/// What to capture — the logical window id comes from [`Window::new`](crate::Window::new).
+/// What to capture: the logical window id comes from [`Window::new`](crate::Window::new).
 ///
 /// # Examples
 ///

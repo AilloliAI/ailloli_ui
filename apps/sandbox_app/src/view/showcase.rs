@@ -76,7 +76,7 @@ pub(crate) fn run() -> ailloli_ui::Result<()> {
         )
         .window(
             Window::new("main")
-                .title("Ailloli UI — Framework Showcase")
+                .title("Ailloli UI: Framework Showcase")
                 .size(1280.0, 900.0)
                 .ailloli_ui_chrome()
                 .content(move || showcase_root(window_state.clone())),
@@ -618,7 +618,7 @@ fn documentation_explorer(theme: Theme, state: ShowcaseState) -> View<Action> {
             theme,
             "DOCUMENTATION EXPLORER",
             "Navigate the actual public architecture",
-            "Select a subsystem to read its role. The tree contains framework-owned concepts only—no product layer or private dependency.",
+            "Select a subsystem to read its role. The tree contains framework-owned concepts only; it has no product layer or private dependency.",
         ))
         .child(documentation_explorer_panel(theme, state, 380.0, false))
         .into_view()

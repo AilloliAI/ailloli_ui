@@ -38,11 +38,10 @@ exception.
 Start from a reviewed branch using Rust 1.88 and run:
 
 ```sh
-cargo xtask audit --allow-missing-funding
+cargo xtask audit
 cargo xtask package-check --allow-dirty
 cargo xtask release-plan
-cargo xtask release-check --state candidate --allow-dirty \
-  --allow-missing-funding
+cargo xtask release-check --state candidate --allow-dirty
 ```
 
 The audit validates the closed package set, metadata, exact first-party
@@ -73,8 +72,7 @@ Before selecting the final commit:
    `cargo xtask package-check`, and the clean-worktree check:
 
    ```sh
-   cargo xtask release-check --state release-ready \
-     --allow-missing-funding
+   cargo xtask release-check --state release-ready
    ```
 
 4. Confirm that the source revision and packaged provenance refer to the public
@@ -82,9 +80,9 @@ Before selecting the final commit:
 5. Freeze the validated `main` revision. No source modification is permitted
    between green CI and tag creation.
 
-The temporary `--allow-missing-funding` option may be used while the
-organization Sponsors profile is not active. Sponsorship is not a dependency
-of crates.io publication.
+The repository audit always requires `.github/FUNDING.yml` to contain the
+canonical `AilloliAI` beneficiary. Sponsorship remains voluntary and is not a
+dependency of crates.io publication.
 
 ## Tag the validated revision
 
@@ -93,7 +91,7 @@ After dedicated approval, create one annotated tag on the exact green SHA:
 ```sh
 git tag -a v0.1.0-beta.1 -m "Ailloli UI v0.1.0-beta.1"
 git push origin v0.1.0-beta.1
-cargo xtask release-check --state tagged --allow-missing-funding
+cargo xtask release-check --state tagged
 ```
 
 Do not push any other tag and do not modify the tag after publication.

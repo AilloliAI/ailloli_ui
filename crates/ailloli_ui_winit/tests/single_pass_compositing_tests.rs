@@ -1,4 +1,4 @@
-//! single-pass compositing — single-`RenderPass` multi-layer compositing visual regressions.
+//! single-pass compositing: single-`RenderPass` multi-layer compositing visual regressions.
 //!
 //! These scenarios stress the post-single-pass compositing renderer where N logical layers are
 //! recorded into a **single** `wgpu::RenderPass` driven by `FrameRenderPlan`,
@@ -168,7 +168,7 @@ impl ScenarioReport {
     }
 }
 
-/// Scenario E — 8 layers alternating clipped / non-clipped small rects.
+/// Scenario E: 8 layers alternating clipped / non-clipped small rects.
 ///
 /// Validates that:
 ///   - per-layer scissor reset works (a non-clipped layer following a clipped one
@@ -265,7 +265,7 @@ fn scenario_e_8_layers(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     }
 }
 
-/// Scenario F — root window RoundRect (stencil) + 3 nested Rect clips + post non-stencil layer.
+/// Scenario F: root window RoundRect (stencil) + 3 nested Rect clips + post non-stencil layer.
 ///
 /// Validates that:
 ///   - the rounded window mask is preserved across multiple inner rect-clipped layers,
@@ -407,14 +407,14 @@ fn scenario_f_stencil_nested_rects_post(renderer: &mut Renderer, rep: &mut Scena
     });
 }
 
-/// Scenario G — text-free variant: 2 layers each containing differently colored
+/// Scenario G: text-free variant with 2 layers, each containing differently colored
 /// rects in **disjoint** regions, both clipped to overlapping windows.
 ///
 /// This guards the vertex arena ranges contract: arena packing for layer 1 and
 /// layer 2 must produce **disjoint** ranges; if single-pass compositing regresses to a shared
 /// `vertex_buf` (multilayer compositing trap), one layer's rect will overwrite the other.
 ///
-/// (We avoid actual text rendering to keep the test self-contained — text would
+/// (We avoid actual text rendering to keep the test self-contained; text would
 /// require font setup + face_blobs plumbing.)
 fn scenario_g_arena_packing(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     // Layer 1: 4 colored squares forming a grid in the top half.

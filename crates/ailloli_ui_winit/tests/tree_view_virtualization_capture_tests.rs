@@ -58,7 +58,7 @@ fn scene(ctx: &mut Context<()>, props: SceneProps) -> View<()> {
             Column::new()
                 .fill()
                 .gap(10.0)
-                .child(Text::new("tree virtualization — retained virtual TreeView").size(24.0))
+                .child(Text::new("tree virtualization: retained virtual TreeView").size(24.0))
                 .child(
                     Row::new()
                         .gap(10.0)
@@ -87,7 +87,7 @@ fn synthetic_model() -> TreeModelHandle<u64> {
     });
     for id in 1..ROW_COUNT {
         let label = if id == SELECTED_ROW + 3 {
-            format!("row-{id:06} — late-discovered-width-abcdefghijklmnopqrstuvwxyz-0123456789")
+            format!("row-{id:06}: late-discovered-width-abcdefghijklmnopqrstuvwxyz-0123456789")
         } else {
             format!("row-{id:06}")
         };

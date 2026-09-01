@@ -1,4 +1,4 @@
-//! Regression: Ailloli UI title bar — usable height and square icons.
+//! Regression: Ailloli UI title bar with usable height and square icons.
 
 use ailloli_ui_core::geometry::Constraints;
 use ailloli_ui_core::math::Scale;

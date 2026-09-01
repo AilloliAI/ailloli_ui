@@ -1,4 +1,4 @@
-//! backdrop filter — backdrop filter visual regressions (scenarios X–AB).
+//! backdrop filter: backdrop filter visual regressions (scenarios X–AB).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -87,7 +87,7 @@ impl ScenarioReport {
     }
 }
 
-/// X — backdrop under round-rect clip; stripes visible blurred behind panel.
+/// X: backdrop under round-rect clip; stripes visible blurred behind panel.
 fn scenario_x_backdrop_clipped(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let panel = Rect::new(64.0, 64.0, 128.0, 128.0);
     let iso_cmds = vec![DrawCmd::Rect(DrawRect {
@@ -140,7 +140,7 @@ fn scenario_x_backdrop_clipped(renderer: &mut Renderer, rep: &mut ScenarioReport
     });
 }
 
-/// Y — backdrop + group opacity.
+/// Y: backdrop + group opacity.
 fn scenario_y_backdrop_opacity(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let iso_cmds = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(48.0, 48.0, 160.0, 160.0),
@@ -173,7 +173,7 @@ fn scenario_y_backdrop_opacity(renderer: &mut Renderer, rep: &mut ScenarioReport
     });
 }
 
-/// Z — distinct backdrop halo vs content blur.
+/// Z: distinct backdrop halo vs content blur.
 fn scenario_z_backdrop_and_content_blur(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let iso_cmds = vec![
         DrawCmd::Rect(DrawRect {
@@ -226,7 +226,7 @@ fn scenario_z_backdrop_and_content_blur(renderer: &mut Renderer, rep: &mut Scena
     });
 }
 
-/// AA — backdrop budget skip still renders.
+/// AA: backdrop budget skip still renders.
 fn scenario_aa_budget_skip(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let iso_cmds = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(48.0, 48.0, 160.0, 160.0),
@@ -260,7 +260,7 @@ fn scenario_aa_budget_skip(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// AB — nested_3 without backdrop (nested isolated compositor parity).
+/// AB: nested_3 without backdrop (nested isolated compositor parity).
 fn scenario_ab_nested_no_backdrop(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bufs = [
         vec![DrawCmd::Rect(DrawRect {

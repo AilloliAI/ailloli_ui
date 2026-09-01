@@ -3,11 +3,11 @@
 //! # Composing views
 //!
 //! Return [`View`] from UI functions (static or dynamic). Call `.into_view()` on the root builder
-//! (see application `view/prelude`: re-export `ailloli_ui::IntoView` there — not in this crate prelude).
+//! (see application `view/prelude`: re-export `ailloli_ui::IntoView` there, not in this crate prelude).
 //! Containers still accept builders in `.child(...)` without converting each child;
 //! [`Window::content`] converts the closure result once per frame.
 //!
-//! [`IntoView`] is a lower-level trait (`.child`, custom widgets) — not exported from this prelude.
+//! [`IntoView`] is a lower-level trait (`.child`, custom widgets); it is not exported from this prelude.
 //!
 //! ```rust
 //! use ailloli_ui::prelude::*;

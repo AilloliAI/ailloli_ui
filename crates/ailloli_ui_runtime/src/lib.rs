@@ -2,9 +2,9 @@
 //!
 //! Pipeline for each frame (see `Runtime::render_root` on [`app::Runtime`]):
 //!
-//! 1. **Reconcile** — diff declarative [`component::View`] into an [`element::ElementTree`]
-//! 2. **Layout** — measure and position nodes ([`layout::LayoutEngine`], [`layout::Widget`])
-//! 3. **Paint** — emit [`scene::DrawCmd`] lists into a [`scene::Scene`]
+//! 1. **Reconcile**: diff declarative [`component::View`] into an [`element::ElementTree`]
+//! 2. **Layout**: measure and position nodes ([`layout::LayoutEngine`], [`layout::Widget`])
+//! 3. **Paint**: emit [`scene::DrawCmd`] lists into a [`scene::Scene`]
 //!
 //! Input is routed separately via [`input::InputRouter`] and widget [`component::Widget::event`].
 //!

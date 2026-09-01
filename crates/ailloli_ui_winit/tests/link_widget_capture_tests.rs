@@ -37,7 +37,7 @@ fn link_showcase_component(ctx: &mut Context<()>, _props: ()) -> View<()> {
         .child(
             Column::new()
                 .gap(18.0)
-                .child(Text::new("link widget — Link").size(22.0))
+                .child(Text::new("link widget: Link").size(22.0))
                 .child(Link::with_label("Documentation").href("https://docs.ailloli.ai"))
                 .child(
                     Link::with_label("Focused link")

@@ -1,4 +1,4 @@
-//! nested isolated compositor — nested isolated offscreen compositor visual regressions.
+//! nested isolated compositor: nested isolated offscreen compositor visual regressions.
 //!
 //! Scenarios S–W exercise parent/child DAG planning, topo execution, and depth limits.
 
@@ -114,7 +114,7 @@ impl ScenarioReport {
     }
 }
 
-/// S — parent blur + child opacity (nested DAG).
+/// S: parent blur + child opacity (nested DAG).
 fn scenario_s_parent_blur_child_opacity(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -164,7 +164,7 @@ fn scenario_s_parent_blur_child_opacity(renderer: &mut Renderer, rep: &mut Scena
     });
 }
 
-/// T — parent noop (collapse) + child blur behaves like child-only blur at main pass.
+/// T: parent noop (collapse) + child blur behaves like child-only blur at main pass.
 fn scenario_t_parent_noop_child_blur(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -203,7 +203,7 @@ fn scenario_t_parent_noop_child_blur(renderer: &mut Renderer, rep: &mut Scenario
     });
 }
 
-/// U — three nesting levels (depth 0 / 1 / 2).
+/// U: three nesting levels (depth 0 / 1 / 2).
 fn scenario_u_three_levels(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -267,7 +267,7 @@ fn scenario_u_three_levels(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     }
 }
 
-/// V — two sibling isolated children inside one parent.
+/// V: two sibling isolated children inside one parent.
 fn scenario_v_siblings_in_parent(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -335,7 +335,7 @@ fn scenario_v_siblings_in_parent(renderer: &mut Renderer, rep: &mut ScenarioRepo
     });
 }
 
-/// W — nesting depth budget exceeded (CPU plan error).
+/// W: nesting depth budget exceeded (CPU plan error).
 fn scenario_w_depth_exceeded(rep: &mut ScenarioReport) {
     let cmds = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, 10.0, 10.0),

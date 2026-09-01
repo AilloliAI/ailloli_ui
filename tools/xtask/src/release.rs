@@ -47,9 +47,8 @@ pub(crate) fn check(
     state: ReleaseState,
     allow_dirty: bool,
     skip_package_check: bool,
-    allow_missing_funding: bool,
 ) -> Result<()> {
-    run_audit(root, allow_missing_funding, &[], 0)?;
+    run_audit(root, &[], 0)?;
     let plan = publication_plan(root)?;
     validate_changelog(root)?;
     validate_git_state(root, state, allow_dirty)?;
@@ -175,8 +174,16 @@ fn publication_plan(root: &Path) -> Result<PublicationPlan> {
 
 fn validate_changelog(root: &Path) -> Result<()> {
     let changelog = fs::read_to_string(root.join("CHANGELOG.md"))?;
+    if changelog.matches("## [Unreleased]").count() != 1 {
+        bail!("CHANGELOG.md needs exactly one ## [Unreleased] heading");
+    }
+    for line in changelog.lines().filter(|line| line.starts_with("## ")) {
+        if !line.starts_with("## [") {
+            bail!("CHANGELOG.md release heading must use square brackets: {line}");
+        }
+    }
     let heading = Regex::new(&format!(
-        r"(?m)^## {} - \d{{4}}-\d{{2}}-\d{{2}}$",
+        r"(?m)^## \[{}\] - \d{{4}}-\d{{2}}-\d{{2}}$",
         regex::escape(VERSION)
     ))?;
     if !heading.is_match(&changelog) {
@@ -185,13 +192,24 @@ fn validate_changelog(root: &Path) -> Result<()> {
     if changelog.contains("Unpublished candidate") {
         bail!("CHANGELOG.md still describes {VERSION} as an unpublished candidate");
     }
+    let unreleased_link =
+        format!("[Unreleased]: https://github.com/AilloliAI/ailloli_ui/compare/v{VERSION}...HEAD");
+    if !changelog.contains(&unreleased_link) {
+        bail!("CHANGELOG.md needs the canonical [Unreleased] comparison link");
+    }
+    let version_link =
+        format!("[{VERSION}]: https://github.com/AilloliAI/ailloli_ui/releases/tag/v{VERSION}");
+    if !changelog.contains(&version_link) {
+        bail!("CHANGELOG.md needs the canonical [{VERSION}] release link");
+    }
+    let normalized = changelog.to_ascii_lowercase();
     for phrase in [
-        "First public beta",
-        "Rust 1.88",
-        "Experimental",
-        "Known limitations",
+        "first public beta",
+        "rust 1.88",
+        "experimental",
+        "known limitations",
     ] {
-        if !changelog.contains(phrase) {
+        if !normalized.contains(phrase) {
             bail!("CHANGELOG.md is missing release note text {phrase:?}");
         }
     }

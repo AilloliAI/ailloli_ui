@@ -10,7 +10,7 @@ use ailloli_ui_runtime::{DrawBorder, DrawCmd, DrawPolyline, DrawRRect, DrawRect,
 /// glyphs and selection rects are clipped on the GPU.
 ///
 /// multilayer compositing fix in `ailloli_ui_render_wgpu::renderer` (per-layer vertex buffers) is what
-/// makes this safe again — previously a second scene layer would corrupt the
+/// makes this safe again. Previously, a second scene layer would corrupt the
 /// previously rendered chrome through the shared vertex buffer being
 /// overwritten.
 ///

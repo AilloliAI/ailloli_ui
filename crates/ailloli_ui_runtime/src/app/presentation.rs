@@ -600,7 +600,7 @@ impl PendingPresentationIntents {
     /// Drains coalesced intents in deterministic replay order.
     ///
     /// Replay order is title, size, cursor, every chrome operation in insertion
-    /// order, then redraw—regardless of original interleaving. All stored state
+    /// order, then redraw, regardless of original interleaving. All stored state
     /// is cleared; a second drain is empty.
     ///
     /// # Examples

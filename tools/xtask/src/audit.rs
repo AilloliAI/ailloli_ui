@@ -54,6 +54,8 @@ const EXPECTED_FIRST_PARTY_EDGES: usize = 72;
 
 const EXPECTED_CODEOWNERS: &str = "* @MrRise-RiCorp\n";
 const EXPECTED_FUNDING: &str = "github: AilloliAI\n";
+const VERBATIM_EM_DASH_EXEMPTIONS: [(&str, usize); 1] =
+    [("crates/ailloli_ui_devicons_font/LICENSE-FONT-AWESOME", 2)];
 const REVIEWED_CAPTURES: [(&str, &str); 3] = [
     (
         "artifacts/captures/public_sandbox_showcase.png",
@@ -71,10 +73,11 @@ const REVIEWED_CAPTURES: [(&str, &str); 3] = [
 const ICON_PATH: &str = "apps/sandbox_app/src/assets/icons/icon.svg";
 const ICON_V3_SHA256: &str = "e8056e11a3e16a21da5e12726c283cea4d43bab2b479a9c8b31401cd2118de43";
 
-const REQUIRED_ROOT_FILES: [&str; 34] = [
+const REQUIRED_ROOT_FILES: [&str; 35] = [
     ".cargo/audit.toml",
     ".cargo/config.toml",
     ".github/CODEOWNERS",
+    ".github/FUNDING.yml",
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/ISSUE_TEMPLATE/feature_request.yml",
@@ -235,7 +238,6 @@ impl Workspace {
 #[derive(Debug)]
 pub(crate) struct AuditOptions {
     pub(crate) self_test: bool,
-    pub(crate) allow_missing_funding: bool,
     pub(crate) extra_workflow_roots: Vec<PathBuf>,
     pub(crate) commit_range: Option<String>,
     pub(crate) commit_subjects: Vec<String>,
@@ -308,12 +310,7 @@ pub(crate) fn command(root: &Path, options: AuditOptions) -> Result<()> {
             }
             json!({"status": "ok", "commit_subjects": commit_subjects})
         } else {
-            let report = run_audit(
-                root,
-                options.allow_missing_funding,
-                &options.extra_workflow_roots,
-                commit_subjects,
-            )?;
+            let report = run_audit(root, &options.extra_workflow_roots, commit_subjects)?;
             serde_json::to_value(report)?
         }
     };
@@ -328,13 +325,12 @@ pub(crate) fn command(root: &Path, options: AuditOptions) -> Result<()> {
 
 pub(crate) fn run_audit(
     root: &Path,
-    allow_missing_funding: bool,
     extra_workflow_roots: &[PathBuf],
     commit_subjects: usize,
 ) -> Result<AuditReport> {
     let workspace = Workspace::load(root)?;
     let metadata = validate_metadata(&workspace)?;
-    let funding = validate_governance(root, !allow_missing_funding)?;
+    let funding = validate_governance(root)?;
     let workflows = validate_workflows(root, extra_workflow_roots)?;
     let scanned_text_files = validate_candidate_text(root)?;
     let relative_links = validate_relative_markdown_links(root)?;
@@ -1123,6 +1119,7 @@ fn validate_candidate_text(root: &Path) -> Result<usize> {
         scanned += 1;
         let relative = path.strip_prefix(root)?.to_string_lossy();
         validate_decontextualized_value(&text, &format!("public file {relative}"))?;
+        validate_em_dash_policy(&text, &relative)?;
         for token in &private_tokens {
             if text.contains(token) {
                 bail!("private or non-canonical repository token found in {relative}");
@@ -1151,6 +1148,23 @@ fn validate_candidate_text(root: &Path) -> Result<usize> {
         }
     }
     Ok(scanned)
+}
+
+fn validate_em_dash_policy(text: &str, relative: &str) -> Result<()> {
+    let expected = VERBATIM_EM_DASH_EXEMPTIONS
+        .iter()
+        .find_map(|(path, count)| (*path == relative).then_some(*count))
+        .unwrap_or(0);
+    let actual = text.matches('\u{2014}').count();
+    if actual != expected {
+        if expected == 0 {
+            bail!("em dash punctuation is forbidden in first-party public file {relative}");
+        }
+        bail!(
+            "verbatim third-party em dash count changed in {relative}: expected {expected}, found {actual}"
+        );
+    }
+    Ok(())
 }
 
 fn candidate_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -1460,7 +1474,7 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn validate_governance(root: &Path, require_funding: bool) -> Result<&'static str> {
+fn validate_governance(root: &Path) -> Result<&'static str> {
     for relative in REQUIRED_ROOT_FILES {
         let path = root.join(relative);
         if !path.is_file() || fs::metadata(&path)?.len() == 0 {
@@ -1526,7 +1540,13 @@ fn validate_governance(root: &Path, require_funding: bool) -> Result<&'static st
         ),
         (
             "CONTRIBUTING.md",
-            &["Rust 1.88", "Apache License 2.0", "SECURITY.md"],
+            &[
+                "Rust 1.88",
+                "Apache License 2.0",
+                "SECURITY.md",
+                "Em dashes are not permitted",
+                "Never replace a range with a colon",
+            ],
         ),
         (
             "SUPPORT.md",
@@ -1554,12 +1574,12 @@ fn validate_governance(root: &Path, require_funding: bool) -> Result<&'static st
             "SPONSORS.md",
             &[
                 "Sponsorship funds the development of Ailloli UI; it does not purchase the",
-                "Supporter — 5 USD/month",
-                "Backer — 25 USD/month",
-                "Bronze Sponsor — 100 USD/month",
-                "Silver Sponsor — 250 USD/month",
-                "Gold Sponsor — 500 USD/month",
-                "Corporate Sponsor — 1,000 USD/month",
+                "Supporter: 5 USD/month",
+                "Backer: 25 USD/month",
+                "Bronze Sponsor: 100 USD/month",
+                "Silver Sponsor: 250 USD/month",
+                "Gold Sponsor: 500 USD/month",
+                "Corporate Sponsor: 1,000 USD/month",
                 "up to ten monthly tiers",
                 "price cannot be",
             ],
@@ -1636,14 +1656,7 @@ fn validate_governance(root: &Path, require_funding: bool) -> Result<&'static st
     }
 
     let funding = root.join(".github/FUNDING.yml");
-    let funding_status = if funding.exists() {
-        validate_funding_text(&read_utf8(&funding)?, ".github/FUNDING.yml")?;
-        "verified-file"
-    } else if require_funding {
-        bail!(".github/FUNDING.yml is required after Sponsors activation");
-    } else {
-        "deferred"
-    };
+    validate_funding_text(&read_utf8(&funding)?, ".github/FUNDING.yml")?;
 
     let issue_config = read_utf8(&root.join(".github/ISSUE_TEMPLATE/config.yml"))?;
     if !issue_config.contains(&format!("{REPOSITORY}/security/advisories/new")) {
@@ -1655,7 +1668,7 @@ fn validate_governance(root: &Path, require_funding: bool) -> Result<&'static st
     if !read_utf8(&root.join("README.md"))?.contains(HOMEPAGE) {
         bail!("README.md must link the canonical Pages homepage");
     }
-    Ok(funding_status)
+    Ok("verified-file")
 }
 
 fn validate_funding_text(text: &str, label: &str) -> Result<()> {
@@ -1835,6 +1848,28 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     }
 
     validate_decontextualized_value("semantic public regression", "positive context fixture")?;
+    validate_em_dash_policy("title: description", "positive punctuation fixture")?;
+    let em_dash = '\u{2014}';
+    if validate_em_dash_policy(
+        &format!("title {em_dash} description"),
+        "negative punctuation fixture",
+    )
+    .is_ok()
+    {
+        bail!("negative punctuation fixture was unexpectedly accepted");
+    }
+    validate_em_dash_policy(
+        &format!("verbatim {em_dash} legal {em_dash} text"),
+        "crates/ailloli_ui_devicons_font/LICENSE-FONT-AWESOME",
+    )?;
+    if validate_em_dash_policy(
+        &format!("verbatim {em_dash} legal text"),
+        "crates/ailloli_ui_devicons_font/LICENSE-FONT-AWESOME",
+    )
+    .is_ok()
+    {
+        bail!("changed third-party punctuation fixture was unexpectedly accepted");
+    }
     let invalid_values = [
         ["legacy-", "phase", &999_u16.to_string()].concat(),
         ["legacy-", "ui", "-xr", &999_u16.to_string()].concat(),
@@ -1844,7 +1879,7 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
             bail!("negative context fixture was unexpectedly accepted");
         }
     }
-    Ok(json!({"status": "ok", "positive": 5, "negative": 18}))
+    Ok(json!({"status": "ok", "positive": 7, "negative": 20}))
 }
 
 fn validate_metadata_fixture(path: &Path) -> Result<()> {

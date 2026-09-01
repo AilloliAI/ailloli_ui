@@ -84,7 +84,7 @@ fn input_scene(ctx: &mut Context<()>, props: InputSceneProps) -> View<()> {
             Column::new()
                 .fill_width()
                 .gap(16.0)
-                .child(Text::new("Winit host architecture — provider-neutral input").size(22.0))
+                .child(Text::new("Winit host architecture: provider-neutral input").size(22.0))
                 .child(
                     Row::new()
                         .gap(14.0)
@@ -146,7 +146,7 @@ fn popup_scene(_ctx: &mut Context<()>, _props: ()) -> View<()> {
                 .fill_width()
                 .gap(20.0)
                 .child(
-                    Text::new("Winit host architecture — retained popup portal + overlay fallback")
+                    Text::new("Winit host architecture: retained popup portal + overlay fallback")
                         .size(22.0),
                 )
                 .child(
@@ -273,7 +273,7 @@ fn recovery_scene(ctx: &mut Context<()>, props: RecoverySceneProps) -> View<()> 
             Column::new()
                 .fill_width()
                 .gap(16.0)
-                .child(Text::new("Winit host architecture — recovered native presentation").size(22.0))
+                .child(Text::new("Winit host architecture: recovered native presentation").size(22.0))
                 .child(Text::new(
                     "This retained tree was detached after a simulated surface loss and then rebound.",
                 ))

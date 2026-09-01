@@ -27,6 +27,16 @@ Keep provider selection, business policy, credentials, and product-specific
 workflows in consuming applications. Public code, documentation, fixtures, and
 commit messages must not expose private repository names or local paths.
 
+## Punctuation
+
+Em dashes are not permitted in first-party public text, documentation, UI
+labels, source comments, Rustdoc, fixtures, reports, or commit messages. Use a
+colon after a title, label, term, or tier name that introduces a description.
+Use parentheses or commas for a parenthetical remark, and use a semicolon or a
+new sentence for contrast, qualification, or consequence. Use an en dash or
+write the range explicitly for ranges and intervals.
+Never replace a range with a colon. Preserve third-party legal text verbatim.
+
 ## Development workflow
 
 Create a small branch from `main`, keep each change reviewable, and add tests
@@ -46,7 +56,7 @@ cargo +1.88.0-x86_64-unknown-linux-gnu test --workspace --doc --all-features --l
 cargo +1.88.0-x86_64-unknown-linux-gnu clippy --workspace --all-targets --all-features --locked -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo +1.88.0-x86_64-unknown-linux-gnu doc --workspace --all-features --no-deps --locked
 cargo +1.88.0-x86_64-unknown-linux-gnu check -p ailloli_ui --no-default-features --locked
-cargo +1.88.0-x86_64-unknown-linux-gnu xtask audit --allow-missing-funding
+cargo +1.88.0-x86_64-unknown-linux-gnu xtask audit
 cargo +1.88.0-x86_64-unknown-linux-gnu xtask package-check --allow-dirty
 ```
 

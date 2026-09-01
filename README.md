@@ -1,4 +1,4 @@
-![Ailloli UI — Retained-mode desktop UI for Rust](assets/ailloli_ui_banner.png)
+![Ailloli UI: Retained-mode desktop UI for Rust](assets/ailloli_ui_banner.png)
 
 # Ailloli UI
 
@@ -145,8 +145,8 @@ the same API surface available to external applications.
 
 - [API Documentation](https://ailloliai.github.io/ailloli_ui/)
 - [Architecture](ARCHITECTURE.md)
-- **Ailloli UI — The Book** — coming soon
-- **Ailloli UI by Example** — coming soon
+- **Ailloli UI: The Book**: coming soon
+- **Ailloli UI by Example**: coming soon
 - [Contributing](CONTRIBUTING.md)
 - [Support](SUPPORT.md)
 - [Security](SECURITY.md)

@@ -13,7 +13,7 @@
 //!
 //! ## Application entry point
 //!
-//! For desktop apps, use [`app::App`] and [`prelude`] — see [`App::new`] and
+//! For desktop apps, use [`app::App`] and [`prelude`]; see [`App::new`] and
 //! [`AppBuilder::run`] (requires the **`winit`** feature, enabled by default).
 //!
 //! Lower-level integration (custom event loop, raw `DrawCmd`) is available via
@@ -287,7 +287,7 @@ pub use ailloli_ui_winit::{
 };
 #[cfg(feature = "winit")]
 pub use capture::{CaptureOpts, CaptureTargetSpec, CapturedArtifact};
-/// Alias for [`Memo`] — derived reactive values.
+/// Alias for [`Memo`]: derived reactive values.
 ///
 /// # Examples
 ///

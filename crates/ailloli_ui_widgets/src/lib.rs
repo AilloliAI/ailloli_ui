@@ -2,7 +2,7 @@
 //!
 //! This crate implements the retained [`ailloli_ui_runtime::Widget`] trait for
 //! layout, controls, text, chrome, and overlays. It contains **no app-specific**
-//! screens (chat, IDE shells, etc.) — those belong in the application crate.
+//! screens (chat, IDE shells, etc.); those belong in the application crate.
 //!
 //! # Modules
 //!

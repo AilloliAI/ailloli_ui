@@ -1,4 +1,4 @@
-//! isolated compositor — isolated offscreen compositor visual regressions.
+//! isolated compositor: isolated offscreen compositor visual regressions.
 //!
 //! Scenarios H–M exercise opacity, blur, stencil inside isolated passes, Z-order
 //! sandwiching, sibling isolated layers, and offscreen pool reuse across frames.
@@ -113,7 +113,7 @@ impl ScenarioReport {
     }
 }
 
-/// H — 50 % opacity on a clipped isolated rect; background bleeds through.
+/// H: 50 % opacity on a clipped isolated rect; background bleeds through.
 fn scenario_h_opacity_clipped(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -158,7 +158,7 @@ fn scenario_h_opacity_clipped(renderer: &mut Renderer, rep: &mut ScenarioReport)
     });
 }
 
-/// I — blur radius 8 on an isolated solid rect.
+/// I: blur radius 8 on an isolated solid rect.
 fn scenario_i_blur(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -204,7 +204,7 @@ fn scenario_i_blur(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// J — rounded stencil inside an isolated pass preserves corner transparency.
+/// J: rounded stencil inside an isolated pass preserves corner transparency.
 fn scenario_j_stencil_round(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let root = ClipShape::RoundRect {
         rect: Rect::new(48.0, 48.0, 160.0, 160.0),
@@ -245,7 +245,7 @@ fn scenario_j_stencil_round(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// K — normal → isolated → normal Z-order sandwich.
+/// K: normal → isolated → normal Z-order sandwich.
 fn scenario_k_z_sandwich(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let l1 = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -293,7 +293,7 @@ fn scenario_k_z_sandwich(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// L — two isolated siblings (non-consecutive in layer list via normal spacer).
+/// L: two isolated siblings (non-consecutive in layer list via normal spacer).
 fn scenario_l_two_siblings(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let bg = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(0.0, 0.0, W as f32, H as f32),
@@ -351,7 +351,7 @@ fn scenario_l_two_siblings(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     });
 }
 
-/// M — two consecutive frames reuse the offscreen pool.
+/// M: two consecutive frames reuse the offscreen pool.
 fn scenario_m_pool_reuse(renderer: &mut Renderer, rep: &mut ScenarioReport) {
     let iso_cmds = vec![DrawCmd::Rect(DrawRect {
         rect: Rect::new(64.0, 64.0, 128.0, 128.0),
