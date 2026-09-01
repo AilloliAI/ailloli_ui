@@ -43,8 +43,8 @@ APIs remain subject to change.
 
 - Public CI now uses context-aware routing, explicit Windows validation,
   release workflow validation, and deterministic policy fixtures.
-- Superseded CI runs are cancelled automatically, and runners select safe
-  parallelism based on their available resources.
+- Superseded CI runs are cancelled automatically, and exhaustive Rust jobs cap
+  Cargo compilation at four workers to prevent linker memory exhaustion.
 - Package validation now works correctly on fresh CI runners without
   pre-existing build artifacts.
 - GitHub Pages now publishes library documentation only.

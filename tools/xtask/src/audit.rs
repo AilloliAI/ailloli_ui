@@ -885,8 +885,17 @@ fn validate_validation_workflow(text: &str, label: &str, surface: WorkflowSurfac
     if text.contains("\nconcurrency:") {
         bail!("reusable validation workflow {label} must not own concurrency");
     }
-    if text.contains("CARGO_BUILD_JOBS") || text.contains("--test-threads") {
-        bail!("validation workflow {label} must use runner-selected parallelism");
+    if text.contains("--test-threads") {
+        bail!("validation workflow {label} must not limit test threads");
+    }
+    if surface == WorkflowSurface::InternalProduction {
+        if text.matches("CARGO_BUILD_JOBS: \"4\"").count() != 1 {
+            bail!(
+                "Internal production validation workflow {label} must cap Cargo build jobs at four"
+            );
+        }
+    } else if text.contains("CARGO_BUILD_JOBS") {
+        bail!("validation workflow {label} must use runner-selected build parallelism");
     }
     if surface == WorkflowSurface::Public {
         if text.matches("runs-on: windows-latest").count() != 1 {
@@ -1824,6 +1833,36 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     .is_ok()
     {
         bail!("incomplete reusable validation fixture was unexpectedly accepted");
+    }
+
+    let public_validation = read_utf8(&root.join(".github/workflows/validation.yml"))?;
+    let internal_validation = public_validation.replacen(
+        "  CARGO_INCREMENTAL: \"0\"",
+        "  CARGO_BUILD_JOBS: \"4\"\n  CARGO_INCREMENTAL: \"0\"",
+        1,
+    );
+    validate_validation_workflow(
+        &internal_validation,
+        "positive Internal build-job cap fixture",
+        WorkflowSurface::InternalProduction,
+    )?;
+    if validate_validation_workflow(
+        &public_validation,
+        "missing Internal build-job cap fixture",
+        WorkflowSurface::InternalProduction,
+    )
+    .is_ok()
+    {
+        bail!("Internal validation without its build-job cap was unexpectedly accepted");
+    }
+    if validate_validation_workflow(
+        &internal_validation,
+        "public build-job cap fixture",
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
+        bail!("public validation with an Internal build-job cap was unexpectedly accepted");
     }
 
     let codeql_with_excess_write = format!(
