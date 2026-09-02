@@ -13,8 +13,6 @@ use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
-pub(crate) const VERSION: &str = "0.1.0-beta.1";
-pub(crate) const EXACT_VERSION: &str = "=0.1.0-beta.1";
 pub(crate) const AUTHORS: [&str; 1] = ["Rising Corporation and Ailloli UI contributors"];
 pub(crate) const LICENSE: &str = "Apache-2.0 OR MIT";
 pub(crate) const MSRV: &str = "1.88";
@@ -233,6 +231,25 @@ impl Workspace {
             .find(|package| package.name == name)
             .with_context(|| format!("workspace package {name:?} is missing"))
     }
+
+    pub(crate) fn version(&self) -> Result<&str> {
+        let versions: BTreeSet<&str> = self
+            .packages()
+            .into_iter()
+            .map(|package| package.version.as_str())
+            .collect();
+        if versions.len() != 1 {
+            bail!("workspace packages must share exactly one version; got {versions:?}");
+        }
+        versions
+            .into_iter()
+            .next()
+            .context("workspace package set is empty")
+    }
+
+    pub(crate) fn exact_version(&self) -> Result<String> {
+        Ok(format!("={}", self.version()?))
+    }
 }
 
 #[derive(Debug)]
@@ -253,7 +270,7 @@ pub(crate) struct MetadataReport {
     first_party_edges: usize,
     exact_version_edges: usize,
     path_only_dev_exceptions: usize,
-    version: &'static str,
+    version: String,
     lru: &'static str,
 }
 
@@ -342,7 +359,7 @@ pub(crate) fn run_audit(
         workflows,
         scanned_text_files,
         relative_links,
-        capture: "2x1280x756",
+        capture: "3x1280x756",
         icon: "v3",
         commit_subjects,
     })
@@ -350,6 +367,8 @@ pub(crate) fn run_audit(
 
 pub(crate) fn validate_metadata(workspace: &Workspace) -> Result<MetadataReport> {
     let packages = workspace.packages();
+    let version = workspace.version()?.to_owned();
+    let exact_version = workspace.exact_version()?;
     let mut expected_names: BTreeSet<&str> = FRAMEWORK_CRATES.into_iter().collect();
     expected_names.extend(NON_PUBLISHABLE_PACKAGES);
     let actual_names: BTreeSet<&str> = packages
@@ -370,7 +389,7 @@ pub(crate) fn validate_metadata(workspace: &Workspace) -> Result<MetadataReport>
     let mut path_only_dev_exceptions = 0;
 
     for package in &packages {
-        validate_common_package_fields(workspace, package)?;
+        validate_common_package_fields(workspace, package, &version)?;
         if FRAMEWORK_CRATES.contains(&package.name.as_str()) {
             validate_publishable_package(workspace, package)?;
         } else {
@@ -428,7 +447,7 @@ pub(crate) fn validate_metadata(workspace: &Workspace) -> Result<MetadataReport>
                     bail!("the path-only dev cycle must not carry a registry version");
                 }
                 path_only_dev_exceptions += 1;
-            } else if dependency.req == EXACT_VERSION {
+            } else if dependency.req == exact_version {
                 exact_version_edges += 1;
             } else {
                 bail!(
@@ -436,7 +455,7 @@ pub(crate) fn validate_metadata(workspace: &Workspace) -> Result<MetadataReport>
                     package.name,
                     dependency.name,
                     dependency.req,
-                    EXACT_VERSION
+                    exact_version
                 );
             }
         }
@@ -471,15 +490,19 @@ pub(crate) fn validate_metadata(workspace: &Workspace) -> Result<MetadataReport>
         first_party_edges,
         exact_version_edges,
         path_only_dev_exceptions,
-        version: VERSION,
+        version,
         lru: "0.18.2",
     })
 }
 
-fn validate_common_package_fields(workspace: &Workspace, package: &CargoPackage) -> Result<()> {
-    if package.version != VERSION {
+fn validate_common_package_fields(
+    workspace: &Workspace,
+    package: &CargoPackage,
+    version: &str,
+) -> Result<()> {
+    if package.version != version {
         bail!(
-            "package {:?} has version {:?}",
+            "package {:?} has version {:?}; expected synchronized workspace version {version:?}",
             package.name,
             package.version
         );
@@ -703,18 +726,30 @@ fn allowed_actions() -> BTreeMap<&'static str, &'static str> {
         ),
         (
             "actions/configure-pages",
-            "983d7736d9b0ae728b81ab479565c72886d7745b",
+            "45bfe0192ca1faeb007ade9deae92b16b8254a0d",
         ),
         (
             "actions/upload-pages-artifact",
-            "7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
+            "fc324d3547104276b827a68afc52ff2a11cc49c9",
         ),
         (
             "actions/deploy-pages",
-            "d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+            "368f82528645a54fb793d4d04e342629a3f51346",
         ),
     ])
 }
+
+const RELEASE_ARTIFACT_ACTION: &str = "actions/upload-artifact";
+const RELEASE_ARTIFACT_SHA: &str = "bbbca2ddaa5d8feaa63e36b76fdaad77386f024f";
+const RELEASE_ARTIFACT_BLOCK: &str = r#"      - name: Upload deterministic release evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: release-validation-${{ github.sha }}
+          path: |
+            target/xtask-package-check/release-manifest.json
+            target/xtask-package-check/release-notes.md
+          if-no-files-found: error
+          retention-days: 14"#;
 
 fn validate_workflow_text(text: &str, label: &str) -> Result<()> {
     let forbidden = [
@@ -732,6 +767,10 @@ fn validate_workflow_text(text: &str, label: &str) -> Result<()> {
             bail!("workflow {label} contains forbidden token {forbidden:?}");
         }
     }
+    let flow_permissions = Regex::new(r"(?m)^\s*permissions:\s*\{")?;
+    if flow_permissions.is_match(text) {
+        bail!("workflow {label} must use auditable block-style permissions");
+    }
     let permissions = Regex::new(r"(?m)^permissions:\s*\n\s{2}contents:\s*read\s*$")?;
     if !permissions.is_match(text) {
         bail!("workflow {label} needs top-level permissions: contents: read");
@@ -747,15 +786,34 @@ fn validate_workflow_text(text: &str, label: &str) -> Result<()> {
     for reference in references {
         let action = &reference[1];
         let revision = &reference[2];
-        let expected = allowed
-            .get(action)
-            .with_context(|| format!("workflow {label} uses unapproved action {action:?}"))?;
+        let expected = if action == RELEASE_ARTIFACT_ACTION {
+            if Path::new(label).file_name().and_then(|name| name.to_str()) != Some("release.yml") {
+                bail!("workflow {label} may not use the release artifact action");
+            }
+            RELEASE_ARTIFACT_SHA
+        } else {
+            allowed
+                .get(action)
+                .copied()
+                .with_context(|| format!("workflow {label} uses unapproved action {action:?}"))?
+        };
         if !sha.is_match(revision) {
             bail!("workflow {label} action {action:?} is not pinned by full SHA");
         }
-        if revision != *expected {
+        if revision != expected {
             bail!("workflow {label} action {action:?} uses an unreviewed SHA");
         }
+    }
+    Ok(())
+}
+
+fn validate_release_artifact_upload(text: &str, label: &str) -> Result<()> {
+    if text.matches("actions/upload-artifact@").count() != 1
+        || !text.contains(RELEASE_ARTIFACT_BLOCK)
+    {
+        bail!(
+            "release workflow {label} must contain exactly one pinned release evidence upload with the canonical name, paths, and fail-closed behavior"
+        );
     }
     Ok(())
 }
@@ -1005,6 +1063,7 @@ fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) 
             if text.matches("pages: write").count() != 1
                 || text.matches("id-token: write").count() != 1
                 || !text.contains("needs: build")
+                || !text.contains("if: github.ref == 'refs/heads/main'")
                 || !text.contains("group: pages")
                 || !text.contains("cancel-in-progress: false")
                 || text.contains("CARGO_INCREMENTAL")
@@ -1018,11 +1077,30 @@ fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) 
                 bail!("release validation is permitted only on the Public workflow surface");
             }
             if !text.contains("cancel-in-progress: false")
-                || !text.contains("cargo +1.88.0 xtask release-check")
+                || !text.contains("cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-check")
+                || !text.contains("cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-notes")
+                || !text
+                    .contains("cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-plan --json")
+                || !text.contains("fetch-depth: 0")
+                || !text.contains("jq -er '.version'")
+                || !text.contains("--version \"${RELEASE_VERSION}\"")
+                || !text.contains("[[ \"${REF_NAME}\" == \"v${RELEASE_VERSION}\" ]]")
+                || !text.contains("--tag \"v${RELEASE_VERSION}\"")
+                || !text.contains("target/xtask-package-check/release-manifest.json")
                 || text.contains("cargo publish")
                 || text.contains("cargo login")
             {
                 bail!("release workflow must validate without publishing and without cancellation");
+            }
+            validate_release_artifact_upload(text, &label)?;
+            let validation = text
+                .find("- name: Validate the release state")
+                .context("release workflow omits the release-state gate")?;
+            let upload = text
+                .find("- name: Upload deterministic release evidence")
+                .context("release workflow omits the evidence upload")?;
+            if validation >= upload {
+                bail!("release workflow must validate the release state before evidence upload");
             }
         }
         _ => {}
@@ -1568,10 +1646,10 @@ fn validate_governance(root: &Path) -> Result<&'static str> {
                 "release-ready",
                 "tagged",
                 "published",
-                "cargo xtask audit",
-                "cargo xtask package-check",
-                "cargo xtask release-check",
-                "cargo xtask release-plan",
+                "cargo +1.88.0-x86_64-unknown-linux-gnu xtask audit",
+                "cargo +1.88.0-x86_64-unknown-linux-gnu xtask package-check",
+                "cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-check",
+                "cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-plan",
                 "`ailloli_ui` is published last",
             ],
         ),
@@ -1742,10 +1820,44 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
             "private path fixture",
             format!("{valid_workflow}\n# {}", ["../", "internal/"].concat()),
         ),
+        (
+            "flow permissions fixture",
+            valid_workflow.replace(
+                "permissions:\n  contents: read",
+                "permissions: { contents: read }",
+            ),
+        ),
     ];
     for (label, text) in invalid_workflows {
         if validate_workflow_text(&text, label).is_ok() {
             bail!("{label} was unexpectedly accepted");
+        }
+    }
+
+    let release_path = root.join(".github/workflows/release.yml");
+    let release_workflow = read_utf8(&release_path)?;
+    validate_workflow_text(&release_workflow, &release_path.display().to_string())?;
+    validate_release_artifact_upload(&release_workflow, "release.yml")?;
+    if validate_workflow_text(&release_workflow, "ci.yml").is_ok() {
+        bail!("release artifact action was accepted outside release.yml");
+    }
+    let invalid_release_uploads = [
+        release_workflow.replace(
+            "name: release-validation-${{ github.sha }}",
+            "name: release-validation",
+        ),
+        release_workflow.replace(
+            "target/xtask-package-check/release-notes.md",
+            "target/release-notes.md",
+        ),
+        release_workflow.replace("if-no-files-found: error", "if-no-files-found: warn"),
+        format!(
+            "{release_workflow}\n      - uses: actions/upload-artifact@{RELEASE_ARTIFACT_SHA}\n"
+        ),
+    ];
+    for text in invalid_release_uploads {
+        if validate_release_artifact_upload(&text, "release.yml").is_ok() {
+            bail!("invalid release artifact upload fixture was unexpectedly accepted");
         }
     }
 
@@ -1836,6 +1948,19 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     }
 
     let public_validation = read_utf8(&root.join(".github/workflows/validation.yml"))?;
+
+    let pages_path = root.join(".github/workflows/pages.yml");
+    let pages_workflow = read_utf8(&pages_path)?;
+    validate_surface_workflow(&pages_path, &pages_workflow, WorkflowSurface::Public)?;
+    if validate_surface_workflow(
+        &pages_path,
+        &pages_workflow.replace("    if: github.ref == 'refs/heads/main'\n", ""),
+        WorkflowSurface::Public,
+    )
+    .is_ok()
+    {
+        bail!("Pages workflow without the main-only deploy guard was accepted");
+    }
     let internal_validation = public_validation.replacen(
         "  CARGO_INCREMENTAL: \"0\"",
         "  CARGO_BUILD_JOBS: \"4\"\n  CARGO_INCREMENTAL: \"0\"",
@@ -1881,8 +2006,9 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
         bail!("CodeQL excess write fixture failed for the wrong reason: {excess_write}");
     }
 
-    validate_metadata_fixture(&fixtures.join("metadata-valid.json"))?;
-    if validate_metadata_fixture(&fixtures.join("metadata-invalid.json")).is_ok() {
+    let fixture_version = "1.2.3-beta.1";
+    validate_metadata_fixture(&fixtures.join("metadata-valid.json"), fixture_version)?;
+    if validate_metadata_fixture(&fixtures.join("metadata-invalid.json"), fixture_version).is_ok() {
         bail!("negative metadata fixture was unexpectedly accepted");
     }
 
@@ -1921,10 +2047,10 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     Ok(json!({"status": "ok", "positive": 7, "negative": 20}))
 }
 
-fn validate_metadata_fixture(path: &Path) -> Result<()> {
+fn validate_metadata_fixture(path: &Path, expected_version: &str) -> Result<()> {
     let value: JsonValue = serde_json::from_str(&read_utf8(path)?)?;
     if value.get("name").and_then(JsonValue::as_str) != Some("ailloli_ui")
-        || value.get("version").and_then(JsonValue::as_str) != Some(VERSION)
+        || value.get("version").and_then(JsonValue::as_str) != Some(expected_version)
         || value.get("license").and_then(JsonValue::as_str) != Some(LICENSE)
         || value.get("rust_version").and_then(JsonValue::as_str) != Some(MSRV)
         || value.get("repository").and_then(JsonValue::as_str) != Some(REPOSITORY)

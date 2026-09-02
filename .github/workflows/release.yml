@@ -39,30 +39,58 @@ jobs:
       - name: Install Rust 1.88
         run: rustup toolchain install 1.88.0 --profile minimal
       - name: Fetch locked dependencies
-        run: cargo +1.88.0 fetch --locked
+        run: cargo +1.88.0-x86_64-unknown-linux-gnu fetch --locked
       - name: Audit repository and workflows
         run: |
-          cargo +1.88.0 xtask audit --self-test
-          cargo +1.88.0 xtask audit
+          cargo +1.88.0-x86_64-unknown-linux-gnu xtask audit --self-test
+          cargo +1.88.0-x86_64-unknown-linux-gnu xtask audit
           .github/scripts/run-actionlint.sh .github/workflows/*.yml
-      - name: Inspect all publishable crate archives
-        run: cargo +1.88.0 xtask package-check
+      - name: Derive exact release version
+        id: release_version
+        run: |
+          set -euo pipefail
+          release_version="$(cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-plan --json | jq -er '.version')"
+          [[ -n "${release_version}" ]]
+          printf 'version=%s\n' "${release_version}" >> "${GITHUB_OUTPUT}"
+      - name: Build all preflight source archives
+        run: cargo +1.88.0-x86_64-unknown-linux-gnu xtask package-check
+      - name: Render release notes
+        env:
+          RELEASE_VERSION: ${{ steps.release_version.outputs.version }}
+        run: |
+          cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-notes \
+            --version "${RELEASE_VERSION}" \
+            > target/xtask-package-check/release-notes.md
       - name: Validate the release state
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF: ${{ github.ref }}
+          RELEASE_VERSION: ${{ steps.release_version.outputs.version }}
         run: |
           set -euo pipefail
           if [[ "${EVENT_NAME}" == "push" ]]; then
             [[ "${REF_TYPE}" == "tag" ]]
-            cargo +1.88.0 xtask release-check \
+            [[ "${REF_NAME}" == "v${RELEASE_VERSION}" ]]
+            cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-check \
               --state tagged \
+              --tag "v${RELEASE_VERSION}" \
               --skip-package-check
           else
             [[ "${REF}" == "refs/heads/main" ]]
-            cargo +1.88.0 xtask release-check \
+            [[ "${REF_TYPE}" == "branch" ]]
+            [[ "${REF_NAME}" == "main" ]]
+            cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-check \
               --state release-ready \
               --skip-package-check
           fi
+      - name: Upload deterministic release evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: release-validation-${{ github.sha }}
+          path: |
+            target/xtask-package-check/release-manifest.json
+            target/xtask-package-check/release-notes.md
+          if-no-files-found: error
+          retention-days: 14

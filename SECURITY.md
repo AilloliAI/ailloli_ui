@@ -2,16 +2,24 @@
 
 ## Supported versions
 
-Ailloli UI is preparing its first public beta. Security fixes are provided on
-a best-effort basis for the current development line only.
+Ailloli UI provides security fixes on a best-effort basis for the latest beta
+line only. Publishing a newer beta ends support for every older beta; fixes are
+not backported across pre-release lines.
 
-| Version | Supported |
+| Release | Supported |
 | --- | --- |
-| `0.1.0-beta.x` | Yes, once the first beta is published |
-| Earlier development snapshots | No |
+| Latest published beta | Yes |
+| Earlier betas | No |
 
 Pre-release interfaces can change. This support statement is not a service
 level agreement and does not promise a response or resolution time.
+
+An unpublished release candidate does not change this table: the current
+published beta remains supported until the newer beta's exact tag and artifacts
+are published. Candidate source revisions may receive fixes during preparation,
+but become supported releases only upon publication. A fix that changes source
+is issued under a new version; published tags and crates are never replaced in
+place.
 
 ## Report a vulnerability privately
 

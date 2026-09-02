@@ -49,7 +49,7 @@ enum Command {
         json: bool,
     },
 
-    /// Inspect and build all publishable crate archives without publishing.
+    /// Build a full preflight or selected publish-equivalent crate archives.
     PackageCheck {
         /// Inspect package file lists without producing `.crate` archives.
         #[arg(long)]
@@ -59,7 +59,7 @@ enum Command {
         #[arg(long)]
         allow_dirty: bool,
 
-        /// Limit the check to selected package names.
+        /// Build selected publish-equivalent archives and update their ledger.
         #[arg(long = "package")]
         packages: Vec<String>,
     },
@@ -77,6 +77,10 @@ enum Command {
         /// Skip archive generation when it was already proved separately.
         #[arg(long)]
         skip_package_check: bool,
+
+        /// Assert the triggering tag name against the synchronized workspace version.
+        #[arg(long)]
+        tag: Option<String>,
     },
 
     /// Print the dependency-derived topological publication plan.
@@ -86,11 +90,22 @@ enum Command {
         json: bool,
     },
 
+    /// Print only the current release section as reusable Markdown notes.
+    ReleaseNotes {
+        /// Version to render. Defaults to the synchronized workspace version.
+        #[arg(long)]
+        version: Option<String>,
+    },
+
     /// Verify that every framework crate and version exists on crates.io.
     VerifyRelease {
         /// Version to verify. Defaults to the synchronized workspace version.
         #[arg(long)]
         version: Option<String>,
+
+        /// Limit verification to selected package names; may be repeated.
+        #[arg(long = "package")]
+        packages: Vec<String>,
     },
 }
 
@@ -137,8 +152,18 @@ fn main() -> Result<()> {
             state,
             allow_dirty,
             skip_package_check,
-        } => release::check(&root, state, allow_dirty, skip_package_check),
+            tag,
+        } => release::check(
+            &root,
+            state,
+            allow_dirty,
+            skip_package_check,
+            tag.as_deref(),
+        ),
         Command::ReleasePlan { json } => release::plan_command(&root, json),
-        Command::VerifyRelease { version } => release::verify(&root, version.as_deref()),
+        Command::ReleaseNotes { version } => release::notes(&root, version.as_deref()),
+        Command::VerifyRelease { version, packages } => {
+            release::verify(&root, version.as_deref(), &packages)
+        }
     }
 }
