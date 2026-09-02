@@ -14,8 +14,21 @@ pub const DOCUMENTATION_URL: &str = "https://ailloliai.github.io/ailloli_ui/";
 pub const GITHUB_REPOSITORY_URL: &str = "https://github.com/AilloliAI/ailloli_ui";
 
 /// Candidate release notes on the public default branch.
-pub const RELEASE_NOTES_URL: &str =
-    "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md";
+pub const CANDIDATE_RELEASE_NOTES_URL: &str =
+    "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md#010-beta2---2026-09-02";
+
+/// Canonical release notes after the beta tag and GitHub pre-release exist.
+pub const FINAL_RELEASE_NOTES_URL: &str = concat!(
+    "https://github.com/AilloliAI/ailloli_ui/releases/tag/v",
+    env!("CARGO_PKG_VERSION")
+);
+
+/// Candidate and final release-notes destinations in promotion order.
+pub const RELEASE_NOTES_DESTINATIONS: [&str; 2] =
+    [CANDIDATE_RELEASE_NOTES_URL, FINAL_RELEASE_NOTES_URL];
+
+/// Active release-notes destination for the current candidate stage.
+pub const RELEASE_NOTES_URL: &str = RELEASE_NOTES_DESTINATIONS[0];
 
 /// Canonical contribution guide on the public default branch.
 pub const CONTRIBUTING_URL: &str =
@@ -68,6 +81,8 @@ pub enum ResourceAvailability {
 /// One public learning resource rendered in the header and resource section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Resource {
+    /// Stable identity used by content-policy tests.
+    pub id: ResourceId,
     /// Stable human-facing title.
     pub title: &'static str,
     /// Short explanation of what the destination provides.
@@ -76,11 +91,31 @@ pub struct Resource {
     pub availability: ResourceAvailability,
 }
 
+/// Stable identities for resources presented by the showcase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResourceId {
+    /// Hosted API documentation.
+    Documentation,
+    /// Notes for the current release candidate.
+    ReleaseNotes,
+    /// Public source repository.
+    GitHub,
+    /// Public contribution guide.
+    Contributing,
+    /// Voluntary sponsorship page.
+    Sponsors,
+    /// Published façade crate.
+    CratesIo,
+    /// Planned framework book.
+    Book,
+}
+
 /// Number of cards in each stable resource-grid row.
 pub const RESOURCE_COLUMNS: usize = 3;
 
 /// Canonical documentation resource reused by the grid and compact header.
 pub const DOCUMENTATION_RESOURCE: Resource = Resource {
+    id: ResourceId::Documentation,
     title: "API Documentation",
     description: "Browse the hosted Rust API reference, linked types, and examples.",
     availability: ResourceAvailability::Live(DOCUMENTATION_URL),
@@ -88,6 +123,7 @@ pub const DOCUMENTATION_RESOURCE: Resource = Resource {
 
 /// Candidate release notes shown only in the compact header.
 pub const RELEASE_NOTES_RESOURCE: Resource = Resource {
+    id: ResourceId::ReleaseNotes,
     title: concat!(env!("CARGO_PKG_VERSION"), " release notes"),
     description: "Review the candidate changes in the public changelog.",
     availability: ResourceAvailability::Live(RELEASE_NOTES_URL),
@@ -100,26 +136,31 @@ pub const HEADER_RESOURCES: [Resource; 2] = [DOCUMENTATION_RESOURCE, RELEASE_NOT
 pub const RESOURCES: [Resource; RESOURCE_COLUMNS * 2] = [
     DOCUMENTATION_RESOURCE,
     Resource {
+        id: ResourceId::GitHub,
         title: "GitHub",
         description: "Read the source, architecture, features, and validation gates.",
         availability: ResourceAvailability::Live(GITHUB_REPOSITORY_URL),
     },
     Resource {
+        id: ResourceId::Contributing,
         title: "Contributing",
         description: "Set up Rust 1.88, follow the boundaries, and prepare a focused change.",
         availability: ResourceAvailability::Live(CONTRIBUTING_URL),
     },
     Resource {
+        id: ResourceId::Sponsors,
         title: "GitHub Sponsors",
         description: "Voluntarily support maintenance without buying access or priority.",
         availability: ResourceAvailability::Live(SPONSORS_URL),
     },
     Resource {
+        id: ResourceId::CratesIo,
         title: "crates.io",
         description: "Install the published ailloli_ui façade and inspect its beta releases.",
         availability: ResourceAvailability::Live(CRATES_IO_URL),
     },
     Resource {
+        id: ResourceId::Book,
         title: "The Ailloli UI Book",
         description: "A guided path from first window to advanced native applications.",
         availability: ResourceAvailability::ComingSoon,
@@ -290,55 +331,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resource_grid_has_two_complete_rows_and_the_github_card() {
-        let rows = RESOURCES.chunks(RESOURCE_COLUMNS).collect::<Vec<_>>();
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|row| row.len() == RESOURCE_COLUMNS));
+    fn resource_grid_has_two_complete_rows_and_stable_identities() {
+        assert_eq!(RESOURCES.len(), RESOURCE_COLUMNS * 2);
         assert_eq!(
             RESOURCES
                 .iter()
-                .map(|resource| resource.title)
+                .map(|resource| resource.id)
                 .collect::<Vec<_>>(),
             [
-                "API Documentation",
-                "GitHub",
-                "Contributing",
-                "GitHub Sponsors",
-                "crates.io",
-                "The Ailloli UI Book",
+                ResourceId::Documentation,
+                ResourceId::GitHub,
+                ResourceId::Contributing,
+                ResourceId::Sponsors,
+                ResourceId::CratesIo,
+                ResourceId::Book,
             ]
         );
         assert!(RESOURCES.iter().any(|resource| {
-            resource.title == "GitHub"
+            resource.id == ResourceId::GitHub
                 && resource.availability == ResourceAvailability::Live(GITHUB_REPOSITORY_URL)
         }));
         assert!(RESOURCES.iter().any(|resource| {
-            resource.title == "crates.io"
+            resource.id == ResourceId::CratesIo
                 && resource.availability == ResourceAvailability::Live(CRATES_IO_URL)
         }));
         assert!(RESOURCES.iter().any(|resource| {
-            resource.title == "The Ailloli UI Book"
+            resource.id == ResourceId::Book
                 && resource.availability == ResourceAvailability::ComingSoon
         }));
     }
 
     #[test]
     fn header_resources_are_documentation_and_candidate_release_notes() {
-        let titles = HEADER_RESOURCES
+        let ids = HEADER_RESOURCES
             .iter()
-            .map(|resource| resource.title)
+            .map(|resource| resource.id)
             .collect::<Vec<_>>();
+        assert_eq!(ids, [ResourceId::Documentation, ResourceId::ReleaseNotes]);
         assert_eq!(
-            titles,
-            [
-                "API Documentation",
-                concat!(env!("CARGO_PKG_VERSION"), " release notes"),
-            ]
+            HEADER_RESOURCES.map(|resource| resource.title),
+            ["API Documentation", "0.1.0-beta.2 release notes",]
         );
         assert_eq!(
             RELEASE_NOTES_RESOURCE.availability,
             ResourceAvailability::Live(RELEASE_NOTES_URL)
         );
+    }
+
+    #[test]
+    fn candidate_and_final_release_notes_destinations_are_canonical() {
+        assert_eq!(RELEASE_NOTES_URL, CANDIDATE_RELEASE_NOTES_URL);
+        assert_ne!(CANDIDATE_RELEASE_NOTES_URL, FINAL_RELEASE_NOTES_URL);
+        assert_eq!(
+            CANDIDATE_RELEASE_NOTES_URL,
+            "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md#010-beta2---2026-09-02"
+        );
+        assert_eq!(
+            FINAL_RELEASE_NOTES_URL,
+            "https://github.com/AilloliAI/ailloli_ui/releases/tag/v0.1.0-beta.2"
+        );
+
+        ExternalUrl::parse(CANDIDATE_RELEASE_NOTES_URL)
+            .expect("candidate release-notes URL is canonical");
+        ExternalUrl::parse(FINAL_RELEASE_NOTES_URL).expect("final release-notes URL is canonical");
     }
 
     #[test]
@@ -361,13 +416,14 @@ mod tests {
         runtime.set_external_url_opener(Rc::new(opener.clone()));
 
         let resources = HEADER_RESOURCES.iter().chain(RESOURCES.iter());
-        let expected = resources
+        let mut expected = resources
             .clone()
             .filter_map(|resource| match resource.availability {
                 ResourceAvailability::Live(url) => Some(url),
                 ResourceAvailability::ComingSoon => None,
             })
             .collect::<Vec<_>>();
+        expected.push(FINAL_RELEASE_NOTES_URL);
 
         for source in &expected {
             let url = ExternalUrl::parse(source).expect("validated canonical URL");
