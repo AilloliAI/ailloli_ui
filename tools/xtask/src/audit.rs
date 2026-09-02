@@ -57,11 +57,11 @@ const VERBATIM_EM_DASH_EXEMPTIONS: [(&str, usize); 1] =
 const REVIEWED_CAPTURES: [(&str, &str); 3] = [
     (
         "artifacts/captures/public_sandbox_showcase.png",
-        "88920411aafcb8cbc6e9a9e71a5041a627b677cec62da820fd4f8d9be1ba1136",
+        "f79e1c3c6c533f6873edf6f2aeab2426289086b15246befd5cbda438b2492b6e",
     ),
     (
         "artifacts/captures/reactive_layout_consistency.png",
-        "682299693f5ab6eb0fd9628b17331b7394bb51e9e267a3b751a0873128737ed5",
+        "9378e63354f41e51f0d3f5d3a7db2f98d6911b4a441f5ceb73ae831eff4a0715",
     ),
     (
         "artifacts/captures/interactive_scrolling_showcase.png",

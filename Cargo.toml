@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Rising Corporation and Ailloli UI contributors"]
@@ -39,29 +39,29 @@ homepage = "https://ailloliai.github.io/ailloli_ui/"
 publish = ["crates-io"]
 
 [workspace.dependencies]
-ailloli_ui = { path = "crates/ailloli_ui", version = "=0.1.0-beta.1" }
-ailloli_ui_app_storage = { path = "crates/ailloli_ui_app_storage", version = "=0.1.0-beta.1" }
-ailloli_ui_bench = { path = "crates/ailloli_ui_bench", version = "=0.1.0-beta.1" }
-ailloli_ui_core = { path = "crates/ailloli_ui_core", version = "=0.1.0-beta.1" }
-ailloli_ui_devicons_font = { path = "crates/ailloli_ui_devicons_font", version = "=0.1.0-beta.1" }
-ailloli_ui_devtools_core = { path = "crates/ailloli_ui_devtools_core", version = "=0.1.0-beta.1" }
-ailloli_ui_devtools_ui = { path = "crates/ailloli_ui_devtools_ui", version = "=0.1.0-beta.1" }
-ailloli_ui_editor = { path = "crates/ailloli_ui_editor", version = "=0.1.0-beta.1" }
-ailloli_ui_fs = { path = "crates/ailloli_ui_fs", version = "=0.1.0-beta.1" }
-ailloli_ui_fs_local = { path = "crates/ailloli_ui_fs_local", version = "=0.1.0-beta.1" }
-ailloli_ui_fs_runtime = { path = "crates/ailloli_ui_fs_runtime", version = "=0.1.0-beta.1" }
-ailloli_ui_icon = { path = "crates/ailloli_ui_icon", version = "=0.1.0-beta.1" }
-ailloli_ui_openxr = { path = "crates/ailloli_ui_openxr", version = "=0.1.0-beta.1" }
-ailloli_ui_packaging = { path = "crates/ailloli_ui_packaging", version = "=0.1.0-beta.1" }
-ailloli_ui_render = { package = "ailloli_ui_render_wgpu", path = "crates/ailloli_ui_render_wgpu", version = "=0.1.0-beta.1" }
-ailloli_ui_render_vulkan = { path = "crates/ailloli_ui_render_vulkan", version = "=0.1.0-beta.1" }
-ailloli_ui_render_wgpu = { path = "crates/ailloli_ui_render_wgpu", version = "=0.1.0-beta.1" }
-ailloli_ui_runtime = { path = "crates/ailloli_ui_runtime", version = "=0.1.0-beta.1" }
-ailloli_ui_terminal_core = { path = "crates/ailloli_ui_terminal_core", version = "=0.1.0-beta.1" }
-ailloli_ui_terminal_pty = { path = "crates/ailloli_ui_terminal_pty", version = "=0.1.0-beta.1" }
-ailloli_ui_text = { path = "crates/ailloli_ui_text", version = "=0.1.0-beta.1" }
-ailloli_ui_widgets = { path = "crates/ailloli_ui_widgets", version = "=0.1.0-beta.1" }
-ailloli_ui_winit = { path = "crates/ailloli_ui_winit", version = "=0.1.0-beta.1" }
+ailloli_ui = { path = "crates/ailloli_ui", version = "=0.1.0-beta.2" }
+ailloli_ui_app_storage = { path = "crates/ailloli_ui_app_storage", version = "=0.1.0-beta.2" }
+ailloli_ui_bench = { path = "crates/ailloli_ui_bench", version = "=0.1.0-beta.2" }
+ailloli_ui_core = { path = "crates/ailloli_ui_core", version = "=0.1.0-beta.2" }
+ailloli_ui_devicons_font = { path = "crates/ailloli_ui_devicons_font", version = "=0.1.0-beta.2" }
+ailloli_ui_devtools_core = { path = "crates/ailloli_ui_devtools_core", version = "=0.1.0-beta.2" }
+ailloli_ui_devtools_ui = { path = "crates/ailloli_ui_devtools_ui", version = "=0.1.0-beta.2" }
+ailloli_ui_editor = { path = "crates/ailloli_ui_editor", version = "=0.1.0-beta.2" }
+ailloli_ui_fs = { path = "crates/ailloli_ui_fs", version = "=0.1.0-beta.2" }
+ailloli_ui_fs_local = { path = "crates/ailloli_ui_fs_local", version = "=0.1.0-beta.2" }
+ailloli_ui_fs_runtime = { path = "crates/ailloli_ui_fs_runtime", version = "=0.1.0-beta.2" }
+ailloli_ui_icon = { path = "crates/ailloli_ui_icon", version = "=0.1.0-beta.2" }
+ailloli_ui_openxr = { path = "crates/ailloli_ui_openxr", version = "=0.1.0-beta.2" }
+ailloli_ui_packaging = { path = "crates/ailloli_ui_packaging", version = "=0.1.0-beta.2" }
+ailloli_ui_render = { package = "ailloli_ui_render_wgpu", path = "crates/ailloli_ui_render_wgpu", version = "=0.1.0-beta.2" }
+ailloli_ui_render_vulkan = { path = "crates/ailloli_ui_render_vulkan", version = "=0.1.0-beta.2" }
+ailloli_ui_render_wgpu = { path = "crates/ailloli_ui_render_wgpu", version = "=0.1.0-beta.2" }
+ailloli_ui_runtime = { path = "crates/ailloli_ui_runtime", version = "=0.1.0-beta.2" }
+ailloli_ui_terminal_core = { path = "crates/ailloli_ui_terminal_core", version = "=0.1.0-beta.2" }
+ailloli_ui_terminal_pty = { path = "crates/ailloli_ui_terminal_pty", version = "=0.1.0-beta.2" }
+ailloli_ui_text = { path = "crates/ailloli_ui_text", version = "=0.1.0-beta.2" }
+ailloli_ui_widgets = { path = "crates/ailloli_ui_widgets", version = "=0.1.0-beta.2" }
+ailloli_ui_winit = { path = "crates/ailloli_ui_winit", version = "=0.1.0-beta.2" }
 winit = "0.30.13"
 wgpu = "0.20"
 ash = { version = "0.38", default-features = false, features = ["loaded"] }

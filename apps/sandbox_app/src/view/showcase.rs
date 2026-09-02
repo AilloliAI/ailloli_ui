@@ -1,8 +1,9 @@
 //! Premium native showcase assembled entirely from the public façade.
 
 use crate::content::{
-    topic, Capability, Resource, ResourceAvailability, CAPABILITIES, GUIDE_ENTRIES,
-    INITIAL_REACTIVE_HEADLINE, QUICK_START_RUST, RESOURCES,
+    topic, Capability, Resource, ResourceAvailability, CAPABILITIES, DOCUMENTATION_RESOURCE,
+    GUIDE_ENTRIES, HEADER_RESOURCES, INITIAL_REACTIVE_HEADLINE, PUBLIC_BETA_LABEL,
+    QUICK_START_RUST, RESOURCES, RESOURCE_COLUMNS,
 };
 
 use super::prelude::*;
@@ -410,8 +411,8 @@ fn showcase_capture_panel(
 fn header(theme: Theme) -> View<Action> {
     let palette = theme.palette();
     let mut live_resources = Row::new().gap(10.0).align_items(AlignItems::Center);
-    for resource in &RESOURCES[..2] {
-        live_resources = live_resources.child(resource_pill(theme, *resource));
+    for resource in HEADER_RESOURCES {
+        live_resources = live_resources.child(resource_pill(theme, resource));
     }
 
     Row::new()
@@ -426,11 +427,7 @@ fn header(theme: Theme) -> View<Action> {
                     Column::new()
                         .gap(2.0)
                         .child(styled_text("Ailloli UI", 18, palette.text))
-                        .child(styled_text(
-                            "Native retained UI for Rust",
-                            12,
-                            palette.text_muted,
-                        )),
+                        .child(styled_text(PUBLIC_BETA_LABEL, 12, palette.text_muted)),
                 ),
         )
         .child(Container::new().flex_grow())
@@ -473,7 +470,7 @@ fn hero(theme: Theme, quick_start: State<Document>) -> View<Action> {
                             .child(Badge::new("GPU rendered"))
                             .child(Badge::new("Composable")),
                     )
-                    .child(resource_pill(theme, RESOURCES[0]))
+                    .child(resource_pill(theme, DOCUMENTATION_RESOURCE))
                     .child(styled_text(
                         "Every surface on this page is built through ailloli_ui::prelude::*.",
                         12,
@@ -708,7 +705,7 @@ fn documentation_explorer_panel(
                         13,
                         palette.text,
                     ))
-                    .child(resource_pill(theme, RESOURCES[0])),
+                    .child(resource_pill(theme, DOCUMENTATION_RESOURCE)),
             )
             .into_view()
     };
@@ -806,7 +803,7 @@ fn resources_section(theme: Theme) -> View<Action> {
 /// Builds two stable three-card resource rows at a caller-selected logical-pixel height.
 fn resource_cards(theme: Theme, height: f32) -> View<Action> {
     let mut rows = Column::new().fill_width().gap(14.0);
-    for resources in RESOURCES.chunks(3) {
+    for resources in RESOURCES.chunks(RESOURCE_COLUMNS) {
         let mut row = Row::new()
             .fill_width()
             .gap(14.0)

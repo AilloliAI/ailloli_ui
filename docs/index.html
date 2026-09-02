@@ -31,6 +31,17 @@
         box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 35%);
       }
       p { color: #c5c9d2; line-height: 1.65; }
+      .release {
+        display: inline-flex;
+        margin: 0 0 0.75rem;
+        padding: 0.35rem 0.65rem;
+        border: 1px solid #6d7480;
+        border-radius: 999px;
+        color: #f4f5f7;
+        background: #292e37;
+        font-size: 0.875rem;
+        font-weight: 700;
+      }
       nav { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
       a {
         padding: 0.75rem 1rem;
@@ -47,13 +58,22 @@
   <body>
     <main>
       <p>Ailloli UI / Rust documentation</p>
+      <span class="release">0.1.0-beta.2 release candidate</span>
       <h1>Retained-mode desktop UI for Rust</h1>
       <p>
         Browse the public façade first, then follow linked types into the core,
         runtime, widgets, native host, and renderer crates.
       </p>
+      <p>
+        Beta.2 was frozen on 2026-09-02. Read the release notes and confirm
+        crates.io availability before selecting the registry version.
+      </p>
       <nav aria-label="Documentation resources">
         <a href="ailloli_ui/">Open the API reference</a>
+        <a
+          class="secondary"
+          href="https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md"
+        >0.1.0-beta.2 release notes</a>
         <a class="secondary" href="https://github.com/AilloliAI/ailloli_ui">GitHub</a>
         <a class="secondary" href="https://github.com/AilloliAI/ailloli_ui/blob/main/CONTRIBUTING.md">Contribute</a>
       </nav>

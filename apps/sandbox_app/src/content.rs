@@ -2,13 +2,20 @@
 //!
 //! Keeping visible text separate from layout makes the sandbox auditable as
 //! documentation: every claim maps to a public framework capability and every
-//! external destination has an explicit availability state.
+//! external destination is explicit.
+
+/// Visible beta label derived from Cargo package metadata.
+pub const PUBLIC_BETA_LABEL: &str = concat!("PUBLIC BETA: ", env!("CARGO_PKG_VERSION"));
 
 /// Canonical hosted Rustdoc landing page.
 pub const DOCUMENTATION_URL: &str = "https://ailloliai.github.io/ailloli_ui/";
 
 /// Canonical public repository.
 pub const GITHUB_REPOSITORY_URL: &str = "https://github.com/AilloliAI/ailloli_ui";
+
+/// Candidate release notes on the public default branch.
+pub const RELEASE_NOTES_URL: &str =
+    "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md";
 
 /// Canonical contribution guide on the public default branch.
 pub const CONTRIBUTING_URL: &str =
@@ -63,23 +70,35 @@ pub enum ResourceAvailability {
 pub struct Resource {
     /// Stable human-facing title.
     pub title: &'static str,
-    /// Short explanation of what the destination will provide.
+    /// Short explanation of what the destination provides.
     pub description: &'static str,
     /// Whether the resource is active or explicitly unavailable.
     pub availability: ResourceAvailability,
 }
 
-/// Resources shown in stable display order.
-///
-/// The first two entries are live and reused by the compact header. All five
-/// canonical destinations precede resources that remain unavailable, so the
-/// renderer never manufactures a placeholder URL.
-pub const RESOURCES: &[Resource] = &[
-    Resource {
-        title: "API Documentation",
-        description: "Browse the hosted Rust API reference, linked types, and examples.",
-        availability: ResourceAvailability::Live(DOCUMENTATION_URL),
-    },
+/// Number of cards in each stable resource-grid row.
+pub const RESOURCE_COLUMNS: usize = 3;
+
+/// Canonical documentation resource reused by the grid and compact header.
+pub const DOCUMENTATION_RESOURCE: Resource = Resource {
+    title: "API Documentation",
+    description: "Browse the hosted Rust API reference, linked types, and examples.",
+    availability: ResourceAvailability::Live(DOCUMENTATION_URL),
+};
+
+/// Candidate release notes shown only in the compact header.
+pub const RELEASE_NOTES_RESOURCE: Resource = Resource {
+    title: concat!(env!("CARGO_PKG_VERSION"), " release notes"),
+    description: "Review the candidate changes in the public changelog.",
+    availability: ResourceAvailability::Live(RELEASE_NOTES_URL),
+};
+
+/// Compact header resources in stable semantic order.
+pub const HEADER_RESOURCES: [Resource; 2] = [DOCUMENTATION_RESOURCE, RELEASE_NOTES_RESOURCE];
+
+/// Existing resources shown as exactly two rows of three cards.
+pub const RESOURCES: [Resource; RESOURCE_COLUMNS * 2] = [
+    DOCUMENTATION_RESOURCE,
     Resource {
         title: "GitHub",
         description: "Read the source, architecture, features, and validation gates.",
@@ -271,29 +290,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_resources_use_the_canonical_public_destinations() {
-        let expected = [
-            DOCUMENTATION_URL,
-            GITHUB_REPOSITORY_URL,
-            CONTRIBUTING_URL,
-            SPONSORS_URL,
-            CRATES_IO_URL,
-        ];
-        let actual = RESOURCES[..5]
-            .iter()
-            .map(|resource| match resource.availability {
-                ResourceAvailability::Live(url) => url,
-                ResourceAvailability::ComingSoon => panic!("canonical resource is disabled"),
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
+    fn resource_grid_has_two_complete_rows_and_the_github_card() {
+        let rows = RESOURCES.chunks(RESOURCE_COLUMNS).collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.len() == RESOURCE_COLUMNS));
+        assert_eq!(
+            RESOURCES
+                .iter()
+                .map(|resource| resource.title)
+                .collect::<Vec<_>>(),
+            [
+                "API Documentation",
+                "GitHub",
+                "Contributing",
+                "GitHub Sponsors",
+                "crates.io",
+                "The Ailloli UI Book",
+            ]
+        );
+        assert!(RESOURCES.iter().any(|resource| {
+            resource.title == "GitHub"
+                && resource.availability == ResourceAvailability::Live(GITHUB_REPOSITORY_URL)
+        }));
+        assert!(RESOURCES.iter().any(|resource| {
+            resource.title == "crates.io"
+                && resource.availability == ResourceAvailability::Live(CRATES_IO_URL)
+        }));
+        assert!(RESOURCES.iter().any(|resource| {
+            resource.title == "The Ailloli UI Book"
+                && resource.availability == ResourceAvailability::ComingSoon
+        }));
     }
 
     #[test]
-    fn unpublished_resources_have_no_placeholder_url() {
-        assert!(RESOURCES[5..]
+    fn header_resources_are_documentation_and_candidate_release_notes() {
+        let titles = HEADER_RESOURCES
             .iter()
-            .all(|resource| { matches!(resource.availability, ResourceAvailability::ComingSoon) }));
+            .map(|resource| resource.title)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            titles,
+            [
+                "API Documentation",
+                concat!(env!("CARGO_PKG_VERSION"), " release notes"),
+            ]
+        );
+        assert_eq!(
+            RELEASE_NOTES_RESOURCE.availability,
+            ResourceAvailability::Live(RELEASE_NOTES_URL)
+        );
+    }
+
+    #[test]
+    fn beta_2_workspace_version_drives_the_public_beta_label() {
+        assert_eq!(
+            env!("CARGO_PKG_VERSION"),
+            "0.1.0-beta.2",
+            "the sandbox release contract must follow the synchronized workspace version"
+        );
+        assert_eq!(
+            PUBLIC_BETA_LABEL, "PUBLIC BETA: 0.1.0-beta.2",
+            "the visible beta label must identify the current release candidate"
+        );
     }
 
     #[test]
@@ -302,26 +360,23 @@ mod tests {
         let opener = MemoryExternalUrlOpener::new();
         runtime.set_external_url_opener(Rc::new(opener.clone()));
 
-        for resource in &RESOURCES[..5] {
-            let ResourceAvailability::Live(source) = resource.availability else {
-                panic!("canonical resource is disabled");
-            };
+        let resources = HEADER_RESOURCES.iter().chain(RESOURCES.iter());
+        let expected = resources
+            .clone()
+            .filter_map(|resource| match resource.availability {
+                ResourceAvailability::Live(url) => Some(url),
+                ResourceAvailability::ComingSoon => None,
+            })
+            .collect::<Vec<_>>();
+
+        for source in &expected {
             let url = ExternalUrl::parse(source).expect("validated canonical URL");
             runtime
                 .open_external_url(&url)
                 .expect("memory opener accepts canonical URL");
         }
 
-        assert_eq!(
-            opener.opened_urls(),
-            [
-                DOCUMENTATION_URL,
-                GITHUB_REPOSITORY_URL,
-                CONTRIBUTING_URL,
-                SPONSORS_URL,
-                CRATES_IO_URL,
-            ]
-        );
+        assert_eq!(opener.opened_urls(), expected);
         assert!(runtime.take_open_url_errors().is_empty());
     }
 

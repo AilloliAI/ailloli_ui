@@ -15,10 +15,13 @@ primary `wgpu` renderer, and reusable components for building complete desktop
 applications.
 
 > **Status:** Ailloli UI is pre-1.0 and under active development.\
+> **Release candidate:** `0.1.0-beta.2` was frozen on 2026-09-02.\
 > **MSRV:** Rust 1.88\
-> The current beta is available on crates.io as `ailloli_ui = "0.1.0-beta.1"`.
+> Confirm that beta.2 is present on crates.io before using the registry
+> installation below.
 
 [API Documentation](https://ailloliai.github.io/ailloli_ui/) ·
+[0.1.0-beta.2 release notes](https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md) ·
 [Contributing](CONTRIBUTING.md) · [Support](SUPPORT.md) ·
 [Security](SECURITY.md)
 
@@ -36,11 +39,11 @@ applications.
 
 ## Quick start
 
-Add the façade crate from crates.io:
+After crates.io lists beta.2, add the façade crate:
 
 ```toml
 [dependencies]
-ailloli_ui = "0.1.0-beta.1"
+ailloli_ui = "0.1.0-beta.2"
 ```
 
 Then build an application through the public prelude:
@@ -76,6 +79,31 @@ fn main() -> ailloli_ui::Result<()> {
 
 Lower-level crates remain available for custom runtimes, render hosts, platform
 integrations, and reusable framework extensions.
+
+## Beta 2 highlights
+
+Beta.2 focuses on retained consistency and interactive scrolling:
+
+- reactive reads now invalidate the exact retained Build, Layout, or Paint
+  consumers, including consumers mounted in separate native presentations;
+- layout publishes geometry, caches, and reactive dependencies atomically, and
+  paint never redraws fresh content into stale bounds;
+- scroll views, editors, text inputs, tables, terminals, and popup lists share
+  wheel normalization, scrollbar geometry, track clicks, and captured dragging;
+- `Dialog::modal_content` composes retained modal content, while
+  `Dialog::on_submit` provides an Enter fallback after descendants receive the
+  event;
+- `Component` accepts capturing render closures, and custom widget authors can
+  inspect `LayoutPass` and the public scrollbar geometry primitives.
+
+The audited beta.1 to beta.2 delta does not remove or rename a documented
+façade item, so documented beta.1 consumers require no source migration. APIs
+remain pre-1.0 and may evolve in later betas. Vulkan and OpenXR remain
+experimental; this candidate is validated by the public Linux and Windows CI
+paths, not by macOS or OpenXR hardware testing.
+
+Read the complete [0.1.0-beta.2 release notes](https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md)
+and the latest-beta [security support policy](SECURITY.md).
 
 ## Architecture
 

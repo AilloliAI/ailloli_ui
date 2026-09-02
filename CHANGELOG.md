@@ -8,23 +8,55 @@ APIs remain subject to change.
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-09-02
+
+Second public beta of Ailloli UI, focused on retained consistency, interactive
+scrolling, and repeatable release validation.
+
 ### Added
 
-- Reactive dependencies are now tracked precisely across Build, Layout, and
-  Paint, reducing unnecessary work and ensuring affected windows and popups
-  update correctly.
-- Layout results, cache entries, and reactive dependencies are now committed
-  atomically, preventing paint operations from using stale geometry.
-- Shared scrollbar geometry and interaction primitives are now used by
-  `ScrollView`, editors, text inputs, tables, terminals, and popup lists.
+- Public scrollbar contracts now expose `ScrollbarAxis`, `ScrollbarPart`,
+  `ScrollbarGeometrySpec`, `ScrollbarGeometry`, and `ScrollbarDrag` through the
+  façade and prelude. `ScrollBehavior::wheel_delta_with_modifiers` and
+  `code_scrollbar_geometries` support custom integrations.
+- `Dialog::modal_content` mounts retained declarative content as a
+  `PopupRole::Dialog` modal, and `Dialog::on_submit` provides an Enter fallback
+  after descendants receive the event.
+- `Editor::caret_follow_margin_lines` and
+  `CodeEditor::caret_follow_margin_lines` configure the visible safety margin
+  maintained around a revealed caret.
+- `Component` and the `component` helper now accept capturing render closures.
+  `LayoutPass` is public for custom widgets that must distinguish measurement
+  from authoritative layout.
+- `InputRouter::cancel_pointer_state` lets host adapters deliver cancellation
+  to active capture owners before clearing retained pointer state.
 
 ### Changed
 
+- Values created with `State::new` establish precise reactive dependencies when
+  retained Build, Layout, or Paint callbacks read them. Successful callbacks
+  replace conditional dependencies atomically, while failed or provisional
+  work cannot publish a partial dependency set.
+- Layout results, cache entries, geometry-derived widget state, and reactive
+  dependencies are committed as one transaction. Paint consumes only artifacts
+  from the matching committed layout.
 - Scrolling now handles line and pixel wheel deltas consistently, supports
   Shift-based horizontal scrolling, centers the thumb on track clicks, and
-  preserves pointer capture during drag.
+  shares geometry and interaction rules across `ScrollView`, editors, text
+  inputs, tables, terminals, and popup lists.
 - Caret reveal and other geometry-dependent effects are now applied only after
   an authoritative layout pass.
+- Reactive work is aggregated per native presentation, so every affected
+  window or popup is woken without scheduling unrelated presentations.
+- `Context::register_ui_service` now requests `Build` only for its current
+  mounted owner when a callback reports a change. Low-level
+  `RuntimeHandle::register_ui_service` registrations no longer infer a
+  presentation or redraw, so those callbacks must explicitly request the
+  required Build, Layout, or Paint invalidation.
+- Reusing a `StateStore::signal`, `StateStore::signal_scoped`, or
+  `StateStore::signal_scoped_with` slot now preserves the invalidator installed
+  when the slot was first created. Later handles share that source and do not
+  replace its invalidator until the slot is removed.
 
 ### Fixed
 
@@ -38,6 +70,17 @@ APIs remain subject to change.
   measurement pass.
 - Windows now request their first drawable frame after becoming visible,
   preventing them from remaining blank until another input or resize event.
+- Replacing a retained widget or component with a different concrete type at
+  the same position or key now starts a fresh mount and clears the previous
+  state slots and reactive dependencies.
+
+### Security
+
+- The four informational RustSec exceptions remain limited to their reviewed
+  dependency chains after the 2026-09-02 lockfile review. Vulnerabilities, new
+  warnings, and unreviewed advisory IDs still fail the release gate.
+- `lru` remains pinned to `0.18.2`, so the resolved fix for RUSTSEC-2026-0253
+  cannot regress silently.
 
 ### Project
 
@@ -51,6 +94,9 @@ APIs remain subject to change.
 - The public sandbox now links to the published `ailloli_ui` crate on
   crates.io while keeping unavailable documentation destinations visibly
   disabled.
+- The sandbox identifies the beta.2 candidate and links to these changelog
+  notes without claiming that an unverified registry version or GitHub Release
+  is already available.
 - Added the public framework banner, release badges, and canonical GitHub
   Sponsors funding metadata.
 - Repository and release audits now require the canonical `AilloliAI` funding
@@ -60,6 +106,23 @@ APIs remain subject to change.
 - Public documentation, Rustdoc, UI labels, fixtures, and reports now follow
   the project's contextual punctuation policy. En dashes remain valid for
   ranges, while verbatim third-party legal text is preserved where required.
+
+### Compatibility
+
+- The audited delta removes or renames no documented beta.1 façade item. Most
+  façade consumers require no source migration; update the Cargo requirement
+  to `0.1.0-beta.2` to select this release.
+- Low-level users of `RuntimeHandle::register_ui_service` must explicitly
+  request the required invalidation when a service reports changed state.
+  `Context::register_ui_service` performs the owner-scoped `Build` request
+  automatically.
+- The minimum supported Rust version remains Rust 1.88.
+
+### Known Limitations
+
+- APIs remain pre-1.0 and may change between beta releases.
+- Vulkan and OpenXR support remain experimental. Public CI validates Linux and
+  Windows, while macOS and OpenXR hardware are not validated for this beta.
 
 ## [0.1.0-beta.1] - 2026-08-26
 
@@ -111,5 +174,6 @@ First public beta of Ailloli UI.
 - Minimum supported Rust version: Rust 1.88.
 - Cargo feature names use underscores. See [MIGRATION.md](MIGRATION.md).
 
-[Unreleased]: https://github.com/AilloliAI/ailloli_ui/compare/v0.1.0-beta.1...HEAD
+[Unreleased]: https://github.com/AilloliAI/ailloli_ui/compare/v0.1.0-beta.2...HEAD
+[0.1.0-beta.2]: https://github.com/AilloliAI/ailloli_ui/releases/tag/v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/AilloliAI/ailloli_ui/releases/tag/v0.1.0-beta.1

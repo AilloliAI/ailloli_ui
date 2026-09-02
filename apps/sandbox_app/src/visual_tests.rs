@@ -26,6 +26,7 @@ use ailloli_ui::text::TextSystem;
 use ailloli_ui::{CaptureRequestId, Command};
 use ailloli_ui::{DrawCmd, IntoView};
 
+use crate::content::{PUBLIC_BETA_LABEL, RELEASE_NOTES_RESOURCE};
 use crate::view::showcase::{
     documentation_capture_root, interactive_scrolling_capture_root, showcase_root,
     InteractiveScrollingState, ShowcaseState,
@@ -526,6 +527,84 @@ fn committed_text_geometry(app: &Runtime<()>, content: &str) -> (Rect, usize) {
         .unwrap_or_else(|| panic!("missing committed text artifact: {content}"))
 }
 
+/// Returns every absolute bound for widgets with one exact diagnostic name.
+fn widget_bounds_named(app: &Runtime<()>, debug_name: &str) -> Vec<Rect> {
+    app.tree
+        .iter_elements()
+        .filter_map(|(id, element)| match &element.kind {
+            ElementKind::Widget(widget) if widget.debug_name() == debug_name => {
+                absolute_paint_bounds(&app.tree, id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns whether two logical-pixel rectangles overlap by a positive area.
+fn rects_overlap(left: Rect, right: Rect) -> bool {
+    left.x < right.right()
+        && left.right() > right.x
+        && left.y < right.bottom()
+        && left.bottom() > right.y
+}
+
+/// Proves the beta identity and all header/grid links fit the reviewed frame.
+fn assert_public_beta_capture_contract(app: &Runtime<()>, text_system: &mut TextSystem) {
+    let frame = Rect::new(0.0, 0.0, 1280.0, 756.0);
+    let (version, version_lines) = committed_text_geometry(app, PUBLIC_BETA_LABEL);
+    let (release_notes, release_notes_lines) =
+        committed_text_geometry(app, RELEASE_NOTES_RESOURCE.title);
+    assert_eq!(
+        version_lines, 1,
+        "public beta label must remain on one line"
+    );
+    assert_eq!(
+        release_notes_lines, 1,
+        "release-notes header link must remain on one line"
+    );
+
+    let scene = app.paint(text_system);
+    for (label, committed) in [
+        (PUBLIC_BETA_LABEL, version),
+        (RELEASE_NOTES_RESOURCE.title, release_notes),
+    ] {
+        let painted = painted_text_geometry(&scene, label, committed);
+        assert!(
+            painted.x >= frame.x
+                && painted.y >= frame.y
+                && painted.right() <= frame.right()
+                && painted.bottom() <= frame.bottom(),
+            "{label}: painted text leaves the reviewed frame: {painted:?}"
+        );
+    }
+
+    let links = widget_bounds_named(app, "Link");
+    assert_eq!(
+        links.len(),
+        8,
+        "capture must contain two header links and six resource-card links"
+    );
+    for (index, bounds) in links.iter().copied().enumerate() {
+        assert!(
+            bounds.w > 0.0
+                && bounds.h > 0.0
+                && bounds.x >= frame.x
+                && bounds.y >= frame.y
+                && bounds.right() <= frame.right()
+                && bounds.bottom() <= frame.bottom(),
+            "link {index} leaves the reviewed frame: {bounds:?}"
+        );
+    }
+    for (index, left) in links.iter().copied().enumerate() {
+        for (other_index, right) in links.iter().copied().enumerate().skip(index + 1) {
+            assert!(
+                !rects_overlap(left, right),
+                "links {index} and {other_index} overlap: {left:?} / {right:?}"
+            );
+        }
+    }
+}
+
 /// Returns the actual logical-pixel extent emitted for one exact text command.
 fn painted_text_geometry(
     scene: &ailloli_ui::runtime::Scene,
@@ -572,6 +651,7 @@ fn assert_reactive_layout_consistency() {
     let mut text_system = TextSystem::new();
     let constraints = Constraints::tight(1280.0, 756.0);
     app.layout(constraints, Scale::new(1.0), &mut text_system);
+    assert_public_beta_capture_contract(&app, &mut text_system);
 
     state.select_openxr_for_capture();
     let prepared = app.prepare_frame();

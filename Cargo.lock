@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_app_storage",
  "ailloli_ui_core",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_app_storage"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_bench"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "clap",
  "once_cell",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_core"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "lucide-icons",
  "serde",
@@ -100,14 +100,14 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_devicons_font"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ttf-parser 0.25.1",
 ]
 
 [[package]]
 name = "ailloli_ui_devtools_core"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_runtime",
@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_devtools_ui"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_devtools_core",
@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_editor"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_fs",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_fs"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_fs_local"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_fs",
  "notify",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_fs_runtime"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_fs",
  "ailloli_ui_runtime",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_icon"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "resvg",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_openxr"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_render_vulkan",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_packaging"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_icon",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_render_vulkan"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_runtime",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_render_wgpu"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_bench",
  "ailloli_ui_core",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_runtime"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_text",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_terminal_core"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_terminal_pty"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "portable-pty",
  "serde",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_text"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "fontdue",
@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_widgets"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui_core",
  "ailloli_ui_devicons_font",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "ailloli_ui_winit"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui",
  "ailloli_ui_app_storage",
@@ -3529,7 +3529,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox_app"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "ailloli_ui",
 ]
@@ -5408,7 +5408,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "clap",
