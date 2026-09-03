@@ -15,7 +15,7 @@ pub const GITHUB_REPOSITORY_URL: &str = "https://github.com/AilloliAI/ailloli_ui
 
 /// Candidate release notes on the public default branch.
 pub const CANDIDATE_RELEASE_NOTES_URL: &str =
-    "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md#010-beta2---2026-09-02";
+    "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md#010-beta2---2026-09-03";
 
 /// Canonical release notes after the beta tag and GitHub pre-release exist.
 pub const FINAL_RELEASE_NOTES_URL: &str = concat!(
@@ -384,7 +384,7 @@ mod tests {
         assert_ne!(CANDIDATE_RELEASE_NOTES_URL, FINAL_RELEASE_NOTES_URL);
         assert_eq!(
             CANDIDATE_RELEASE_NOTES_URL,
-            "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md#010-beta2---2026-09-02"
+            "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md#010-beta2---2026-09-03"
         );
         assert_eq!(
             FINAL_RELEASE_NOTES_URL,

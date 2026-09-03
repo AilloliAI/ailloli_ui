@@ -15,7 +15,7 @@ primary `wgpu` renderer, and reusable components for building complete desktop
 applications.
 
 > **Status:** Ailloli UI is pre-1.0 and under active development.\
-> **Release candidate:** `0.1.0-beta.2` was frozen on 2026-09-02.\
+> **Release candidate:** `0.1.0-beta.2` was frozen on 2026-09-03.\
 > **MSRV:** Rust 1.88\
 > Confirm that beta.2 is present on crates.io before using the registry
 > installation below.
