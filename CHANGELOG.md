@@ -8,7 +8,7 @@ APIs remain subject to change.
 
 ## [Unreleased]
 
-## [0.1.0-beta.2] - 2026-09-02
+## [0.1.0-beta.2] - 2026-09-03
 
 Second public beta of Ailloli UI, focused on retained consistency, interactive
 scrolling, and repeatable release validation.
