@@ -8,6 +8,24 @@ APIs remain subject to change.
 
 ## [Unreleased]
 
+### Project
+
+- Release validation now requires the complete, reviewed changelog body before
+  creating or pushing a tag. Missing, shortened, or outdated release notes are
+  rejected, and the publication procedure checks the GitHub Release body again
+  after creation.
+- Registry verification now checks dependency aliases against Cargo's official
+  index, avoiding false mismatches for renamed dependencies while still rejecting
+  incorrect versions, features, targets, checksums, or yank state.
+- Local archive preflight now accepts unchanged crates alongside modified files
+  when `--allow-dirty` is explicit. Publication verification still requires a
+  clean checkout and clean archives.
+- README, documentation landing pages, and the sandbox now link directly to the
+  published beta.2 release notes and no longer describe it as an unpublished
+  candidate.
+- The beta.2 changelog now includes the reviewed historical release-note
+  additions and corrects an inaccurate public CI configuration claim.
+
 ## [0.1.0-beta.2] - 2026-09-03
 
 Second public beta of Ailloli UI, focused on retained consistency, interactive
@@ -57,6 +75,10 @@ scrolling, and repeatable release validation.
   `StateStore::signal_scoped_with` slot now preserves the invalidator installed
   when the slot was first created. Later handles share that source and do not
   replace its invalidator until the slot is removed.
+- Signal mutations notify retained consumers before the historical invalidator,
+  after releasing value and subscription borrows. Historical callbacks can read
+  or mutate the signal reentrantly, including after `Signal::take`; a panic in
+  that callback does not undo retained invalidations already queued.
 
 ### Fixed
 
@@ -73,6 +95,8 @@ scrolling, and repeatable release validation.
 - Replacing a retained widget or component with a different concrete type at
   the same position or key now starts a fresh mount and clears the previous
   state slots and reactive dependencies.
+- Pending capture requests now wake only their target logical windows instead
+  of requesting redraws for unrelated windows.
 
 ### Security
 
@@ -86,8 +110,7 @@ scrolling, and repeatable release validation.
 
 - Public CI now uses context-aware routing, explicit Windows validation,
   release workflow validation, and deterministic policy fixtures.
-- Superseded CI runs are cancelled automatically, and exhaustive Rust jobs cap
-  Cargo compilation at four workers to prevent linker memory exhaustion.
+- Superseded CI runs are cancelled automatically.
 - Package validation now works correctly on fresh CI runners without
   pre-existing build artifacts.
 - GitHub Pages now publishes library documentation only.
@@ -106,6 +129,11 @@ scrolling, and repeatable release validation.
 - Public documentation, Rustdoc, UI labels, fixtures, and reports now follow
   the project's contextual punctuation policy. En dashes remain valid for
   ranges, while verbatim third-party legal text is preserved where required.
+- Release tooling derives the publication plan from the workspace version,
+  exports version-specific Markdown notes, and checks that the release tag
+  matches Cargo metadata. Selected-package checks record publish-equivalent
+  archives in a checksum ledger; registry verification supports repeated
+  `--package` selections and bounded network retries.
 
 ### Compatibility
 

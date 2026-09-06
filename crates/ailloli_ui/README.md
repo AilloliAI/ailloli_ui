@@ -3,13 +3,12 @@
 Ailloli UI is a retained-mode desktop UI framework for Rust with native
 `winit` windows and GPU rendering through `wgpu`.
 
-> Beta status: `0.1.0-beta.2` was frozen on 2026-09-03. APIs may evolve before
-> 1.0. The minimum supported Rust version is Rust 1.88. Confirm registry
-> availability before installing the release candidate from crates.io.
+> Latest public beta: `0.1.0-beta.2`, available on crates.io. APIs may evolve
+> before 1.0. The minimum supported Rust version is Rust 1.88.
 
 ## Installation
 
-After crates.io lists beta.2, use:
+Install the published beta:
 
 ```toml
 [dependencies]
@@ -45,7 +44,7 @@ It also makes reactive invalidation, layout publication, paint, and
 multi-presentation wakeups consistent without removing or renaming a documented
 beta.1 façade item. Documented beta.1 consumers require no source migration.
 
-[0.1.0-beta.2 release notes](https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md) ·
+[0.1.0-beta.2 release notes](https://github.com/AilloliAI/ailloli_ui/releases/tag/v0.1.0-beta.2) ·
 [Security support](https://github.com/AilloliAI/ailloli_ui/blob/main/SECURITY.md)
 
 [API documentation](https://ailloliai.github.io/ailloli_ui/ailloli_ui/) ·

@@ -14,6 +14,7 @@ pub const DOCUMENTATION_URL: &str = "https://ailloliai.github.io/ailloli_ui/";
 pub const GITHUB_REPOSITORY_URL: &str = "https://github.com/AilloliAI/ailloli_ui";
 
 /// Candidate release notes on the public default branch.
+#[cfg(test)]
 pub const CANDIDATE_RELEASE_NOTES_URL: &str =
     "https://github.com/AilloliAI/ailloli_ui/blob/main/CHANGELOG.md#010-beta2---2026-09-03";
 
@@ -24,11 +25,12 @@ pub const FINAL_RELEASE_NOTES_URL: &str = concat!(
 );
 
 /// Candidate and final release-notes destinations in promotion order.
+#[cfg(test)]
 pub const RELEASE_NOTES_DESTINATIONS: [&str; 2] =
     [CANDIDATE_RELEASE_NOTES_URL, FINAL_RELEASE_NOTES_URL];
 
-/// Active release-notes destination for the current candidate stage.
-pub const RELEASE_NOTES_URL: &str = RELEASE_NOTES_DESTINATIONS[0];
+/// Active release-notes destination for the published beta.
+pub const RELEASE_NOTES_URL: &str = FINAL_RELEASE_NOTES_URL;
 
 /// Canonical contribution guide on the public default branch.
 pub const CONTRIBUTING_URL: &str =
@@ -96,7 +98,7 @@ pub struct Resource {
 pub enum ResourceId {
     /// Hosted API documentation.
     Documentation,
-    /// Notes for the current release candidate.
+    /// Notes for the current public beta.
     ReleaseNotes,
     /// Public source repository.
     GitHub,
@@ -362,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn header_resources_are_documentation_and_candidate_release_notes() {
+    fn header_resources_are_documentation_and_published_release_notes() {
         let ids = HEADER_RESOURCES
             .iter()
             .map(|resource| resource.id)
@@ -380,7 +382,7 @@ mod tests {
 
     #[test]
     fn candidate_and_final_release_notes_destinations_are_canonical() {
-        assert_eq!(RELEASE_NOTES_URL, CANDIDATE_RELEASE_NOTES_URL);
+        assert_eq!(RELEASE_NOTES_URL, FINAL_RELEASE_NOTES_URL);
         assert_ne!(CANDIDATE_RELEASE_NOTES_URL, FINAL_RELEASE_NOTES_URL);
         assert_eq!(
             CANDIDATE_RELEASE_NOTES_URL,
@@ -397,6 +399,35 @@ mod tests {
     }
 
     #[test]
+    fn published_release_links_are_aligned_with_documentation() {
+        for (name, document) in [
+            ("README", include_str!("../../../README.md")),
+            (
+                "facade README",
+                include_str!("../../../crates/ailloli_ui/README.md"),
+            ),
+            (
+                "documentation landing",
+                include_str!("../../../docs/index.html"),
+            ),
+        ] {
+            assert!(document.contains(RELEASE_NOTES_URL), "{name}: release URL");
+            assert!(
+                !document.contains("release candidate"),
+                "{name}: stale candidate"
+            );
+            assert!(
+                !document.contains("Release candidate"),
+                "{name}: stale candidate"
+            );
+            assert!(
+                !document.contains("After crates.io lists"),
+                "{name}: pending registry"
+            );
+        }
+    }
+
+    #[test]
     fn beta_2_workspace_version_drives_the_public_beta_label() {
         assert_eq!(
             env!("CARGO_PKG_VERSION"),
@@ -405,7 +436,7 @@ mod tests {
         );
         assert_eq!(
             PUBLIC_BETA_LABEL, "PUBLIC BETA: 0.1.0-beta.2",
-            "the visible beta label must identify the current release candidate"
+            "the visible beta label must identify the published beta"
         );
     }
 
@@ -423,7 +454,7 @@ mod tests {
                 ResourceAvailability::ComingSoon => None,
             })
             .collect::<Vec<_>>();
-        expected.push(FINAL_RELEASE_NOTES_URL);
+        expected.extend(RELEASE_NOTES_DESTINATIONS);
 
         for source in &expected {
             let url = ExternalUrl::parse(source).expect("validated canonical URL");

@@ -1093,6 +1093,7 @@ fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) 
                 bail!("release workflow must validate without publishing and without cancellation");
             }
             validate_release_artifact_upload(text, &label)?;
+            validate_release_notes_workflow(text)?;
             let validation = text
                 .find("- name: Validate the release state")
                 .context("release workflow omits the release-state gate")?;
@@ -1104,6 +1105,34 @@ fn validate_surface_workflow(path: &Path, text: &str, surface: WorkflowSurface) 
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn validate_release_notes_workflow(text: &str) -> Result<()> {
+    let render = text
+        .find("- name: Render release notes")
+        .context("release workflow omits release-note generation")?;
+    let verify = text
+        .find("- name: Verify complete release notes")
+        .context("release workflow omits the complete release-note gate")?;
+    let state = text
+        .find("- name: Validate the release state")
+        .context("release workflow omits the release-state gate")?;
+    if !(render < verify && verify < state) {
+        bail!(
+            "release workflow must render and verify complete notes before the release-state gate"
+        );
+    }
+    let verification = &text[verify..state];
+    if !verification.contains("cargo +1.88.0-x86_64-unknown-linux-gnu xtask release-notes \\")
+        || !verification.contains("--check target/xtask-package-check/release-notes.md")
+        || text
+            .matches("--notes-file target/xtask-package-check/release-notes.md \\")
+            .count()
+            != 2
+    {
+        bail!("release workflow must verify and supply the complete notes for both release states");
     }
     Ok(())
 }
@@ -1838,6 +1867,24 @@ fn run_self_test(root: &Path) -> Result<JsonValue> {
     let release_workflow = read_utf8(&release_path)?;
     validate_workflow_text(&release_workflow, &release_path.display().to_string())?;
     validate_release_artifact_upload(&release_workflow, "release.yml")?;
+    validate_release_notes_workflow(&release_workflow)?;
+    for invalid in [
+        release_workflow.replace("--check target/xtask-package-check/release-notes.md", ""),
+        release_workflow.replacen(
+            "--notes-file target/xtask-package-check/release-notes.md",
+            "--notes-file target/short-summary.md",
+            1,
+        ),
+        release_workflow.replace("Verify complete release notes", "Unchecked release notes"),
+        release_workflow
+            .replace("Render release notes", "TEMP STEP")
+            .replace("Verify complete release notes", "Render release notes")
+            .replace("TEMP STEP", "Verify complete release notes"),
+    ] {
+        if validate_release_notes_workflow(&invalid).is_ok() {
+            bail!("missing or misplaced release-note gate fixture was unexpectedly accepted");
+        }
+    }
     if validate_workflow_text(&release_workflow, "ci.yml").is_ok() {
         bail!("release artifact action was accepted outside release.yml");
     }

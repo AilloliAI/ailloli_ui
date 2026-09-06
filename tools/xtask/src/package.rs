@@ -654,19 +654,7 @@ fn source_provenance(root: &Path, packages: &[PackageArchive]) -> Result<SourceP
     )?;
     let dirty = !status.trim().is_empty();
     for package in packages {
-        if package.provenance.commit != commit {
-            bail!(
-                "archive {} provenance commit {:?} differs from source commit {commit:?}",
-                package.name,
-                package.provenance.commit
-            );
-        }
-        if package.provenance.dirty != dirty {
-            bail!(
-                "archive {} dirty provenance differs from the source worktree",
-                package.name
-            );
-        }
+        validate_archive_source(&package.name, &package.provenance, &commit, dirty)?;
     }
 
     let public_checkout = if workspace == git_root {
@@ -680,6 +668,27 @@ fn source_provenance(root: &Path, packages: &[PackageArchive]) -> Result<SourceP
         dirty,
         public_checkout,
     })
+}
+
+fn validate_archive_source(
+    name: &str,
+    provenance: &ArchiveProvenance,
+    commit: &str,
+    source_dirty: bool,
+) -> Result<()> {
+    if provenance.commit != commit {
+        bail!(
+            "archive {name} provenance commit {:?} differs from source commit {commit:?}",
+            provenance.commit
+        );
+    }
+    // Cargo checks packaged inputs, not every file in the repository. An unchanged
+    // package may therefore be clean in a dirty candidate checkout. The manifest
+    // must still record that checkout as dirty, never as a publishable source.
+    if provenance.dirty && !source_dirty {
+        bail!("archive {name} has dirty provenance in a clean source worktree");
+    }
+    Ok(())
 }
 
 fn public_origin_matches(git_root: &Path) -> Result<bool> {
@@ -933,8 +942,8 @@ mod tests {
 
     use super::{
         cargo_package_arguments, complete_archive_manifest, require_evidence, selected_packages,
-        should_write_complete_manifest, vcs_dirty, verify_local_archive, ArchiveProvenance,
-        EvidenceKind, PackageArchive, SourceProvenance,
+        should_write_complete_manifest, validate_archive_source, vcs_dirty, verify_local_archive,
+        ArchiveProvenance, EvidenceKind, PackageArchive, SourceProvenance,
     };
     use crate::audit::{FRAMEWORK_CRATES, REPOSITORY};
 
@@ -965,6 +974,54 @@ mod tests {
         let error = vcs_dirty(&git(json!({ "dirty": "false" })))
             .expect_err("non-boolean dirty state must fail closed");
         assert!(error.to_string().contains("is not a boolean"));
+    }
+
+    #[test]
+    fn candidate_dirty_state_does_not_require_every_package_to_be_modified() {
+        let mut provenance = ArchiveProvenance {
+            commit: "a".repeat(40),
+            dirty: false,
+            path_in_vcs: "crates/ailloli_ui_core".to_owned(),
+        };
+        for (source_dirty, package_dirty, valid) in [
+            (false, false, true),
+            (true, false, true),
+            (true, true, true),
+            (false, true, false),
+        ] {
+            provenance.dirty = package_dirty;
+            assert_eq!(
+                validate_archive_source(
+                    "ailloli_ui_core",
+                    &provenance,
+                    &"a".repeat(40),
+                    source_dirty,
+                )
+                .is_ok(),
+                valid,
+                "source dirty={source_dirty}, package dirty={package_dirty}"
+            );
+        }
+    }
+
+    #[test]
+    fn dirty_candidates_still_reject_archives_from_another_commit() {
+        for dirty in [false, true] {
+            let provenance = ArchiveProvenance {
+                commit: "b".repeat(40),
+                dirty,
+                path_in_vcs: "crates/ailloli_ui_core".to_owned(),
+            };
+            for source_dirty in [false, true] {
+                assert!(validate_archive_source(
+                    "ailloli_ui_core",
+                    &provenance,
+                    &"a".repeat(40),
+                    source_dirty,
+                )
+                .is_err());
+            }
+        }
     }
 
     #[test]

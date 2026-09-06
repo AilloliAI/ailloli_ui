@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::audit::{
@@ -29,6 +30,37 @@ const CONNECT_TIMEOUT_SECONDS: u64 = 10;
 const REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const RETRY_BACKOFF_SECONDS: [u64; REGISTRY_ATTEMPTS - 1] = [1, 2, 4];
 const REGISTRY_ACCEPT: &str = "application/json";
+
+/// The registry index is authoritative for Cargo dependency aliases.
+#[derive(Debug, Deserialize)]
+struct RegistryIndexEntry {
+    name: String,
+    vers: String,
+    cksum: String,
+    yanked: bool,
+    deps: Vec<RegistryIndexDependency>,
+    v: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RegistryIndexDependency {
+    name: String,
+    package: Option<String>,
+    req: String,
+    kind: Option<String>,
+    target: Option<String>,
+    registry: Option<String>,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default = "enabled_by_default")]
+    default_features: bool,
+    #[serde(default)]
+    features: Vec<String>,
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
 
 #[derive(Debug, Serialize)]
 struct PublicationPlan {
@@ -254,13 +286,18 @@ pub(crate) fn check(
     allow_dirty: bool,
     skip_package_check: bool,
     asserted_tag: Option<&str>,
+    notes_file: Option<&Path>,
 ) -> Result<()> {
+    require_release_notes_file(state, notes_file)?;
     run_audit(root, &[], 0)?;
     let workspace = Workspace::load(root)?;
     validate_metadata(&workspace)?;
     let version = workspace.version()?.to_owned();
     let plan = publication_plan_for_workspace(&workspace)?;
     validate_changelog(root, &version, state)?;
+    if let Some(path) = notes_file {
+        check_release_notes_file(root, &version, path)?;
+    }
     validate_release_surfaces(root, &version)?;
     validate_git_state(root, &version, state, allow_dirty, asserted_tag)?;
     if !skip_package_check {
@@ -278,17 +315,70 @@ pub(crate) fn check(
     Ok(())
 }
 
-pub(crate) fn notes(root: &Path, requested_version: Option<&str>) -> Result<()> {
+pub(crate) fn notes(
+    root: &Path,
+    requested_version: Option<&str>,
+    check_file: Option<&Path>,
+) -> Result<()> {
     let workspace = Workspace::load(root)?;
     validate_metadata(&workspace)?;
     let workspace_version = workspace.version()?;
     let version = requested_workspace_version(workspace_version, requested_version)?;
+    if let Some(path) = check_file {
+        return check_release_notes_file(root, version, path);
+    }
+    println!("{}", expected_release_notes(root, version)?);
+    Ok(())
+}
+
+fn expected_release_notes(root: &Path, version: &str) -> Result<String> {
     let changelog =
         fs::read_to_string(root.join("CHANGELOG.md")).context("cannot read CHANGELOG.md")?;
     let parsed = parse_changelog(&changelog)?;
     let section = release_notes_for_version(&parsed, version)?;
     validate_release_note_body("CHANGELOG.md", version, &section.body)?;
-    println!("{}", section.body.trim());
+    validate_beta_release_requirements(version, &section.body)?;
+    Ok(section.body.clone())
+}
+
+fn require_release_notes_file(state: ReleaseState, path: Option<&Path>) -> Result<()> {
+    if state != ReleaseState::Candidate && path.is_none() {
+        bail!(
+            "release-check {state:?} requires --notes-file with the reviewed complete GitHub Release body; generate it with cargo xtask release-notes before creating or pushing a tag"
+        );
+    }
+    Ok(())
+}
+
+fn check_release_notes_file(root: &Path, version: &str, path: &Path) -> Result<()> {
+    let expected = expected_release_notes(root, version)?;
+    let actual = fs::read_to_string(path)
+        .with_context(|| format!("cannot read release notes {}", path.display()))?;
+    validate_release_notes_match(version, &expected, &actual)?;
+    println!(
+        "release-notes: PASS: version={version}, sha256={:x}, file={}",
+        Sha256::digest(actual.as_bytes()),
+        path.display()
+    );
+    Ok(())
+}
+
+/// Only transport line endings and terminal newlines may differ. Every section,
+/// entry and continuation line must survive extraction and publication intact.
+fn validate_release_notes_match(version: &str, expected: &str, actual: &str) -> Result<()> {
+    let normalized = actual.replace("\r\n", "\n");
+    let actual = normalized.trim_end_matches('\n');
+    if actual != expected {
+        let first_difference = expected
+            .lines()
+            .zip(actual.lines())
+            .position(|(expected, actual)| expected != actual)
+            .unwrap_or_else(|| expected.lines().count().min(actual.lines().count()))
+            + 1;
+        bail!(
+            "release notes differ from the complete CHANGELOG.md [{version}] body at line {first_difference}; missing, shortened, extra or outdated entries block tagging; regenerate with cargo xtask release-notes and review the full release delta"
+        );
+    }
     Ok(())
 }
 
@@ -346,16 +436,17 @@ pub(crate) fn verify(
             &crate_response,
         )?;
 
-        let dependencies_url =
-            format!("https://crates.io/api/v1/crates/{name}/{version}/dependencies");
-        let dependencies_response = registry_json(
+        // The REST dependency response can omit aliases. Cargo's sparse index
+        // preserves both the manifest name and the original package name.
+        let index_body = registry_body(
             &mut transport,
-            &dependencies_url,
+            &registry_index_url(name)?,
             &user_agent,
-            &format!("{name} dependencies"),
+            &format!("{name} sparse index"),
             thread::sleep,
         )?;
-        validate_registry_dependencies(name, &archive.dependencies, &dependencies_response)?;
+        let entry = parse_registry_index(name, version, &index_body)?;
+        validate_registry_index(&entry, &local_archive.sha256, &archive.dependencies)?;
     }
     println!(
         "verify-release: PASS: {0}/{0} selected crates available at {version}",
@@ -600,9 +691,21 @@ fn trim_release_body(body: &str) -> Result<String> {
 }
 
 fn validate_release_note_body(file: &str, label: &str, body: &str) -> Result<()> {
-    if !body.lines().any(|line| line.starts_with("### "))
-        || !body.lines().any(|line| line.trim_start().starts_with("- "))
-    {
+    let mut notable_section = false;
+    let has_entry = body.lines().any(|line| {
+        if let Some(heading) = line.strip_prefix("### ") {
+            notable_section = matches!(
+                heading.trim(),
+                "Added" | "Changed" | "Deprecated" | "Removed" | "Fixed" | "Security" | "Project"
+            );
+        }
+        notable_section
+            && line
+                .trim_start()
+                .strip_prefix("- ")
+                .is_some_and(|entry| !entry.trim().is_empty())
+    });
+    if !has_entry {
         bail!("{file} section [{label}] needs at least one categorized release-note entry");
     }
     if body.to_ascii_lowercase().contains("unpublished candidate") {
@@ -982,8 +1085,27 @@ fn registry_json<T, S>(
     url: &str,
     user_agent: &str,
     label: &str,
-    mut sleep: S,
+    sleep: S,
 ) -> std::result::Result<JsonValue, RegistryError>
+where
+    T: RegistryTransport,
+    S: FnMut(Duration),
+{
+    let body = registry_body(transport, url, user_agent, label, sleep)?;
+    serde_json::from_slice(&body).map_err(|source| RegistryError::InvalidJson {
+        label: label.to_owned(),
+        source,
+    })
+}
+
+/// Share bounded HTTP handling between REST JSON and newline-delimited index data.
+fn registry_body<T, S>(
+    transport: &mut T,
+    url: &str,
+    user_agent: &str,
+    label: &str,
+    mut sleep: S,
+) -> std::result::Result<Vec<u8>, RegistryError>
 where
     T: RegistryTransport,
     S: FnMut(Duration),
@@ -998,12 +1120,7 @@ where
         };
         match transport.get(&request) {
             Ok(response) if response.status == 200 => {
-                return serde_json::from_slice(&response.body).map_err(|source| {
-                    RegistryError::InvalidJson {
-                        label: label.to_owned(),
-                        source,
-                    }
-                });
+                return Ok(response.body);
             }
             Ok(response) if response.status == 403 => {
                 return Err(RegistryError::Forbidden {
@@ -1117,67 +1234,97 @@ fn validate_registry_response(
     Ok(())
 }
 
+fn registry_index_url(name: &str) -> Result<String> {
+    // The closed first-party set contains ASCII names of at least four bytes.
+    if !FRAMEWORK_CRATES.contains(&name) {
+        bail!("cannot query the first-party index for unknown package {name:?}");
+    }
+    Ok(format!(
+        "https://index.crates.io/{}/{}/{name}",
+        &name[..2],
+        &name[2..4]
+    ))
+}
+
+fn parse_registry_index(name: &str, version: &str, body: &[u8]) -> Result<RegistryIndexEntry> {
+    let mut selected = None;
+    for line in body.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: JsonValue =
+            serde_json::from_slice(line).map_err(|source| RegistryError::InvalidJson {
+                label: format!("{name} sparse index"),
+                source,
+            })?;
+        if value.get("name").and_then(JsonValue::as_str) != Some(name) {
+            bail!("sparse index package identity is inconsistent for {name}");
+        }
+        let row_version = value
+            .get("vers")
+            .and_then(JsonValue::as_str)
+            .with_context(|| format!("sparse index row for {name} omits a version"))?;
+        if row_version != version {
+            continue;
+        }
+        let entry: RegistryIndexEntry = serde_json::from_value(value)
+            .with_context(|| format!("invalid sparse index entry for {name} {version}"))?;
+        if entry.name != name || !matches!(entry.v, None | Some(1 | 2)) {
+            bail!("sparse index identity or schema is inconsistent for {name} {version}");
+        }
+        if selected.replace(entry).is_some() {
+            bail!("duplicate sparse index entries for {name} {version}");
+        }
+    }
+    selected.with_context(|| format!("{name} {version} is absent from the sparse index"))
+}
+
+fn validate_registry_index(
+    entry: &RegistryIndexEntry,
+    expected_checksum: &str,
+    expected: &[FirstPartyDependency],
+) -> Result<()> {
+    if entry.yanked || !is_sha256(&entry.cksum) || entry.cksum != expected_checksum {
+        bail!(
+            "sparse index checksum or yank state is inconsistent for {} {}",
+            entry.name,
+            entry.vers
+        );
+    }
+    validate_registry_dependencies(&entry.name, expected, &entry.deps)
+}
+
 fn validate_registry_dependencies(
     name: &str,
     expected: &[FirstPartyDependency],
-    value: &JsonValue,
+    dependencies: &[RegistryIndexDependency],
 ) -> Result<()> {
-    let dependencies = value
-        .get("dependencies")
-        .and_then(JsonValue::as_array)
-        .with_context(|| format!("crates.io response for {name} omits dependencies"))?;
     let mut actual = Vec::new();
     for dependency in dependencies {
-        let package = dependency
-            .get("crate_id")
-            .and_then(JsonValue::as_str)
-            .with_context(|| format!("crates.io dependency for {name} omits crate_id"))?;
+        let package = dependency.package.as_deref().unwrap_or(&dependency.name);
         if !FRAMEWORK_CRATES.contains(&package) {
             continue;
         }
-        let mut features: Vec<String> = dependency
-            .get("features")
-            .and_then(JsonValue::as_array)
-            .into_iter()
-            .flatten()
-            .map(|feature| {
-                feature
-                    .as_str()
-                    .map(ToOwned::to_owned)
-                    .with_context(|| format!("crates.io dependency feature for {name} is invalid"))
-            })
-            .collect::<Result<_>>()?;
+        if dependency.registry.as_deref().is_some_and(|registry| {
+            registry != "https://github.com/rust-lang/crates.io-index"
+                && registry != "sparse+https://index.crates.io/"
+        }) {
+            bail!("first-party dependency {package} for {name} uses another registry");
+        }
+        let mut features = dependency.features.clone();
         features.sort();
-        let alias = dependency
-            .get("explicit_name_in_toml")
-            .and_then(JsonValue::as_str)
-            .map(ToOwned::to_owned)
-            .filter(|alias| alias != package);
+        let alias = (dependency.name != package).then(|| dependency.name.clone());
         actual.push(FirstPartyDependency {
             name: package.to_owned(),
             alias,
-            requirement: dependency
-                .get("req")
-                .and_then(JsonValue::as_str)
-                .with_context(|| format!("crates.io dependency for {name} omits req"))?
-                .to_owned(),
+            requirement: dependency.req.clone(),
             kind: dependency
-                .get("kind")
-                .and_then(JsonValue::as_str)
-                .unwrap_or("normal")
-                .to_owned(),
-            target: dependency
-                .get("target")
-                .and_then(JsonValue::as_str)
-                .map(ToOwned::to_owned),
-            optional: dependency
-                .get("optional")
-                .and_then(JsonValue::as_bool)
-                .unwrap_or(false),
-            default_features: dependency
-                .get("default_features")
-                .and_then(JsonValue::as_bool)
-                .unwrap_or(true),
+                .kind
+                .clone()
+                .unwrap_or_else(|| "normal".to_owned()),
+            target: dependency.target.clone(),
+            optional: dependency.optional,
+            default_features: dependency.default_features,
             features,
         });
     }
@@ -1186,7 +1333,7 @@ fn validate_registry_dependencies(
     sort_dependencies(&mut expected);
     if actual != expected {
         bail!(
-            "crates.io first-party dependencies for {name} differ from the normalized archive: actual={actual:?}, expected={expected:?}"
+            "sparse index first-party dependencies for {name} differ from the normalized archive: actual={actual:?}, expected={expected:?}"
         );
     }
     Ok(())
@@ -1339,6 +1486,89 @@ mod tests {
         let error = release_notes_for_version(&parsed, "1.2.3-beta.2")
             .expect_err("missing dated section must not use Unreleased");
         assert!(error.to_string().contains("no dated [1.2.3-beta.2]"));
+    }
+
+    const REVIEWED_NOTES: &str = "Release overview.\n\n### Added\n\n- A new control.\n  Its multiline usage example matters.\n\n### Changed\n\n- Keyboard navigation now preserves focus.\n\n### Fixed\n\n- Correct bounds after a reactive update.\n\n### Security\n\n- Reject invalid input.\n\n### Project\n\n- Validate release notes.\n\n### Compatibility\n\n- Rust 1.88.\n\n### Known Limitations\n\n- The backend is experimental.";
+
+    #[test]
+    fn release_notes_match_accepts_full_body_and_transport_newlines() {
+        for actual in [
+            REVIEWED_NOTES.to_owned(),
+            format!("{REVIEWED_NOTES}\n"),
+            format!("{REVIEWED_NOTES}\n").replace('\n', "\r\n"),
+        ] {
+            validate_release_notes_match("1.2.3-beta.2", REVIEWED_NOTES, &actual)
+                .expect("complete notes should survive transport newline conversion");
+        }
+    }
+
+    #[test]
+    fn release_notes_match_rejects_empty_summary_link_or_stale_version() {
+        for actual in [
+            "",
+            "Release overview.",
+            "See CHANGELOG.md for the improvements.",
+            "### Added\n\n- Historical feature from another release.",
+        ] {
+            let error = validate_release_notes_match("1.2.3-beta.2", REVIEWED_NOTES, actual)
+                .expect_err("an incomplete release body must block tagging");
+            assert!(error
+                .to_string()
+                .contains("complete CHANGELOG.md [1.2.3-beta.2]"));
+        }
+    }
+
+    #[test]
+    fn release_notes_match_rejects_each_omitted_entry_or_continuation() {
+        for removed in REVIEWED_NOTES
+            .lines()
+            .filter(|line| line.starts_with("- ") || line.starts_with("  "))
+        {
+            let truncated = REVIEWED_NOTES.replace(removed, "");
+            validate_release_notes_match("1.2.3-beta.2", REVIEWED_NOTES, &truncated)
+                .expect_err("every note and continuation must be present");
+        }
+    }
+
+    #[test]
+    fn release_notes_match_rejects_added_or_rewritten_notes() {
+        for actual in [
+            format!("{REVIEWED_NOTES}\n\n- Unreleased feature."),
+            REVIEWED_NOTES.replace("preserves focus", "changes focus"),
+            REVIEWED_NOTES.replace("### Added", "### Highlights"),
+        ] {
+            validate_release_notes_match("1.2.3-beta.2", REVIEWED_NOTES, &actual)
+                .expect_err("extra or rewritten content needs a changelog review");
+        }
+    }
+
+    #[test]
+    fn release_notes_file_is_mandatory_before_tagging_even_without_archive_checks() {
+        require_release_notes_file(ReleaseState::Candidate, None)
+            .expect("unfrozen development does not require a release body");
+        for state in [ReleaseState::ReleaseReady, ReleaseState::Tagged] {
+            let error = require_release_notes_file(state, None)
+                .expect_err("tag gates cannot omit the reviewed body");
+            assert!(error.to_string().contains("requires --notes-file"));
+            require_release_notes_file(state, Some(Path::new("release-notes.md")))
+                .expect("the notes path is supplied");
+        }
+    }
+
+    #[test]
+    fn release_notes_body_requires_a_real_entry_in_a_notable_section() {
+        for body in [
+            "### Added\n\n### Known Limitations\n\n- Experimental.",
+            "### Added\n\n- \n",
+            "### Compatibility\n\n- Rust 1.88.",
+        ] {
+            validate_release_note_body("CHANGELOG.md", "1.2.3", body)
+                .expect_err("empty headings or limitations alone are not release notes");
+        }
+        validate_release_note_body("CHANGELOG.md", "1.2.3", REVIEWED_NOTES)
+            .expect("full categorized notes should pass");
+        validate_release_note_body("CHANGELOG.md", "1.2.3", "### Project\n\n- Update guides.")
+            .expect("a maintenance-only release need not invent framework features");
     }
 
     #[test]
@@ -1601,8 +1831,8 @@ mod tests {
             features: vec!["feature-a".to_owned()],
         }];
         let response = json!({
-            "dependencies": [{
-                "crate_id": "ailloli_ui_core",
+            "deps": [{
+                "name": "ailloli_ui_core",
                 "req": "=1.2.3-beta.1",
                 "kind": "normal",
                 "target": null,
@@ -1610,7 +1840,7 @@ mod tests {
                 "default_features": true,
                 "features": ["feature-a"]
             }, {
-                "crate_id": "serde",
+                "name": "serde",
                 "req": "1",
                 "kind": "normal",
                 "optional": false,
@@ -1618,7 +1848,10 @@ mod tests {
                 "features": []
             }]
         });
-        validate_registry_dependencies("ailloli_ui_widgets", &expected, &response)
+        let dependencies =
+            serde_json::from_value::<Vec<RegistryIndexDependency>>(response["deps"].clone())
+                .expect("valid sparse index dependencies");
+        validate_registry_dependencies("ailloli_ui_widgets", &expected, &dependencies)
             .expect("normalized first-party dependencies should match");
         let selected = package::selected_packages(&[
             "ailloli_ui_core".to_owned(),
@@ -1626,6 +1859,176 @@ mod tests {
         ])
         .expect("partial level should be selectable");
         assert_eq!(selected.len(), 2);
+    }
+
+    fn aliased_index_fixture() -> (JsonValue, Vec<FirstPartyDependency>) {
+        let expected = vec![FirstPartyDependency {
+            name: "ailloli_ui_render_wgpu".to_owned(),
+            alias: Some("ailloli_ui_render".to_owned()),
+            requirement: "=1.2.3-beta.1".to_owned(),
+            kind: "normal".to_owned(),
+            target: None,
+            optional: true,
+            default_features: false,
+            features: vec!["wgpu_target".to_owned()],
+        }];
+        let value = json!({
+            "name": "ailloli_ui_openxr",
+            "vers": "1.2.3-beta.1",
+            "cksum": "a".repeat(64),
+            "yanked": false,
+            "v": 2,
+            "deps": [{
+                "name": "ailloli_ui_render",
+                "package": "ailloli_ui_render_wgpu",
+                "req": "=1.2.3-beta.1",
+                "kind": null,
+                "target": null,
+                "optional": true,
+                "default_features": false,
+                "features": ["wgpu_target"]
+            }]
+        });
+        (value, expected)
+    }
+
+    fn check_index_fixture(value: &JsonValue, expected: &[FirstPartyDependency]) -> Result<()> {
+        let bytes = serde_json::to_vec(value)?;
+        let entry = parse_registry_index("ailloli_ui_openxr", "1.2.3-beta.1", &bytes)?;
+        validate_registry_index(&entry, &"a".repeat(64), expected)
+    }
+
+    #[test]
+    fn sparse_index_preserves_aliases_without_rest_explicit_name() {
+        let (value, expected) = aliased_index_fixture();
+        assert!(value["deps"][0].get("explicit_name_in_toml").is_none());
+        check_index_fixture(&value, &expected)
+            .expect("the Cargo index attests the alias without the REST-only field");
+        for name in FRAMEWORK_CRATES {
+            assert_eq!(
+                registry_index_url(name).expect("known ASCII package"),
+                format!("https://index.crates.io/ai/ll/{name}")
+            );
+        }
+        assert!(registry_index_url("../untrusted").is_err());
+        assert!(registry_index_url("é").is_err());
+    }
+
+    #[test]
+    fn sparse_index_rejects_every_first_party_dependency_mismatch() {
+        let (value, expected) = aliased_index_fixture();
+        for (field, replacement) in [
+            ("name", json!("another_alias")),
+            ("package", json!("ailloli_ui_render_vulkan")),
+            ("req", json!("^1.2.3-beta.1")),
+            ("kind", json!("build")),
+            ("target", json!("cfg(windows)")),
+            ("optional", json!(false)),
+            ("default_features", json!(true)),
+            ("features", json!([])),
+            ("registry", json!("https://example.com/another-index")),
+        ] {
+            let mut changed = value.clone();
+            changed["deps"][0][field] = replacement;
+            assert!(check_index_fixture(&changed, &expected).is_err(), "{field}");
+        }
+        for deps in [json!([]), json!([value["deps"][0], value["deps"][0]])] {
+            let mut changed = value.clone();
+            changed["deps"] = deps;
+            assert!(check_index_fixture(&changed, &expected).is_err());
+        }
+    }
+
+    #[test]
+    fn sparse_index_rejects_untrusted_identity_checksum_and_schema() {
+        let (value, expected) = aliased_index_fixture();
+        for (field, replacement) in [
+            ("name", json!("ailloli_ui_core")),
+            ("vers", json!("1.2.3-beta.2")),
+            ("cksum", json!("b".repeat(64))),
+            ("yanked", json!(true)),
+            ("v", json!(3)),
+            ("deps", json!(null)),
+        ] {
+            let mut changed = value.clone();
+            changed[field] = replacement;
+            assert!(check_index_fixture(&changed, &expected).is_err(), "{field}");
+        }
+        let mut changed = value.clone();
+        changed["deps"][0]["optional"] = json!("false");
+        assert!(check_index_fixture(&changed, &expected).is_err());
+    }
+
+    #[test]
+    fn sparse_index_selects_exact_version_and_rejects_duplicate_or_invalid_rows() {
+        let (value, expected) = aliased_index_fixture();
+        let mut older = value.clone();
+        older["vers"] = json!("1.2.3-beta.0");
+        let lines = format!("{older}\r\n{value}\r\n");
+        let entry = parse_registry_index("ailloli_ui_openxr", "1.2.3-beta.1", lines.as_bytes())
+            .expect("the requested version need not be the first line");
+        validate_registry_index(&entry, &"a".repeat(64), &expected).unwrap();
+        for body in [
+            format!("{value}\n{value}\n"),
+            format!("{value}\ninvalid json\n"),
+            format!("{value}\n{{}}\n"),
+            String::new(),
+        ] {
+            assert!(
+                parse_registry_index("ailloli_ui_openxr", "1.2.3-beta.1", body.as_bytes()).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_index_accepts_cargo_defaults_and_target_specific_kinds() {
+        let dependency: RegistryIndexDependency = serde_json::from_value(json!({
+            "name": "ailloli_ui_core", "req": "=1.2.3-beta.1"
+        }))
+        .unwrap();
+        assert!(!dependency.optional);
+        assert!(dependency.default_features);
+        assert!(dependency.features.is_empty());
+        let (mut value, mut expected) = aliased_index_fixture();
+        for kind in ["normal", "build", "dev"] {
+            value["deps"][0]["kind"] = json!(kind);
+            value["deps"][0]["target"] = json!("cfg(windows)");
+            expected[0].kind = kind.to_owned();
+            expected[0].target = Some("cfg(windows)".to_owned());
+            check_index_fixture(&value, &expected).expect("exact target-specific edge");
+        }
+    }
+
+    #[test]
+    fn publication_still_rejects_dirty_archive_provenance() {
+        let commit = "a".repeat(40);
+        let mut archive = PackageArchive {
+            name: "ailloli_ui_core".to_owned(),
+            version: "1.2.3-beta.1".to_owned(),
+            archive: "ailloli_ui_core-1.2.3-beta.1.crate".to_owned(),
+            size: 1,
+            sha256: "b".repeat(64),
+            files: [
+                ".cargo_vcs_info.json",
+                "Cargo.toml",
+                "Cargo.toml.orig",
+                "README.md",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            provenance: crate::package::ArchiveProvenance {
+                commit: commit.clone(),
+                dirty: false,
+                path_in_vcs: "crates/ailloli_ui_core".to_owned(),
+            },
+            dependencies: Vec::new(),
+        };
+        validate_archive_entry(&archive, "1.2.3-beta.1", &commit).expect("clean public provenance");
+        archive.provenance.dirty = true;
+        let error = validate_archive_entry(&archive, "1.2.3-beta.1", &commit)
+            .expect_err("candidate allowances never apply to published archives");
+        assert!(error.to_string().contains("non-Public provenance"));
     }
 
     #[test]

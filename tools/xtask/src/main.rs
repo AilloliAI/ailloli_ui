@@ -81,6 +81,10 @@ enum Command {
         /// Assert the triggering tag name against the synchronized workspace version.
         #[arg(long)]
         tag: Option<String>,
+
+        /// Reviewed GitHub Release body; required for release-ready and tagged.
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
     },
 
     /// Print the dependency-derived topological publication plan.
@@ -95,6 +99,10 @@ enum Command {
         /// Version to render. Defaults to the synchronized workspace version.
         #[arg(long)]
         version: Option<String>,
+
+        /// Check that a proposed body contains the complete current release notes.
+        #[arg(long, value_name = "FILE")]
+        check: Option<PathBuf>,
     },
 
     /// Verify that every framework crate and version exists on crates.io.
@@ -153,15 +161,19 @@ fn main() -> Result<()> {
             allow_dirty,
             skip_package_check,
             tag,
+            notes_file,
         } => release::check(
             &root,
             state,
             allow_dirty,
             skip_package_check,
             tag.as_deref(),
+            notes_file.as_deref(),
         ),
         Command::ReleasePlan { json } => release::plan_command(&root, json),
-        Command::ReleaseNotes { version } => release::notes(&root, version.as_deref()),
+        Command::ReleaseNotes { version, check } => {
+            release::notes(&root, version.as_deref(), check.as_deref())
+        }
         Command::VerifyRelease { version, packages } => {
             release::verify(&root, version.as_deref(), &packages)
         }
