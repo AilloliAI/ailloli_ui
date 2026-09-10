@@ -27,6 +27,8 @@ APIs remain subject to change.
   additions and corrects an inaccurate public CI configuration claim.
 - Clarified the beta.2 release notes to focus on framework behavior,
   compatibility, and relevant project updates.
+- Winit unit tests now compile with default features, without requiring the
+  optional `test_support` feature.
 
 ## [0.1.0-beta.2] - 2026-09-03
 

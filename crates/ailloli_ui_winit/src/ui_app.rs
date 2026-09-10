@@ -47,7 +47,7 @@ use ailloli_ui_runtime::input::{
 use ailloli_ui_runtime::popup_mount::PopupOverlayMounts;
 use ailloli_ui_text::TextSystem;
 use ailloli_ui_widgets::chrome::{hit_resize_frame, hit_window_drag_region};
-#[cfg(feature = "test_support")]
+#[cfg(any(test, feature = "test_support"))]
 use winit::dpi::PhysicalSize;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, Ime, MouseScrollDelta, TouchPhase, WindowEvent};
