@@ -25,11 +25,13 @@ APIs remain subject to change.
   candidate.
 - The beta.2 changelog now includes the reviewed historical release-note
   additions and corrects an inaccurate public CI configuration claim.
+- Clarified the beta.2 release notes to focus on framework behavior,
+  compatibility, and relevant project updates.
 
 ## [0.1.0-beta.2] - 2026-09-03
 
 Second public beta of Ailloli UI, focused on retained consistency, interactive
-scrolling, and repeatable release validation.
+scrolling, and more reliable native window updates.
 
 ### Added
 
@@ -100,46 +102,30 @@ scrolling, and repeatable release validation.
 
 ### Security
 
-- The four informational RustSec exceptions remain limited to their reviewed
-  dependency chains after the 2026-09-02 lockfile review. Vulnerabilities, new
-  warnings, and unreviewed advisory IDs still fail the release gate.
-- `lru` remains pinned to `0.18.2`, so the resolved fix for RUSTSEC-2026-0253
-  cannot regress silently.
+- The dependency set retains four informational RustSec advisory exceptions,
+  listed in the [versioned dependency audit configuration](https://github.com/AilloliAI/ailloli_ui/blob/v0.1.0-beta.2/.cargo/audit.toml).
+  These advisories are not resolved by this release.
+- `lru` remains pinned to `0.18.2`, preserving the fix for RUSTSEC-2026-0253
+  already included in beta.1.
 
 ### Project
 
-- Public CI now uses context-aware routing, explicit Windows validation,
-  release workflow validation, and deterministic policy fixtures.
-- Superseded CI runs are cancelled automatically.
-- Package validation now works correctly on fresh CI runners without
-  pre-existing build artifacts.
+- Continuous integration now includes Windows checks and avoids full Rust
+  validation for documentation-only changes. Superseded runs are cancelled
+  automatically to reduce contributor wait times.
+- Package validation now works on clean CI environments without requiring
+  previous builds.
 - GitHub Pages now publishes library documentation only.
-- The public sandbox now links to the published `ailloli_ui` crate on
-  crates.io while keeping unavailable documentation destinations visibly
-  disabled.
-- The sandbox identifies the beta.2 candidate and links to these changelog
-  notes without claiming that an unverified registry version or GitHub Release
-  is already available.
-- Added the public framework banner, release badges, and canonical GitHub
-  Sponsors funding metadata.
-- Repository and release audits now require the canonical `AilloliAI` funding
-  beneficiary.
-- Release validation now enforces bracketed Keep a Changelog headings and the
-  canonical comparison and release links.
-- Public documentation, Rustdoc, UI labels, fixtures, and reports now follow
-  the project's contextual punctuation policy. En dashes remain valid for
-  ranges, while verbatim third-party legal text is preserved where required.
-- Release tooling derives the publication plan from the workspace version,
-  exports version-specific Markdown notes, and checks that the release tag
-  matches Cargo metadata. Selected-package checks record publish-equivalent
-  archives in a checksum ledger; registry verification supports repeated
-  `--package` selections and bounded network retries.
+- The sandbox links to the `ailloli_ui` crate on crates.io and to the beta.2
+  changelog. Unavailable documentation destinations remain visibly disabled.
+- Project pages now include a framework banner, release badges, and a GitHub
+  Sponsors link for optional project funding.
 
 ### Compatibility
 
-- The audited delta removes or renames no documented beta.1 façade item. Most
-  façade consumers require no source migration; update the Cargo requirement
-  to `0.1.0-beta.2` to select this release.
+- Documented beta.1 façade API names are preserved. Most façade consumers
+  require no source migration; update the Cargo requirement to `0.1.0-beta.2`
+  to select this release.
 - Low-level users of `RuntimeHandle::register_ui_service` must explicitly
   request the required invalidation when a service reports changed state.
   `Context::register_ui_service` performs the owner-scoped `Build` request
