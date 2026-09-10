@@ -8,6 +8,20 @@ APIs remain subject to change.
 
 ## [Unreleased]
 
+### Added
+
+- Custom WGPU hosts can record Ailloli UI into their own encoder and color
+  target, sharing the renderer's device and queue. `TargetLoadOp::Load` preserves
+  the host image for UI overlays; the host retains submission and presentation.
+  Borrowed-target validation uses the new `TargetRecordingError` type without
+  changing existing `RendererError` variants or managed rendering signatures.
+
+### Fixed
+
+- An explicit WGPU target clear now takes effect for an empty UI frame and
+  before a first-layer backdrop samples the destination, preventing stale
+  background pixels from being preserved or filtered.
+
 ### Project
 
 - Release validation now requires the complete, reviewed changelog body before

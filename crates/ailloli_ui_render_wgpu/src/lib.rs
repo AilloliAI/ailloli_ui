@@ -5,6 +5,29 @@
 //! `render_layered` / `render_layered_scaled` with one [`LayerPass`] per scene
 //! layer (clip mode chosen via [`choose_clip_render_mode`]).
 //!
+//! # Rendering inside an application-owned frame
+//!
+//! Custom hosts can create resources with [`Renderer::device`] and retain control
+//! of their image, encoder, submission, and presentation. Call
+//! [`Renderer::record_layered_to_target_scaled`] with a [`BorrowedRenderTarget`]
+//! after ending the host's render pass. [`TargetLoadOp::Load`] composites the UI
+//! over the host image; [`TargetLoadOp::Clear`] intentionally replaces it.
+//! Finish and submit the encoder on [`Renderer::queue`] before recording another
+//! UI frame. No 3D commands, windowing types, or application policies are added to
+//! the retained scene protocol.
+//!
+//! The target must be a single-sampled, full-size `D2` color view on the same
+//! device and in the renderer's pipeline format. Backdrop blur and non-normal
+//! blending additionally need the matching texture with `COPY_SRC` usage.
+//! Ordinary UI can borrow a view alone. Descriptor checks return
+//! [`TargetRecordingError`]; wgpu still validates actual GPU bindings.
+//!
+//! Existing managed rendering and capture APIs retain their acquire/submit/present
+//! behavior and their [`RendererError`] type. Borrowed recording is an additive
+//! lower-level API, not a replacement for the ordinary `ailloli_ui` application
+//! builder. See the `host_composition` example for a host triangle and retained
+//! UI text recorded into the same image and command encoder.
+//!
 //! # Modules
 //!
 //! | Module | Role |
@@ -71,7 +94,7 @@ pub mod vertices;
 
 pub use capture::{CaptureParams, CapturedFrame, CapturedFrameFormat};
 pub use clip::{choose_clip_render_mode, resolve_clip_render_plan, ClipRenderMode, RenderClipPlan};
-pub use error::RendererError;
+pub use error::{RendererError, TargetRecordingError};
 pub use frame_plan::{
     ClipBindKind, FramePlanError, FrameRenderPlan, IsolatedPass, PipelineKind, PlannedBatch,
     PlannedLayer, TextureBindKind,
@@ -91,5 +114,7 @@ pub use pipeline_cache::{
     SurfaceReattachOutcome, WgpuRenderContext,
 };
 pub use plan::{build_render_plan, LayerPlan, RenderPlan};
-pub use render_target::{PhysicalExtent, RenderFrame, RenderTarget};
+pub use render_target::{
+    BorrowedRenderTarget, PhysicalExtent, RenderFrame, RenderTarget, TargetLoadOp,
+};
 pub use renderer::{IsolatedFrameMetrics, LayerPass, Renderer, RendererOptions};

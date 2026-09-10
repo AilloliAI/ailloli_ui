@@ -3,6 +3,21 @@
 Ailloli UI is pre-1.0. Compatibility changes are documented here so the README
 can remain focused on the current framework surface.
 
+## Unreleased: recording UI into a host-owned WGPU frame
+
+The new `Renderer::device`, `Renderer::queue`, `BorrowedRenderTarget`,
+`TargetLoadOp`, and `record_layered_to_target_scaled` APIs are not part of the
+published `0.1.0-beta.2`. They are additive low-level capabilities for the next
+beta, documented in the [host-composition guide](crates/ailloli_ui_render_wgpu/README.md#host-owned-composition-unreleased).
+
+Existing managed render and capture calls retain their signatures and the
+existing `RendererError` variants. No migration is required for ordinary façade
+applications. Hosts adopting borrowed recording handle `TargetRecordingError`,
+which is non-exhaustive; match the cases relevant to the application and retain
+a wildcard fallback. The host must submit each recorded UI frame before recording
+the next, supply matching device/target metadata, and request `Load` explicitly
+to preserve its previously drawn image. No WGPU version change is involved.
+
 ## Cargo feature migration
 
 Earlier development snapshots exposed kebab-case aliases for first-party Cargo

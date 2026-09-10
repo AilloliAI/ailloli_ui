@@ -1,7 +1,94 @@
-//! Host-independent frame acquisition and presentation contracts.
+//! Host-independent targets for managed presentation or borrowed command recording.
 
 use crate::error::RendererError;
 use crate::pipeline_cache::ResizeOutcome;
+
+/// A host-owned, single-sampled color target borrowed for UI recording.
+///
+/// Use this with [`crate::Renderer::record_layered_to_target_scaled`] when the
+/// application already owns the image and command encoder. Unlike [`RenderFrame`],
+/// this descriptor transfers no ownership and carries no presentation callback.
+/// The host acquires, submits, and presents the image itself.
+///
+/// # Attachment contract
+///
+/// - The view and encoder belong to [`crate::Renderer::device`].
+/// - The view is `D2`, covers mip zero only and array layer zero only, and uses
+///   a single-sampled color texture with `RENDER_ATTACHMENT` usage.
+/// - `size` is the full physical-pixel extent, not a logical size or a crop.
+///   Both axes are nonzero and within the device's `max_texture_dimension_2d`.
+/// - `format` matches the renderer's pipeline format. Format reinterpretation
+///   through a differently formatted view is not supported by this contract.
+/// - If supplied, `texture` backs exactly this view, with matching dimensions
+///   and format. It is a single-layer `D2` image, not a multisampled attachment.
+///
+/// Wgpu 0.20 does not expose a view's descriptor or backing texture for inspection.
+/// The caller must attest the view metadata and identity. The recorder checks the
+/// supplied extent, format and texture descriptor, but cannot prove that the view
+/// refers to that texture or that all handles share a device. Wgpu validates
+/// invalid GPU bindings separately; such failures are not typed recorder errors.
+///
+/// # Examples
+///
+/// ```no_run
+/// use ailloli_ui_render_wgpu::{BorrowedRenderTarget, PhysicalExtent};
+/// fn describe<'a>(
+///     texture: &'a wgpu::Texture,
+///     view: &'a wgpu::TextureView,
+/// ) -> BorrowedRenderTarget<'a> {
+///     BorrowedRenderTarget {
+///         view,
+///         texture: Some(texture),
+///         size: PhysicalExtent::new(texture.width(), texture.height()),
+///         format: texture.format(),
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct BorrowedRenderTarget<'a> {
+    /// Full-size destination color view, on the renderer's device.
+    pub view: &'a wgpu::TextureView,
+    /// Optional backing image for destination-dependent effects.
+    ///
+    /// `None` is sufficient for ordinary UI and foreground blur. Backdrop blur,
+    /// `Multiply`, and `Screen` blends require `Some` with `COPY_SRC` usage.
+    /// The recorder never acquires, owns, or presents this texture.
+    pub texture: Option<&'a wgpu::Texture>,
+    /// Full physical dimensions; both axes must be nonzero.
+    pub size: PhysicalExtent,
+    /// Attachment format, exactly matching the renderer's pipeline format.
+    pub format: wgpu::TextureFormat,
+}
+
+/// How the UI recorder treats colors already present in the host target.
+///
+/// Neither policy submits GPU work. It takes effect when the host submits the
+/// encoder. Use `Load` after host drawing; use `Clear` for standalone UI or to
+/// intentionally replace the host background. The policy covers the full target,
+/// independently of layer clips and whether the layer list is empty.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_core::Color;
+/// use ailloli_ui_render_wgpu::TargetLoadOp;
+/// let overlay = TargetLoadOp::Load;
+/// let standalone = TargetLoadOp::Clear(Color::BLACK);
+/// assert_ne!(overlay, standalone);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TargetLoadOp {
+    /// Preserve the initialized destination, including when the UI has no layers.
+    ///
+    /// Initialize it in an earlier submitted command or an earlier pass in the
+    /// same encoder. Backdrop effects and destination blends read that content.
+    Load,
+    /// Clear the full attachment before destination reads or UI drawing.
+    ///
+    /// The clear still runs for empty UI or a backdrop as the first layer. The
+    /// color follows the same conventions as [`crate::Renderer::render_layered`].
+    Clear(ailloli_ui_core::Color),
+}
 
 /// Physical pixel dimensions of a render destination.
 ///

@@ -2,6 +2,36 @@
 
 use thiserror::Error;
 
+/// Rejected input to [`crate::Renderer::record_layered_to_target_scaled`].
+///
+/// These failures are detected before the encoder, atlas, or stencil cache is
+/// changed. GPU validation failures (for example, a view from another device)
+/// are reported by wgpu instead. This separate error type leaves the published
+/// [`RendererError`] variants unchanged for existing exhaustive matches.
+///
+/// # Examples
+///
+/// ```
+/// use ailloli_ui_render_wgpu::TargetRecordingError;
+/// let error = TargetRecordingError::FrameTextureUnavailable;
+/// assert!(error.to_string().contains("backing texture"));
+/// ```
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum TargetRecordingError {
+    /// Dimensions, format, scale, or the supplied texture violate the contract.
+    ///
+    /// The diagnostic explains which check failed; its wording is not a stable
+    /// identifier. Match the variant, not the diagnostic string.
+    #[error("wgpu: invalid borrowed render target: {0}")]
+    InvalidRenderTarget(&'static str),
+    /// A backdrop filter or destination blend needs the backing texture.
+    ///
+    /// Supply the texture corresponding to the view, with `COPY_SRC` usage.
+    #[error("wgpu: borrowed target requires a backing texture for destination effects")]
+    FrameTextureUnavailable,
+}
+
 /// Failure during adapter/device setup, surface configuration, or capture readback.
 ///
 /// # Examples

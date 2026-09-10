@@ -32,6 +32,14 @@ The `ailloli_ui` façade and its prelude are the primary application API.
 Lower-level crates remain available for custom runtimes, render hosts, platform
 integrations, and reusable framework extensions.
 
+Custom WGPU hosts may borrow the renderer's device and queue, then record UI into
+their own encoder and single-sampled color target. The host owns acquisition,
+submission, presentation, and any non-UI rendering. `TargetLoadOp::Load` preserves
+the host image; `Clear` replaces it. Pipelines and UI caches remain retained in
+the renderer, and `DrawCmd` remains application-neutral. See the
+[host-composition guide](crates/ailloli_ui_render_wgpu/README.md#host-owned-composition-unreleased)
+for the unreleased API, target restrictions, and queue-ordering contract.
+
 Framework crates never depend on a consumer application or application-owned
 business logic. Provider selection, credentials, product policy, and business
 workflows belong in consuming applications. The public `sandbox_app` validates

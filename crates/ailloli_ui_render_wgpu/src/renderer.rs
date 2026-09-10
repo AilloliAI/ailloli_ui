@@ -26,7 +26,7 @@ use crate::capture::{
 use crate::clip::{resolve_clip_render_plan, ClipParamsGpu, ClipRenderMode, RenderClipPlan};
 use crate::composite_blend::{draw_composite_blend, CompositeBlendPipelines};
 use crate::effect_chain::{run_effect_chain, EffectPipelines, IsolatedCompositeTable};
-use crate::error::RendererError;
+use crate::error::{RendererError, TargetRecordingError};
 use crate::frame_plan::{
     ClipBindKind, FrameRenderPlan, PipelineKind, PlannedBatch, PlannedLayer, TextureBindKind,
 };
@@ -41,10 +41,14 @@ use crate::pipeline_cache::{
     ResizeOutcome, SurfaceAttachmentState, SurfaceReattachOutcome, WgpuRenderContext,
     WgpuSurfaceBundle,
 };
-use crate::render_target::{PhysicalExtent, RenderTarget};
+use crate::render_target::{BorrowedRenderTarget, PhysicalExtent, RenderTarget, TargetLoadOp};
 use crate::stencil::StencilTarget;
 use crate::text::{TextAtlas, TextAtlasStats};
 use wgpu::util::DeviceExt;
+
+#[cfg(test)]
+#[path = "host_composition_tests.rs"]
+mod host_composition_tests;
 
 /// GPU renderer for a host-owned surface or externally managed render target.
 ///
@@ -729,6 +733,174 @@ fn record_text_atlas_frame(stats: TextAtlasStats) {
 }
 
 impl Renderer {
+    /// Borrows the device for host resource creation and command recording.
+    ///
+    /// Resources created here are compatible with this renderer's pipelines and
+    /// caches. The borrow does not transfer device ownership. This works for both
+    /// surface-backed renderers and [`Self::new_with_render_context`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::Renderer;
+    /// fn encoder(ui: &Renderer) -> wgpu::CommandEncoder {
+    ///     ui.device().create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    ///         label: Some("host and UI frame"),
+    ///     })
+    /// }
+    /// ```
+    pub fn device(&self) -> &wgpu::Device {
+        self.gpu.device()
+    }
+
+    /// Borrows the shared queue for host uploads and submission.
+    ///
+    /// Submit the encoder returned by the host on this queue after recording UI.
+    /// UI atlas uploads use this same queue; recording alone does not flush them.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_render_wgpu::Renderer;
+    /// fn submit(ui: &Renderer, encoder: wgpu::CommandEncoder) {
+    ///     ui.queue().submit([encoder.finish()]);
+    /// }
+    /// ```
+    pub fn queue(&self) -> &wgpu::Queue {
+        self.gpu.queue()
+    }
+
+    /// Records UI commands into an encoder and target owned by the host.
+    ///
+    /// This method never acquires a frame, submits an encoder, or presents.
+    /// It records complete UI render passes, not commands inside an already-open
+    /// pass. End the host's preceding render pass before calling it. The renderer
+    /// retains its pipelines, glyph/icon atlases, and offscreen pool. Its stencil
+    /// attachment is resized only when the borrowed target's extent changes;
+    /// this does not resize a managed window or reconfigure its native surface.
+    ///
+    /// `scale.dpr` is finite and strictly positive: `1.0` maps one logical UI unit
+    /// to one physical pixel, and `2.0` maps it to two. Target dimensions remain
+    /// physical pixels at either scale. A format change requires a renderer whose
+    /// pipelines were built for that format; resizing alone does not.
+    ///
+    /// # Submission order
+    ///
+    /// Preparation can enqueue atlas writes on [`Self::queue`]. They are executed
+    /// before command buffers in its next submission. Submit this UI recording on
+    /// that queue before recording another frame with the same renderer, including
+    /// calls to its managed render or capture methods. Recording several UI frames
+    /// and submitting them together is unsupported: later atlas updates or pooled
+    /// texture reuse could change resources referenced by earlier commands. A CPU
+    /// wait for GPU completion is not needed between correctly ordered submissions.
+    ///
+    /// Use [`TargetLoadOp::Load`] to overlay an initialized destination, or
+    /// [`TargetLoadOp::Clear`] to replace it. The host may record additional passes
+    /// after UI, but those passes can of course cover the UI pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TargetRecordingError::InvalidRenderTarget`] for zero/oversized
+    /// extents, a pipeline-format mismatch, nonpositive/nonfinite DPR, an invalid
+    /// supplied texture descriptor, or a missing `COPY_SRC` usage for effects.
+    /// Returns [`TargetRecordingError::FrameTextureUnavailable`] when backdrop
+    /// blur or a non-normal blend is requested without a backing texture. Ordinary
+    /// UI and foreground-only effects may supply just a view.
+    ///
+    /// These checks occur before recording, uploads, or changes to UI caches.
+    /// The encoder remains usable after a returned error. The checks cannot verify
+    /// that a view actually matches its declared texture, metadata, or device;
+    /// follow the full [`BorrowedRenderTarget`] contract.
+    ///
+    /// # Panics
+    ///
+    /// Invalid GPU handles or bindings use wgpu's validation/error handling, which
+    /// may panic. An invalid layer plan can also panic. Arbitrary GPU validation
+    /// or panic failures are not rolled back and are not returned as typed errors.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ailloli_ui_core::Scale;
+    /// use ailloli_ui_render_wgpu::{
+    ///     BorrowedRenderTarget, LayerPass, Renderer, TargetLoadOp, TargetRecordingError,
+    /// };
+    /// fn overlay(
+    ///     ui: &mut Renderer,
+    ///     target: BorrowedRenderTarget<'_>,
+    ///     layers: &[LayerPass<'_>],
+    /// ) -> Result<(), TargetRecordingError> {
+    ///     // The host has already initialized the target on the shared queue.
+    ///     let mut encoder = ui.device().create_command_encoder(&Default::default());
+    ///     ui.record_layered_to_target_scaled(
+    ///         &mut encoder, target, layers, Scale::new(1.0), TargetLoadOp::Load,
+    ///     )?;
+    ///     ui.queue().submit([encoder.finish()]);
+    ///     // Present the host surface here if there is one.
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn record_layered_to_target_scaled(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: BorrowedRenderTarget<'_>,
+        layers: &[LayerPass<'_>],
+        scale: Scale,
+        load_op: TargetLoadOp,
+    ) -> Result<(), TargetRecordingError> {
+        let limit = self.device().limits().max_texture_dimension_2d;
+        if target.size.is_zero() || target.size.width > limit || target.size.height > limit {
+            return Err(TargetRecordingError::InvalidRenderTarget("invalid extent"));
+        }
+        if target.format != self.gpu.format() {
+            return Err(TargetRecordingError::InvalidRenderTarget(
+                "pipeline format mismatch",
+            ));
+        }
+        if !scale.dpr.is_finite() || scale.dpr <= 0.0 {
+            return Err(TargetRecordingError::InvalidRenderTarget("invalid scale"));
+        }
+        let needs_copy = layers.iter().any(|layer| {
+            layer.effects.backdrop_blur_radius_px > 0.0
+                || layer.effects.blend_mode != BlendMode::Normal
+        });
+        if needs_copy && target.texture.is_none() {
+            return Err(TargetRecordingError::FrameTextureUnavailable);
+        }
+        if let Some(texture) = target.texture {
+            if texture.width() != target.size.width
+                || texture.height() != target.size.height
+                || texture.depth_or_array_layers() != 1
+                || texture.dimension() != wgpu::TextureDimension::D2
+                || texture.sample_count() != 1
+                || texture.format() != target.format
+                || !texture
+                    .usage()
+                    .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            {
+                return Err(TargetRecordingError::InvalidRenderTarget(
+                    "texture descriptor mismatch",
+                ));
+            }
+            if needs_copy && !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                return Err(TargetRecordingError::InvalidRenderTarget(
+                    "effects require COPY_SRC",
+                ));
+            }
+        }
+        self.record_single_pass(
+            target.view,
+            target.texture,
+            encoder,
+            target.size.width as f32,
+            target.size.height as f32,
+            scale,
+            load_op,
+            layers,
+        );
+        Ok(())
+    }
+
     /// Creates a renderer from an owned raw-window-handle provider.
     ///
     /// Presentation adapters are responsible for converting their native size
@@ -1509,16 +1681,14 @@ impl Renderer {
                     label: Some("encoder"),
                 });
 
-        let w = size.width as f32;
-        let h = size.height as f32;
         self.record_single_pass(
             view,
-            source_texture,
+            Some(source_texture),
             &mut encoder,
-            w,
-            h,
+            size.width as f32,
+            size.height as f32,
             scale,
-            clear,
+            TargetLoadOp::Clear(clear),
             layers,
         );
 
@@ -1643,17 +1813,14 @@ impl Renderer {
                     label: Some("encoder (capture)"),
                 });
 
-        let extent = self.gpu.extent();
-        let w = extent.width as f32;
-        let h = extent.height as f32;
         self.record_single_pass(
             &frame.view,
-            frame_texture,
+            Some(frame_texture),
             &mut encoder,
-            w,
-            h,
+            frame.size.width as f32,
+            frame.size.height as f32,
             scale,
-            clear,
+            TargetLoadOp::Clear(clear),
             layers,
         );
 
@@ -1851,7 +2018,7 @@ impl Renderer {
     ///   2. `FrameRenderPlan::build_cpu(...)` (pure CPU).
     ///   3. Allocate per-frame arena buffers (3-4) + per-layer clip bindings
     ///      **before** `begin_render_pass`.
-    ///   4. Open one render pass with `LoadOp::Clear(color)` (+ stencil clear
+    ///   4. Apply the host color load policy, then open UI passes (+ stencil clear
     ///      if needed); iterate `PlannedLayer`s setting scissor / stencil_ref
     ///      / pipeline / bind groups / vertex range for each batch.
     ///
@@ -1869,14 +2036,24 @@ impl Renderer {
     fn record_single_pass(
         &mut self,
         view: &wgpu::TextureView,
-        frame_texture: &wgpu::Texture,
+        frame_texture: Option<&wgpu::Texture>,
         encoder: &mut wgpu::CommandEncoder,
         w: f32,
         h: f32,
         scale: Scale,
-        clear: Color,
+        load_op: TargetLoadOp,
         layers: &[LayerPass<'_>],
     ) {
+        // Borrowed frames may alternate with a differently sized managed frame.
+        // Restore the stencil for the actual destination, not remembered surface
+        // dimensions. Typed borrowed-target checks have already succeeded here.
+        if let Some(stencil) = &mut self.stencil_target {
+            stencil.recreate(self.gpu.device(), w as u32, h as u32);
+        }
+        let clear = match load_op {
+            TargetLoadOp::Load => Color::TRANSPARENT,
+            TargetLoadOp::Clear(color) => color,
+        };
         // --- Étape 1: PREP GPU (atlas + icons) ---
         self.text_atlas.start_frame();
         let prepared = PreparedResources::prepare(
@@ -1904,6 +2081,18 @@ impl Renderer {
         .unwrap_or_else(|e| panic!("FrameRenderPlan::try_build_cpu: {e:?}"));
 
         let has_backdrop = !plan.backdrop_captures.is_empty();
+        // Keep ordinary frames in one pass. An empty plan or a backdrop at
+        // index zero has no preceding main segment in which to clear color.
+        let clear_before_main = matches!(load_op, TargetLoadOp::Clear(_))
+            && (plan.layers.is_empty()
+                || plan
+                    .backdrop_captures
+                    .first()
+                    .is_some_and(|cut| cut.split_planned_layer_idx == 0));
+        if clear_before_main {
+            clear_color_target(encoder, view, clear);
+        }
+        let clear_in_main = matches!(load_op, TargetLoadOp::Clear(_)) && !clear_before_main;
         self.frame_leases.clear();
 
         // --- Étape 3: ALLOC GPU (vertex arenas + per-layer clip bindings) ---
@@ -2070,7 +2259,7 @@ impl Renderer {
                 &plan,
                 &gpu_bufs,
                 0..first_split,
-                true,
+                clear_in_main,
                 clear,
                 needs_stencil_attachment,
                 None,
@@ -2099,7 +2288,7 @@ impl Renderer {
                 copy_swapchain_region_to_offscreen(
                     self.gpu.device(),
                     encoder,
-                    frame_texture,
+                    frame_texture.expect("backdrop texture validated before recording"),
                     cut.capture_rect_px,
                     &lease,
                     &self.offscreen_pool,
@@ -2218,7 +2407,7 @@ impl Renderer {
                 &plan,
                 &gpu_bufs,
                 0..plan.layers.len(),
-                true,
+                clear_in_main,
                 clear,
                 needs_stencil_attachment,
                 Some(&table),
@@ -2250,7 +2439,7 @@ impl Renderer {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
-        frame_texture: &wgpu::Texture,
+        frame_texture: Option<&wgpu::Texture>,
         plan: &FrameRenderPlan,
         gpu_bufs: &MainPassGpuBuffers,
         layer_range: std::ops::Range<usize>,
@@ -2328,7 +2517,7 @@ impl Renderer {
                 self.draw_shader_blend_composite(
                     encoder,
                     view,
-                    frame_texture,
+                    frame_texture.expect("blend texture validated before recording"),
                     comp,
                     composite_table,
                     gpu_bufs.composite_buf.as_ref(),
@@ -2684,9 +2873,17 @@ fn clear_isolated_color_target(
     pool: &crate::offscreen_pool::OffscreenSurfacePool,
     clear: Color,
 ) {
-    let color_view = lease.color_view(pool);
+    clear_color_target(encoder, lease.color_view(pool), clear);
+}
+
+/// Explicitly clears before any UI work, including an empty or backdrop-only frame.
+fn clear_color_target(
+    encoder: &mut wgpu::CommandEncoder,
+    color_view: &wgpu::TextureView,
+    clear: Color,
+) {
     let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("clear nested isolated parent"),
+        label: Some("clear render target"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: color_view,
             resolve_target: None,
